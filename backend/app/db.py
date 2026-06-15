@@ -54,7 +54,7 @@ def _pg_rewrite(sql: str) -> str:
         return "INSERT INTO " + table + " (" + cols_str + ") VALUES (" + vals + ") ON CONFLICT (" + cols_str + ") DO UPDATE SET " + set_str
     # INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
     m2 = re.match(
-        r"INSERT OR IGNORE INTO (\\w+) .*", sql, re.DOTALL | re.IGNORECASE,
+        r"INSERT OR IGNORE INTO (\w+) .*", sql, re.DOTALL | re.IGNORECASE,
     )
     if m2:
         return re.sub(r"INSERT OR IGNORE", "INSERT", sql, flags=re.IGNORECASE) + " ON CONFLICT DO NOTHING"

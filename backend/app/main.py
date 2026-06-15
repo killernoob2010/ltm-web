@@ -1065,9 +1065,11 @@ def delete_alert_setting(alert_id: int, user=Depends(current_user)):
     require_edit("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        cursor = db._exec(cur, "DELETE FROM alert_settings WHERE id = ?", (alert_id,))
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="预警规则不存在")
+        row = db._exec(cur, "SELECT id FROM alert_settings WHERE id = ?", (alert_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="预警规则不存在")
+        db._exec(cur, "DELETE FROM alert_history WHERE alert_id = ?", (alert_id,))
+        db._exec(cur, "DELETE FROM alert_settings WHERE id = ?", (alert_id,))
     db.log_operation(user["id"], "risk_alert", "删除预警", "删除风险预警规则", "alert_settings", alert_id)
     return {"ok": True}
 
@@ -1719,10 +1721,11 @@ def delete_strategy_group(group_id: int, user=Depends(current_user)):
     require_edit("mid_event_monitor", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        cursor = db._exec(cur, "DELETE FROM strategy_groups WHERE id = ?", (group_id,))
+        group = db._exec(cur, "SELECT id FROM strategy_groups WHERE id = ?", (group_id,)).fetchone()
+        if not group:
+            raise HTTPException(status_code=404, detail="策略组不存在")
         db._exec(cur, "DELETE FROM strategy_positions WHERE group_id = ?", (group_id,))
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="策略组不存在")
+        db._exec(cur, "DELETE FROM strategy_groups WHERE id = ?", (group_id,))
     db.log_operation(user["id"], "mid_event_monitor", "删除策略组", "删除策略组及持仓", "strategy_groups", group_id)
     return {"ok": True}
 

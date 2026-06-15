@@ -13,16 +13,20 @@ DESKTOP_SOURCE_ZIP = Path("/Users/wangjingze/Desktop/v6.04_source_code.zip")
 DESKTOP_CACHE_SUFFIX = "modules\\info_alert\\data_cache.db"
 
 
+def month_matches_clause() -> str:
+    return "(month = ? OR (month IS NULL AND ? IS NULL))"
+
+
 def get_cached_data(info_type: str, year: int, month: Optional[str], calc_date: str) -> Optional[dict]:
     with db.connect() as conn:
         cur = conn.cursor()
         row = db._exec(cur, 
-            """
+            f"""
             SELECT t_1_value, t_2_value, mean_value, min_value, max_value, std_value
             FROM calculated_data
-            WHERE info_type = ? AND year = ? AND month IS ? AND calc_date = ?
+            WHERE info_type = ? AND year = ? AND {month_matches_clause()} AND calc_date = ?
             """,
-            (info_type, year, month, calc_date),
+            (info_type, year, month, month, calc_date),
         ).fetchone()
     if not row:
         return None
@@ -40,14 +44,14 @@ def get_latest_cached_data(info_type: str, year: int, month: Optional[str], calc
     with db.connect() as conn:
         cur = conn.cursor()
         row = db._exec(cur, 
-            """
+            f"""
             SELECT t_1_value, t_2_value, mean_value, min_value, max_value, std_value
             FROM calculated_data
-            WHERE info_type = ? AND year = ? AND month IS ? AND calc_date <= ?
+            WHERE info_type = ? AND year = ? AND {month_matches_clause()} AND calc_date <= ?
             ORDER BY calc_date DESC
             LIMIT 1
             """,
-            (info_type, year, month, calc_date),
+            (info_type, year, month, month, calc_date),
         ).fetchone()
     if not row:
         return None
