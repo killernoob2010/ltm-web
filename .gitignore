@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+backend/data/*.db
+.env
+releases/
+*.pyo
+.runtime/
+*.bak

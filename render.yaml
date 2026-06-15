@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ltm-web
+    env: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash render_start.sh
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PORT
+        value: "8000"

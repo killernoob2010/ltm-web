@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>轻量化交易管理系统 Web</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main id="loginView" class="login-shell">
+      <section class="login-panel">
+        <h1>轻量化交易管理系统</h1>
+        <form id="loginForm" class="form-stack">
+          <label>
+            用户名
+            <input id="username" autocomplete="username" value="管理员" />
+          </label>
+          <label>
+            密码
+            <input id="password" type="password" autocomplete="current-password" value="admin" />
+          </label>
+          <button type="submit">登录</button>
+          <p id="loginError" class="error-text"></p>
+        </form>
+      </section>
+    </main>
+
+    <main id="appView" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="brand">
+          <strong>交易管理系统</strong>
+          <span>Web 工作台</span>
+        </div>
+        <nav id="menu"></nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1 id="pageTitle">实时信息汇总</h1>
+            <p id="pageSubtitle">信息预警管理 / 实时信息汇总</p>
+          </div>
+          <div class="userbar">
+            <button id="notificationBtn" class="secondary notification-button" title="预警通知">
+              预警 <span id="notificationBadge" class="notification-badge hidden">0</span>
+            </button>
+            <span id="currentUser"></span>
+            <button id="logoutBtn" class="secondary">退出</button>
+          </div>
+        </header>
+
+        <section id="infoSummaryPage" class="page">
+          <div class="toolbar">
+            <button id="calculateAllInfoBtn">计算全部</button>
+            <button id="refreshIndicatorsBtn" class="secondary">刷新</button>
+            <button id="importCacheBtn" class="secondary">导入历史缓存</button>
+            <span id="infoStatus" class="toolbar-status">实时更新：开启｜最后更新：--</span>
+          </div>
+
+          <section class="info-section-list" id="infoCards"></section>
+        </section>
+
+        <section id="midEventPage" class="page hidden">
+          <div class="toolbar">
+            <button id="addGroupBtn">新增策略组</button>
+            <button id="addPositionBtn" class="secondary">新增持仓</button>
+            <button id="refreshPricesBtn" class="secondary">刷新价格</button>
+            <button id="refreshMidEventBtn" class="secondary">刷新页面</button>
+            <span id="midEventStatus" class="toolbar-status">实时更新：开启｜最后更新：--</span>
+          </div>
+
+          <div class="mid-event-stack">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>策略组列表</h2>
+                <span id="groupCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>策略组名称</th>
+                      <th>整体盈亏</th>
+                      <th>更新时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="groupsTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2 id="positionsTitle">策略组持仓明细</h2>
+                <span id="positionSummary"></span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>品种</th>
+                      <th>合约</th>
+                      <th>方向</th>
+                      <th>开仓价</th>
+                      <th>当前价</th>
+                      <th>数量</th>
+                      <th>合约乘数</th>
+                      <th>浮盈亏</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="positionsTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="total-strip">
+              <span>所有组总盈亏</span>
+              <strong id="allGroupsPnl">--</strong>
+            </section>
+          </div>
+        </section>
+
+        <section id="shJunnengPage" class="page hidden">
+          <div class="toolbar">
+            <button id="addShJunnengBtn">添加交易</button>
+            <button id="editShJunnengBtn" class="secondary">编辑交易</button>
+            <button id="deleteShJunnengBtn" class="secondary">删除交易</button>
+            <button id="closeShJunnengBtn" class="secondary">平仓</button>
+            <button id="refreshShJunnengPricesBtn" class="secondary">刷新实时价格</button>
+            <button id="manualShJunnengPricesBtn" class="secondary">手动更新价格</button>
+            <button id="exportShJunnengBtn" class="secondary">导出台账</button>
+            <button id="settledOverviewBtn" class="secondary">已平仓数据总览</button>
+            <button id="refreshShJunnengBtn" class="secondary">刷新页面</button>
+            <span id="shJunnengStatus" class="toolbar-status">台账状态：待加载</span>
+          </div>
+
+          <section class="panel filter-panel">
+            <div class="filter-grid">
+              <label>
+                选择日期
+                <input id="shJunnengSelectedDate" type="date" />
+              </label>
+              <label>
+                关键词
+                <input id="shJunnengFilterKeyword" placeholder="合约或日期" />
+              </label>
+              <div class="filter-actions">
+                <button id="queryShJunnengBtn" class="secondary">查询</button>
+                <button id="resetShJunnengFilterBtn" class="secondary">重置</button>
+              </div>
+            </div>
+          </section>
+
+          <div class="ledger-stack">
+            <section class="panel ledger-panel">
+              <div class="panel-head">
+                <h2>今日交易</h2>
+                <span id="shJunnengTodayCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="ledger-table">
+                  <thead>
+                    <tr>
+                      <th>合约</th>
+                      <th>方向</th>
+                      <th>开仓均价</th>
+                      <th>平仓均价</th>
+                      <th>数量</th>
+                      <th>手续费(开)</th>
+                      <th>手续费(平)</th>
+                      <th>盈亏</th>
+                      <th>开仓日期</th>
+                      <th>平仓日期</th>
+                      <th>是否平仓</th>
+                    </tr>
+                  </thead>
+                  <tbody id="shJunnengTodayTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel ledger-panel">
+              <div class="panel-head">
+                <h2>即期持仓</h2>
+                <span id="shJunnengCurrentCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="ledger-table">
+                  <thead>
+                    <tr>
+                      <th>合约</th>
+                      <th>方向</th>
+                      <th>开仓均价</th>
+                      <th>当日收盘价</th>
+                      <th>持仓数量</th>
+                      <th>手续费(开)</th>
+                      <th>盈亏</th>
+                      <th>开仓日期</th>
+                      <th>是否平仓</th>
+                    </tr>
+                  </thead>
+                  <tbody id="shJunnengCurrentTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel ledger-panel">
+              <div class="panel-head">
+                <h2>已平仓数据</h2>
+                <span id="shJunnengSettledCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="ledger-table">
+                  <thead>
+                    <tr>
+                      <th>合约</th>
+                      <th>方向</th>
+                      <th>开仓均价</th>
+                      <th>平仓均价</th>
+                      <th>数量</th>
+                      <th>手续费(开)</th>
+                      <th>手续费(平)</th>
+                      <th>盈亏</th>
+                      <th>开仓日期</th>
+                      <th>平仓日期</th>
+                      <th>资金利息</th>
+                      <th>80%结算</th>
+                      <th>20%结算</th>
+                    </tr>
+                  </thead>
+                  <tbody id="shJunnengSettledTable"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="riskAlertPage" class="page hidden">
+          <div class="toolbar">
+            <button id="addAlertBtn">新增预警</button>
+            <button id="batchEnableAlertsBtn" class="secondary">批量启用</button>
+            <button id="batchDisableAlertsBtn" class="secondary">批量停用</button>
+            <button id="batchDeleteAlertsBtn" class="secondary">批量删除</button>
+            <button id="scanAlertsBtn" class="secondary">手动扫描</button>
+            <button id="refreshAlertsBtn" class="secondary">刷新</button>
+            <span id="riskAlertStatus" class="toolbar-status">后台扫描：开启｜最后更新：--</span>
+          </div>
+
+          <div class="content-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>预警规则</h2>
+                <span id="alertCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th><input id="selectAllAlerts" type="checkbox" /></th>
+                      <th>指标</th>
+                      <th>合约</th>
+                      <th>预警值</th>
+                      <th>方向</th>
+                      <th>状态</th>
+                      <th>提醒人</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="alertsTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>预警历史</h2>
+                <span id="historyCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>指标</th>
+                      <th>当前值</th>
+                      <th>预警值</th>
+                      <th>方向</th>
+                      <th>状态</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="historyTable"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+            <section id="userManagementPage" class="page hidden">
+          <div class="toolbar">
+            <button id="addUserBtn">添加用户</button>
+            <button id="editUserBtn" class="secondary">编辑用户</button>
+            <button id="deleteUserBtn" class="secondary">删除用户</button>
+            <button id="setPermissionBtn" class="secondary">权限设置</button>
+            <button id="viewLogsBtn" class="secondary">操作日志</button>
+            <span id="userMgmtStatus" class="toolbar-status">就绪</span>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>用户列表</h2>
+              <span id="userCount"></span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>姓名</th>
+                    <th>部门</th>
+                    <th>角色</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="placeholderPage" class="page hidden">
+          <section class="panel empty-state">
+            <h2 id="placeholderTitle"></h2>
+            <p>该模块的 Web 页面框架已预留，后续会按迁移顺序接入具体功能。</p>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="alertDialog">
+      <form id="alertForm" method="dialog" class="dialog-form">
+        <h2 id="dialogTitle">新增预警</h2>
+        <input id="alertId" type="hidden" />
+        <label>
+          指标类型
+          <select id="infoType">
+            <option value="卷螺差">卷螺差</option>
+            <option value="螺矿比">螺矿比</option>
+            <option value="煤矿比">煤矿比</option>
+            <option value="月差">月差</option>
+            <option value="盘面钢厂利润">盘面钢厂利润</option>
+            <option value="内外盘差">内外盘差</option>
+            <option value="内外盘差2">内外盘差2</option>
+          </select>
+        </label>
+        <label>
+          合约年份
+          <input id="contractYear" required value="2026" />
+        </label>
+        <label>
+          合约月份
+          <input id="contractMonth" required placeholder="例如 05，月差填 09_01" />
+        </label>
+        <label>
+          预警值
+          <input id="alertValue" required type="number" step="0.01" />
+        </label>
+        <label>
+          方向
+          <select id="direction">
+            <option value="above">高于</option>
+            <option value="below">低于</option>
+          </select>
+        </label>
+        <label>
+          提醒人
+          <input id="reminderUsers" placeholder="留空提醒所有人，多个用逗号分隔" />
+        </label>
+        <label>
+          状态
+          <select id="alertStatus">
+            <option value="enabled">启用</option>
+            <option value="disabled">停用</option>
+          </select>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="cancelDialogBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <aside id="notificationPanel" class="notification-panel hidden">
+      <div class="panel-head">
+        <h2>预警通知</h2>
+        <button id="markAllNotificationsBtn" class="link">全部已读</button>
+      </div>
+      <div id="notificationList" class="notification-list"></div>
+    </aside>
+
+    <div id="toastHost" class="toast-host"></div>
+
+    <dialog id="groupDialog">
+      <form id="groupForm" method="dialog" class="dialog-form">
+        <h2 id="groupDialogTitle">新增策略组</h2>
+        <input id="groupId" type="hidden" />
+        <label>
+          策略组名称
+          <input id="groupName" required placeholder="例如 螺纹套利组合" />
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="cancelGroupBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="shJunnengDialog">
+      <form id="shJunnengForm" method="dialog" class="dialog-form">
+        <h2 id="shJunnengDialogTitle">新增交易</h2>
+        <input id="shJunnengTradeId" type="hidden" />
+        <div class="form-grid">
+          <label>
+            合约月份
+            <input id="shJunnengContractMonth" required placeholder="例如 热卷2610、HC2610、螺纹2610" />
+          </label>
+          <label>
+            方向
+            <select id="shJunnengDirection">
+              <option value="多头">多头</option>
+              <option value="空头">空头</option>
+            </select>
+          </label>
+          <label>
+            是否平仓
+            <select id="shJunnengIsClosed">
+              <option value="未平仓">未平仓</option>
+              <option value="已平仓">已平仓</option>
+            </select>
+          </label>
+          <label>
+            开仓价
+            <input id="shJunnengOpenPrice" required type="number" step="0.01" />
+          </label>
+          <label>
+            数量
+            <input id="shJunnengTradeQuantity" required type="number" value="1" />
+          </label>
+          <label>
+            开仓手续费
+            <input id="shJunnengOpenFee" type="number" step="0.01" value="0" />
+          </label>
+          <label>
+            开仓日期
+            <input id="shJunnengOpenDate" required type="date" />
+          </label>
+          <label>
+            当日收盘价
+            <input id="shJunnengCurrentPrice" type="number" step="0.01" />
+          </label>
+          <label class="sh-junneng-close-field">
+            平仓价
+            <input id="shJunnengFormClosePrice" type="number" step="0.01" />
+          </label>
+          <label class="sh-junneng-close-field">
+            平仓手续费
+            <input id="shJunnengFormCloseFee" type="number" step="0.01" />
+          </label>
+          <label class="sh-junneng-close-field">
+            平仓日期
+            <input id="shJunnengFormCloseDate" type="date" />
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelShJunnengBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="shJunnengCloseDialog">
+      <form id="shJunnengCloseForm" method="dialog" class="dialog-form">
+        <h2>交易平仓</h2>
+        <input id="shJunnengCloseTradeId" type="hidden" />
+        <div class="form-grid">
+          <label>
+            平仓价
+            <input id="shJunnengClosePrice" required type="number" step="0.01" />
+          </label>
+          <label>
+            平仓手续费
+            <input id="shJunnengCloseFee" type="number" step="0.01" value="0" />
+          </label>
+          <label>
+            平仓日期
+            <input id="shJunnengCloseDate" required type="date" />
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelShJunnengCloseBtn" class="secondary">取消</button>
+          <button type="submit">确认平仓</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="manualPriceDialog">
+      <form id="manualPriceForm" method="dialog" class="dialog-form">
+        <h2>手动更新价格</h2>
+        <div id="manualPriceFields" class="form-stack"></div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelManualPriceBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="settledOverviewDialog" class="wide-dialog">
+      <form method="dialog" class="dialog-form">
+        <h2>已平仓数据总览</h2>
+        <div class="filter-grid overview-filter-grid">
+          <label>
+            开仓开始
+            <input id="overviewOpenStart" type="date" />
+          </label>
+          <label>
+            开仓结束
+            <input id="overviewOpenEnd" type="date" />
+          </label>
+          <label>
+            平仓开始
+            <input id="overviewCloseStart" type="date" />
+          </label>
+          <label>
+            平仓结束
+            <input id="overviewCloseEnd" type="date" />
+          </label>
+          <label>
+            合约
+            <input id="overviewContracts" placeholder="多个合约用逗号分隔" />
+          </label>
+          <div class="filter-actions">
+            <button type="button" id="filterSettledOverviewBtn" class="secondary">筛选</button>
+            <button type="button" id="resetSettledOverviewBtn" class="secondary">重置</button>
+          </div>
+        </div>
+        <div class="table-wrap overview-table-wrap">
+          <table class="ledger-table">
+            <thead>
+              <tr>
+                <th>合约</th>
+                <th>方向</th>
+                <th>开仓均价</th>
+                <th>平仓均价</th>
+                <th>数量</th>
+                <th>手续费(开)</th>
+                <th>手续费(平)</th>
+                <th>盈亏</th>
+                <th>开仓日期</th>
+                <th>平仓日期</th>
+                <th>资金利息</th>
+                <th>80%结算</th>
+                <th>20%结算</th>
+              </tr>
+            </thead>
+            <tbody id="settledOverviewTable"></tbody>
+          </table>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="closeSettledOverviewBtn" class="secondary">关闭</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="positionDialog">
+      <form id="positionForm" method="dialog" class="dialog-form">
+        <h2 id="positionDialogTitle">新增持仓</h2>
+        <input id="positionId" type="hidden" />
+        <div class="form-grid">
+          <label>
+            品种
+            <select id="positionVariety"></select>
+          </label>
+          <label>
+            合约
+            <select id="positionContract"></select>
+          </label>
+          <label>
+            方向
+            <select id="positionDirection">
+              <option value="long">多</option>
+              <option value="short">空</option>
+            </select>
+          </label>
+          <label>
+            开仓价
+            <input id="positionOpenPrice" required type="number" step="0.01" />
+          </label>
+          <label>
+            数量
+            <input id="positionQuantity" required type="number" value="1" />
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelPositionBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+        <dialog id="userDialog">
+      <form id="userForm" method="dialog" class="dialog-form">
+        <h2 id="userDialogTitle">添加用户</h2>
+        <input id="userId" type="hidden" />
+        <div class="form-stack">
+          <label>
+            姓名
+            <input id="userName" required placeholder="请输入用户名" />
+          </label>
+          <label>
+            部门
+            <input id="userDepartment" required placeholder="请输入部门" />
+          </label>
+          <label>
+            密码
+            <input id="userPassword" type="password" placeholder="留空则不修改" />
+          </label>
+          <label>
+            角色
+            <select id="userRole">
+              <option value="用户">用户</option>
+              <option value="管理员">管理员</option>
+            </select>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelUserBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="permissionDialog" class="wide-dialog">
+      <form id="permissionForm" method="dialog" class="dialog-form">
+        <h2 id="permissionDialogTitle">权限设置</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>模块</th>
+                <th>查看</th>
+                <th>编辑</th>
+              </tr>
+            </thead>
+            <tbody id="permissionTable"></tbody>
+          </table>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelPermissionBtn" class="secondary">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="operationLogsDialog" class="wide-dialog">
+      <form method="dialog" class="dialog-form">
+        <h2>操作日志</h2>
+        <div class="filter-grid">
+          <label>
+            操作类型
+            <select id="logsOpType">
+              <option value="">全部</option>
+              <option value="添加用户">添加用户</option>
+              <option value="编辑用户">编辑用户</option>
+              <option value="删除用户">删除用户</option>
+              <option value="设置权限">设置权限</option>
+            </select>
+          </label>
+          <label>
+            用户名
+            <input id="logsUserName" placeholder="用户名搜索" />
+          </label>
+          <div class="filter-actions">
+            <button type="button" id="searchLogsBtn" class="secondary">搜索</button>
+            <button type="button" id="exportLogsBtn" class="secondary">导出</button>
+          </div>
+        </div>
+        <div class="table-wrap logs-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>用户</th>
+                <th>操作类型</th>
+                <th>描述</th>
+                <th>模块</th>
+                <th>时间</th>
+              </tr>
+            </thead>
+            <tbody id="logsTable"></tbody>
+          </table>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="closeLogsBtn" class="secondary">关闭</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog">
+      <form method="dialog" class="dialog-form">
+        <h2 id="confirmTitle">确认操作</h2>
+        <p id="confirmMessage" class="confirm-message"></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancelConfirmBtn" class="secondary">取消</button>
+          <button type="button" id="okConfirmBtn">确认</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
