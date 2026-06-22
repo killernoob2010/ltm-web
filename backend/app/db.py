@@ -2,6 +2,7 @@ import hashlib
 import os
 import re
 import secrets
+from contextlib import contextmanager
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
@@ -69,19 +70,28 @@ def _q() -> str:
     return "%s" if _is_pg() else "?"
 
 
+@contextmanager
 def connect():
     """Return a DB-API 2.0 connection (psycopg2 for PG, sqlite3 for SQLite fallback)."""
     db_url = get_db_url()
     if db_url.startswith("postgres"):
         conn = psycopg2.connect(db_url, connect_timeout=30)
         conn.cursor_factory = psycopg2.extras.RealDictCursor
-        return conn
-    # SQLite fallback
-    import sqlite3
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    else:
+        # SQLite fallback
+        import sqlite3
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _last_ids.pop(id(conn), None)
+        conn.close()
 
 
 
