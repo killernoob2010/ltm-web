@@ -122,6 +122,19 @@ function money(value) {
   return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 }
 
+function rate(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+}
+
+function midEventPrice(item, value) {
+  return item.variety === "USD/CNY" ? rate(value) : money(value);
+}
+
+function dateTimeToSecond(value) {
+  return value ? String(value).replace(/\.\d+/, "") : "";
+}
+
 function pnlClass(value) {
   const number = Number(value || 0);
   if (number > 0) return "numeric-up";
@@ -448,7 +461,7 @@ function renderGroups() {
     <tr class="${group.id === state.selectedGroupId ? "selected-row" : ""}">
       <td>${group.group_name}</td>
       <td class="${pnlClass(group.total_pnl)}">${money(group.total_pnl)}</td>
-      <td>${group.updated_at || group.created_at || ""}</td>
+      <td>${dateTimeToSecond(group.updated_at || group.created_at)}</td>
       <td>
         <div class="row-actions">
           <button class="link" data-action="select" data-id="${group.id}">查看</button>
@@ -519,9 +532,17 @@ async function handleGroupAction(action, id) {
 }
 
 async function refreshPrices(mock = false) {
-  await api(`/api/mid-event/prices/refresh${mock ? "?mock=true" : ""}`, { method: "POST" });
+  const result = await api(`/api/mid-event/prices/refresh${mock ? "?mock=true" : ""}`, { method: "POST" });
   await loadMidEvent();
-  updateMidEventStatus("价格已刷新");
+  const missing = result.missing_contracts || [];
+  const reused = result.reused_contracts || [];
+  if (missing.length) {
+    updateMidEventStatus(`价格已刷新，${missing.length} 个合约未取到价格`);
+  } else if (reused.length) {
+    updateMidEventStatus(`价格已刷新，${reused.length} 个合约沿用已有价格`);
+  } else {
+    updateMidEventStatus("价格已刷新");
+  }
 }
 
 async function loadPositions() {
@@ -545,8 +566,8 @@ async function loadPositions() {
       <td>${item.variety_name || item.variety}</td>
       <td>${item.contract || "-"}</td>
       <td>${item.direction === "long" ? "多" : "空"}</td>
-      <td>${money(item.open_price)}</td>
-      <td>${money(item.current_price)}</td>
+      <td>${midEventPrice(item, item.open_price)}</td>
+      <td>${midEventPrice(item, item.current_price)}</td>
       <td>${item.quantity}</td>
       <td>${item.multiplier}</td>
       <td class="${pnlClass(item.floating_pnl)}">${money(item.floating_pnl)}</td>
@@ -607,6 +628,11 @@ function fillPositionOptions() {
   contractSelect.innerHTML = state.midConfig.contracts.map((item) => `<option value="${item}">${item}</option>`).join("");
 }
 
+function syncPositionOpenPriceStep() {
+  const priceInput = document.querySelector("#positionOpenPrice");
+  priceInput.step = document.querySelector("#positionVariety").value === "USD/CNY" ? "0.0001" : "0.01";
+}
+
 function openPositionDialog(item = null) {
   if (!state.selectedGroupId) {
     window.alert("请先新增或选择一个策略组");
@@ -620,6 +646,7 @@ function openPositionDialog(item = null) {
   document.querySelector("#positionDirection").value = item?.direction || "long";
   document.querySelector("#positionOpenPrice").value = item?.open_price ?? "";
   document.querySelector("#positionQuantity").value = item?.quantity || 1;
+  syncPositionOpenPriceStep();
   positionDialog.showModal();
 }
 
@@ -1120,11 +1147,11 @@ importCacheBtn.addEventListener("click", async () => {
   }
 });
 document.querySelector("#addGroupBtn").addEventListener("click", openGroupDialog);
-document.querySelector("#refreshMidEventBtn").addEventListener("click", loadMidEvent);
 document.querySelector("#refreshPricesBtn").addEventListener("click", () => refreshPrices(false));
 document.querySelector("#addPositionBtn").addEventListener("click", () => openPositionDialog());
 document.querySelector("#cancelGroupBtn").addEventListener("click", () => groupDialog.close());
 document.querySelector("#cancelPositionBtn").addEventListener("click", () => positionDialog.close());
+document.querySelector("#positionVariety").addEventListener("change", syncPositionOpenPriceStep);
 document.querySelector("#addShJunnengBtn").addEventListener("click", () => openShJunnengDialog());
 document.querySelector("#editShJunnengBtn").addEventListener("click", () => {
   const item = selectedShJunnengTrade();
@@ -1194,10 +1221,14 @@ groupForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const id = document.querySelector("#groupId").value;
   const payload = { group_name: document.querySelector("#groupName").value };
-  await api(id ? `/api/mid-event/groups/${id}` : "/api/mid-event/groups", {
+  const result = await api(id ? `/api/mid-event/groups/${id}` : "/api/mid-event/groups", {
     method: id ? "PUT" : "POST",
     body: JSON.stringify(payload),
   });
+  if (!id && result.id) {
+    state.selectedGroupId = result.id;
+    state.selectedGroupName = payload.group_name;
+  }
   groupDialog.close();
   await loadMidEvent();
 });
