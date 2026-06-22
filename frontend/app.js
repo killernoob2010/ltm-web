@@ -132,7 +132,7 @@ function midEventPrice(item, value) {
 }
 
 function dateTimeToSecond(value) {
-  return value ? String(value).replace(/\.\d+/, "") : "";
+  return value ? String(value).replace(/\.\d+/, "").replace(/([+-]\d{2})(:\d{2})?$/, "") : "";
 }
 
 function pnlClass(value) {
@@ -434,11 +434,14 @@ function updateInfoStatus(message) {
   infoStatus.textContent = `实时更新：开启｜最后更新：${new Date().toLocaleTimeString("zh-CN")}｜${countText}｜${message}`;
 }
 
-async function loadMidEvent() {
+async function loadMidEvent(preferredGroupId = null) {
   state.midConfig = await api("/api/mid-event/config");
   const result = await api("/api/mid-event/groups");
   state.groups = result.groups || [];
   state.allGroupsPnl = result.all_total_pnl;
+  if (preferredGroupId && state.groups.some((group) => group.id === preferredGroupId)) {
+    state.selectedGroupId = preferredGroupId;
+  }
   if (!state.selectedGroupId && state.groups.length) {
     state.selectedGroupId = state.groups[0].id;
     state.selectedGroupName = state.groups[0].group_name;
@@ -1221,16 +1224,22 @@ groupForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const id = document.querySelector("#groupId").value;
   const payload = { group_name: document.querySelector("#groupName").value };
-  const result = await api(id ? `/api/mid-event/groups/${id}` : "/api/mid-event/groups", {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(payload),
-  });
-  if (!id && result.id) {
-    state.selectedGroupId = result.id;
-    state.selectedGroupName = payload.group_name;
+  try {
+    const result = await api(id ? `/api/mid-event/groups/${id}` : "/api/mid-event/groups", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    const preferredGroupId = !id && result.id ? result.id : null;
+    if (preferredGroupId) {
+      state.selectedGroupId = preferredGroupId;
+      state.selectedGroupName = payload.group_name;
+    }
+    groupDialog.close();
+    await loadMidEvent(preferredGroupId);
+  } catch (error) {
+    updateMidEventStatus(`保存策略组失败：${error.message}`);
+    window.alert(`保存策略组失败：${error.message}`);
   }
-  groupDialog.close();
-  await loadMidEvent();
 });
 
 positionForm.addEventListener("submit", async (event) => {
@@ -1243,12 +1252,17 @@ positionForm.addEventListener("submit", async (event) => {
     open_price: Number(document.querySelector("#positionOpenPrice").value),
     quantity: Number(document.querySelector("#positionQuantity").value),
   };
-  await api(id ? `/api/mid-event/positions/${id}` : `/api/mid-event/groups/${state.selectedGroupId}/positions`, {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(payload),
-  });
-  positionDialog.close();
-  await refreshPrices(false);
+  try {
+    await api(id ? `/api/mid-event/positions/${id}` : `/api/mid-event/groups/${state.selectedGroupId}/positions`, {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    positionDialog.close();
+    await refreshPrices(false);
+  } catch (error) {
+    updateMidEventStatus(`保存持仓失败：${error.message}`);
+    window.alert(`保存持仓失败：${error.message}`);
+  }
 });
 
 shJunnengForm.addEventListener("submit", async (event) => {
