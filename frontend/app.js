@@ -122,6 +122,19 @@ function money(value) {
   return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 }
 
+function rate(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+}
+
+function midEventPrice(item, value) {
+  return item.variety === "USD/CNY" ? rate(value) : money(value);
+}
+
+function dateTimeToSecond(value) {
+  return value ? String(value).replace(/\.\d+/, "").replace(/([+-]\d{2})(:\d{2})?$/, "") : "";
+}
+
 function pnlClass(value) {
   const number = Number(value || 0);
   if (number > 0) return "numeric-up";
@@ -421,11 +434,14 @@ function updateInfoStatus(message) {
   infoStatus.textContent = `实时更新：开启｜最后更新：${new Date().toLocaleTimeString("zh-CN")}｜${countText}｜${message}`;
 }
 
-async function loadMidEvent() {
+async function loadMidEvent(preferredGroupId = null) {
   state.midConfig = await api("/api/mid-event/config");
   const result = await api("/api/mid-event/groups");
   state.groups = result.groups || [];
   state.allGroupsPnl = result.all_total_pnl;
+  if (preferredGroupId && state.groups.some((group) => group.id === preferredGroupId)) {
+    state.selectedGroupId = preferredGroupId;
+  }
   if (!state.selectedGroupId && state.groups.length) {
     state.selectedGroupId = state.groups[0].id;
     state.selectedGroupName = state.groups[0].group_name;
@@ -448,7 +464,7 @@ function renderGroups() {
     <tr class="${group.id === state.selectedGroupId ? "selected-row" : ""}">
       <td>${group.group_name}</td>
       <td class="${pnlClass(group.total_pnl)}">${money(group.total_pnl)}</td>
-      <td>${group.updated_at || group.created_at || ""}</td>
+      <td>${dateTimeToSecond(group.updated_at || group.created_at)}</td>
       <td>
         <div class="row-actions">
           <button class="link" data-action="select" data-id="${group.id}">查看</button>
@@ -519,9 +535,17 @@ async function handleGroupAction(action, id) {
 }
 
 async function refreshPrices(mock = false) {
-  await api(`/api/mid-event/prices/refresh${mock ? "?mock=true" : ""}`, { method: "POST" });
+  const result = await api(`/api/mid-event/prices/refresh${mock ? "?mock=true" : ""}`, { method: "POST" });
   await loadMidEvent();
-  updateMidEventStatus("价格已刷新");
+  const missing = result.missing_contracts || [];
+  const reused = result.reused_contracts || [];
+  if (missing.length) {
+    updateMidEventStatus(`价格已刷新，${missing.length} 个合约未取到价格`);
+  } else if (reused.length) {
+    updateMidEventStatus(`价格已刷新，${reused.length} 个合约沿用已有价格`);
+  } else {
+    updateMidEventStatus("价格已刷新");
+  }
 }
 
 async function loadPositions() {
@@ -545,8 +569,8 @@ async function loadPositions() {
       <td>${item.variety_name || item.variety}</td>
       <td>${item.contract || "-"}</td>
       <td>${item.direction === "long" ? "多" : "空"}</td>
-      <td>${money(item.open_price)}</td>
-      <td>${money(item.current_price)}</td>
+      <td>${midEventPrice(item, item.open_price)}</td>
+      <td>${midEventPrice(item, item.current_price)}</td>
       <td>${item.quantity}</td>
       <td>${item.multiplier}</td>
       <td class="${pnlClass(item.floating_pnl)}">${money(item.floating_pnl)}</td>
@@ -607,6 +631,11 @@ function fillPositionOptions() {
   contractSelect.innerHTML = state.midConfig.contracts.map((item) => `<option value="${item}">${item}</option>`).join("");
 }
 
+function syncPositionOpenPriceStep() {
+  const priceInput = document.querySelector("#positionOpenPrice");
+  priceInput.step = document.querySelector("#positionVariety").value === "USD/CNY" ? "0.0001" : "0.01";
+}
+
 function openPositionDialog(item = null) {
   if (!state.selectedGroupId) {
     window.alert("请先新增或选择一个策略组");
@@ -620,6 +649,7 @@ function openPositionDialog(item = null) {
   document.querySelector("#positionDirection").value = item?.direction || "long";
   document.querySelector("#positionOpenPrice").value = item?.open_price ?? "";
   document.querySelector("#positionQuantity").value = item?.quantity || 1;
+  syncPositionOpenPriceStep();
   positionDialog.showModal();
 }
 
@@ -1120,11 +1150,11 @@ importCacheBtn.addEventListener("click", async () => {
   }
 });
 document.querySelector("#addGroupBtn").addEventListener("click", openGroupDialog);
-document.querySelector("#refreshMidEventBtn").addEventListener("click", loadMidEvent);
 document.querySelector("#refreshPricesBtn").addEventListener("click", () => refreshPrices(false));
 document.querySelector("#addPositionBtn").addEventListener("click", () => openPositionDialog());
 document.querySelector("#cancelGroupBtn").addEventListener("click", () => groupDialog.close());
 document.querySelector("#cancelPositionBtn").addEventListener("click", () => positionDialog.close());
+document.querySelector("#positionVariety").addEventListener("change", syncPositionOpenPriceStep);
 document.querySelector("#addShJunnengBtn").addEventListener("click", () => openShJunnengDialog());
 document.querySelector("#editShJunnengBtn").addEventListener("click", () => {
   const item = selectedShJunnengTrade();
@@ -1194,12 +1224,22 @@ groupForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const id = document.querySelector("#groupId").value;
   const payload = { group_name: document.querySelector("#groupName").value };
-  await api(id ? `/api/mid-event/groups/${id}` : "/api/mid-event/groups", {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(payload),
-  });
-  groupDialog.close();
-  await loadMidEvent();
+  try {
+    const result = await api(id ? `/api/mid-event/groups/${id}` : "/api/mid-event/groups", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    const preferredGroupId = !id && result.id ? result.id : null;
+    if (preferredGroupId) {
+      state.selectedGroupId = preferredGroupId;
+      state.selectedGroupName = payload.group_name;
+    }
+    groupDialog.close();
+    await loadMidEvent(preferredGroupId);
+  } catch (error) {
+    updateMidEventStatus(`保存策略组失败：${error.message}`);
+    window.alert(`保存策略组失败：${error.message}`);
+  }
 });
 
 positionForm.addEventListener("submit", async (event) => {
@@ -1212,12 +1252,17 @@ positionForm.addEventListener("submit", async (event) => {
     open_price: Number(document.querySelector("#positionOpenPrice").value),
     quantity: Number(document.querySelector("#positionQuantity").value),
   };
-  await api(id ? `/api/mid-event/positions/${id}` : `/api/mid-event/groups/${state.selectedGroupId}/positions`, {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(payload),
-  });
-  positionDialog.close();
-  await refreshPrices(false);
+  try {
+    await api(id ? `/api/mid-event/positions/${id}` : `/api/mid-event/groups/${state.selectedGroupId}/positions`, {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    positionDialog.close();
+    await refreshPrices(false);
+  } catch (error) {
+    updateMidEventStatus(`保存持仓失败：${error.message}`);
+    window.alert(`保存持仓失败：${error.message}`);
+  }
 });
 
 shJunnengForm.addEventListener("submit", async (event) => {

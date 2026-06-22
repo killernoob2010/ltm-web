@@ -890,6 +890,11 @@ def index():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
+@app.head("/")
+def index_head():
+    return Response(status_code=200)
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -1826,26 +1831,48 @@ def refresh_mid_event_prices(mock: bool = False, user=Depends(current_user)):
         cur = conn.cursor()
         rows = db._exec(cur, "SELECT DISTINCT variety, contract FROM strategy_positions").fetchall()
 
-    REALTIME_PRICES.clear()
+    refreshed_contracts = []
+    reused_contracts = []
+    missing_contracts = []
     fx = fetch_usdcnh_rate("", mock)
     if fx is not None:
         REALTIME_PRICES["USD/CNY"] = fx
+        refreshed_contracts.append("USD/CNY")
+    elif "USD/CNY" in REALTIME_PRICES:
+        reused_contracts.append("USD/CNY")
     for row in rows:
         variety = row["variety"]
         contract = normalize_contract(variety, row["contract"])
+        key = price_key_for_position(variety, contract)
         if variety == "USD/CNY":
             price = fetch_usdcnh_rate(contract, mock)
         else:
             price = fetch_sina_price(variety, contract, mock)
         if price is not None:
-            key = price_key_for_position(variety, contract)
             REALTIME_PRICES[key] = price
+            refreshed_contracts.append(key)
+        elif key in REALTIME_PRICES:
+            reused_contracts.append(key)
+        else:
+            missing_contracts.append(key)
         if variety == "FE" and contract:
+            rate_key = exchange_rate_key(contract)
             rate = fetch_usdcnh_rate(contract, mock)
             if rate is not None:
-                REALTIME_PRICES[exchange_rate_key(contract)] = rate
-    db.log_operation(user["id"], "mid_event_monitor", "刷新价格", f"刷新 {len(REALTIME_PRICES)} 个价格")
-    return {"ok": True, "prices": REALTIME_PRICES}
+                REALTIME_PRICES[rate_key] = rate
+                refreshed_contracts.append(rate_key)
+            elif rate_key in REALTIME_PRICES:
+                reused_contracts.append(rate_key)
+            else:
+                missing_contracts.append(rate_key)
+    db.log_operation(user["id"], "mid_event_monitor", "刷新价格", f"刷新 {len(refreshed_contracts)} 个价格")
+    return {
+        "ok": True,
+        "prices": REALTIME_PRICES,
+        "refreshed_contracts": refreshed_contracts,
+        "reused_contracts": reused_contracts,
+        "missing_contracts": missing_contracts,
+    }
 
 
 @app.delete("/api/mid-event/positions/{position_id}")
