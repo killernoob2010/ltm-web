@@ -890,6 +890,11 @@ def index():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
+@app.head("/")
+def index_head():
+    return Response(status_code=200)
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
