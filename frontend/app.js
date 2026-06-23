@@ -14,7 +14,7 @@ const state = {
   alertNotificationTimer: null,
   lastNotificationIds: new Set(),
   midConfig: { varieties: [], contracts: [] },
-  infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], inner_months: [] },
+  infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], month_options_by_type: {}, inner_months: [] },
   shJunnengConfig: { contracts: [], default_contract: "", default_open_date: "" },
   shJunnengTrades: [],
   shJunnengSections: { today_trades: [], current_trades: [], settled_trades: [], totals: {} },
@@ -272,13 +272,16 @@ async function loadInfoSummary() {
 }
 
 function renderInfoCards() {
-  const monthOptions = state.infoConfig.contract_months.map((month) => `<option value="${month}">${month}</option>`).join("");
   const years = Array.from({ length: 11 }, (_, index) => 2020 + index);
   const yearOptions = years.map((year) => `<option value="${year}">${year}</option>`).join("");
+  const monthOptionsForType = (type) => (state.infoConfig.month_options_by_type?.[type] || state.infoConfig.contract_months)
+    .map((month) => `<option value="${month}">${month}</option>`)
+    .join("");
+  const allMonthOptions = monthOptionsForType("");
   infoCards.innerHTML = state.infoConfig.info_types.map((type) => {
-    const isMonthDiff = type === "月差";
+    const isMonthDiff = type === "月差" || type === "掉期月差";
     const isInnerOuter = type === "内外盘差" || type === "内外盘差2";
-    const monthSelect = `<select class="info-month">${monthOptions}</select>`;
+    const monthSelect = `<select class="info-month">${monthOptionsForType(type)}</select>`;
     const yearSelect = `<select class="info-year">${yearOptions}</select>`;
     const controls = isInnerOuter
       ? `
@@ -290,9 +293,9 @@ function renderInfoCards() {
         ? `
           <label>选择日期<input class="info-date" type="date" value="${today()}" /></label>
           <label>年1<select class="info-year1">${yearOptions}</select></label>
-          <label>月1<select class="info-month1">${monthOptions}</select></label>
+          <label>月1<select class="info-month1">${allMonthOptions}</select></label>
           <label>年2<select class="info-year2">${yearOptions}</select></label>
-          <label>月2<select class="info-month2">${monthOptions}</select></label>
+          <label>月2<select class="info-month2">${allMonthOptions}</select></label>
           <button class="calculate-info-btn">计算</button>
         `
         : `

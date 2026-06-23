@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import date, datetime
+import calendar
 import csv
 import io
 from typing import List, Optional
@@ -127,7 +128,12 @@ VARIETY_CONFIG = {
     "USD/CNY": {"name": "离岸人民币（USD/CNH）", "multiplier": 1, "sina_prefix": "fx_susdcnh", "has_contract": True},
 }
 
-INFO_TYPES = ["卷螺差", "螺矿比", "煤矿比", "盘面钢厂利润", "月差", "内外盘差", "内外盘差2"]
+INFO_TYPES = ["卷螺差", "螺矿比", "煤矿比", "盘面钢厂利润", "月差", "掉期月差", "内外盘差", "内外盘差2"]
+MONTH_DIFF_TYPES = ["月差", "掉期月差"]
+SPECIAL_MONTH_OPTIONS = {
+    "螺矿比": ["01", "05", "09"],
+    "盘面钢厂利润": ["01", "05", "09"],
+}
 INNER_OUTER_MONTHS = ["05", "06", "07", "08", "09"]
 REALTIME_PRICES = {}
 ALERT_LAST_VALUES = {}
@@ -141,6 +147,7 @@ MOCK_PRICES = {
     "JM2609": 1230.0,
     "J2609": 1760.0,
     "FE2609": 103.5,
+    "FE2701": 99.0,
     "USD/CNY": 7.18,
 }
 SH_JUNNENG_DEFAULT_VARIETY = "RB"
@@ -161,6 +168,108 @@ def contract_options() -> List[str]:
 
 def two_digit_year(year: int) -> int:
     return int(year) % 100
+
+
+def default_info_contracts(today_value: Optional[date] = None) -> dict:
+    today_value = today_value or date.today()
+    current_year = today_value.year
+    current_month = today_value.month
+
+    def nth_to_last_weekday(year: int, month: int, n: int) -> Optional[date]:
+        last_day = calendar.monthrange(year, month)[1]
+        dates = []
+        for day in range(last_day, 0, -1):
+            candidate = date(year, month, day)
+            if candidate.weekday() < 5:
+                dates.append(candidate)
+            if len(dates) == n:
+                return dates[-1]
+        return None
+
+    default_year = current_year
+    default_month = "05"
+    yuecha_year1 = current_year
+    yuecha_month1 = "05"
+    yuecha_year2 = current_year
+    yuecha_month2 = "09"
+
+    if current_month == 11:
+        nov_last_7th = nth_to_last_weekday(current_year, 11, 7)
+        if nov_last_7th and today_value >= nov_last_7th:
+            default_year = current_year + 1
+            default_month = "05"
+            yuecha_year1 = current_year
+            yuecha_month1 = "05"
+            yuecha_year2 = current_year
+            yuecha_month2 = "09"
+    elif current_month == 12:
+        default_year = current_year + 1
+        default_month = "05"
+        yuecha_year1 = current_year + 1
+        yuecha_month1 = "05"
+        yuecha_year2 = current_year + 1
+        yuecha_month2 = "09"
+    elif current_month in [1, 2]:
+        default_year = current_year
+        default_month = "05"
+        yuecha_year1 = current_year
+        yuecha_month1 = "05"
+        yuecha_year2 = current_year
+        yuecha_month2 = "09"
+    elif current_month == 3:
+        mar_last_7th = nth_to_last_weekday(current_year, 3, 7)
+        if mar_last_7th and today_value >= mar_last_7th:
+            default_month = "09"
+            yuecha_year1 = current_year
+            yuecha_month1 = "09"
+            yuecha_year2 = current_year + 1
+            yuecha_month2 = "01"
+        else:
+            default_month = "05"
+            yuecha_year1 = current_year
+            yuecha_month1 = "05"
+            yuecha_year2 = current_year
+            yuecha_month2 = "09"
+    elif current_month in [4, 5, 6]:
+        default_year = current_year
+        default_month = "09"
+        yuecha_year1 = current_year
+        yuecha_month1 = "09"
+        yuecha_year2 = current_year + 1
+        yuecha_month2 = "01"
+    elif current_month == 7:
+        jul_last_7th = nth_to_last_weekday(current_year, 7, 7)
+        if jul_last_7th and today_value >= jul_last_7th:
+            default_month = "01"
+            default_year = current_year + 1
+            yuecha_year1 = current_year + 1
+            yuecha_month1 = "01"
+            yuecha_year2 = current_year + 1
+            yuecha_month2 = "05"
+        else:
+            default_month = "09"
+            yuecha_year1 = current_year
+            yuecha_month1 = "09"
+            yuecha_year2 = current_year + 1
+            yuecha_month2 = "01"
+    elif current_month in [8, 9, 10]:
+        default_year = current_year
+        default_month = "01"
+        yuecha_year1 = current_year + 1
+        yuecha_month1 = "01"
+        yuecha_year2 = current_year + 1
+        yuecha_month2 = "05"
+
+    return {
+        "default_year": default_year,
+        "default_month": default_month,
+        "yuecha_defaults": {
+            "year1": yuecha_year1,
+            "month1": yuecha_month1,
+            "year2": yuecha_year2,
+            "month2": yuecha_month2,
+        },
+    }
 
 
 def sina_symbol(variety: str, contract: str) -> str:
@@ -619,14 +728,15 @@ def calculate_today_indicator(payload: InfoCalculateIn, mock: bool = False) -> d
         j = fetch_sina_price("J", f"{yy}{j_month}", mock)
         contracts = {"RB": f"RB{yy}{rb_month}", "I": f"I{yy}{i_month}", "J": f"J{yy}{j_month}"}
         value = (rb - 1.6 * i - 0.45 * j - 375) / 1.13 - 1035 if rb is not None and i is not None and j is not None else None
-    elif payload.info_type == "月差":
+    elif payload.info_type in MONTH_DIFF_TYPES:
+        variety = "FE" if payload.info_type == "掉期月差" else "I"
         year1 = two_digit_year(payload.year1 or payload.year)
         year2 = two_digit_year(payload.year2 or payload.year)
         month1 = (payload.month1 or "09").zfill(2)
         month2 = (payload.month2 or "01").zfill(2)
-        p1 = fetch_sina_price("I", f"{year1}{month1}", mock)
-        p2 = fetch_sina_price("I", f"{year2}{month2}", mock)
-        contracts = {"I1": f"I{year1}{month1}", "I2": f"I{year2}{month2}"}
+        p1 = fetch_sina_price(variety, f"{year1}{month1}", mock)
+        p2 = fetch_sina_price(variety, f"{year2}{month2}", mock)
+        contracts = {f"{variety}1": f"{variety}{year1}{month1}", f"{variety}2": f"{variety}{year2}{month2}"}
         value = p1 - p2 if p1 is not None and p2 is not None else None
     elif payload.info_type == "内外盘差":
         i = fetch_sina_price("I", f"{yy}{month}", mock)
@@ -747,7 +857,7 @@ def start_alert_monitor() -> None:
 
 
 def cache_month_key(payload: InfoCalculateIn) -> Optional[str]:
-    if payload.info_type == "月差":
+    if payload.info_type in MONTH_DIFF_TYPES:
         return f"{(payload.month1 or '09').zfill(2)}_{(payload.month2 or '01').zfill(2)}"
     if payload.info_type in ["内外盘差", "内外盘差2"]:
         return payload.month.zfill(2)
@@ -779,10 +889,11 @@ def indicator_contracts_for_cache(payload: InfoCalculateIn) -> list[str]:
         return ["JM0", "I0"]
     if payload.info_type == "盘面钢厂利润":
         return ["RB0", "I0", "J0"]
-    if payload.info_type == "月差":
+    if payload.info_type in MONTH_DIFF_TYPES:
+        variety = "FE" if payload.info_type == "掉期月差" else "I"
         y1 = two_digit_year(payload.year1 or payload.year)
         y2 = two_digit_year(payload.year2 or payload.year)
-        return [f"I{y1}{(payload.month1 or '09').zfill(2)}", f"I{y2}{(payload.month2 or '01').zfill(2)}"]
+        return [f"{variety}{y1}{(payload.month1 or '09').zfill(2)}", f"{variety}{y2}{(payload.month2 or '01').zfill(2)}"]
     return []
 
 
@@ -795,7 +906,7 @@ def value_from_cached_prices(info_type: str, prices: list[float]) -> Optional[fl
         return 1.88 * prices[0] / prices[1] if prices[1] else None
     if info_type == "盘面钢厂利润":
         return (prices[0] - 1.6 * prices[1] - 0.45 * prices[2] - 375) / 1.13 - 1035
-    if info_type == "月差":
+    if info_type in MONTH_DIFF_TYPES:
         return prices[0] - prices[1]
     return None
 
@@ -1185,13 +1296,15 @@ def list_indicators(user=Depends(current_user)):
 
 @app.get("/api/info-summary/config")
 def info_summary_config(user=Depends(current_user)):
+    defaults = default_info_contracts()
     return {
         "info_types": INFO_TYPES,
-        "default_year": 2026,
-        "default_month": "09",
-        "yuecha_defaults": {"year1": 2026, "month1": "09", "year2": 2026, "month2": "01"},
+        "default_year": defaults["default_year"],
+        "default_month": defaults["default_month"],
+        "yuecha_defaults": defaults["yuecha_defaults"],
         "contract_months": [str(i).zfill(2) for i in range(1, 13)],
         "special_months": ["01", "05", "09"],
+        "month_options_by_type": SPECIAL_MONTH_OPTIONS,
         "inner_months": INNER_OUTER_MONTHS,
         "cache_counts": cache_counts(),
     }
