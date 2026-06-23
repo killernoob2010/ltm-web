@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+import json
+import re
 import statistics
 from typing import Optional, Protocol
+
+import requests
 
 from .cache_service import get_all_prices_for_info_type, save_calculated_data, save_daily_prices_batch
 
@@ -48,32 +52,38 @@ class StaticHistoryProvider:
         return self.histories.get(contract_code.upper(), {})
 
 
-class AkshareHistoryProvider:
+class SinaHistoryProvider:
     def history(self, contract_code: str) -> dict[str, float]:
         if contract_code.upper().startswith("FE"):
             return {}
 
+        symbol = contract_code.lower()
+        url = (
+            "https://stock2.finance.sina.com.cn/futures/api/jsonp.php"
+            f"/var%20_{symbol}=/InnerFuturesNewService.getDailyKLine?symbol={symbol}"
+        )
         try:
-            import akshare as ak
-            import pandas as pd
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
         except Exception:
             return {}
 
-        symbol = contract_code.lower() if contract_code.endswith("0") else contract_code.lower()
-        try:
-            data = ak.futures_zh_daily_sina(symbol=symbol)
-        except Exception:
-            return {}
-        if data is None or getattr(data, "empty", False):
+        match = re.search(r"=\((\[.*\])\)", response.text, flags=re.S)
+        if not match:
             return {}
 
-        data["date"] = pd.to_datetime(data["date"])
+        try:
+            rows = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return {}
+
         result = {}
-        for _, row in data.iterrows():
-            close_price = row.get("close")
-            if close_price is None:
+        for row in rows:
+            calc_date = row.get("d")
+            close_price = row.get("c")
+            if not calc_date or close_price in [None, ""]:
                 continue
-            result[row["date"].strftime("%Y-%m-%d")] = float(close_price)
+            result[calc_date] = float(close_price)
         return result
 
 
@@ -116,7 +126,7 @@ def run_all_info_summary_backfills(
 def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvider] = None) -> BackfillResult:
     from .main import cache_month_key, indicator_contracts_for_cache, value_from_cached_prices
 
-    provider = provider or AkshareHistoryProvider()
+    provider = provider or SinaHistoryProvider()
     info_type = payload.info_type
     contract_codes = indicator_contracts_for_cache(payload)
     if not contract_codes:

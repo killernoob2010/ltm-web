@@ -6,7 +6,7 @@
 
 **Architecture:** Add a focused backend service for info-summary backfill, keep indicator-specific contract/formula rules in adapters, expose status/backfill APIs from `backend/app/main.py`, and add a small toolbar in the existing realtime info summary view. Tests use deterministic in-memory history providers; live data-source failures must return clear status and never fabricate historical values.
 
-**Tech Stack:** FastAPI, existing SQLite/Postgres abstraction in `backend/app/db.py`, `backend/app/cache_service.py`, Python `unittest`, Node built-in test runner, optional AkShare historical source for domestic futures.
+**Tech Stack:** FastAPI, existing SQLite/Postgres abstraction in `backend/app/db.py`, `backend/app/cache_service.py`, Python `unittest`, Node built-in test runner, lightweight Sina HTTP historical source for domestic futures.
 
 ---
 
@@ -85,7 +85,7 @@ Create `backend/app/info_summary_backfill.py` with:
 - `BackfillJob`
 - `HistoryProvider`
 - `StaticHistoryProvider`
-- `AkshareHistoryProvider`
+- `SinaHistoryProvider`
 - `build_backfill_jobs(request)`
 - `run_info_summary_backfill(payload, provider=None)`
 - `run_all_info_summary_backfills(request, provider=None)`
@@ -230,24 +230,13 @@ node --test tests/info_summary_frontend.test.mjs tests/pnl_colors.test.mjs
 
 Expected: all tests pass.
 
-### Task 4: Dependency, Verification, and Release Record
+### Task 4: Verification and Release Record
 
 **Files:**
-- Modify: `requirements.txt`
 - Modify: `版本更新记录.md`
 - Possibly modify: `frontend/index.html` cache-bust query for `app.js`
 
-- [ ] **Step 1: Add historical source dependency only if required**
-
-If the implemented domestic live history provider uses AkShare, add a pinned dependency to `requirements.txt`:
-
-```text
-akshare==1.16.98
-```
-
-If runtime verification shows a different current compatible version is required, pin that exact version and record the reason in the release note.
-
-- [ ] **Step 2: Add versioned frontend script URL if `app.js` changed**
+- [ ] **Step 1: Add versioned frontend script URL if `app.js` changed**
 
 Update `frontend/index.html` script URL to a new cache-bust value:
 
@@ -255,7 +244,7 @@ Update `frontend/index.html` script URL to a new cache-bust value:
 <script type="module" src="/static/app.js?v=info-cache-backfill-20260623"></script>
 ```
 
-- [ ] **Step 3: Run full targeted verification**
+- [ ] **Step 2: Run full targeted verification**
 
 Run:
 
@@ -267,7 +256,7 @@ git diff --check
 
 Expected: all commands pass.
 
-- [ ] **Step 4: Update release record**
+- [ ] **Step 3: Update release record**
 
 Add a Staging entry to `版本更新记录.md` after verification, noting:
 
@@ -276,12 +265,12 @@ Add a Staging entry to `版本更新记录.md` after verification, noting:
 - tests run
 - no Production release yet
 
-- [ ] **Step 5: Commit implementation**
+- [ ] **Step 4: Commit implementation**
 
 Stage only files touched by this feature:
 
 ```bash
-git add backend/app/info_summary_backfill.py backend/app/main.py backend/app/cache_service.py frontend/app.js frontend/index.html tests/test_info_summary_backfill.py tests/info_summary_frontend.test.mjs requirements.txt 版本更新记录.md
+git add backend/app/info_summary_backfill.py backend/app/main.py backend/app/cache_service.py frontend/app.js frontend/index.html tests/test_info_summary_backfill.py tests/info_summary_frontend.test.mjs 版本更新记录.md
 git commit -m "Add info summary cache backfill"
 ```
 
