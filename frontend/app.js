@@ -15,6 +15,7 @@ const state = {
   lastNotificationIds: new Set(),
   midConfig: { varieties: [], contracts: [] },
   infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], month_options_by_type: {}, inner_months: [] },
+  infoCacheStatus: null,
   shJunnengConfig: { contracts: [], default_contract: "", default_open_date: "" },
   shJunnengTrades: [],
   shJunnengSections: { today_trades: [], current_trades: [], settled_trades: [], totals: {} },
@@ -43,6 +44,8 @@ const infoCards = document.querySelector("#infoCards");
 const indicatorsTable = document.querySelector("#indicatorsTable");
 const indicatorCount = document.querySelector("#indicatorCount");
 const infoStatus = document.querySelector("#infoStatus");
+const infoCacheStatus = document.querySelector("#infoCacheStatus");
+const refreshInfoCacheBtn = document.querySelector("#refreshInfoCacheBtn");
 const importCacheBtn = document.querySelector("#importCacheBtn");
 const groupsTable = document.querySelector("#groupsTable");
 const positionsTable = document.querySelector("#positionsTable");
@@ -265,10 +268,23 @@ async function bootstrap() {
 
 async function loadInfoSummary() {
   state.infoConfig = await api("/api/info-summary/config");
+  await loadInfoCacheStatus();
   renderInfoCards();
   updateInfoStatus("正在计算全部指标");
   await calculateAllInfo(false);
   updateInfoStatus("页面已加载并完成计算");
+}
+
+async function loadInfoCacheStatus() {
+  try {
+    state.infoCacheStatus = await api("/api/info-summary/cache/status");
+    if (state.infoCacheStatus?.cache_counts) {
+      state.infoConfig.cache_counts = state.infoCacheStatus.cache_counts;
+    }
+    updateInfoCacheStatus("已读取");
+  } catch (error) {
+    updateInfoCacheStatus(error.message);
+  }
 }
 
 function renderInfoCards() {
@@ -435,6 +451,34 @@ function updateInfoStatus(message) {
   const counts = state.infoConfig.cache_counts || {};
   const countText = `缓存：计算 ${counts.calculated_data || 0}，价格 ${counts.daily_prices || 0}，交易日 ${counts.trading_days || 0}`;
   infoStatus.textContent = `实时更新：开启｜最后更新：${new Date().toLocaleTimeString("zh-CN")}｜${countText}｜${message}`;
+}
+
+function updateInfoCacheStatus(message) {
+  if (!infoCacheStatus) return;
+  const indicators = state.infoCacheStatus?.indicators || [];
+  const dates = indicators.flatMap((item) => [item.latest_price_date, item.latest_calculated_date]).filter(Boolean);
+  dates.sort();
+  const latestDate = dates.length ? dates[dates.length - 1] : "--";
+  infoCacheStatus.textContent = `历史缓存截至：${latestDate}｜${message}`;
+}
+
+async function refreshInfoCache() {
+  refreshInfoCacheBtn.disabled = true;
+  updateInfoCacheStatus("正在回填");
+  try {
+    const result = await api("/api/info-summary/cache/backfill", {
+      method: "POST",
+      body: JSON.stringify({ calc_date: today() }),
+    });
+    state.infoConfig.cache_counts = result.cache_counts || state.infoConfig.cache_counts;
+    await loadInfoCacheStatus();
+    await calculateAllInfo(false);
+    updateInfoCacheStatus(result.status === "success" ? "回填完成" : "部分指标需检查");
+  } catch (error) {
+    updateInfoCacheStatus(error.message);
+  } finally {
+    refreshInfoCacheBtn.disabled = false;
+  }
 }
 
 async function loadMidEvent(preferredGroupId = null) {
@@ -1139,6 +1183,7 @@ document.querySelector("#logoutBtn").addEventListener("click", async () => {
 
 document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false));
 document.querySelector("#refreshIndicatorsBtn").addEventListener("click", loadInfoSummary);
+refreshInfoCacheBtn.addEventListener("click", refreshInfoCache);
 importCacheBtn.addEventListener("click", async () => {
   importCacheBtn.disabled = true;
   updateInfoStatus("正在导入历史缓存");

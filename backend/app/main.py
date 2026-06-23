@@ -10,6 +10,7 @@ import threading
 import time
 
 import requests
+from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,7 @@ from .cache_service import (
     import_desktop_cache,
     save_calculated_data,
 )
+from .info_summary_backfill import BackfillRequest, run_all_info_summary_backfills
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 
 
@@ -116,6 +118,12 @@ class InfoCalculateIn(BaseModel):
     month1: Optional[str] = None
     year2: Optional[int] = None
     month2: Optional[str] = None
+
+
+class InfoBackfillIn(BaseModel):
+    info_type: Optional[str] = None
+    calc_date: str = Field(default_factory=lambda: date.today().isoformat())
+    force: bool = False
 
 
 VARIETY_CONFIG = {
@@ -1351,6 +1359,62 @@ def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=De
 @app.get("/api/info-summary/cache/counts")
 def info_summary_cache_counts(user=Depends(current_user)):
     return cache_counts()
+
+
+@app.get("/api/info-summary/cache/status")
+def info_summary_cache_status(user=Depends(current_user)):
+    with db.connect() as conn:
+        cur = conn.cursor()
+        price_rows = db._exec(cur,
+            """
+            SELECT info_type, MAX(calc_date) AS latest_price_date
+            FROM daily_prices
+            GROUP BY info_type
+            """
+        ).fetchall()
+        calculated_rows = db._exec(cur,
+            """
+            SELECT info_type, MAX(calc_date) AS latest_calculated_date
+            FROM calculated_data
+            GROUP BY info_type
+            """
+        ).fetchall()
+
+    indicators = {info_type: {"info_type": info_type} for info_type in INFO_TYPES}
+    for row in price_rows:
+        info_type = row["info_type"]
+        indicators.setdefault(info_type, {"info_type": info_type})["latest_price_date"] = row["latest_price_date"]
+    for row in calculated_rows:
+        info_type = row["info_type"]
+        indicators.setdefault(info_type, {"info_type": info_type})["latest_calculated_date"] = row["latest_calculated_date"]
+
+    return {
+        "cache_counts": cache_counts(),
+        "indicators": [indicators[key] for key in indicators],
+        "last_backfill": None,
+    }
+
+
+@app.post("/api/info-summary/cache/backfill")
+def backfill_info_summary_cache(payload: InfoBackfillIn, user=Depends(current_user)):
+    require_edit("info_summary", user)
+    request = BackfillRequest(info_type=payload.info_type, calc_date=payload.calc_date, force=payload.force)
+    results = run_all_info_summary_backfills(request)
+    statuses = [result.status for result in results]
+    if statuses and all(status == "success" for status in statuses):
+        status = "success"
+    elif any(status == "success" for status in statuses):
+        status = "partial"
+    elif any(status == "partial" for status in statuses):
+        status = "partial"
+    else:
+        status = "failed"
+    db.log_operation(user["id"], "info_summary", "回填历史缓存", status, "daily_prices", None)
+    return {
+        "status": status,
+        "results": [asdict(result) for result in results],
+        "cache_counts": cache_counts(),
+    }
 
 
 @app.post("/api/info-summary/cache/import")
