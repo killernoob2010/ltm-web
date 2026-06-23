@@ -1344,7 +1344,7 @@ def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=De
     realtime = calculate_today_indicator(payload, mock=mock)
     month_key = cache_month_key(payload)
     cached = get_cached_data(payload.info_type, payload.year, month_key, payload.calc_date)
-    if not cached or cached.get("t_1_value") is None:
+    if not cached or cached.get("t_1_value") is None or cached.get("std_value") is None:
         cached = calculate_missing_cache_from_prices(payload) or get_latest_cached_data(
             payload.info_type,
             payload.year,

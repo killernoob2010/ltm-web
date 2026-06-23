@@ -325,7 +325,7 @@ def get_existing_calculated_dates(info_type: str, year: int, month: str) -> set:
         rows = db._exec(cur,
             """
             SELECT calc_date FROM calculated_data
-            WHERE info_type = ? AND year = ? AND month = ?
+            WHERE info_type = ? AND year = ? AND month = ? AND std_value IS NOT NULL
             """,
             (info_type, year, month),
         ).fetchall()
