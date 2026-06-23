@@ -63,7 +63,7 @@ class SinaHistoryProvider:
             f"/var%20_{symbol}=/InnerFuturesNewService.getDailyKLine?symbol={symbol}"
         )
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=4)
             response.raise_for_status()
         except Exception:
             return {}
@@ -120,61 +120,70 @@ def run_all_info_summary_backfills(
     request: BackfillRequest,
     provider: Optional[HistoryProvider] = None,
 ) -> list[BackfillResult]:
-    return [run_info_summary_backfill(job.payload, provider=provider) for job in build_backfill_jobs(request)]
+    results = []
+    for job in build_backfill_jobs(request):
+        try:
+            results.append(run_info_summary_backfill(job.payload, provider=provider))
+        except Exception as exc:
+            results.append(BackfillResult(info_type=job.info_type, status="failed", message=str(exc)))
+    return results
 
 
 def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvider] = None) -> BackfillResult:
     from .main import cache_month_key, indicator_contracts_for_cache, value_from_cached_prices
 
-    provider = provider or SinaHistoryProvider()
-    info_type = payload.info_type
-    contract_codes = indicator_contracts_for_cache(payload)
-    if not contract_codes:
-        return BackfillResult(info_type=info_type, status="skipped", message="暂无可回填的历史合约规则")
+    try:
+        provider = provider or SinaHistoryProvider()
+        info_type = payload.info_type
+        contract_codes = indicator_contracts_for_cache(payload)
+        if not contract_codes:
+            return BackfillResult(info_type=info_type, status="skipped", message="暂无可回填的历史合约规则")
 
-    histories = {code: provider.history(code) for code in contract_codes}
-    if any(not histories[code] for code in contract_codes):
-        missing = [code for code in contract_codes if not histories[code]]
-        return BackfillResult(
-            info_type=info_type,
-            status="failed",
-            message=f"历史行情缺失: {', '.join(missing)}",
+        histories = {code: provider.history(code) for code in contract_codes}
+        if any(not histories[code] for code in contract_codes):
+            missing = [code for code in contract_codes if not histories[code]]
+            return BackfillResult(
+                info_type=info_type,
+                status="failed",
+                message=f"历史行情缺失: {', '.join(missing)}",
+            )
+
+        common_dates = sorted(set.intersection(*(set(histories[code]) for code in contract_codes)))
+        if len(common_dates) < 2:
+            return BackfillResult(info_type=info_type, status="failed", message="共同历史日期不足")
+
+        price_rows = []
+        for code in contract_codes:
+            for calc_date in common_dates:
+                close_price = histories[code].get(calc_date)
+                if close_price is not None:
+                    price_rows.append((info_type, code, calc_date, close_price))
+        if price_rows:
+            save_daily_prices_batch(price_rows)
+
+        price_data = get_prices_for_info_contracts(info_type, contract_codes) or {}
+        calculation_dates = _common_dates_for_contracts(price_data, contract_codes)
+        results_written = _calculate_and_save_results(
+            payload=payload,
+            contract_codes=contract_codes,
+            calculation_dates=calculation_dates,
+            price_data=price_data,
+            value_from_cached_prices=value_from_cached_prices,
+            month_key=cache_month_key(payload),
         )
 
-    common_dates = sorted(set.intersection(*(set(histories[code]) for code in contract_codes)))
-    if len(common_dates) < 2:
-        return BackfillResult(info_type=info_type, status="failed", message="共同历史日期不足")
-
-    price_rows = []
-    for code in contract_codes:
-        for calc_date in common_dates:
-            close_price = histories[code].get(calc_date)
-            if close_price is not None:
-                price_rows.append((info_type, code, calc_date, close_price))
-    if price_rows:
-        save_daily_prices_batch(price_rows)
-
-    price_data = get_prices_for_info_contracts(info_type, contract_codes) or {}
-    calculation_dates = _common_dates_for_contracts(price_data, contract_codes)
-    results_written = _calculate_and_save_results(
-        payload=payload,
-        contract_codes=contract_codes,
-        calculation_dates=calculation_dates,
-        price_data=price_data,
-        value_from_cached_prices=value_from_cached_prices,
-        month_key=cache_month_key(payload),
-    )
-
-    latest_price_date = common_dates[-1] if common_dates else None
-    return BackfillResult(
-        info_type=info_type,
-        status="success" if results_written else "partial",
-        price_rows_written=len(price_rows),
-        calculated_rows_written=results_written,
-        latest_price_date=latest_price_date,
-        latest_calculated_date=calculation_dates[-1] if results_written else None,
-        message="已更新" if results_written else "已写入价格，但历史窗口不足",
-    )
+        latest_price_date = common_dates[-1] if common_dates else None
+        return BackfillResult(
+            info_type=info_type,
+            status="success" if results_written else "partial",
+            price_rows_written=len(price_rows),
+            calculated_rows_written=results_written,
+            latest_price_date=latest_price_date,
+            latest_calculated_date=calculation_dates[-1] if results_written else None,
+            message="已更新" if results_written else "已写入价格，但历史窗口不足",
+        )
+    except Exception as exc:
+        return BackfillResult(info_type=payload.info_type, status="failed", message=str(exc))
 
 
 def _common_dates_for_contracts(price_data: dict, contract_codes: list[str]) -> list[str]:
