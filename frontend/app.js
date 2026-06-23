@@ -207,6 +207,7 @@ function showOnly(page) {
 async function activateModule(code) {
   state.activeModule = code;
   stopMidEventAutoRefresh();
+  stopInfoSummaryAutoRefresh();
   renderMenu();
   const label = moduleLabel(code);
   pageTitle.textContent = label.name;
@@ -215,6 +216,7 @@ async function activateModule(code) {
   if (code === "info_summary") {
     showOnly(infoSummaryPage);
     await loadInfoSummary();
+    startInfoSummaryAutoRefresh();
     return;
   }
   if (code === "mid_event_monitor") {
@@ -543,6 +545,23 @@ function stopMidEventAutoRefresh() {
     window.clearInterval(state.midEventTimer);
     state.midEventTimer = null;
   }
+}
+function stopInfoSummaryAutoRefresh() {
+  if (state.infoSummaryTimer) {
+    window.clearInterval(state.infoSummaryTimer);
+    state.infoSummaryTimer = null;
+  }
+}
+
+function startInfoSummaryAutoRefresh() {
+  stopInfoSummaryAutoRefresh();
+  state.infoSummaryTimer = window.setInterval(() => {
+    if (state.activeModule === "info_summary") {
+      calculateAllInfo(false).then(() => {
+        updateInfoStatus("自动刷新完成");
+      }).catch((error) => updateInfoStatus(error.message));
+    }
+  }, 30000);
 }
 
 function startMidEventAutoRefresh() {
