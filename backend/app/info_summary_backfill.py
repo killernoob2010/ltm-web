@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from datetime import datetime
 import json
 import re
 import statistics
@@ -11,8 +12,31 @@ import requests
 
 from .cache_service import get_prices_for_info_contracts, save_calculated_data, save_daily_prices_batch
 
+_last_backfill_result = None
+_last_backfill_time = None
+
 
 INFO_SUMMARY_TYPES = ["卷螺差", "螺矿比", "煤矿比", "盘面钢厂利润", "月差", "掉期月差", "内外盘差", "内外盘差2"]
+
+def get_last_backfill_status():
+    """返回最近一次回填的状态摘要，供 status API 使用。"""
+    if _last_backfill_result is None:
+        return None
+    return {
+        "time": _last_backfill_time,
+        "results": [
+            {
+                "info_type": r.info_type,
+                "status": r.status,
+                "message": r.message,
+                "price_rows_written": r.price_rows_written,
+                "calculated_rows_written": r.calculated_rows_written,
+                "latest_price_date": r.latest_price_date,
+                "latest_calculated_date": r.latest_calculated_date,
+            }
+            for r in _last_backfill_result
+        ],
+    }
 
 
 @dataclass
@@ -123,25 +147,42 @@ def run_all_info_summary_backfills(
     results = []
     for job in build_backfill_jobs(request):
         try:
-            results.append(run_info_summary_backfill(job.payload, provider=provider))
+            results.append(run_info_summary_backfill(job.payload, provider=provider, force=request.force))
         except Exception as exc:
             results.append(BackfillResult(info_type=job.info_type, status="failed", message=str(exc)))
+    global _last_backfill_result, _last_backfill_time
+    _last_backfill_result = results
+    _last_backfill_time = datetime.now().isoformat()
     return results
 
 
-def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvider] = None) -> BackfillResult:
-    from .main import cache_month_key, indicator_contracts_for_cache, value_from_cached_prices
+def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvider] = None, force: bool = False) -> BackfillResult:
+    from .main import cache_month_key, indicator_contracts_for_cache, value_from_cached_prices, MONTH_DIFF_TYPES
 
     try:
         provider = provider or SinaHistoryProvider()
         info_type = payload.info_type
         contract_codes = indicator_contracts_for_cache(payload)
         if not contract_codes:
+            if info_type in ["内外盘差", "内外盘差2"]:
+                return BackfillResult(info_type=info_type, status="skipped", message="内外盘差历史回填尚未实现（需 FE 历史源和汇率历史）")
             return BackfillResult(info_type=info_type, status="skipped", message="暂无可回填的历史合约规则")
+
+        if not force:
+            existing = get_prices_for_info_contracts(info_type, contract_codes)
+            if existing and all(code in existing for code in contract_codes):
+                all_dates = set.intersection(*(set(existing[code]) for code in contract_codes))
+                if all_dates:
+                    latest = max(all_dates)
+                    calc_dt = date.fromisoformat(payload.calc_date)
+                    if (calc_dt - date.fromisoformat(latest)).days <= 2:
+                        return BackfillResult(info_type=info_type, status="skipped", message="无需回填，缓存已是最新", latest_price_date=latest)
 
         histories = {code: provider.history(code) for code in contract_codes}
         if any(not histories[code] for code in contract_codes):
             missing = [code for code in contract_codes if not histories[code]]
+            if all(code.upper().startswith("FE") for code in missing):
+                return BackfillResult(info_type=info_type, status="skipped", message="FE 历史行情源未就绪，暂无法回填")
             return BackfillResult(
                 info_type=info_type,
                 status="failed",

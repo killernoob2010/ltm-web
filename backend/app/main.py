@@ -26,7 +26,7 @@ from .cache_service import (
     import_desktop_cache,
     save_calculated_data,
 )
-from .info_summary_backfill import BackfillRequest, run_all_info_summary_backfills
+from .info_summary_backfill import BackfillRequest, run_all_info_summary_backfills, get_last_backfill_status
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 
 
@@ -1390,7 +1390,7 @@ def info_summary_cache_status(user=Depends(current_user)):
     return {
         "cache_counts": cache_counts(),
         "indicators": [indicators[key] for key in indicators],
-        "last_backfill": None,
+        "last_backfill": get_last_backfill_status(),
     }
 
 
