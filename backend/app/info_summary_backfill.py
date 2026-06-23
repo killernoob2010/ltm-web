@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from datetime import datetime
 import json
 import re
@@ -10,7 +10,14 @@ from typing import Optional, Protocol
 
 import requests
 
-from .cache_service import get_prices_for_info_contracts, save_calculated_data, save_daily_prices_batch
+from .cache_service import (
+    delete_old_calculated_data,
+    delete_old_daily_prices,
+    get_existing_calculated_dates,
+    get_prices_for_info_contracts,
+    save_calculated_data,
+    save_daily_prices_batch,
+)
 
 _last_backfill_result = None
 _last_backfill_time = None
@@ -64,7 +71,7 @@ class BackfillResult:
 
 
 class HistoryProvider(Protocol):
-    def history(self, contract_code: str) -> dict[str, float]:
+    def history(self, contract_code: str, since_date: str = "...") -> dict[str, float]:
         """Return close prices keyed by YYYY-MM-DD."""
 
 
@@ -72,14 +79,20 @@ class StaticHistoryProvider:
     def __init__(self, histories: dict[str, dict[str, float]]):
         self.histories = histories
 
-    def history(self, contract_code: str) -> dict[str, float]:
-        return self.histories.get(contract_code.upper(), {})
+    def history(self, contract_code: str, since_date: str = "1980-01-01") -> dict[str, float]:
+        raw = self.histories.get(contract_code.upper(), {})
+        since = date.fromisoformat(since_date)
+        return {dt: v for dt, v in raw.items() if date.fromisoformat(dt) >= since}
 
 
 class SinaHistoryProvider:
-    def history(self, contract_code: str) -> dict[str, float]:
+    def history(self, contract_code: str, since_date: str = "1980-01-01") -> dict[str, float]:
         if contract_code.upper().startswith("FE"):
             return {}
+        return self._fetch_history(contract_code, since_date)
+
+    def _fetch_history(self, contract_code: str, since_date: str = "1980-01-01") -> dict[str, float]:
+        since = date.fromisoformat(since_date)
 
         symbol = contract_code.lower()
         url = (
@@ -106,6 +119,8 @@ class SinaHistoryProvider:
             calc_date = row.get("d")
             close_price = row.get("c")
             if not calc_date or close_price in [None, ""]:
+                continue
+            if date.fromisoformat(calc_date) < since:
                 continue
             result[calc_date] = float(close_price)
         return result
@@ -168,17 +183,21 @@ def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvide
                 return BackfillResult(info_type=info_type, status="skipped", message="内外盘差历史回填尚未实现（需 FE 历史源和汇率历史）")
             return BackfillResult(info_type=info_type, status="skipped", message="暂无可回填的历史合约规则")
 
+        # 增量窗口：仅取近 210 个自然日的历史数据
+        calc_dt = date.fromisoformat(payload.calc_date)
+        cutoff_date = (calc_dt - timedelta(days=210)).isoformat()
+
+        # 检查 DB 已有数据，判断是否需要回填
+        existing_prices = get_prices_for_info_contracts(info_type, contract_codes) or {}
         if not force:
-            existing = get_prices_for_info_contracts(info_type, contract_codes)
-            if existing and all(code in existing for code in contract_codes):
-                all_dates = set.intersection(*(set(existing[code]) for code in contract_codes))
+            if existing_prices and all(code in existing_prices for code in contract_codes):
+                all_dates = set.intersection(*(set(existing_prices[code]) for code in contract_codes))
                 if all_dates:
                     latest = max(all_dates)
-                    calc_dt = date.fromisoformat(payload.calc_date)
                     if (calc_dt - date.fromisoformat(latest)).days <= 2:
                         return BackfillResult(info_type=info_type, status="skipped", message="无需回填，缓存已是最新", latest_price_date=latest)
 
-        histories = {code: provider.history(code) for code in contract_codes}
+        histories = {code: provider.history(code, since_date=cutoff_date) for code in contract_codes}
         if any(not histories[code] for code in contract_codes):
             missing = [code for code in contract_codes if not histories[code]]
             if all(code.upper().startswith("FE") for code in missing):
@@ -193,31 +212,45 @@ def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvide
         if len(common_dates) < 2:
             return BackfillResult(info_type=info_type, status="failed", message="共同历史日期不足")
 
-        price_rows = []
+        # 增量写入：仅写入 DB 中还不存在的 price 行
+        new_price_rows = []
         for code in contract_codes:
-            for calc_date in common_dates:
-                close_price = histories[code].get(calc_date)
+            existing_dates = set(existing_prices.get(code, {}).keys())
+            for calc_date_str in common_dates:
+                if calc_date_str in existing_dates:
+                    continue
+                close_price = histories[code].get(calc_date_str)
                 if close_price is not None:
-                    price_rows.append((info_type, code, calc_date, close_price))
-        if price_rows:
-            save_daily_prices_batch(price_rows)
+                    new_price_rows.append((info_type, code, calc_date_str, close_price))
+        if new_price_rows:
+            save_daily_prices_batch(new_price_rows)
 
+        # 回读合并后的 price_data
         price_data = get_prices_for_info_contracts(info_type, contract_codes) or {}
         calculation_dates = _common_dates_for_contracts(price_data, contract_codes)
+
+        # 增量计算：仅计算 calculated_data 中还不存在的日期
+        month_key = cache_month_key(payload)
+        existing_calc_dates = get_existing_calculated_dates(info_type, payload.year, month_key)
+        new_calculation_dates = calculation_dates if force else [d for d in calculation_dates if d not in existing_calc_dates]
         results_written = _calculate_and_save_results(
             payload=payload,
             contract_codes=contract_codes,
-            calculation_dates=calculation_dates,
+            calculation_dates=new_calculation_dates,
             price_data=price_data,
             value_from_cached_prices=value_from_cached_prices,
-            month_key=cache_month_key(payload),
+            month_key=month_key,
         )
+
+        # 清理超过 210 天的旧缓存
+        delete_old_daily_prices(cutoff_date)
+        delete_old_calculated_data(cutoff_date)
 
         latest_price_date = common_dates[-1] if common_dates else None
         return BackfillResult(
             info_type=info_type,
             status="success" if results_written else "partial",
-            price_rows_written=len(price_rows),
+            price_rows_written=len(new_price_rows),
             calculated_rows_written=results_written,
             latest_price_date=latest_price_date,
             latest_calculated_date=calculation_dates[-1] if results_written else None,
@@ -225,7 +258,6 @@ def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvide
         )
     except Exception as exc:
         return BackfillResult(info_type=payload.info_type, status="failed", message=str(exc))
-
 
 def _common_dates_for_contracts(price_data: dict, contract_codes: list[str]) -> list[str]:
     if any(code not in price_data for code in contract_codes):
