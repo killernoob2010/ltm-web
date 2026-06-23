@@ -10,7 +10,6 @@ import threading
 import time
 
 import requests
-from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -1399,20 +1398,13 @@ def info_summary_cache_status(user=Depends(current_user)):
 def backfill_info_summary_cache(payload: InfoBackfillIn, user=Depends(current_user)):
     require_edit("info_summary", user)
     request = BackfillRequest(info_type=payload.info_type, calc_date=payload.calc_date, force=payload.force)
-    results = run_all_info_summary_backfills(request)
-    statuses = [result.status for result in results]
-    if statuses and all(status == "success" for status in statuses):
-        status = "success"
-    elif any(status == "success" for status in statuses):
-        status = "partial"
-    elif any(status == "partial" for status in statuses):
-        status = "partial"
-    else:
-        status = "failed"
-    db.log_operation(user["id"], "info_summary", "回填历史缓存", status, "daily_prices", None)
+    threading.Thread(target=run_all_info_summary_backfills, args=(request,), daemon=True).start()
+    status = "started"
+    db.log_operation(user["id"], "info_summary", "启动历史缓存回填", payload.info_type or "全部指标", "daily_prices", None)
     return {
         "status": status,
-        "results": [asdict(result) for result in results],
+        "results": [],
+        "message": "历史缓存回填已启动",
         "cache_counts": cache_counts(),
     }
 

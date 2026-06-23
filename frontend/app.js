@@ -471,9 +471,10 @@ async function refreshInfoCache() {
       body: JSON.stringify({ calc_date: today() }),
     });
     state.infoConfig.cache_counts = result.cache_counts || state.infoConfig.cache_counts;
-    await loadInfoCacheStatus();
-    await calculateAllInfo(false);
-    updateInfoCacheStatus(result.status === "success" ? "回填完成" : "部分指标需检查");
+    updateInfoCacheStatus(result.status === "started" ? "回填已启动" : "部分指标需检查");
+    window.setTimeout(() => {
+      loadInfoCacheStatus().catch(() => {});
+    }, 5000);
   } catch (error) {
     updateInfoCacheStatus(error.message);
   } finally {
