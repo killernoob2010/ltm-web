@@ -9,7 +9,7 @@ from typing import Optional, Protocol
 
 import requests
 
-from .cache_service import get_all_prices_for_info_type, save_calculated_data, save_daily_prices_batch
+from .cache_service import get_prices_for_info_contracts, save_calculated_data, save_daily_prices_batch
 
 
 INFO_SUMMARY_TYPES = ["卷螺差", "螺矿比", "煤矿比", "盘面钢厂利润", "月差", "掉期月差", "内外盘差", "内外盘差2"]
@@ -154,7 +154,7 @@ def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvide
     if price_rows:
         save_daily_prices_batch(price_rows)
 
-    price_data = get_all_prices_for_info_type(info_type) or {}
+    price_data = get_prices_for_info_contracts(info_type, contract_codes) or {}
     calculation_dates = _common_dates_for_contracts(price_data, contract_codes)
     results_written = _calculate_and_save_results(
         payload=payload,

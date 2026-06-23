@@ -77,6 +77,42 @@ class InfoSummaryBackfillTest(TempDbTestCase):
         self.assertEqual(prices, 8)
         self.assertEqual(calculated, 3)
 
+    def test_backfill_ignores_unrelated_contracts_for_same_info_type(self):
+        provider = StaticHistoryProvider({
+            "I2609": {
+                "2026-06-22": 810.0,
+                "2026-06-23": 812.0,
+            },
+            "I2701": {
+                "2026-06-22": 775.0,
+                "2026-06-23": 777.0,
+            },
+        })
+        with db.connect() as conn:
+            cur = conn.cursor()
+            db._exec(
+                cur,
+                """
+                INSERT INTO daily_prices (info_type, contract_code, calc_date, close_price)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("月差", "I2605", "2026-06-23", 700.0),
+            )
+        payload = InfoCalculateIn(
+            info_type="月差",
+            year=2026,
+            calc_date="2026-06-23",
+            year1=2026,
+            month1="09",
+            year2=2027,
+            month2="01",
+        )
+
+        result = run_info_summary_backfill(payload, provider=provider)
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.calculated_rows_written, 1)
+
     def test_info_summary_cache_status_shape(self):
         from backend.app.main import info_summary_cache_status
 

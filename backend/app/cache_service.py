@@ -149,6 +149,29 @@ def get_all_prices_for_info_type(info_type: str) -> Optional[dict]:
     return result
 
 
+def get_prices_for_info_contracts(info_type: str, contract_codes: list[str]) -> Optional[dict]:
+    if not contract_codes:
+        return None
+    placeholders = ", ".join([db._q()] * len(contract_codes))
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(cur,
+            f"""
+            SELECT contract_code, calc_date, close_price
+            FROM daily_prices
+            WHERE info_type = ? AND contract_code IN ({placeholders})
+            ORDER BY contract_code, calc_date ASC
+            """,
+            (info_type, *contract_codes),
+        ).fetchall()
+    if not rows:
+        return None
+    result = {}
+    for row in rows:
+        result.setdefault(row["contract_code"], {})[row["calc_date"]] = row["close_price"]
+    return result
+
+
 def get_all_prices_for_contract(contract_code: str) -> Optional[dict]:
     with db.connect() as conn:
         cur = conn.cursor()
