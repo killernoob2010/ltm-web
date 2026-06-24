@@ -1783,9 +1783,9 @@ dvChartTabs.addEventListener("click", (e) => {
 async function loadDVTable(metric) {
   try {
     const result = await api(`/api/data-visualization/table?metric=${encodeURIComponent(metric)}`);
-    renderDVTable(result.data);
+    renderDVTable(result);
   } catch (err) {
-    dvDataTbody.innerHTML = `<tr><td colspan="3" class="error-cell">加载失败: ${err.message}</td></tr>`;
+    dvDataTbody.innerHTML = `<tr><td colspan="14" class="error-cell">加载失败: ${err.message}</td></tr>`;
   }
 }
 
