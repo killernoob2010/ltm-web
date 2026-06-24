@@ -780,10 +780,14 @@ async def get_import_batches(user=Depends(dv_current_user)):
 # ── Seed test data ─────────────────────────────────────────────────
 
 def seed_dv_data():
-    """如果 DV 表为空，插入 2023-2026 共 4 年测试数据（仅卡粉）。
+    """从真实 Excel 数据播种 DV 表（发运 + 卡粉库存 + 表需）。
     
-    使用 compute_business_week() 正确计算跨年周所属年份。
+    数据来源: 建龙/期货组/本地数据库/副本铁矿data base.xlsx
+    使用 {parse_excel + match_and_merge_weeks + recalc_apparent_demand} 流程，
+    替代旧的随机合成数据。
     """
+    from .dv_seed_data import DV_SEED_SHIPMENT, DV_SEED_INVENTORY
+
     with db.connect() as conn:
         cur = conn.cursor()
         existing_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_week_keys").fetchone()["c"]
@@ -792,7 +796,7 @@ def seed_dv_data():
                 cur, "SELECT COUNT(*) AS c FROM dv_data_points WHERE source = '种子数据'"
             ).fetchone()["c"]
             if old_seed > 0:
-                print("[seed_dv_data] 检测到旧种子数据，清除后重新生成...")
+                print("[seed_dv_data] 检测到旧种子数据，清除后重新生成（真实数据）...")
                 db._exec(cur, "DELETE FROM dv_change_log")
                 db._exec(cur, "DELETE FROM dv_data_points")
                 db._exec(cur, "DELETE FROM dv_week_keys")
@@ -800,65 +804,45 @@ def seed_dv_data():
             else:
                 return
 
-        import random
-        random.seed(42)
+        # 构建 parse_excel 兼容的 dict
+        parsed = {
+            "shipment": [{"date": s[0], "value": s[1]} for s in DV_SEED_SHIPMENT],
+            "inventory": [{"date": i[0], "value": i[1]} for i in DV_SEED_INVENTORY],
+        }
 
-        week_ids: List[int] = []
-        years_to_seed = [2023, 2024, 2025, 2026]
+        result = match_and_merge_weeks(parsed, conn)
+        week_keys = result["week_keys"]
+        pairs = result["pairs"]
 
-        today = date.today()
-        current_year_max_wn = compute_business_week(today)["week_no"]
+        total_weeks = len(week_keys)
+        print(f"[seed_dv_data] 真实数据：{total_weeks} 个业务周")
 
-        for yr in years_to_seed:
-            jan1 = date(yr, 1, 1)
-            w01_start = jan1 - timedelta(days=jan1.weekday())
-
-            for wn in range(1, 53):
-                if yr == today.year and wn > current_year_max_wn:
-                    break
-                ws = w01_start + timedelta(weeks=wn - 1)
-                we = ws + timedelta(days=6)
-
-                bw = compute_business_week(ws)
-                correct_year = bw["year"]
-                correct_wn = bw["week_no"]
-
-                db._exec(
-                    cur,
-                    """INSERT INTO dv_week_keys
-                       (year, week_no, week_start_date, week_end_date, display_date)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (correct_year, correct_wn, ws.isoformat(), we.isoformat(), ws.isoformat()),
-                )
-                wk = db._exec(
-                    cur,
-                    "SELECT id FROM dv_week_keys WHERE year=? AND week_no=? AND week_start_date=?",
-                    (correct_year, correct_wn, ws.isoformat()),
-                ).fetchone()
-                week_ids.append(wk["id"])
-
-        total_weeks = len(week_ids)
-        print(f"[seed_dv_data] 已插入 {len(years_to_seed)} 年 x 52 周 = {total_weeks} 个业务周")
-
-        base = 1200
-        inv = [float(base + i * 5 + random.randint(-80, 80)) for i in range(total_weeks)]
-        ship = [float(500 + random.randint(-60, 60)) for _ in range(total_weeks)]
-        ad = [0.0] * total_weeks
-        for t in range(2, total_weeks):
-            ad[t] = float(ship[t - 2] + inv[t - 1] - inv[t])
-        ad[0] = 0.0
-        ad[1] = 0.0
-
-        for i, wk_id in enumerate(week_ids):
-            for metric, values in [("inventory", inv), ("shipment", ship), ("apparent_demand", ad)]:
-                val = values[i]
+        # 插入发运和库存数据点
+        for pair in pairs:
+            wk_id = pair["week_key_id"]
+            if pair["shipment_row"]:
+                s_val = pair["shipment_row"]["value"]
                 db._exec(
                     cur,
                     """INSERT INTO dv_data_points
                        (week_key_id, product, metric_type, imported_value, calculated_value,
                         display_value, source, created_by)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (wk_id, PRODUCT, metric, val, val, val, "种子数据", "system"),
+                       VALUES (?, ?, 'shipment', ?, ?, ?, '种子数据', 'system')""",
+                    (wk_id, PRODUCT, s_val, s_val, s_val),
+                )
+            if pair["inventory_row"]:
+                i_val = pair["inventory_row"]["value"]
+                db._exec(
+                    cur,
+                    """INSERT INTO dv_data_points
+                       (week_key_id, product, metric_type, imported_value, calculated_value,
+                        display_value, source, created_by)
+                       VALUES (?, ?, 'inventory', ?, ?, ?, '种子数据', 'system')""",
+                    (wk_id, PRODUCT, i_val, i_val, i_val),
                 )
 
-        print(f"[seed_dv_data] 已完成：{total_weeks} 周 x 3 指标 = {total_weeks * 3} 条测试数据")
+        # 计算表需
+        recalc_apparent_demand(conn)
+
+        point_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_data_points WHERE source = '种子数据'").fetchone()["c"]
+        print(f"[seed_dv_data] 已完成：{total_weeks} 周，共 {point_count} 条数据点")
