@@ -256,19 +256,19 @@ async function activateModule(code, subName) {
     await loadUserManagement();
     return;
   }
-  if (code === "data_visualization") {
-    if (subName === "数据展示") {
-      pageTitle.textContent = "数据展示";
-      pageSubtitle.textContent = "数据可视化管理 / 数据展示";
-      showOnly(dvChartPage);
-      await loadDVChart();
-    } else {
-      pageTitle.textContent = "图表数据管理";
-      pageSubtitle.textContent = "数据可视化管理 / 图表数据管理";
-      showOnly(dvDataPage);
-      initDVData();
-      await loadDVTable("inventory");
-    }
+  if (code === "data_visualization_data") {
+    pageTitle.textContent = "图表数据管理";
+    pageSubtitle.textContent = "数据可视化管理 / 图表数据管理";
+    showOnly(dvDataPage);
+    initDVData();
+    await loadDVTable("inventory");
+    return;
+  }
+  if (code === "data_visualization_chart") {
+    pageTitle.textContent = "数据展示";
+    pageSubtitle.textContent = "数据可视化管理 / 数据展示";
+    showOnly(dvChartPage);
+    await loadDVChart();
     return;
   }
 

@@ -23,8 +23,8 @@ MODULES = [
     ("信息预警管理", "mid_event_monitor", "事中风险监控"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
-    ("数据可视化管理", "data_visualization", "图表数据管理"),
-    ("数据可视化管理", "data_visualization", "数据展示"),
+    ("数据可视化管理", "data_visualization_data", "图表数据管理"),
+    ("数据可视化管理", "data_visualization_chart", "数据展示"),
 ]
 
 
