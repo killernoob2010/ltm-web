@@ -46,6 +46,7 @@ const dvDataTabs = document.querySelector("#dvDataTabs");
 const dvDataTbody = document.querySelector("#dvDataTbody");
 const dvChartTabs = document.querySelector("#dvChartTabs");
 const dvChartCanvas = document.querySelector("#dvChartCanvas");
+const dvChartStatus = document.querySelector("#dvChartStatus");
 const dvChartYears = document.querySelector("#dvChartYears");
 const dvChartProduct = document.querySelector("#dvChartProduct");
 const dvImportBtn = document.querySelector("#dvImportBtn");
@@ -257,9 +258,13 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization") {
     if (subName === "数据展示") {
+      pageTitle.textContent = "数据展示";
+      pageSubtitle.textContent = "数据可视化管理 / 数据展示";
       showOnly(dvChartPage);
       await loadDVChart();
     } else {
+      pageTitle.textContent = "图表数据管理";
+      pageSubtitle.textContent = "数据可视化管理 / 图表数据管理";
       showOnly(dvDataPage);
       initDVData();
       await loadDVTable("inventory");
@@ -1965,9 +1970,29 @@ dvCommitImportBtn.addEventListener("click", async () => {
   }
 });
 
+// 初始化 Canvas 尺寸
+function initDVCanvasSize() {
+  var canvas = dvChartCanvas;
+  var dpr = window.devicePixelRatio || 1;
+  var container = canvas.parentElement;
+  var W = container.clientWidth;
+  var H = 400;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  var ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+}
+
 // ── Chart loading ─────────────────────────────────────
 async function loadDVChart() {
   const metric = dvState.chartMetric;
+
+  initDVCanvasSize();
+  dvChartStatus.textContent = "";
+  dvChartStatus.className = "dv-chart-status";
   try {
     const yearsStr = Array.from(dvChartYears.selectedOptions)
       .map((o) => o.value)
@@ -1977,23 +2002,21 @@ async function loadDVChart() {
     renderDVChart(result.series);
   } catch (err) {
     console.error("图表加载失败:", err);
+    var canvas = dvChartCanvas;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无数据，请先导入数据", canvas.width / (window.devicePixelRatio || 1) / 2, 200);
   }
 }
 
 function renderDVChart(series) {
-  const canvas = dvChartCanvas;
-  const dpr = window.devicePixelRatio || 1;
-  const container = canvas.parentElement;
-  const W = container.clientWidth;
-  const H = 400;
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
-  canvas.style.width = W + "px";
-  canvas.style.height = H + "px";
-
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, W, H);
+  initDVCanvasSize();
+  var W, H, ctx;
+  W = canvas.parentElement.clientWidth;
+  H = 400;
+  ctx = canvas.getContext("2d");
 
   const years = Object.keys(series);
   if (!years.length) {
