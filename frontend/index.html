@@ -341,25 +341,31 @@
           </section>
         </section>
 
-        <!-- 数据可视化管理 - 图表数据管理 -->
-        <section id="dvDataPage" class="page hidden">
-          <div class="toolbar">
-            <button type="button" id="dvImportBtn">📥 导入 Excel</button>
-            <div class="dv-tabs" id="dvDataTabs">
-              <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
-              <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
-              <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
-            </div>
+       <!-- 数据可视化管理 - 图表数据管理 -->
+      <section id="dvDataPage" class="page hidden">
+        <div class="toolbar">
+          <button type="button" id="dvImportBtn">📥 导入 Excel</button>
+          <div class="dv-tabs" id="dvDataTabs">
+            <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
+            <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
+            <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
           </div>
-          <div class="table-wrap">
-            <table id="dvDataTable">
-              <thead id="dvDataThead">
-                <tr><th>日期</th><th>周次</th><th>卡粉</th></tr>
-              </thead>
-              <tbody id="dvDataTbody"></tbody>
-            </table>
+        </div>
+          <div class="dv-filter-row" id="dvDataYearFilter">
+            <span class="dv-filter-label">年份：</span>
+            <div class="dv-checkbox-group" id="dvDataYearCheckboxes"></div>
+            <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataYearAll">全选</button>
+            <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataYearNone">全不选</button>
           </div>
-        </section>
+        <div class="table-wrap">
+           <table id="dvDataTable">
+             <thead id="dvDataThead">
+               <tr><th>日期</th><th>周次</th><th>卡粉</th></tr>
+             </thead>
+             <tbody id="dvDataTbody"></tbody>
+           </table>
+        </div>
+      </section>
 
         <!-- 数据可视化管理 - 数据展示 -->
         <section id="dvChartPage" class="page hidden">
@@ -368,14 +374,27 @@
               <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
               <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
               <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
-            </div>
-          </div>
-          <div class="dv-chart-controls-row">
+           </div>
+         </div>
+         <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
-              <label>年份 <select id="dvChartYears" multiple size="4"></select></label>
-              <label>品种 <select id="dvChartProduct"><option value="卡粉">卡粉</option></select></label>
+              <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>年份</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="dvChartYearAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="dvChartYearNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartYearCheckboxes"></div>
+              </div>
+              <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>品种</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="dvChartProductAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="dvChartProductNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartProductCheckboxes"></div>
+              </div>
             </div>
-            <span class="dv-chart-hint">按住 Cmd/Ctrl 多选年份，默认展示全部</span>
           </div>
           <div class="chart-container">
             <div id="dvChartStatus" class="dv-chart-status"></div>
@@ -759,6 +778,10 @@
     <dialog id="dvImportDialog">
       <form method="dialog" class="dialog-form dv-import-dialog">
         <h2>导入预检</h2>
+        <div class="form-field">
+          <label>选择 Excel 文件：</label>
+          <input type="file" id="dvImportFile" accept=".xlsx,.xls">
+        </div>
         <div id="dvPreviewContent"></div>
         <div class="dialog-actions">
           <button type="button" id="dvCancelImportBtn" class="secondary">取消</button>
@@ -778,6 +801,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-fix-2026062401"></script>
+    <script src="/static/app.js?v=dv-fix-2026062402"></script>
   </body>
 </html>

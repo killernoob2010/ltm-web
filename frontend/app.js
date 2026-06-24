@@ -47,8 +47,15 @@ const dvDataTbody = document.querySelector("#dvDataTbody");
 const dvChartTabs = document.querySelector("#dvChartTabs");
 const dvChartCanvas = document.querySelector("#dvChartCanvas");
 const dvChartStatus = document.querySelector("#dvChartStatus");
-const dvChartYears = document.querySelector("#dvChartYears");
-const dvChartProduct = document.querySelector("#dvChartProduct");
+const dvChartYearCheckboxes = document.querySelector("#dvChartYearCheckboxes");
+const dvChartProductCheckboxes = document.querySelector("#dvChartProductCheckboxes");
+const dvDataYearCheckboxes = document.querySelector("#dvDataYearCheckboxes");
+const dvDataYearAll = document.querySelector("#dvDataYearAll");
+const dvDataYearNone = document.querySelector("#dvDataYearNone");
+const dvChartYearAll = document.querySelector("#dvChartYearAll");
+const dvChartYearNone = document.querySelector("#dvChartYearNone");
+const dvChartProductAll = document.querySelector("#dvChartProductAll");
+const dvChartProductNone = document.querySelector("#dvChartProductNone");
 const dvImportBtn = document.querySelector("#dvImportBtn");
 const dvImportDialog = document.querySelector("#dvImportDialog");
 const dvPreviewContent = document.querySelector("#dvPreviewContent");
@@ -264,9 +271,9 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization_chart") {
     showOnly(dvChartPage);
-    if (!dvState.dvChartInitialized) {
-      initDVChartYears();
-      dvState.dvChartInitialized = true;
+    if (!dvState.dvChartControlsInitialized) {
+      initDVChartControls();
+      dvState.dvChartControlsInitialized = true;
     }
     await loadDVChart();
     return;
@@ -1746,61 +1753,134 @@ let dvState = {
   uploadFile: null,
   uploadFileName: "",
   previewData: null,
-  dvChartInitialized: false,
+  dvDataFilterInitialized: false,
+  dvChartControlsInitialized: false,
+  highlightedYear: null,
+  lastChartData: null,
 };
 
 const DV_PAGE_SIZE = 50;
+
+// ── Helpers ────────────────────────────────────────────────────────────
+function getCheckedValues(container) {
+  var checked = container.querySelectorAll('input[type="checkbox"]:checked');
+  return Array.from(checked).map(function(cb) { return cb.value; });
+}
+
+function selectAllCheckboxes(container) {
+  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = true; });
+}
+function selectNoneCheckboxes(container) {
+  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = false; });
+}
+
+async function buildYearCheckboxes(container, onChange) {
+  try {
+    var result = await api("/api/data-visualization/years");
+    var years = result.years || [];
+    container.innerHTML = "";
+    years.forEach(function(y) {
+      var label = document.createElement("label");
+      label.className = "dv-checkbox-label";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = String(y);
+      cb.checked = true;
+      cb.addEventListener("change", onChange);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(String(y)));
+      container.appendChild(label);
+    });
+  } catch (err) {
+    console.error("加载年份列表失败:", err);
+  }
+}
+
+var DV_PRODUCT_LIST = ["卡粉", "纽曼粉", "麦克粉", "PB粉", "金布巴粉", "超特粉", "混合粉", "杨迪粉", "罗伊山粉", "巴西粗粉", "乌克兰精粉", "俄罗斯精粉", "IOC6"];
+
+async function buildProductCheckboxes(container, onChange) {
+  container.innerHTML = "";
+  DV_PRODUCT_LIST.forEach(function(p) {
+    var label = document.createElement("label");
+    label.className = "dv-checkbox-label";
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = p;
+    cb.checked = (p === "卡粉");
+    cb.addEventListener("change", onChange);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(p));
+    container.appendChild(label);
+  });
+}
 
 function initDVData() {
   if (dvState.currentMetric !== "inventory") {
     dvState.currentMetric = "inventory";
   }
-  dvDataTabs.querySelectorAll(".dv-tab").forEach((t) => t.classList.remove("active"));
-  const inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
+  dvDataTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
+  var inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
   if (inventoryTab) inventoryTab.classList.add("active");
+
+  // Init data table year filter (once)
+  if (!dvState.dvDataFilterInitialized) {
+    buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
+    dvDataYearAll.addEventListener("click", function() {
+      selectAllCheckboxes(dvDataYearCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    });
+    dvDataYearNone.addEventListener("click", function() {
+      selectNoneCheckboxes(dvDataYearCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    });
+    dvState.dvDataFilterInitialized = true;
+  }
 }
 
-// ── Tabs ──────────────────────────────────────────────
-dvDataTabs.addEventListener("click", (e) => {
-  const tab = e.target.closest(".dv-tab");
+// ── Tabs ──────────────────────────────────────────────────────────────
+dvDataTabs.addEventListener("click", function(e) {
+  var tab = e.target.closest(".dv-tab");
   if (!tab) return;
-  dvDataTabs.querySelectorAll(".dv-tab").forEach((t) => t.classList.remove("active"));
+  dvDataTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
   tab.classList.add("active");
   dvState.currentMetric = tab.dataset.metric;
   loadDVTable(dvState.currentMetric);
 });
 
-dvChartTabs.addEventListener("click", (e) => {
-  const tab = e.target.closest(".dv-tab");
+dvChartTabs.addEventListener("click", function(e) {
+  var tab = e.target.closest(".dv-tab");
   if (!tab) return;
-  dvChartTabs.querySelectorAll(".dv-tab").forEach((t) => t.classList.remove("active"));
+  dvChartTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
   tab.classList.add("active");
   dvState.chartMetric = tab.dataset.metric;
   loadDVChart();
 });
 
-// ── Table loading ─────────────────────────────────────
+// ── Table loading ─────────────────────────────────────────────────────
 async function loadDVTable(metric) {
   try {
-    const result = await api(`/api/data-visualization/table?metric=${encodeURIComponent(metric)}`);
+    var yearsArr = getCheckedValues(dvDataYearCheckboxes);
+    var yearsStr = yearsArr.join(",");
+    var url = "/api/data-visualization/table?metric=" + encodeURIComponent(metric);
+    if (yearsStr) url += "&years=" + encodeURIComponent(yearsStr);
+    var result = await api(url);
     renderDVTable(result);
   } catch (err) {
-    dvDataTbody.innerHTML = `<tr><td colspan="14" class="error-cell">加载失败: ${err.message}</td></tr>`;
+    dvDataTbody.innerHTML = '<tr><td colspan="14" class="error-cell">加载失败: ' + err.message + '</td></tr>';
   }
 }
 
 function renderDVTable(result) {
-  const data = result.data || [];
-  const products = result.products || [];
-  const productCount = products.length;
+  var data = result.data || [];
+  var products = result.products || [];
+  var productCount = products.length;
 
   if (!data.length) {
     dvDataTbody.innerHTML = '<tr><td colspan="' + (2 + productCount) + '" class="empty-cell">暂无数据，请先导入</td></tr>';
     return;
   }
 
-  // Build table header dynamically
-  const thead = document.querySelector('#dvDataTable thead');
+  var thead = document.querySelector('#dvDataTable thead');
   if (thead) {
     thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
       products.map(function(p) { return '<th>' + p + '</th>'; }).join('') +
@@ -1830,7 +1910,7 @@ function renderDVTable(result) {
 }
 
 function tooltipText(row) {
-  const parts = [];
+  var parts = [];
   if (row.is_manual_override) parts.push("人工修正");
   if (row.is_missing_filled) parts.push("缺失补0");
   if (row.source) parts.push("来源: " + row.source);
@@ -1844,25 +1924,24 @@ function formatNumber(val) {
   return val.toFixed(2);
 }
 
-// 图表整数格式化
 function formatChartNumber(val) {
   if (val == null) return "-";
   if (Number.isInteger(val)) return val.toString();
   return Math.round(val).toString();
 }
 
-// ── Inline edit ───────────────────────────────────────
+// ── Inline edit ────────────────────────────────────────────────────────
 function attachInlineEdit() {
-  dvDataTbody.querySelectorAll(".dv-value-cell").forEach((cell) => {
-    cell.addEventListener("dblclick", () => startInlineEdit(cell));
+  dvDataTbody.querySelectorAll(".dv-value-cell").forEach(function(cell) {
+    cell.addEventListener("dblclick", function() { startInlineEdit(cell); });
   });
 }
 
 function startInlineEdit(cell) {
-  const tr = cell.closest("tr");
-  const id = parseInt(cell.dataset.id);
-  const current = cell.dataset.value;
-  const input = document.createElement("input");
+  var tr = cell.closest("tr");
+  var id = parseInt(cell.dataset.id);
+  var current = cell.dataset.value;
+  var input = document.createElement("input");
   input.type = "number";
   input.step = "any";
   input.value = current;
@@ -1872,8 +1951,8 @@ function startInlineEdit(cell) {
   input.focus();
   input.select();
 
-  const save = async () => {
-    const val = parseFloat(input.value);
+  var save = async function() {
+    var val = parseFloat(input.value);
     if (isNaN(val)) {
       cell.textContent = current || "-";
       return;
@@ -1891,115 +1970,102 @@ function startInlineEdit(cell) {
   };
 
   input.addEventListener("blur", save);
-  input.addEventListener("keydown", (e) => {
+  input.addEventListener("keydown", function(e) {
     if (e.key === "Enter") { input.blur(); }
     if (e.key === "Escape") { cell.textContent = current || "-"; }
   });
 }
 
-// ── Import flow ───────────────────────────────────────
-dvImportBtn.addEventListener("click", () => {
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = ".xlsx,.xls";
-  fileInput.onchange = async () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    dvState.uploadFileName = file.name;
-    try {
-      const base64 = await fileToBase64(file);
-      const preview = await api("/api/data-visualization/import/preview", {
-        method: "POST",
-        body: JSON.stringify({ file_data: base64, file_name: file.name }),
+// ── Excel import ───────────────────────────────────────────────────────
+dvImportBtn.addEventListener("click", function() { dvImportDialog.showModal(); });
+dvCancelImportBtn.addEventListener("click", function() { dvImportDialog.close(); });
+
+dvImportFile.addEventListener("change", async function() {
+  var file = dvImportFile.files[0];
+  if (!file) return;
+
+  dvState.uploadFileName = file.name;
+  dvPreviewContent.innerHTML = '<div class="dv-chart-status">正在解析文件...</div>';
+
+  try {
+    // Read file as base64 to match backend ImportRequest model
+    var base64 = await new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() {
+        var result = reader.result;
+        var comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.substring(comma + 1) : result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    dvState.uploadFile = base64;
+
+    var headers = {};
+    if (state.token) headers.Authorization = "Bearer " + state.token;
+    headers["Content-Type"] = "application/json";
+
+    var response = await fetch("/api/data-visualization/import/preview", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ file_data: base64, file_name: file.name }),
+    });
+
+    if (!response.ok) {
+      var errPayload = await response.json().catch(function() { return {}; });
+      throw new Error(errPayload.detail || "预览失败");
+    }
+
+    var preview = await response.json();
+    dvState.previewData = preview;
+
+    var html = '<div class="dv-preview-stats">';
+    html += '<div>文件: ' + file.name + '</div>';
+    html += '<div>指标: ' + (preview.metric_types || []).join(", ") + '</div>';
+    html += '<div>日期范围: ' + (preview.date_start || "-") + ' ~ ' + (preview.date_end || "-") + '</div>';
+    html += '<div>可导入行数: ' + (preview.insert_count || 0) + ' | 覆盖行数: ' + (preview.overwrite_count || 0) + ' | 错误行数: ' + (preview.error_count || 0) + '</div>';
+    if (preview.errors && preview.errors.length) {
+      html += '<div style="color:#dc2626;margin-top:6px;">错误详情:</div>';
+      preview.errors.forEach(function(err) {
+        html += '<div style="color:#dc2626;font-size:12px;">行' + err.row + ': ' + err.message + '</div>';
       });
-      dvState.previewData = preview;
-      dvState.uploadFile = base64;
-      renderPreview(preview);
-      dvImportDialog.showModal();
-    } catch (err) {
-      alert("预检失败: " + err.message);
     }
-  };
-  fileInput.click();
+    html += '</div>';
+    dvPreviewContent.innerHTML = html;
+    dvCommitImportBtn.disabled = (preview.insert_count + preview.overwrite_count) === 0;
+  } catch (err) {
+    dvPreviewContent.innerHTML = '<div class="error-cell">解析失败: ' + err.message + '</div>';
+    dvCommitImportBtn.disabled = true;
+  }
 });
 
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      const comma = result.indexOf(",");
-      resolve(comma > 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+dvCommitImportBtn.addEventListener("click", async function() {
+  if (!dvState.previewData) return;
 
-function renderPreview(preview) {
-  let html = `<div class="dv-preview-stats">
-    <p><strong>文件名:</strong> ${preview.file_name}</p>
-    <p><strong>数据类型:</strong> ${preview.metric_types}</p>
-    <p><strong>日期范围:</strong> ${preview.date_start || "-"} ~ ${preview.date_end || "-"}</p>
-    <p><strong>总行数:</strong> ${preview.total_rows} | 新增: ${preview.insert_count} | 覆盖: ${preview.overwrite_count} | 空值: ${preview.null_count}</p>
-    <p><strong>人工保护项:</strong> ${preview.manual_protected_count} | 异常: ${preview.error_count}</p>
-  </div>`;
+  dvCommitImportBtn.disabled = true;
+  dvCommitImportBtn.textContent = "导入中...";
 
-  if (preview.manual_protected && preview.manual_protected.length) {
-    html += '<div class="dv-preview-section"><h4>人工修正保护项（导入后不会被覆盖）</h4><table><thead><tr><th>类型</th><th>日期</th><th>当前值</th><th>导入值</th><th>覆盖</th></tr></thead><tbody>';
-    for (const item of preview.manual_protected) {
-      html += `<tr>
-        <td>${item.metric_type === "inventory" ? "库存" : "发运"}</td>
-        <td>${item.date}</td>
-        <td>${item.current_value}</td>
-        <td>${item.new_value}</td>
-        <td><input type="checkbox" class="dv-override-check" data-id="${item.data_point_id}"></td>
-      </tr>`;
-    }
-    html += "</tbody></table></div>";
-  }
-
-  if (preview.history_changes && preview.history_changes.length) {
-    html += '<div class="dv-preview-section"><h4>历史变更项</h4><table><thead><tr><th>类型</th><th>日期</th><th>当前值</th><th>导入值</th></tr></thead><tbody>';
-    for (const item of preview.history_changes) {
-      html += `<tr><td>${item.metric_type === "inventory" ? "库存" : "发运"}</td><td>${item.date}</td><td>${item.current_value}</td><td>${item.new_value}</td></tr>`;
-    }
-    html += "</tbody></table></div>";
-  }
-
-  dvPreviewContent.innerHTML = html;
-}
-
-dvCancelImportBtn.addEventListener("click", () => {
-  dvImportDialog.close();
-  dvState.previewData = null;
-  dvState.uploadFile = null;
-});
-
-dvCommitImportBtn.addEventListener("click", async () => {
-  const overwriteIds = [];
-  dvPreviewContent.querySelectorAll(".dv-override-check:checked").forEach((cb) => {
-    overwriteIds.push(parseInt(cb.dataset.id));
-  });
   try {
     await api("/api/data-visualization/import/commit", {
       method: "POST",
       body: JSON.stringify({
         file_data: dvState.uploadFile,
         file_name: dvState.uploadFileName,
-        overwrite_manual_ids: overwriteIds,
       }),
     });
-    dvImportDialog.close();
     dvState.previewData = null;
     dvState.uploadFile = null;
     loadDVTable(dvState.currentMetric);
+    dvImportDialog.close();
   } catch (err) {
     alert("导入失败: " + err.message);
+  } finally {
+    dvCommitImportBtn.disabled = false;
+    dvCommitImportBtn.textContent = "确认导入";
   }
 });
 
-// 初始化 Canvas 尺寸
+// ── Chart canvas ───────────────────────────────────────────────────────
 function initDVCanvasSize() {
   var canvas = dvChartCanvas;
   var dpr = window.devicePixelRatio || 1;
@@ -2015,21 +2081,23 @@ function initDVCanvasSize() {
   ctx.clearRect(0, 0, W, H);
 }
 
-// ── Chart loading ─────────────────────────────────────
+// ── Chart loading ──────────────────────────────────────────────────────
 async function loadDVChart() {
-  const metric = dvState.chartMetric;
+  var metric = dvState.chartMetric;
 
-  // Wait for layout after showOnly before sizing canvas
-  await new Promise((resolve) => requestAnimationFrame(resolve));
+  await new Promise(function(resolve) { requestAnimationFrame(resolve); });
   initDVCanvasSize();
   dvChartStatus.textContent = "";
   dvChartStatus.className = "dv-chart-status";
   try {
-    const yearsStr = Array.from(dvChartYears.selectedOptions)
-      .map((o) => o.value)
-      .join(",");
-    const url = `/api/data-visualization/chart?metric=${encodeURIComponent(metric)}&years=${yearsStr}`;
-    const result = await api(url);
+    var yearsArr = getCheckedValues(dvChartYearCheckboxes);
+    var productsArr = getCheckedValues(dvChartProductCheckboxes);
+    var yearsStr = yearsArr.join(",");
+    var productsStr = productsArr.join(",");
+    var url = "/api/data-visualization/chart?metric=" + encodeURIComponent(metric);
+    if (yearsStr) url += "&years=" + encodeURIComponent(yearsStr);
+    if (productsStr) url += "&products=" + encodeURIComponent(productsStr);
+    var result = await api(url);
     renderDVChart(result.series);
   } catch (err) {
     console.error("图表加载失败:", err);
@@ -2043,14 +2111,47 @@ async function loadDVChart() {
 }
 
 function renderDVChart(series) {
+  // series = { "卡粉": { "2023": [{week_no, display_date, value}, ...], ... }, ... }
   initDVCanvasSize();
   var W, H, ctx;
   W = dvChartCanvas.parentElement.clientWidth;
   H = 400;
   ctx = dvChartCanvas.getContext("2d");
 
-  const years = Object.keys(series);
-  if (!years.length) {
+  dvState.lastChartData = series;
+
+  var products = Object.keys(series);
+  if (!products.length) {
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无数据，请先导入数据", W / 2, H / 2);
+    return;
+  }
+
+  // Collect all (product, year) → data point arrays
+  var lines = []; // [{product, year, points: [{week_no, value, display_date}]}]
+  var allVals = [];
+
+  for (var pi = 0; pi < products.length; pi++) {
+    var prod = products[pi];
+    var productSeries = series[prod] || {};
+    var years = Object.keys(productSeries).sort();
+    for (var yi = 0; yi < years.length; yi++) {
+      var yr = years[yi];
+      var pts = productSeries[yr];
+      lines.push({
+        product: prod,
+        year: yr,
+        points: pts.map(function(p) { return { week_no: p.week_no, value: p.value, display_date: p.display_date }; })
+      });
+      for (var i = 0; i < pts.length; i++) {
+        allVals.push(pts[i].value);
+      }
+    }
+  }
+
+  if (!allVals.length) {
     ctx.fillStyle = "#9ca3af";
     ctx.font = "14px sans-serif";
     ctx.textAlign = "center";
@@ -2058,207 +2159,143 @@ function renderDVChart(series) {
     return;
   }
 
-  const colors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2"];
-  const pad = { top: 30, right: 80, bottom: 60, left: 60 };
-  const chartW = W - pad.left - pad.right;
-  const chartH = H - pad.top - pad.bottom;
+  var dpad = { top: 30, right: 110, bottom: 60, left: 60 };
+  var chartW = W - dpad.left - dpad.right;
+  var chartH = H - dpad.top - dpad.bottom;
 
-  // Collect all data points and build label->display_date map
-  let allVals = [];
-  let allDates = [];
-  let labelToDate = {};
-  for (const yr of years) {
-    const pts = series[yr];
-    for (const p of pts) {
-      allVals.push(p.value);
-      // Format date as "M月D号" from display_date like "2024-12-30"
-      const d = p.display_date || "";
-      const parts = d.split("-");
-      let dateLabel = d;
-      if (parts.length === 3) {
-        dateLabel = parts[1].replace(/^0/, "") + "月" + parts[2].replace(/^0/, "") + "号";
-      }
-      allDates.push(dateLabel);
-      labelToDate["W" + String(p.week_no).padStart(2, "0")] = dateLabel;
-    }
-  }
-  const yMin = 0;
-  const yMax = Math.max(...allVals, 1) * 1.1;
+  // X-axis: week numbers 1-52
+  var maxWeek = 52;
+  function xScale(wn) { return dpad.left + ((wn - 1) / (maxWeek - 1)) * chartW; }
 
-  // Build sorted unique date labels
-  const labelSet = [...new Set(allDates)].sort(function(a, b) {
-    // Extract month/day numbers for sorting
-    var am = parseInt(a), ad = parseInt(a.split("月")[1]), bm = parseInt(b), bd = parseInt(b.split("月")[1]);
-    return am !== bm ? am - bm : ad - bd;
-  });
-  // For multi-year display, use sequential index instead of date-based position
-  const allLabels = [];
-  for (const yr of years) {
-    for (const p of series[yr]) {
-      const d = p.display_date || "";
-      const parts = d.split("-");
-      let dl = d;
-      if (parts.length === 3) {
-        dl = parts[1].replace(/^0/, "") + "月" + parts[2].replace(/^0/, "") + "号";
-      }
-      allLabels.push({label: dl, year: yr, week_no: p.week_no});
-    }
-  }
-  // Sort by (year, week_no)
-  allLabels.sort(function(a, b) { return a.year !== b.year ? a.year - b.year : a.week_no - b.week_no; });
-  
-  const uniqueLabels = [];
-  const seen = {};
-  for (var i = 0; i < allLabels.length; i++) {
-    var key = allLabels[i].year + "-W" + String(allLabels[i].week_no).padStart(2, "0");
-    if (!seen[key]) {
-      seen[key] = true;
-      uniqueLabels.push(allLabels[i].label);
-    }
-  }
+  // Y-axis
+  var yMax = Math.max.apply(null, allVals) * 1.1;
+  function yScale(v) { return dpad.top + chartH - (v / yMax) * chartH; }
 
-  const xScale = function(i) { return pad.left + (i / (uniqueLabels.length - 1 || 1)) * chartW; };
-  const yScale = function(v) { return pad.top + chartH - (v / yMax) * chartH; };
-
-  // Y-axis: use nice integer intervals
-  const niceStep = calcNiceStep(yMax);
-  const yTicks = [];
+  var niceStep = calcNiceStep(yMax);
+  var yTicks = [];
   for (var v = 0; v <= yMax + niceStep * 0.5; v += niceStep) {
     yTicks.push(v);
   }
 
-  // Grid lines
+  // One color per year, shared across products
+  var yearColors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706"];
+  var yearColorMap = {};
+  var allYears = [];
+  for (var li = 0; li < lines.length; li++) {
+    var yr2 = lines[li].year;
+    if (allYears.indexOf(yr2) < 0) allYears.push(yr2);
+  }
+  allYears.sort();
+  for (var yi2 = 0; yi2 < allYears.length; yi2++) {
+    yearColorMap[allYears[yi2]] = yearColors[yi2 % yearColors.length];
+  }
+
+  // Grid lines + Y labels
   ctx.strokeStyle = "#e5e7eb";
   ctx.lineWidth = 1;
   for (var ti = 0; ti < yTicks.length; ti++) {
-    const y = yScale(yTicks[ti]);
+    var y = yScale(yTicks[ti]);
     ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(W - pad.right, y);
+    ctx.moveTo(dpad.left, y);
+    ctx.lineTo(W - dpad.right, y);
     ctx.stroke();
     ctx.fillStyle = "#6b7280";
     ctx.font = "11px sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(formatChartNumber(yTicks[ti]), pad.left - 6, y + 4);
+    ctx.fillText(formatChartNumber(yTicks[ti]), dpad.left - 6, y + 4);
   }
 
-  // X axis labels (dates)
+  // X-axis labels: every 4 weeks
   ctx.fillStyle = "#6b7280";
   ctx.font = "10px sans-serif";
   ctx.textAlign = "center";
-  const skipStep = Math.max(1, Math.floor(uniqueLabels.length / 14));
-  for (var i = 0; i < uniqueLabels.length; i += skipStep) {
-    var lbl = uniqueLabels[i];
-    // Shorten: "12月30号" -> "12/30"
-    var shortLbl = lbl.replace("月", "/").replace("号", "");
-    ctx.fillText(shortLbl, xScale(i), pad.top + chartH + 14);
+  for (var w = 1; w <= maxWeek; w += 4) {
+    ctx.fillText("W" + String(w).padStart(2, "0"), xScale(w), dpad.top + chartH + 14);
   }
 
-  // Lines
-  const highlightedYear = dvState.highlightedYear || null;
-  years.forEach(function(yr, yi) {
-    const pts = series[yr];
-    const color = colors[yi % colors.length];
-    const alpha = highlightedYear && highlightedYear !== yr ? 0.2 : 1;
-    const lineW = highlightedYear === yr ? 3 : 1.5;
+  // Draw lines
+  var highlightedYear = dvState.highlightedYear || null;
+  var dashStyles = [[], [8, 4], [3, 3], [6, 3, 2, 3]];
+  for (var li2 = 0; li2 < lines.length; li2++) {
+    var line = lines[li2];
+    var color = yearColorMap[line.year];
+    var alpha = highlightedYear && highlightedYear !== line.year ? 0.12 : 1;
+    var lineW = highlightedYear === line.year ? 3 : 1.8;
+    // Different products: different dash patterns
+    var prodIdx = products.indexOf(line.product);
+    var dash = dashStyles[prodIdx % dashStyles.length];
 
     ctx.strokeStyle = color;
     ctx.globalAlpha = alpha;
     ctx.lineWidth = lineW;
+    ctx.setLineDash(dash);
     ctx.beginPath();
 
-    // Build date-to-index map for this year's points
-    var ptMap = {};
-    for (var pi = 0; pi < pts.length; pi++) {
-      var d = pts[pi].display_date || "";
-      var parts = d.split("-");
-      var dl = d;
-      if (parts.length === 3) dl = parts[1].replace(/^0/, "") + "月" + parts[2].replace(/^0/, "") + "号";
-      ptMap[dl] = pts[pi];
-    }
-
+    var pts2 = line.points;
     var firstPoint = true;
-    for (var li = 0; li < uniqueLabels.length; li++) {
-      var lbl = uniqueLabels[li];
-      var pt = ptMap[lbl];
-      if (!pt) continue;
-      var x = xScale(li);
-      var y = yScale(pt.value);
-      if (firstPoint) { ctx.moveTo(x, y); firstPoint = false; }
-      else ctx.lineTo(x, y);
+    for (var pi3 = 0; pi3 < pts2.length; pi3++) {
+      var x = xScale(pts2[pi3].week_no);
+      var y2 = yScale(pts2[pi3].value);
+      if (firstPoint) { ctx.moveTo(x, y2); firstPoint = false; }
+      else ctx.lineTo(x, y2);
     }
     ctx.stroke();
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
-    // Year label at end
-    if (pts.length) {
-      const lastP = pts[pts.length - 1];
-      var d2 = lastP.display_date || "";
-      var parts2 = d2.split("-");
-      var dl2 = d2;
-      if (parts2.length === 3) dl2 = parts2[1].replace(/^0/, "") + "月" + parts2[2].replace(/^0/, "") + "号";
-      var li2 = uniqueLabels.indexOf(dl2);
-      if (li2 >= 0) {
-        ctx.fillStyle = color;
-        ctx.font = "bold 12px sans-serif";
-        ctx.textAlign = "left";
-        ctx.fillText(yr, xScale(li2) + 4, yScale(lastP.value) - 4);
-      }
+    // Label at end of line
+    if (pts2.length) {
+      var lastP = pts2[pts2.length - 1];
+      var lx = xScale(lastP.week_no);
+      var ly = yScale(lastP.value);
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "left";
+      var labelText = products.length > 1 ? (line.product + " " + line.year) : line.year;
+      ctx.fillText(labelText, lx + 4, ly - 4);
     }
-  });
+  }
 
-  // Click to highlight
+  // Click to highlight a year
   dvChartCanvas.onclick = function(e) {
-    const rect = dvChartCanvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
 
-    let closestYr = null;
-    let closestDist = Infinity;
-    for (const yr of years) {
-      const pts = series[yr];
-      for (var pi = 0; pi < pts.length; pi++) {
-        var d3 = pts[pi].display_date || "";
-        var parts3 = d3.split("-");
-        var dl3 = d3;
-        if (parts3.length === 3) dl3 = parts3[1].replace(/^0/, "") + "月" + parts3[2].replace(/^0/, "") + "号";
-        var li3 = uniqueLabels.indexOf(dl3);
-        if (li3 < 0) continue;
-        const px = xScale(li3);
-        const py = yScale(pts[pi].value);
-        const dist = Math.hypot(mx - px, my - py);
+    var closestYr = null;
+    var closestDist = Infinity;
+    for (var li3 = 0; li3 < lines.length; li3++) {
+      var ln = lines[li3];
+      for (var pi4 = 0; pi4 < ln.points.length; pi4++) {
+        var px = xScale(ln.points[pi4].week_no);
+        var py = yScale(ln.points[pi4].value);
+        var dist = Math.hypot(mx - px, my - py);
         if (dist < closestDist && dist < 30) {
           closestDist = dist;
-          closestYr = yr;
+          closestYr = ln.year;
         }
       }
     }
     if (closestYr) {
       dvState.highlightedYear = dvState.highlightedYear === closestYr ? null : closestYr;
-      renderDVChart(series);
+      renderDVChart(dvState.lastChartData);
     }
   };
 
   // Hover tooltip
   dvChartCanvas.onmousemove = function(e) {
-    const rect = dvChartCanvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    let tooltip = "";
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var tooltip = "";
 
-    for (const yr of years) {
-      const pts = series[yr];
-      for (var pi = 0; pi < pts.length; pi++) {
-        var d4 = pts[pi].display_date || "";
-        var parts4 = d4.split("-");
-        var dl4 = d4;
-        if (parts4.length === 3) dl4 = parts4[1].replace(/^0/, "") + "月" + parts4[2].replace(/^0/, "") + "号";
-        var li4 = uniqueLabels.indexOf(dl4);
-        if (li4 < 0) continue;
-        const px = xScale(li4);
-        const py = yScale(pts[pi].value);
-        if (Math.hypot(mx - px, my - py) < 15) {
-          tooltip = d4 + " | W" + String(pts[pi].week_no).padStart(2, "0") + " | " + yr + " | 卡粉 | " + formatChartNumber(pts[pi].value);
+    for (var li4 = 0; li4 < lines.length; li4++) {
+      var ln2 = lines[li4];
+      for (var pi5 = 0; pi5 < ln2.points.length; pi5++) {
+        var px2 = xScale(ln2.points[pi5].week_no);
+        var py2 = yScale(ln2.points[pi5].value);
+        if (Math.hypot(mx - px2, my - py2) < 15) {
+          tooltip = ln2.points[pi5].display_date + " | W" + String(ln2.points[pi5].week_no).padStart(2, "0") + " | " + ln2.product + " | " + ln2.year + " | " + formatChartNumber(ln2.points[pi5].value);
           break;
         }
       }
@@ -2268,7 +2305,6 @@ function renderDVChart(series) {
 }
 
 function calcNiceStep(yMax) {
-  // Return a nice round step for Y-axis
   if (yMax <= 200) return 50;
   if (yMax <= 500) return 100;
   if (yMax <= 1000) return 200;
@@ -2277,26 +2313,27 @@ function calcNiceStep(yMax) {
   return Math.pow(10, Math.floor(Math.log10(yMax))) / 2;
 }
 
-// ── Year selector init ────────────────────────────────
-function initDVChartYears() {
-  const currentYear = new Date().getFullYear();
-  dvChartYears.innerHTML = "";
-  // Show all years 2023 through current
-  for (let y = currentYear; y >= 2023; y--) {
-    const opt = document.createElement("option");
-    opt.value = y;
-    opt.textContent = y;
-    // Select all years by default
-    opt.selected = true;
-    dvChartYears.appendChild(opt);
-  }
-  dvState.selectedYears = Array.from(dvChartYears.options).map(function(o) { return parseInt(o.value); });
+// ── Chart controls init ────────────────────────────────────────────────
+function initDVChartControls() {
+  buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
+  buildProductCheckboxes(dvChartProductCheckboxes, loadDVChart);
 
-  dvChartYears.addEventListener("change", function() {
-    dvState.selectedYears = Array.from(dvChartYears.selectedOptions).map(function(o) { return parseInt(o.value); });
+  dvChartYearAll.addEventListener("click", function() {
+    selectAllCheckboxes(dvChartYearCheckboxes);
     loadDVChart();
   });
-  dvChartProduct.addEventListener("change", loadDVChart);
+  dvChartYearNone.addEventListener("click", function() {
+    selectNoneCheckboxes(dvChartYearCheckboxes);
+    loadDVChart();
+  });
+  dvChartProductAll.addEventListener("click", function() {
+    selectAllCheckboxes(dvChartProductCheckboxes);
+    loadDVChart();
+  });
+  dvChartProductNone.addEventListener("click", function() {
+    selectNoneCheckboxes(dvChartProductCheckboxes);
+    loadDVChart();
+  });
 }
 
-// DV chart years initialized lazily on first chart page activation
+// DV controls initialized lazily on first chart page activation

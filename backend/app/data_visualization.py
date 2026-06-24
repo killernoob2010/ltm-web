@@ -18,7 +18,7 @@ router = APIRouter()
 
 # ── 常量 ──────────────────────────────────────────────────────────────
 PRODUCT = "卡粉"
-DV_PRODUCTS = ["卡粉", "纽曼粉", "麦克粉", "PB粉", "金布巴粉", "超特粉", "混合粉", "杨迪粉", "罗伊山粉", "巴西粗粉", "乌克兰精粉", "俄罗斯精粉"]
+DV_PRODUCTS = ["卡粉", "纽曼粉", "麦克粉", "PB粉", "金布巴粉", "超特粉", "混合粉", "杨迪粉", "罗伊山粉", "巴西粗粉", "乌克兰精粉", "俄罗斯精粉", "IOC6"]
 SHIPMENT_SHEET = "发运"
 INVENTORY_SHEET = "卡粉库存"
 SHIPMENT_DATE_COL = 2   # B 列
@@ -377,6 +377,20 @@ def _now_expr() -> str:
     return "CURRENT_TIMESTAMP"
 
 
+
+# ── GET /api/data-visualization/years ──────────────────────────────────
+
+@router.get("/data-visualization/years")
+async def get_years(user=Depends(dv_current_user)):
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            "SELECT DISTINCT year FROM dv_week_keys ORDER BY year"
+        ).fetchall()
+    return {"years": [r["year"] for r in rows]}
+
+
 # ── POST /api/data-visualization/import/preview ───────────────────────
 
 @router.post("/data-visualization/import/preview")
@@ -580,21 +594,37 @@ async def import_commit(
 @router.get("/data-visualization/table")
 async def get_table(
     metric: str = Query(..., regex="^(inventory|shipment|apparent_demand)$"),
+    years: str = "",
     user=Depends(dv_current_user),
 ):
+    year_list: List[int] = []
+    if years:
+        for part in years.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    year_list.append(int(part))
+                except ValueError:
+                    pass
+
     with db.connect() as conn:
         cur = conn.cursor()
-        rows = db._exec(
-            cur,
-            """SELECT wk.display_date, wk.year, wk.week_no, dp.id, dp.product,
-                      dp.display_value, dp.is_manual_override, dp.is_missing_filled,
-                      dp.source, dp.updated_by, dp.updated_at
-               FROM dv_data_points dp
-               JOIN dv_week_keys wk ON wk.id = dp.week_key_id
-               WHERE dp.metric_type = ?
-               ORDER BY wk.display_date, dp.product""",
-            (metric,),
-        ).fetchall()
+
+        base_sql = """SELECT wk.display_date, wk.year, wk.week_no, dp.id, dp.product,
+                        dp.display_value, dp.is_manual_override, dp.is_missing_filled,
+                        dp.source, dp.updated_by, dp.updated_at
+                 FROM dv_data_points dp
+                 JOIN dv_week_keys wk ON wk.id = dp.week_key_id
+                 WHERE dp.metric_type = ?"""
+
+        params: List[Any] = [metric]
+        if year_list:
+            placeholders = ",".join("?" for _ in year_list)
+            base_sql += f" AND wk.year IN ({placeholders})"
+            params.extend(year_list)
+
+        base_sql += " ORDER BY wk.display_date, dp.product"
+        rows = db._exec(cur, base_sql, tuple(params)).fetchall()
 
     products = list(DV_PRODUCTS)
     week_map: Dict[str, Dict] = {}
@@ -667,6 +697,7 @@ async def update_value(
 async def get_chart(
     metric: str = Query(..., regex="^(inventory|shipment|apparent_demand)$"),
     years: str = "",
+    products: str = "",
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
@@ -679,38 +710,42 @@ async def get_chart(
                 except ValueError:
                     pass
 
+    product_list: List[str] = []
+    if products:
+        product_list = [p.strip() for p in products.split(",") if p.strip()]
+
     with db.connect() as conn:
         cur = conn.cursor()
-        if year_list:
-            placeholders = ",".join("?" for _ in year_list)
-            rows = db._exec(
-                cur,
-                f"""SELECT wk.year, wk.week_no, wk.display_date, dp.display_value,
-                           dp.is_manual_override, dp.is_missing_filled
-                    FROM dv_data_points dp
-                    JOIN dv_week_keys wk ON wk.id = dp.week_key_id
-                    WHERE dp.product = ? AND dp.metric_type = ? AND wk.year IN ({placeholders})
-                    ORDER BY wk.year, wk.week_no""",
-                (PRODUCT, metric, *year_list),
-            ).fetchall()
-        else:
-            rows = db._exec(
-                cur,
-                """SELECT wk.year, wk.week_no, wk.display_date, dp.display_value,
-                          dp.is_manual_override, dp.is_missing_filled
-                   FROM dv_data_points dp
-                   JOIN dv_week_keys wk ON wk.id = dp.week_key_id
-                   WHERE dp.product = ? AND dp.metric_type = ?
-                   ORDER BY wk.year, wk.week_no""",
-                (PRODUCT, metric),
-            ).fetchall()
 
-    by_year: Dict[int, List[Dict]] = {}
+        params: List[Any] = [metric]
+        sql = """SELECT wk.year, wk.week_no, wk.display_date, dp.product,
+                        dp.display_value, dp.is_manual_override, dp.is_missing_filled
+                 FROM dv_data_points dp
+                 JOIN dv_week_keys wk ON wk.id = dp.week_key_id
+                 WHERE dp.metric_type = ?"""
+
+        if product_list:
+            placeholders_p = ",".join("?" for _ in product_list)
+            sql += f" AND dp.product IN ({placeholders_p})"
+            params.extend(product_list)
+
+        if year_list:
+            placeholders_y = ",".join("?" for _ in year_list)
+            sql += f" AND wk.year IN ({placeholders_y})"
+            params.extend(year_list)
+
+        sql += " ORDER BY dp.product, wk.year, wk.week_no"
+        rows = db._exec(cur, sql, tuple(params)).fetchall()
+
+    by_product_year: Dict[str, Dict[int, List[Dict]]] = {}
     for r in rows:
+        prod = r["product"]
         yr = r["year"]
-        if yr not in by_year:
-            by_year[yr] = []
-        by_year[yr].append({
+        if prod not in by_product_year:
+            by_product_year[prod] = {}
+        if yr not in by_product_year[prod]:
+            by_product_year[prod][yr] = []
+        by_product_year[prod][yr].append({
             "week_no": r["week_no"],
             "display_date": r["display_date"],
             "value": r["display_value"],
@@ -718,7 +753,12 @@ async def get_chart(
             "is_missing_filled": bool(r["is_missing_filled"]),
         })
 
-    return {"metric": metric, "series": {str(k): v for k, v in sorted(by_year.items())}}
+    # Sort by year within each product
+    result: Dict[str, Dict[str, List[Dict]]] = {}
+    for prod, by_year in by_product_year.items():
+        result[prod] = {str(k): v for k, v in sorted(by_year.items())}
+
+    return {"metric": metric, "series": result}
 
 
 # ── GET /api/data-visualization/import-batches ────────────────────────
