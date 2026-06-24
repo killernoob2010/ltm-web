@@ -1419,6 +1419,8 @@ def calculate_info_summary_payload(
         month_results = {}
         for month in INNER_OUTER_MONTHS:
             cached = get_cached_data(payload.info_type, payload.year, month, payload.calc_date)
+            if not fill_missing_history and (not cached or cached.get("t_1_value") is None):
+                cached = get_latest_cached_data(payload.info_type, payload.year, month, payload.calc_date) or cached
             month_results[month] = {
                 **(cached or {}),
                 "cache_hit": cached is not None and cached.get("t_1_value") is not None,
@@ -1437,6 +1439,8 @@ def calculate_info_summary_payload(
     realtime = calculate_today_indicator(payload, mock=mock, quote_provider=quote_provider)
     month_key = cache_month_key(payload)
     cached = get_cached_data(payload.info_type, payload.year, month_key, payload.calc_date)
+    if not fill_missing_history and (not cached or cached.get("t_1_value") is None or cached.get("std_value") is None):
+        cached = get_latest_cached_data(payload.info_type, payload.year, month_key, payload.calc_date) or cached
     if fill_missing_history and (not cached or cached.get("t_1_value") is None or cached.get("std_value") is None):
         cached = calculate_missing_cache_from_prices(payload) or get_latest_cached_data(
             payload.info_type,

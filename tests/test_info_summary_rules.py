@@ -95,6 +95,33 @@ class InfoSummaryRulesTest(unittest.TestCase):
         self.assertIn(("2609", True), fx_calls)
         missing_cache.assert_not_called()
 
+    def test_calculate_all_reads_latest_history_without_recalculating(self):
+        payload = InfoCalculateAllIn(items=[
+            InfoCalculateIn(info_type="煤矿比", year=2026, month="09", calc_date="2026-06-24"),
+        ])
+        latest = {
+            "t_1_value": 3.24,
+            "t_2_value": 3.18,
+            "mean_value": 2.85,
+            "min_value": 2.41,
+            "max_value": 3.24,
+            "std_value": 0.21,
+        }
+
+        with patch("backend.app.main.fetch_sina_price", side_effect=[1230.0, 805.0]), \
+             patch("backend.app.main.get_cached_data", return_value=None), \
+             patch("backend.app.main.get_latest_cached_data", return_value=latest), \
+             patch("backend.app.main.calculate_missing_cache_from_prices") as missing_cache, \
+             patch("backend.app.main.db.log_operation"):
+            result = calculate_info_summary_all(payload, user={"id": 1, "role": "管理员"})
+
+        card = result["cards"][0]
+        self.assertEqual(card["today_value"], 1.88 * 1230.0 / 805.0)
+        self.assertEqual(card["t_1_value"], 3.24)
+        self.assertEqual(card["std_value"], 0.21)
+        self.assertTrue(card["cache_hit"])
+        missing_cache.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
