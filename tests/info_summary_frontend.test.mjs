@@ -14,7 +14,7 @@ test("info summary month dropdowns use per-type month options from backend confi
 });
 
 test("info summary JavaScript URL is cache busted", () => {
-  assert.match(indexHtml, /src="\/static\/app\.js\?v=info-summary-\d+"/);
+  assert.match(indexHtml, /src="\/static\/app\.js\?v=info-summary-20260624"/);
 });
 
 test("info summary exposes historical cache refresh entry", () => {
