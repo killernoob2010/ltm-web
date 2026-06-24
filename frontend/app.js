@@ -2167,13 +2167,17 @@ function renderDVChart(series) {
   var maxWeek = 52;
   function xScale(wn) { return dpad.left + ((wn - 1) / (maxWeek - 1)) * chartW; }
 
-  // Y-axis
-  var yMax = Math.max.apply(null, allVals) * 1.1;
-  function yScale(v) { return dpad.top + chartH - (v / yMax) * chartH; }
+  // Y-axis: auto-scale from data minimum, not forced from 0
+  var yMin = Math.min.apply(null, allVals);
+  var yMax = Math.max.apply(null, allVals);
+  var yPad = (yMax - yMin) * 0.08 || 50;
+  yMin = Math.max(0, yMin - yPad);
+  yMax = yMax + yPad;
+  function yScale(v) { return dpad.top + chartH - ((v - yMin) / (yMax - yMin)) * chartH; }
 
-  var niceStep = calcNiceStep(yMax);
+  var niceStep = calcNiceStep(yMax - yMin);
   var yTicks = [];
-  for (var v = 0; v <= yMax + niceStep * 0.5; v += niceStep) {
+  for (var v = yMin; v <= yMax + niceStep * 0.5; v += niceStep) {
     yTicks.push(v);
   }
 
@@ -2253,6 +2257,24 @@ function renderDVChart(series) {
       ctx.textAlign = "left";
       var labelText = products.length > 1 ? (line.product + " " + line.year) : line.year;
       ctx.fillText(labelText, lx + 4, ly - 4);
+    }
+  }
+
+  // Draw data point nodes for highlighted line
+  if (highlightedYear) {
+    for (var li3 = 0; li3 < lines.length; li3++) {
+      if (lines[li3].year === highlightedYear) {
+        var hpts = lines[li3].points;
+        ctx.fillStyle = yearColorMap[highlightedYear];
+        for (var pi4 = 0; pi4 < hpts.length; pi4++) {
+          var px = xScale(hpts[pi4].week_no);
+          var py = yScale(hpts[pi4].value);
+          ctx.beginPath();
+          ctx.arc(px, py, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
     }
   }
 

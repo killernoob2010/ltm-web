@@ -806,11 +806,16 @@ def seed_dv_data():
         week_ids: List[int] = []
         years_to_seed = [2023, 2024, 2025, 2026]
 
+        today = date.today()
+        current_year_max_wn = compute_business_week(today)["week_no"]
+
         for yr in years_to_seed:
             jan1 = date(yr, 1, 1)
             w01_start = jan1 - timedelta(days=jan1.weekday())
 
             for wn in range(1, 53):
+                if yr == today.year and wn > current_year_max_wn:
+                    break
                 ws = w01_start + timedelta(weeks=wn - 1)
                 we = ws + timedelta(days=6)
 
