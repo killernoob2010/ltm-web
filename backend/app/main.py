@@ -1063,6 +1063,7 @@ def calculate_missing_cache_from_prices(payload: InfoCalculateIn) -> Optional[di
 @app.on_event("startup")
 def startup() -> None:
     db.init_db()
+    data_visualization.seed_dv_data()
     start_alert_monitor()
 
 

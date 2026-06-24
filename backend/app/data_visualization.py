@@ -711,6 +711,76 @@ async def get_import_batches(user=Depends(dv_current_user)):
             """SELECT id, file_name, metric_types, date_start, date_end,
                       insert_count, overwrite_count, error_count, manual_protected_count,
                       status, created_by, created_at
-               FROM dv_import_batches ORDER BY created_at DESC LIMIT 50""",
+        FROM dv_import_batches ORDER BY created_at DESC LIMIT 50""",
         ).fetchall()
     return {"batches": [_row_to_dict(r) for r in rows]}
+
+
+# ── Seed test data ─────────────────────────────────────────────────
+
+def seed_dv_data():
+    """如果 DV 表为空，插入 52 周测试数据（2025 W01-W52，仅卡粉）。"""
+    with db.connect() as conn:
+        cur = conn.cursor()
+        count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_week_keys").fetchone()["c"]
+        if count > 0:
+            return
+
+        import random
+        random.seed(42)
+
+        # 2025 W01 的周一
+        d = date(2024, 12, 30)
+        week_ids = []
+        for wn in range(1, 53):
+            ws = d + timedelta(weeks=wn - 1)
+            we = ws + timedelta(days=6)
+            year = ws.year
+            db._exec(
+                cur,
+                """INSERT INTO dv_week_keys (year, week_no, week_start_date, week_end_date, display_date)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (year, wn, ws.isoformat(), we.isoformat(), ws.isoformat()),
+            )
+            wk = db._exec(
+                cur, "SELECT id FROM dv_week_keys WHERE year=? AND week_no=?", (year, wn)
+            ).fetchone()
+            week_ids.append(wk["id"])
+
+        # 生成库存（基线 1200，缓慢上升趋势 + 随机波动）
+        inv = []
+        base = 1200
+        for i in range(52):
+            val = base + i * 5 + random.randint(-80, 80)
+            inv.append(float(val))
+
+        # 生成发运（基线 500，波动）
+        ship = []
+        for i in range(52):
+            val = 500 + random.randint(-60, 60)
+            ship.append(float(val))
+
+        # 计算表需: ad(t) = ship(t-2) + inv(t-1) - inv(t)
+        ad = [0.0] * 52
+        for t in range(2, 52):
+            ad[t] = float(ship[t - 2] + inv[t - 1] - inv[t])
+        ad[0] = 0.0
+        ad[1] = 0.0
+
+        for i, wk_id in enumerate(week_ids):
+            for metric, values in [
+                ("inventory", inv),
+                ("shipment", ship),
+                ("apparent_demand", ad),
+            ]:
+                val = values[i]
+                db._exec(
+                    cur,
+                    """INSERT INTO dv_data_points
+                       (week_key_id, product, metric_type, imported_value, calculated_value,
+                        display_value, source, created_by)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (wk_id, PRODUCT, metric, val, val, val, "种子数据", "system"),
+                )
+
+        print(f"[seed_dv_data] 已完成：52 周 × 3 指标 = {52 * 3} 条测试数据")
