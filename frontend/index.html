@@ -708,6 +708,60 @@
       </form>
     </dialog>
 
+    <!-- 数据可视化管理 - 图表数据管理 -->
+    <section id="dvDataPage" class="page hidden">
+      <div class="toolbar">
+        <button type="button" id="dvImportBtn">📥 导入 Excel</button>
+        <div class="dv-tabs" id="dvDataTabs">
+          <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
+          <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
+          <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="dvDataTable">
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>周次</th>
+              <th>卡粉</th>
+            </tr>
+          </thead>
+          <tbody id="dvDataTbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 数据可视化管理 - 数据展示 -->
+    <section id="dvChartPage" class="page hidden">
+      <div class="toolbar">
+        <div class="dv-tabs" id="dvChartTabs">
+          <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
+          <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
+          <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
+        </div>
+        <div class="dv-chart-controls">
+          <label>年份 <select id="dvChartYears" multiple size="3"></select></label>
+          <label>品种 <select id="dvChartProduct"><option value="卡粉">卡粉</option></select></label>
+        </div>
+      </div>
+      <div class="chart-container">
+        <canvas id="dvChartCanvas"></canvas>
+      </div>
+    </section>
+
+    <!-- 导入预检对话框 -->
+    <dialog id="dvImportDialog">
+      <form method="dialog" class="dialog-form dv-import-dialog">
+        <h2>导入预检</h2>
+        <div id="dvPreviewContent"></div>
+        <div class="dialog-actions">
+          <button type="button" id="dvCancelImportBtn" class="secondary">取消</button>
+          <button type="button" id="dvCommitImportBtn">确认导入</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="confirmDialog">
       <form method="dialog" class="dialog-form">
         <h2 id="confirmTitle">确认操作</h2>

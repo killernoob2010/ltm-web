@@ -193,7 +193,7 @@ function renderMenu() {
       const button = document.createElement("button");
       button.className = `menu-item ${item.code === state.activeModule ? "active" : ""}`;
       button.textContent = item.name;
-      button.addEventListener("click", () => activateModule(item.code));
+      button.addEventListener("click", () => activateModule(item.code, item.name));
       wrapper.appendChild(button);
     }
     menu.appendChild(wrapper);
@@ -201,11 +201,11 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
-async function activateModule(code) {
+async function activateModule(code, subName) {
   state.activeModule = code;
   stopMidEventAutoRefresh();
   stopInfoSummaryAutoRefresh();
@@ -240,6 +240,17 @@ async function activateModule(code) {
   if (code === "user_management") {
     showOnly(userManagementPage);
     await loadUserManagement();
+    return;
+  }
+  if (code === "data_visualization") {
+    if (subName === "数据展示") {
+      showOnly(dvChartPage);
+      await loadDVChart();
+    } else {
+      showOnly(dvDataPage);
+      initDVData();
+      await loadDVTable("inventory");
+    }
     return;
   }
 
@@ -1705,3 +1716,435 @@ cancelPermissionBtn.addEventListener("click", () => permissionDialog.close());
 searchLogsBtn.addEventListener("click", loadLogs);
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
+
+// ═══════════════════════════════════════════════════════════════
+// 数据可视化管理
+// ═══════════════════════════════════════════════════════════════
+
+let dvState = {
+  currentMetric: "inventory",
+  chartMetric: "inventory",
+  selectedYears: [new Date().getFullYear()],
+  uploadFile: null,
+  uploadFileName: "",
+  previewData: null,
+};
+
+const DV_PAGE_SIZE = 50;
+
+function initDVData() {
+  if (dvState.currentMetric !== "inventory") {
+    dvState.currentMetric = "inventory";
+  }
+}
+
+// ── Tabs ──────────────────────────────────────────────
+dvDataTabs.addEventListener("click", (e) => {
+  const tab = e.target.closest(".dv-tab");
+  if (!tab) return;
+  dvDataTabs.querySelectorAll(".dv-tab").forEach((t) => t.classList.remove("active"));
+  tab.classList.add("active");
+  dvState.currentMetric = tab.dataset.metric;
+  loadDVTable(dvState.currentMetric);
+});
+
+dvChartTabs.addEventListener("click", (e) => {
+  const tab = e.target.closest(".dv-tab");
+  if (!tab) return;
+  dvChartTabs.querySelectorAll(".dv-tab").forEach((t) => t.classList.remove("active"));
+  tab.classList.add("active");
+  dvState.chartMetric = tab.dataset.metric;
+  loadDVChart();
+});
+
+// ── Table loading ─────────────────────────────────────
+async function loadDVTable(metric) {
+  try {
+    const result = await api(`/api/data-visualization/table?metric=${encodeURIComponent(metric)}`);
+    renderDVTable(result.data);
+  } catch (err) {
+    dvDataTbody.innerHTML = `<tr><td colspan="3" class="error-cell">加载失败: ${err.message}</td></tr>`;
+  }
+}
+
+function renderDVTable(data) {
+  if (!data || !data.length) {
+    dvDataTbody.innerHTML = '<tr><td colspan="3" class="empty-cell">暂无数据，请先导入</td></tr>';
+    return;
+  }
+  dvDataTbody.innerHTML = data
+    .map(
+      (row) => `
+    <tr data-id="${row.id}" data-value="${row.value ?? ""}">
+      <td>${row.date || "-"}</td>
+      <td>${row.week}</td>
+      <td class="dv-value-cell ${row.is_manual_override ? "manual-override" : ""}${row.is_missing_filled ? " missing-filled" : ""}"
+          title="${tooltipText(row)}">
+        ${row.value != null ? formatNumber(row.value) : "-"}
+      </td>
+    </tr>`
+    )
+    .join("");
+
+  attachInlineEdit();
+}
+
+function tooltipText(row) {
+  const parts = [];
+  if (row.is_manual_override) parts.push("人工修正");
+  if (row.is_missing_filled) parts.push("缺失补0");
+  if (row.source) parts.push("来源: " + row.source);
+  if (row.updated_by) parts.push("修改人: " + row.updated_by);
+  return parts.join(" | ");
+}
+
+function formatNumber(val) {
+  if (val == null) return "-";
+  if (Number.isInteger(val)) return val.toString();
+  return val.toFixed(2);
+}
+
+// ── Inline edit ───────────────────────────────────────
+function attachInlineEdit() {
+  dvDataTbody.querySelectorAll(".dv-value-cell").forEach((cell) => {
+    cell.addEventListener("dblclick", () => startInlineEdit(cell));
+  });
+}
+
+function startInlineEdit(cell) {
+  const tr = cell.closest("tr");
+  const id = parseInt(tr.dataset.id);
+  const current = tr.dataset.value;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.value = current;
+  input.className = "dv-inline-input";
+  cell.textContent = "";
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+
+  const save = async () => {
+    const val = parseFloat(input.value);
+    if (isNaN(val)) {
+      cell.textContent = current || "-";
+      return;
+    }
+    try {
+      await api("/api/data-visualization/value", {
+        method: "PUT",
+        body: { data_point_id: id, new_value: val },
+      });
+      loadDVTable(dvState.currentMetric);
+    } catch (err) {
+      cell.textContent = current || "-";
+      alert("保存失败: " + err.message);
+    }
+  };
+
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { input.blur(); }
+    if (e.key === "Escape") { cell.textContent = current || "-"; }
+  });
+}
+
+// ── Import flow ───────────────────────────────────────
+dvImportBtn.addEventListener("click", () => {
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".xlsx,.xls";
+  fileInput.onchange = async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    dvState.uploadFileName = file.name;
+    try {
+      const base64 = await fileToBase64(file);
+      const preview = await api("/api/data-visualization/import/preview", {
+        method: "POST",
+        body: { file_data: base64, file_name: file.name },
+      });
+      dvState.previewData = preview;
+      dvState.uploadFile = base64;
+      renderPreview(preview);
+      dvImportDialog.showModal();
+    } catch (err) {
+      alert("预检失败: " + err.message);
+    }
+  };
+  fileInput.click();
+});
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      const comma = result.indexOf(",");
+      resolve(comma > 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderPreview(preview) {
+  let html = `<div class="dv-preview-stats">
+    <p><strong>文件名:</strong> ${preview.file_name}</p>
+    <p><strong>数据类型:</strong> ${preview.metric_types}</p>
+    <p><strong>日期范围:</strong> ${preview.date_start || "-"} ~ ${preview.date_end || "-"}</p>
+    <p><strong>总行数:</strong> ${preview.total_rows} | 新增: ${preview.insert_count} | 覆盖: ${preview.overwrite_count} | 空值: ${preview.null_count}</p>
+    <p><strong>人工保护项:</strong> ${preview.manual_protected_count} | 异常: ${preview.error_count}</p>
+  </div>`;
+
+  if (preview.manual_protected && preview.manual_protected.length) {
+    html += '<div class="dv-preview-section"><h4>人工修正保护项（导入后不会被覆盖）</h4><table><thead><tr><th>类型</th><th>日期</th><th>当前值</th><th>导入值</th><th>覆盖</th></tr></thead><tbody>';
+    for (const item of preview.manual_protected) {
+      html += `<tr>
+        <td>${item.metric_type === "inventory" ? "库存" : "发运"}</td>
+        <td>${item.date}</td>
+        <td>${item.current_value}</td>
+        <td>${item.new_value}</td>
+        <td><input type="checkbox" class="dv-override-check" data-id="${item.data_point_id}"></td>
+      </tr>`;
+    }
+    html += "</tbody></table></div>";
+  }
+
+  if (preview.history_changes && preview.history_changes.length) {
+    html += '<div class="dv-preview-section"><h4>历史变更项</h4><table><thead><tr><th>类型</th><th>日期</th><th>当前值</th><th>导入值</th></tr></thead><tbody>';
+    for (const item of preview.history_changes) {
+      html += `<tr><td>${item.metric_type === "inventory" ? "库存" : "发运"}</td><td>${item.date}</td><td>${item.current_value}</td><td>${item.new_value}</td></tr>`;
+    }
+    html += "</tbody></table></div>";
+  }
+
+  dvPreviewContent.innerHTML = html;
+}
+
+dvCancelImportBtn.addEventListener("click", () => {
+  dvImportDialog.close();
+  dvState.previewData = null;
+  dvState.uploadFile = null;
+});
+
+dvCommitImportBtn.addEventListener("click", async () => {
+  const overwriteIds = [];
+  dvPreviewContent.querySelectorAll(".dv-override-check:checked").forEach((cb) => {
+    overwriteIds.push(parseInt(cb.dataset.id));
+  });
+  try {
+    await api("/api/data-visualization/import/commit", {
+      method: "POST",
+      body: {
+        file_data: dvState.uploadFile,
+        file_name: dvState.uploadFileName,
+        overwrite_manual_ids: overwriteIds,
+      },
+    });
+    dvImportDialog.close();
+    dvState.previewData = null;
+    dvState.uploadFile = null;
+    loadDVTable(dvState.currentMetric);
+  } catch (err) {
+    alert("导入失败: " + err.message);
+  }
+});
+
+// ── Chart loading ─────────────────────────────────────
+async function loadDVChart() {
+  const metric = dvState.chartMetric;
+  try {
+    const yearsStr = Array.from(dvChartYears.selectedOptions)
+      .map((o) => o.value)
+      .join(",");
+    const url = `/api/data-visualization/chart?metric=${encodeURIComponent(metric)}&years=${yearsStr}`;
+    const result = await api(url);
+    renderDVChart(result.series);
+  } catch (err) {
+    console.error("图表加载失败:", err);
+  }
+}
+
+function renderDVChart(series) {
+  const canvas = dvChartCanvas;
+  const dpr = window.devicePixelRatio || 1;
+  const container = canvas.parentElement;
+  const W = container.clientWidth;
+  const H = 400;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const years = Object.keys(series);
+  if (!years.length) {
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无数据", W / 2, H / 2);
+    return;
+  }
+
+  const colors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2"];
+  const pad = { top: 30, right: 20, bottom: 50, left: 60 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  // Data range
+  let allVals = [];
+  let allLabels = [];
+  for (const yr of years) {
+    const pts = series[yr];
+    for (const p of pts) {
+      allVals.push(p.value);
+      allLabels.push(`W${String(p.week_no).padStart(2,"0")}`);
+    }
+  }
+  const yMin = 0;
+  const yMax = Math.max(...allVals, 1) * 1.1;
+  const labelSet = [...new Set(allLabels)].sort();
+  const xScale = (i) => pad.left + (i / (labelSet.length - 1 || 1)) * chartW;
+  const yScale = (v) => pad.top + chartH - (v / yMax) * chartH;
+
+  // Axes
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.lineWidth = 1;
+  // Y grid
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (chartH * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "right";
+    const val = yMax - (yMax * i) / 4;
+    ctx.fillText(formatNumber(val), pad.left - 6, y + 4);
+  }
+
+  // X axis labels
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "center";
+  const skipStep = Math.max(1, Math.floor(labelSet.length / 12));
+  for (let i = 0; i < labelSet.length; i += skipStep) {
+    ctx.fillText(labelSet[i], xScale(i), pad.top + chartH + 16);
+  }
+
+  // Lines
+  const highlightedYear = dvState.highlightedYear || null;
+  years.forEach((yr, yi) => {
+    const pts = series[yr];
+    const color = colors[yi % colors.length];
+    const alpha = highlightedYear && highlightedYear !== yr ? 0.2 : 1;
+    const lineW = highlightedYear === yr ? 3 : 1.5;
+
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = lineW;
+    ctx.beginPath();
+
+    pts.forEach((p, pi) => {
+      const label = `W${String(p.week_no).padStart(2,"0")}`;
+      const xi = labelSet.indexOf(label);
+      const x = xScale(xi);
+      const y = yScale(p.value);
+      if (pi === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Year label at end
+    if (pts.length) {
+      const lastP = pts[pts.length - 1];
+      const label = `W${String(lastP.week_no).padStart(2,"0")}`;
+      const xi = labelSet.indexOf(label);
+      ctx.fillStyle = color;
+      ctx.font = "bold 12px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(yr, xScale(xi) + 4, yScale(lastP.value) - 4);
+    }
+  });
+
+  // Click to highlight
+  dvChartCanvas.onclick = (e) => {
+    const rect = dvChartCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    let closestYr = null;
+    let closestDist = Infinity;
+    for (const yr of years) {
+      const pts = series[yr];
+      for (const p of pts) {
+        const label = `W${String(p.week_no).padStart(2,"0")}`;
+        const xi = labelSet.indexOf(label);
+        const px = xScale(xi);
+        const py = yScale(p.value);
+        const dist = Math.hypot(mx - px, my - py);
+        if (dist < closestDist && dist < 30) {
+          closestDist = dist;
+          closestYr = yr;
+        }
+      }
+    }
+    if (closestYr) {
+      dvState.highlightedYear = dvState.highlightedYear === closestYr ? null : closestYr;
+      renderDVChart(series);
+    }
+  };
+
+  // Hover tooltip
+  dvChartCanvas.onmousemove = (e) => {
+    const rect = dvChartCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    let tooltip = "";
+
+    for (const yr of years) {
+      const pts = series[yr];
+      for (const p of pts) {
+        const label = `W${String(p.week_no).padStart(2,"0")}`;
+        const xi = labelSet.indexOf(label);
+        const px = xScale(xi);
+        const py = yScale(p.value);
+        if (Math.hypot(mx - px, my - py) < 15) {
+          tooltip = `${p.display_date} | W${String(p.week_no).padStart(2,"0")} | ${yr} | 卡粉 | ${formatNumber(p.value)}`;
+          break;
+        }
+      }
+    }
+    dvChartCanvas.title = tooltip;
+  };
+}
+
+// ── Year selector init ────────────────────────────────
+function initDVChartYears() {
+  const currentYear = new Date().getFullYear();
+  dvChartYears.innerHTML = "";
+  for (let y = currentYear; y >= 2023; y--) {
+    const opt = document.createElement("option");
+    opt.value = y;
+    opt.textContent = y;
+    if (dvState.selectedYears.includes(y)) opt.selected = true;
+    dvChartYears.appendChild(opt);
+  }
+  dvChartYears.addEventListener("change", () => {
+    dvState.selectedYears = Array.from(dvChartYears.selectedOptions).map((o) => parseInt(o.value));
+    loadDVChart();
+  });
+  dvChartProduct.addEventListener("change", loadDVChart);
+}
+
+// Extend bootstrap to init DV chart years
+const origBootstrap = bootstrap;
+// We don't override bootstrap, just init on first chart load
+initDVChartYears();

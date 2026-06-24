@@ -23,6 +23,8 @@ MODULES = [
     ("信息预警管理", "mid_event_monitor", "事中风险监控"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
+    ("数据可视化管理", "data_visualization", "图表数据管理"),
+    ("数据可视化管理", "data_visualization", "数据展示"),
 ]
 
 
@@ -252,6 +254,67 @@ def init_db() -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(info_type, year, month, calc_date)
             );
+            CREATE TABLE IF NOT EXISTS dv_week_keys (
+                id SERIAL PRIMARY KEY,
+                year INTEGER NOT NULL,
+                week_no INTEGER NOT NULL,
+                week_start_date TEXT NOT NULL,
+                week_end_date TEXT NOT NULL,
+                shipment_date TEXT,
+                inventory_date TEXT,
+                display_date TEXT NOT NULL,
+                UNIQUE(year, week_no, shipment_date, inventory_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_data_points (
+                id SERIAL PRIMARY KEY,
+                week_key_id INTEGER NOT NULL,
+                product TEXT NOT NULL DEFAULT '卡粉',
+                metric_type TEXT NOT NULL,
+                imported_value DOUBLE PRECISION,
+                calculated_value DOUBLE PRECISION,
+                manual_value DOUBLE PRECISION,
+                display_value DOUBLE PRECISION,
+                is_manual_override INTEGER NOT NULL DEFAULT 0,
+                is_missing_filled INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT '导入',
+                source_batch_id INTEGER,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(week_key_id, product, metric_type),
+                FOREIGN KEY (week_key_id) REFERENCES dv_week_keys(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_import_batches (
+                id SERIAL PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                metric_types TEXT NOT NULL,
+                date_start TEXT,
+                date_end TEXT,
+                insert_count INTEGER NOT NULL DEFAULT 0,
+                overwrite_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                manual_protected_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_change_log (
+                id SERIAL PRIMARY KEY,
+                data_point_id INTEGER NOT NULL,
+                old_value DOUBLE PRECISION,
+                new_value DOUBLE PRECISION,
+                operation_type TEXT NOT NULL,
+                source_batch_id INTEGER,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                note TEXT,
+                FOREIGN KEY (data_point_id) REFERENCES dv_data_points(id)
+            );
+
 
             CREATE TABLE IF NOT EXISTS daily_prices (
                 id SERIAL PRIMARY KEY,
@@ -400,6 +463,67 @@ def init_db() -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(info_type, year, month, calc_date)
             );
+            CREATE TABLE IF NOT EXISTS dv_week_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year INTEGER NOT NULL,
+                week_no INTEGER NOT NULL,
+                week_start_date TEXT NOT NULL,
+                week_end_date TEXT NOT NULL,
+                shipment_date TEXT,
+                inventory_date TEXT,
+                display_date TEXT NOT NULL,
+                UNIQUE(year, week_no, shipment_date, inventory_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_data_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                week_key_id INTEGER NOT NULL,
+                product TEXT NOT NULL DEFAULT '卡粉',
+                metric_type TEXT NOT NULL,
+                imported_value REAL,
+                calculated_value REAL,
+                manual_value REAL,
+                display_value REAL,
+                is_manual_override INTEGER NOT NULL DEFAULT 0,
+                is_missing_filled INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT '导入',
+                source_batch_id INTEGER,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(week_key_id, product, metric_type),
+                FOREIGN KEY (week_key_id) REFERENCES dv_week_keys(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_import_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_name TEXT NOT NULL,
+                metric_types TEXT NOT NULL,
+                date_start TEXT,
+                date_end TEXT,
+                insert_count INTEGER NOT NULL DEFAULT 0,
+                overwrite_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                manual_protected_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_change_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                data_point_id INTEGER NOT NULL,
+                old_value REAL,
+                new_value REAL,
+                operation_type TEXT NOT NULL,
+                source_batch_id INTEGER,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                note TEXT,
+                FOREIGN KEY (data_point_id) REFERENCES dv_data_points(id)
+            );
+
 
             CREATE TABLE IF NOT EXISTS daily_prices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
