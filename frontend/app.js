@@ -1742,7 +1742,7 @@ closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 let dvState = {
   currentMetric: "inventory",
   chartMetric: "inventory",
-  selectedYears: [new Date().getFullYear()],
+  selectedYears: [],
   uploadFile: null,
   uploadFileName: "",
   previewData: null,
@@ -1789,24 +1789,42 @@ async function loadDVTable(metric) {
   }
 }
 
-function renderDVTable(data) {
-  if (!data || !data.length) {
-    dvDataTbody.innerHTML = '<tr><td colspan="3" class="empty-cell">暂无数据，请先导入</td></tr>';
+function renderDVTable(result) {
+  const data = result.data || [];
+  const products = result.products || [];
+  const productCount = products.length;
+
+  if (!data.length) {
+    dvDataTbody.innerHTML = '<tr><td colspan="' + (2 + productCount) + '" class="empty-cell">暂无数据，请先导入</td></tr>';
     return;
   }
+
+  // Build table header dynamically
+  const thead = document.querySelector('#dvDataTable thead');
+  if (thead) {
+    thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
+      products.map(function(p) { return '<th>' + p + '</th>'; }).join('') +
+      '</tr>';
+  }
+
   dvDataTbody.innerHTML = data
-    .map(
-      (row) => `
-    <tr data-id="${row.id}" data-value="${row.value ?? ""}">
-      <td>${row.date || "-"}</td>
-      <td>${row.week}</td>
-      <td class="dv-value-cell ${row.is_manual_override ? "manual-override" : ""}${row.is_missing_filled ? " missing-filled" : ""}"
-          title="${tooltipText(row)}">
-        ${row.value != null ? formatNumber(row.value) : "-"}
-      </td>
-    </tr>`
-    )
-    .join("");
+    .map(function(row) {
+      var cells = '';
+      for (var pi = 0; pi < products.length; pi++) {
+        var p = products[pi];
+        var pd = row[p] || {};
+        var val = pd.value;
+        var id = pd.id || '';
+        var cls = 'dv-value-cell';
+        if (pd.is_manual_override) cls += ' manual-override';
+        if (pd.is_missing_filled) cls += ' missing-filled';
+        var title = tooltipText(pd);
+        cells += '<td class="' + cls + '" data-id="' + id + '" data-value="' + (val != null ? val : '') + '" title="' + title + '">' +
+          (val != null ? formatNumber(val) : '-') + '</td>';
+      }
+      return '<tr><td>' + (row.date || '-') + '</td><td>' + row.week + '</td>' + cells + '</tr>';
+    })
+    .join('');
 
   attachInlineEdit();
 }
@@ -2034,32 +2052,79 @@ function renderDVChart(series) {
   }
 
   const colors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2"];
-  const pad = { top: 30, right: 20, bottom: 50, left: 60 };
+  const pad = { top: 30, right: 80, bottom: 60, left: 60 };
   const chartW = W - pad.left - pad.right;
   const chartH = H - pad.top - pad.bottom;
 
-  // Data range
+  // Collect all data points and build label->display_date map
   let allVals = [];
-  let allLabels = [];
+  let allDates = [];
+  let labelToDate = {};
   for (const yr of years) {
     const pts = series[yr];
     for (const p of pts) {
       allVals.push(p.value);
-      allLabels.push(`W${String(p.week_no).padStart(2,"0")}`);
+      // Format date as "M月D号" from display_date like "2024-12-30"
+      const d = p.display_date || "";
+      const parts = d.split("-");
+      let dateLabel = d;
+      if (parts.length === 3) {
+        dateLabel = parts[1].replace(/^0/, "") + "月" + parts[2].replace(/^0/, "") + "号";
+      }
+      allDates.push(dateLabel);
+      labelToDate["W" + String(p.week_no).padStart(2, "0")] = dateLabel;
     }
   }
   const yMin = 0;
   const yMax = Math.max(...allVals, 1) * 1.1;
-  const labelSet = [...new Set(allLabels)].sort();
-  const xScale = (i) => pad.left + (i / (labelSet.length - 1 || 1)) * chartW;
-  const yScale = (v) => pad.top + chartH - (v / yMax) * chartH;
 
-  // Axes
+  // Build sorted unique date labels
+  const labelSet = [...new Set(allDates)].sort(function(a, b) {
+    // Extract month/day numbers for sorting
+    var am = parseInt(a), ad = parseInt(a.split("月")[1]), bm = parseInt(b), bd = parseInt(b.split("月")[1]);
+    return am !== bm ? am - bm : ad - bd;
+  });
+  // For multi-year display, use sequential index instead of date-based position
+  const allLabels = [];
+  for (const yr of years) {
+    for (const p of series[yr]) {
+      const d = p.display_date || "";
+      const parts = d.split("-");
+      let dl = d;
+      if (parts.length === 3) {
+        dl = parts[1].replace(/^0/, "") + "月" + parts[2].replace(/^0/, "") + "号";
+      }
+      allLabels.push({label: dl, year: yr, week_no: p.week_no});
+    }
+  }
+  // Sort by (year, week_no)
+  allLabels.sort(function(a, b) { return a.year !== b.year ? a.year - b.year : a.week_no - b.week_no; });
+  
+  const uniqueLabels = [];
+  const seen = {};
+  for (var i = 0; i < allLabels.length; i++) {
+    var key = allLabels[i].year + "-W" + String(allLabels[i].week_no).padStart(2, "0");
+    if (!seen[key]) {
+      seen[key] = true;
+      uniqueLabels.push(allLabels[i].label);
+    }
+  }
+
+  const xScale = function(i) { return pad.left + (i / (uniqueLabels.length - 1 || 1)) * chartW; };
+  const yScale = function(v) { return pad.top + chartH - (v / yMax) * chartH; };
+
+  // Y-axis: use nice integer intervals
+  const niceStep = calcNiceStep(yMax);
+  const yTicks = [];
+  for (var v = 0; v <= yMax + niceStep * 0.5; v += niceStep) {
+    yTicks.push(v);
+  }
+
+  // Grid lines
   ctx.strokeStyle = "#e5e7eb";
   ctx.lineWidth = 1;
-  // Y grid
-  for (let i = 0; i <= 4; i++) {
-    const y = pad.top + (chartH * i) / 4;
+  for (var ti = 0; ti < yTicks.length; ti++) {
+    const y = yScale(yTicks[ti]);
     ctx.beginPath();
     ctx.moveTo(pad.left, y);
     ctx.lineTo(W - pad.right, y);
@@ -2067,22 +2132,24 @@ function renderDVChart(series) {
     ctx.fillStyle = "#6b7280";
     ctx.font = "11px sans-serif";
     ctx.textAlign = "right";
-    const val = yMax - (yMax * i) / 4;
-    ctx.fillText(formatNumber(val), pad.left - 6, y + 4);
+    ctx.fillText(formatChartNumber(yTicks[ti]), pad.left - 6, y + 4);
   }
 
-  // X axis labels
+  // X axis labels (dates)
   ctx.fillStyle = "#6b7280";
   ctx.font = "10px sans-serif";
   ctx.textAlign = "center";
-  const skipStep = Math.max(1, Math.floor(labelSet.length / 12));
-  for (let i = 0; i < labelSet.length; i += skipStep) {
-    ctx.fillText(labelSet[i], xScale(i), pad.top + chartH + 16);
+  const skipStep = Math.max(1, Math.floor(uniqueLabels.length / 14));
+  for (var i = 0; i < uniqueLabels.length; i += skipStep) {
+    var lbl = uniqueLabels[i];
+    // Shorten: "12月30号" -> "12/30"
+    var shortLbl = lbl.replace("月", "/").replace("号", "");
+    ctx.fillText(shortLbl, xScale(i), pad.top + chartH + 14);
   }
 
   // Lines
   const highlightedYear = dvState.highlightedYear || null;
-  years.forEach((yr, yi) => {
+  years.forEach(function(yr, yi) {
     const pts = series[yr];
     const color = colors[yi % colors.length];
     const alpha = highlightedYear && highlightedYear !== yr ? 0.2 : 1;
@@ -2093,31 +2160,48 @@ function renderDVChart(series) {
     ctx.lineWidth = lineW;
     ctx.beginPath();
 
-    pts.forEach((p, pi) => {
-      const label = `W${String(p.week_no).padStart(2,"0")}`;
-      const xi = labelSet.indexOf(label);
-      const x = xScale(xi);
-      const y = yScale(p.value);
-      if (pi === 0) ctx.moveTo(x, y);
+    // Build date-to-index map for this year's points
+    var ptMap = {};
+    for (var pi = 0; pi < pts.length; pi++) {
+      var d = pts[pi].display_date || "";
+      var parts = d.split("-");
+      var dl = d;
+      if (parts.length === 3) dl = parts[1].replace(/^0/, "") + "月" + parts[2].replace(/^0/, "") + "号";
+      ptMap[dl] = pts[pi];
+    }
+
+    var firstPoint = true;
+    for (var li = 0; li < uniqueLabels.length; li++) {
+      var lbl = uniqueLabels[li];
+      var pt = ptMap[lbl];
+      if (!pt) continue;
+      var x = xScale(li);
+      var y = yScale(pt.value);
+      if (firstPoint) { ctx.moveTo(x, y); firstPoint = false; }
       else ctx.lineTo(x, y);
-    });
+    }
     ctx.stroke();
     ctx.globalAlpha = 1;
 
     // Year label at end
     if (pts.length) {
       const lastP = pts[pts.length - 1];
-      const label = `W${String(lastP.week_no).padStart(2,"0")}`;
-      const xi = labelSet.indexOf(label);
-      ctx.fillStyle = color;
-      ctx.font = "bold 12px sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText(yr, xScale(xi) + 4, yScale(lastP.value) - 4);
+      var d2 = lastP.display_date || "";
+      var parts2 = d2.split("-");
+      var dl2 = d2;
+      if (parts2.length === 3) dl2 = parts2[1].replace(/^0/, "") + "月" + parts2[2].replace(/^0/, "") + "号";
+      var li2 = uniqueLabels.indexOf(dl2);
+      if (li2 >= 0) {
+        ctx.fillStyle = color;
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(yr, xScale(li2) + 4, yScale(lastP.value) - 4);
+      }
     }
   });
 
   // Click to highlight
-  dvChartCanvas.onclick = (e) => {
+  dvChartCanvas.onclick = function(e) {
     const rect = dvChartCanvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -2126,11 +2210,15 @@ function renderDVChart(series) {
     let closestDist = Infinity;
     for (const yr of years) {
       const pts = series[yr];
-      for (const p of pts) {
-        const label = `W${String(p.week_no).padStart(2,"0")}`;
-        const xi = labelSet.indexOf(label);
-        const px = xScale(xi);
-        const py = yScale(p.value);
+      for (var pi = 0; pi < pts.length; pi++) {
+        var d3 = pts[pi].display_date || "";
+        var parts3 = d3.split("-");
+        var dl3 = d3;
+        if (parts3.length === 3) dl3 = parts3[1].replace(/^0/, "") + "月" + parts3[2].replace(/^0/, "") + "号";
+        var li3 = uniqueLabels.indexOf(dl3);
+        if (li3 < 0) continue;
+        const px = xScale(li3);
+        const py = yScale(pts[pi].value);
         const dist = Math.hypot(mx - px, my - py);
         if (dist < closestDist && dist < 30) {
           closestDist = dist;
@@ -2145,7 +2233,7 @@ function renderDVChart(series) {
   };
 
   // Hover tooltip
-  dvChartCanvas.onmousemove = (e) => {
+  dvChartCanvas.onmousemove = function(e) {
     const rect = dvChartCanvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -2153,13 +2241,17 @@ function renderDVChart(series) {
 
     for (const yr of years) {
       const pts = series[yr];
-      for (const p of pts) {
-        const label = `W${String(p.week_no).padStart(2,"0")}`;
-        const xi = labelSet.indexOf(label);
-        const px = xScale(xi);
-        const py = yScale(p.value);
+      for (var pi = 0; pi < pts.length; pi++) {
+        var d4 = pts[pi].display_date || "";
+        var parts4 = d4.split("-");
+        var dl4 = d4;
+        if (parts4.length === 3) dl4 = parts4[1].replace(/^0/, "") + "月" + parts4[2].replace(/^0/, "") + "号";
+        var li4 = uniqueLabels.indexOf(dl4);
+        if (li4 < 0) continue;
+        const px = xScale(li4);
+        const py = yScale(pts[pi].value);
         if (Math.hypot(mx - px, my - py) < 15) {
-          tooltip = `${p.display_date} | W${String(p.week_no).padStart(2,"0")} | ${yr} | 卡粉 | ${formatNumber(p.value)}`;
+          tooltip = d4 + " | W" + String(pts[pi].week_no).padStart(2, "0") + " | " + yr + " | 卡粉 | " + formatChartNumber(pts[pi].value);
           break;
         }
       }
@@ -2168,19 +2260,33 @@ function renderDVChart(series) {
   };
 }
 
+function calcNiceStep(yMax) {
+  // Return a nice round step for Y-axis
+  if (yMax <= 200) return 50;
+  if (yMax <= 500) return 100;
+  if (yMax <= 1000) return 200;
+  if (yMax <= 2000) return 400;
+  if (yMax <= 5000) return 500;
+  return Math.pow(10, Math.floor(Math.log10(yMax))) / 2;
+}
+
 // ── Year selector init ────────────────────────────────
 function initDVChartYears() {
   const currentYear = new Date().getFullYear();
   dvChartYears.innerHTML = "";
+  // Show all years 2023 through current
   for (let y = currentYear; y >= 2023; y--) {
     const opt = document.createElement("option");
     opt.value = y;
     opt.textContent = y;
-    if (dvState.selectedYears.includes(y)) opt.selected = true;
+    // Select all years by default
+    opt.selected = true;
     dvChartYears.appendChild(opt);
   }
-  dvChartYears.addEventListener("change", () => {
-    dvState.selectedYears = Array.from(dvChartYears.selectedOptions).map((o) => parseInt(o.value));
+  dvState.selectedYears = Array.from(dvChartYears.options).map(function(o) { return parseInt(o.value); });
+
+  dvChartYears.addEventListener("change", function() {
+    dvState.selectedYears = Array.from(dvChartYears.selectedOptions).map(function(o) { return parseInt(o.value); });
     loadDVChart();
   });
   dvChartProduct.addEventListener("change", loadDVChart);

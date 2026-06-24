@@ -715,6 +715,7 @@ dialog::backdrop {
 
 
 /* ── 数据可视化管理 ───────────────────────────────────── */
+
 .dv-tabs {
   display: flex;
   gap: 2px;
@@ -748,6 +749,11 @@ dialog::backdrop {
 .dv-value-cell {
   cursor: pointer;
   position: relative;
+  min-width: 64px;
+  max-width: 96px;
+  padding: 4px 8px;
+  font-size: 13px;
+  text-align: right;
 }
 
 .dv-value-cell.manual-override {
@@ -765,6 +771,21 @@ dialog::backdrop {
   font-style: italic;
 }
 
+#dvDataTable th {
+  min-width: 64px;
+  max-width: 96px;
+  padding: 6px 8px;
+  font-size: 13px;
+  text-align: right;
+}
+
+#dvDataTable th:first-child,
+#dvDataTable th:nth-child(2) {
+  text-align: center;
+  min-width: 72px;
+  max-width: 88px;
+}
+
 .dv-inline-input {
   width: 100%;
   min-height: 28px;
@@ -774,37 +795,54 @@ dialog::backdrop {
   font-size: 14px;
 }
 
-.dv-chart-controls {
+.dv-chart-controls-row {
   display: flex;
   gap: 16px;
-  align-items: end;
-  margin-left: auto;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+}
+
+.dv-chart-controls {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .dv-chart-controls label {
-  width: auto;
-  grid-template-columns: auto;
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
 }
 
 .dv-chart-controls select {
-  width: auto;
-  min-width: 80px;
-  min-height: 32px;
+  min-width: 90px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  background: var(--surface);
 }
 
 .dv-chart-controls select[multiple] {
-  min-height: 60px;
+  min-height: 72px;
+  min-width: 84px;
 }
 
 .chart-container {
   position: relative;
-  margin-top: 16px;
+  margin-top: 12px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--surface);
-  padding: 8px;
-  min-height: 400px;
+  padding: 12px;
+  min-height: 420px;
 }
 
 .chart-container canvas {
@@ -850,5 +888,4 @@ dialog::backdrop {
 .error-cell {
   color: var(--danger);
   text-align: center;
-  padding: 32px 0;
 }

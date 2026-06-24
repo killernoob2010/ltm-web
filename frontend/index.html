@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260624-seed" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260624-v2" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -353,12 +353,8 @@
           </div>
           <div class="table-wrap">
             <table id="dvDataTable">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>周次</th>
-                  <th>卡粉</th>
-                </tr>
+              <thead id="dvDataThead">
+                <tr><th>日期</th><th>周次</th><th>卡粉</th></tr>
               </thead>
               <tbody id="dvDataTbody"></tbody>
             </table>
@@ -373,6 +369,8 @@
               <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
               <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
             </div>
+          </div>
+          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
               <label>年份 <select id="dvChartYears" multiple size="3"></select></label>
               <label>品种 <select id="dvChartProduct"><option value="卡粉">卡粉</option></select></label>

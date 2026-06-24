@@ -18,6 +18,7 @@ router = APIRouter()
 
 # ── 常量 ──────────────────────────────────────────────────────────────
 PRODUCT = "卡粉"
+DV_PRODUCTS = ["卡粉", "纽曼粉", "麦克粉", "PB粉", "金布巴粉", "超特粉", "混合粉", "杨迪粉", "罗伊山粉", "巴西粗粉", "乌克兰精粉", "俄罗斯精粉"]
 SHIPMENT_SHEET = "发运"
 INVENTORY_SHEET = "卡粉库存"
 SHIPMENT_DATE_COL = 2   # B 列
@@ -572,36 +573,43 @@ async def get_table(
         cur = conn.cursor()
         rows = db._exec(
             cur,
-            """SELECT dp.id, wk.display_date, wk.year, wk.week_no, dp.display_value,
-                      dp.is_manual_override, dp.is_missing_filled, dp.source,
-                      dp.updated_by, dp.updated_at
+            """SELECT wk.display_date, wk.year, wk.week_no, dp.id, dp.product,
+                      dp.display_value, dp.is_manual_override, dp.is_missing_filled,
+                      dp.source, dp.updated_by, dp.updated_at
                FROM dv_data_points dp
                JOIN dv_week_keys wk ON wk.id = dp.week_key_id
-               WHERE dp.product = ? AND dp.metric_type = ?
-               ORDER BY wk.display_date""",
-            (PRODUCT, metric),
+               WHERE dp.metric_type = ?
+               ORDER BY wk.display_date, dp.product""",
+            (metric,),
         ).fetchall()
+
+    products = list(DV_PRODUCTS)
+    week_map: Dict[str, Dict] = {}
+    for r in rows:
+        key = r["display_date"]
+        if key not in week_map:
+            week_map[key] = {
+                "date": r["display_date"],
+                "week": f"{r['year']} W{r['week_no']:02d}",
+            }
+            for p in products:
+                week_map[key][p] = {"id": None, "value": None, "is_manual_override": False, "is_missing_filled": False, "source": None, "updated_by": None, "updated_at": None}
+        week_map[key][r["product"]] = {
+            "id": r["id"],
+            "value": r["display_value"],
+            "is_manual_override": bool(r["is_manual_override"]),
+            "is_missing_filled": bool(r["is_missing_filled"]),
+            "source": r["source"],
+            "updated_by": r["updated_by"],
+            "updated_at": r["updated_at"],
+        }
 
     return {
         "metric": metric,
-        "data": [
-            {
-                "id": r["id"],
-                "date": r["display_date"],
-                "week": f"{r['year']} W{r['week_no']:02d}",
-                "value": r["display_value"],
-                "is_manual_override": bool(r["is_manual_override"]),
-                "is_missing_filled": bool(r["is_missing_filled"]),
-                "source": r["source"],
-                "updated_by": r["updated_by"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ],
+        "products": products,
+        "data": list(week_map.values()),
     }
 
-
-# ── PUT /api/data-visualization/value ─────────────────────────────────
 
 @router.put("/data-visualization/value")
 async def update_value(
@@ -719,60 +727,72 @@ async def get_import_batches(user=Depends(dv_current_user)):
 # ── Seed test data ─────────────────────────────────────────────────
 
 def seed_dv_data():
-    """如果 DV 表为空，插入 52 周测试数据（2025 W01-W52，仅卡粉）。"""
+    """如果 DV 表为空，插入 2023-2026 共 4 年测试数据（仅卡粉）。
+    
+    使用 compute_business_week() 正确计算跨年周所属年份。
+    """
     with db.connect() as conn:
         cur = conn.cursor()
-        count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_week_keys").fetchone()["c"]
-        if count > 0:
-            return
+        existing_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_week_keys").fetchone()["c"]
+        if existing_count > 0:
+            old_seed = db._exec(
+                cur, "SELECT COUNT(*) AS c FROM dv_data_points WHERE source = '种子数据'"
+            ).fetchone()["c"]
+            if old_seed > 0:
+                print("[seed_dv_data] 检测到旧种子数据，清除后重新生成...")
+                db._exec(cur, "DELETE FROM dv_change_log")
+                db._exec(cur, "DELETE FROM dv_data_points")
+                db._exec(cur, "DELETE FROM dv_week_keys")
+                db._exec(cur, "DELETE FROM dv_import_batches")
+            else:
+                return
 
         import random
         random.seed(42)
 
-        # 2025 W01 的周一
-        d = date(2024, 12, 30)
-        week_ids = []
-        for wn in range(1, 53):
-            ws = d + timedelta(weeks=wn - 1)
-            we = ws + timedelta(days=6)
-            year = ws.year
-            db._exec(
-                cur,
-                """INSERT INTO dv_week_keys (year, week_no, week_start_date, week_end_date, display_date)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (year, wn, ws.isoformat(), we.isoformat(), ws.isoformat()),
-            )
-            wk = db._exec(
-                cur, "SELECT id FROM dv_week_keys WHERE year=? AND week_no=?", (year, wn)
-            ).fetchone()
-            week_ids.append(wk["id"])
+        week_ids: List[int] = []
+        years_to_seed = [2023, 2024, 2025, 2026]
 
-        # 生成库存（基线 1200，缓慢上升趋势 + 随机波动）
-        inv = []
+        for yr in years_to_seed:
+            jan1 = date(yr, 1, 1)
+            w01_start = jan1 - timedelta(days=jan1.weekday())
+
+            for wn in range(1, 53):
+                ws = w01_start + timedelta(weeks=wn - 1)
+                we = ws + timedelta(days=6)
+
+                bw = compute_business_week(ws)
+                correct_year = bw["year"]
+                correct_wn = bw["week_no"]
+
+                db._exec(
+                    cur,
+                    """INSERT INTO dv_week_keys
+                       (year, week_no, week_start_date, week_end_date, display_date)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (correct_year, correct_wn, ws.isoformat(), we.isoformat(), ws.isoformat()),
+                )
+                wk = db._exec(
+                    cur,
+                    "SELECT id FROM dv_week_keys WHERE year=? AND week_no=? AND week_start_date=?",
+                    (correct_year, correct_wn, ws.isoformat()),
+                ).fetchone()
+                week_ids.append(wk["id"])
+
+        total_weeks = len(week_ids)
+        print(f"[seed_dv_data] 已插入 {len(years_to_seed)} 年 x 52 周 = {total_weeks} 个业务周")
+
         base = 1200
-        for i in range(52):
-            val = base + i * 5 + random.randint(-80, 80)
-            inv.append(float(val))
-
-        # 生成发运（基线 500，波动）
-        ship = []
-        for i in range(52):
-            val = 500 + random.randint(-60, 60)
-            ship.append(float(val))
-
-        # 计算表需: ad(t) = ship(t-2) + inv(t-1) - inv(t)
-        ad = [0.0] * 52
-        for t in range(2, 52):
+        inv = [float(base + i * 5 + random.randint(-80, 80)) for i in range(total_weeks)]
+        ship = [float(500 + random.randint(-60, 60)) for _ in range(total_weeks)]
+        ad = [0.0] * total_weeks
+        for t in range(2, total_weeks):
             ad[t] = float(ship[t - 2] + inv[t - 1] - inv[t])
         ad[0] = 0.0
         ad[1] = 0.0
 
         for i, wk_id in enumerate(week_ids):
-            for metric, values in [
-                ("inventory", inv),
-                ("shipment", ship),
-                ("apparent_demand", ad),
-            ]:
+            for metric, values in [("inventory", inv), ("shipment", ship), ("apparent_demand", ad)]:
                 val = values[i]
                 db._exec(
                     cur,
@@ -783,4 +803,4 @@ def seed_dv_data():
                     (wk_id, PRODUCT, metric, val, val, val, "种子数据", "system"),
                 )
 
-        print(f"[seed_dv_data] 已完成：52 周 × 3 指标 = {52 * 3} 条测试数据")
+        print(f"[seed_dv_data] 已完成：{total_weeks} 周 x 3 指标 = {total_weeks * 3} 条测试数据")
