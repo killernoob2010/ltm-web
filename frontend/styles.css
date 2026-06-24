@@ -605,12 +605,12 @@ th {
 }
 
 .numeric-up {
-  color: #087443;
+  color: var(--danger);
   font-weight: 600;
 }
 
 .numeric-down {
-  color: var(--danger);
+  color: #087443;
   font-weight: 600;
 }
 

@@ -9,12 +9,14 @@ const state = {
   positions: [],
   allGroupsPnl: null,
   midEventTimer: null,
+  infoSummaryRefreshInFlight: false,
   alertSettings: [],
   alertHistory: [],
   alertNotificationTimer: null,
   lastNotificationIds: new Set(),
   midConfig: { varieties: [], contracts: [] },
-  infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], inner_months: [] },
+  infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], month_options_by_type: {}, inner_months: [] },
+  infoCacheStatus: null,
   shJunnengConfig: { contracts: [], default_contract: "", default_open_date: "" },
   shJunnengTrades: [],
   shJunnengSections: { today_trades: [], current_trades: [], settled_trades: [], totals: {} },
@@ -43,6 +45,8 @@ const infoCards = document.querySelector("#infoCards");
 const indicatorsTable = document.querySelector("#indicatorsTable");
 const indicatorCount = document.querySelector("#indicatorCount");
 const infoStatus = document.querySelector("#infoStatus");
+const infoCacheStatus = document.querySelector("#infoCacheStatus");
+const refreshInfoCacheBtn = document.querySelector("#refreshInfoCacheBtn");
 const importCacheBtn = document.querySelector("#importCacheBtn");
 const groupsTable = document.querySelector("#groupsTable");
 const positionsTable = document.querySelector("#positionsTable");
@@ -204,6 +208,7 @@ function showOnly(page) {
 async function activateModule(code) {
   state.activeModule = code;
   stopMidEventAutoRefresh();
+  stopInfoSummaryAutoRefresh();
   renderMenu();
   const label = moduleLabel(code);
   pageTitle.textContent = label.name;
@@ -212,6 +217,7 @@ async function activateModule(code) {
   if (code === "info_summary") {
     showOnly(infoSummaryPage);
     await loadInfoSummary();
+    startInfoSummaryAutoRefresh();
     return;
   }
   if (code === "mid_event_monitor") {
@@ -265,20 +271,36 @@ async function bootstrap() {
 
 async function loadInfoSummary() {
   state.infoConfig = await api("/api/info-summary/config");
+  await loadInfoCacheStatus();
   renderInfoCards();
   updateInfoStatus("正在计算全部指标");
   await calculateAllInfo(false);
   updateInfoStatus("页面已加载并完成计算");
 }
 
+async function loadInfoCacheStatus() {
+  try {
+    state.infoCacheStatus = await api("/api/info-summary/cache/status");
+    if (state.infoCacheStatus?.cache_counts) {
+      state.infoConfig.cache_counts = state.infoCacheStatus.cache_counts;
+    }
+    updateInfoCacheStatus("已读取");
+  } catch (error) {
+    updateInfoCacheStatus(error.message);
+  }
+}
+
 function renderInfoCards() {
-  const monthOptions = state.infoConfig.contract_months.map((month) => `<option value="${month}">${month}</option>`).join("");
   const years = Array.from({ length: 11 }, (_, index) => 2020 + index);
   const yearOptions = years.map((year) => `<option value="${year}">${year}</option>`).join("");
+  const monthOptionsForType = (type) => (state.infoConfig.month_options_by_type?.[type] || state.infoConfig.contract_months)
+    .map((month) => `<option value="${month}">${month}</option>`)
+    .join("");
+  const allMonthOptions = monthOptionsForType("");
   infoCards.innerHTML = state.infoConfig.info_types.map((type) => {
-    const isMonthDiff = type === "月差";
+    const isMonthDiff = type === "月差" || type === "掉期月差";
     const isInnerOuter = type === "内外盘差" || type === "内外盘差2";
-    const monthSelect = `<select class="info-month">${monthOptions}</select>`;
+    const monthSelect = `<select class="info-month">${monthOptionsForType(type)}</select>`;
     const yearSelect = `<select class="info-year">${yearOptions}</select>`;
     const controls = isInnerOuter
       ? `
@@ -290,9 +312,9 @@ function renderInfoCards() {
         ? `
           <label>选择日期<input class="info-date" type="date" value="${today()}" /></label>
           <label>年1<select class="info-year1">${yearOptions}</select></label>
-          <label>月1<select class="info-month1">${monthOptions}</select></label>
+          <label>月1<select class="info-month1">${allMonthOptions}</select></label>
           <label>年2<select class="info-year2">${yearOptions}</select></label>
-          <label>月2<select class="info-month2">${monthOptions}</select></label>
+          <label>月2<select class="info-month2">${allMonthOptions}</select></label>
           <button class="calculate-info-btn">计算</button>
         `
         : `
@@ -355,11 +377,10 @@ function renderInfoCards() {
   });
 }
 
-async function calculateInfoCard(card, mock = false) {
-  const infoType = card.dataset.infoType;
+function buildInfoPayload(card) {
   const year = Number(card.querySelector(".info-year")?.value || card.querySelector(".info-year1")?.value || state.infoConfig.default_year);
-  const payload = {
-    info_type: infoType,
+  return {
+    info_type: card.dataset.infoType,
     year,
     month: card.querySelector(".info-month")?.value || "09",
     calc_date: card.querySelector(".info-date").value,
@@ -368,6 +389,17 @@ async function calculateInfoCard(card, mock = false) {
     year2: Number(card.querySelector(".info-year2")?.value || year),
     month2: card.querySelector(".info-month2")?.value || undefined,
   };
+}
+
+function applyInfoResult(card, result) {
+  const status = card.querySelector(".status-value");
+  fillInfoResult(card, result);
+  status.textContent = result.cache_hit ? "已读取缓存并刷新今日值" : "缓存未命中，已刷新今日值";
+}
+
+async function calculateInfoCard(card, mock = false) {
+  const infoType = card.dataset.infoType;
+  const payload = buildInfoPayload(card);
   const status = card.querySelector(".status-value");
   status.textContent = "计算中";
   try {
@@ -375,8 +407,7 @@ async function calculateInfoCard(card, mock = false) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    fillInfoResult(card, result);
-    status.textContent = result.cache_hit ? "已读取缓存并刷新今日值" : "缓存未命中，已刷新今日值";
+    applyInfoResult(card, result);
     updateInfoStatus(`${infoType} 已计算`);
   } catch (error) {
     status.textContent = error.message;
@@ -422,9 +453,23 @@ async function loadInfoHistory() {
 
 async function calculateAllInfo(mock = false) {
   const cards = [...infoCards.querySelectorAll(".info-section")];
+  cards.forEach((card) => {
+    card.querySelector(".status-value").textContent = "计算中";
+  });
+  const result = await api(`/api/info-summary/calculate-all${mock ? "?mock=true" : ""}`, {
+    method: "POST",
+    body: JSON.stringify({ items: cards.map(buildInfoPayload) }),
+  });
+  const resultsByType = new Map((result.cards || []).map((item) => [item.info_type, item]));
   for (const card of cards) {
-    await calculateInfoCard(card, mock);
+    const item = resultsByType.get(card.dataset.infoType);
+    if (item) {
+      applyInfoResult(card, item);
+    } else {
+      card.querySelector(".status-value").textContent = "未返回结果";
+    }
   }
+  updateInfoStatus("全部指标已计算");
 }
 
 function updateInfoStatus(message) {
@@ -432,6 +477,35 @@ function updateInfoStatus(message) {
   const counts = state.infoConfig.cache_counts || {};
   const countText = `缓存：计算 ${counts.calculated_data || 0}，价格 ${counts.daily_prices || 0}，交易日 ${counts.trading_days || 0}`;
   infoStatus.textContent = `实时更新：开启｜最后更新：${new Date().toLocaleTimeString("zh-CN")}｜${countText}｜${message}`;
+}
+
+function updateInfoCacheStatus(message) {
+  if (!infoCacheStatus) return;
+  const indicators = state.infoCacheStatus?.indicators || [];
+  const dates = indicators.flatMap((item) => [item.latest_price_date, item.latest_calculated_date]).filter(Boolean);
+  dates.sort();
+  const latestDate = dates.length ? dates[dates.length - 1] : "--";
+  infoCacheStatus.textContent = `历史缓存截至：${latestDate}｜${message}`;
+}
+
+async function refreshInfoCache() {
+  refreshInfoCacheBtn.disabled = true;
+  updateInfoCacheStatus("正在回填");
+  try {
+    const result = await api("/api/info-summary/cache/backfill", {
+      method: "POST",
+      body: JSON.stringify({ calc_date: today() }),
+    });
+    state.infoConfig.cache_counts = result.cache_counts || state.infoConfig.cache_counts;
+    updateInfoCacheStatus(result.status === "started" ? "回填已启动" : "部分指标需检查");
+    window.setTimeout(() => {
+      loadInfoCacheStatus().catch(() => {});
+    }, 5000);
+  } catch (error) {
+    updateInfoCacheStatus(error.message);
+  } finally {
+    refreshInfoCacheBtn.disabled = false;
+  }
 }
 
 async function loadMidEvent(preferredGroupId = null) {
@@ -495,6 +569,30 @@ function stopMidEventAutoRefresh() {
     window.clearInterval(state.midEventTimer);
     state.midEventTimer = null;
   }
+}
+function stopInfoSummaryAutoRefresh() {
+  if (state.infoSummaryTimer) {
+    window.clearInterval(state.infoSummaryTimer);
+    state.infoSummaryTimer = null;
+  }
+}
+
+function startInfoSummaryAutoRefresh() {
+  stopInfoSummaryAutoRefresh();
+  state.infoSummaryTimer = window.setInterval(async () => {
+    if (state.infoSummaryRefreshInFlight) return;
+    if (state.activeModule === "info_summary") {
+      state.infoSummaryRefreshInFlight = true;
+      try {
+        await calculateAllInfo(false);
+        updateInfoStatus("自动刷新完成");
+      } catch (error) {
+        updateInfoStatus(error.message);
+      } finally {
+        state.infoSummaryRefreshInFlight = false;
+      }
+    }
+  }, 60000);
 }
 
 function startMidEventAutoRefresh() {
@@ -1136,6 +1234,7 @@ document.querySelector("#logoutBtn").addEventListener("click", async () => {
 
 document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false));
 document.querySelector("#refreshIndicatorsBtn").addEventListener("click", loadInfoSummary);
+refreshInfoCacheBtn.addEventListener("click", refreshInfoCache);
 importCacheBtn.addEventListener("click", async () => {
   importCacheBtn.disabled = true;
   updateInfoStatus("正在导入历史缓存");

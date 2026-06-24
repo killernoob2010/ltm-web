@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=pnl-colors-20260623" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -53,8 +53,10 @@
           <div class="toolbar">
             <button id="calculateAllInfoBtn">计算全部</button>
             <button id="refreshIndicatorsBtn" class="secondary">刷新</button>
+            <button id="refreshInfoCacheBtn" class="secondary">刷新历史缓存</button>
             <button id="importCacheBtn" class="secondary">导入历史缓存</button>
             <span id="infoStatus" class="toolbar-status">实时更新：开启｜最后更新：--</span>
+            <span id="infoCacheStatus" class="toolbar-status">历史缓存：--</span>
           </div>
 
           <section class="info-section-list" id="infoCards"></section>
@@ -717,6 +719,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=info-summary-2026062402"></script>
   </body>
 </html>
