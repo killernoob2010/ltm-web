@@ -1856,7 +1856,7 @@ function startInlineEdit(cell) {
     try {
       await api("/api/data-visualization/value", {
         method: "PUT",
-        body: { data_point_id: id, new_value: val },
+        body: JSON.stringify({ data_point_id: id, new_value: val }),
       });
       loadDVTable(dvState.currentMetric);
     } catch (err) {
@@ -1885,7 +1885,7 @@ dvImportBtn.addEventListener("click", () => {
       const base64 = await fileToBase64(file);
       const preview = await api("/api/data-visualization/import/preview", {
         method: "POST",
-        body: { file_data: base64, file_name: file.name },
+        body: JSON.stringify({ file_data: base64, file_name: file.name }),
       });
       dvState.previewData = preview;
       dvState.uploadFile = base64;
@@ -1959,11 +1959,11 @@ dvCommitImportBtn.addEventListener("click", async () => {
   try {
     await api("/api/data-visualization/import/commit", {
       method: "POST",
-      body: {
+      body: JSON.stringify({
         file_data: dvState.uploadFile,
         file_name: dvState.uploadFileName,
         overwrite_manual_ids: overwriteIds,
-      },
+      }),
     });
     dvImportDialog.close();
     dvState.previewData = null;
@@ -2187,4 +2187,3 @@ function initDVChartYears() {
 }
 
 // DV chart years initialized lazily on first chart page activation
-const origBootstrap = bootstrap;
