@@ -22,3 +22,10 @@ test("info summary exposes historical cache refresh entry", () => {
   assert.match(appJs, /\/api\/info-summary\/cache\/backfill/);
   assert.match(appJs, /\/api\/info-summary\/cache\/status/);
 });
+
+test("info summary auto refresh skips overlapping runs", () => {
+  assert.match(appJs, /infoSummaryRefreshInFlight:\s*false/);
+  assert.match(appJs, /if \(state\.infoSummaryRefreshInFlight\) return;/);
+  assert.match(appJs, /state\.infoSummaryRefreshInFlight = true;/);
+  assert.match(appJs, /finally\s*\{\s*state\.infoSummaryRefreshInFlight = false;/);
+});

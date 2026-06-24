@@ -9,6 +9,7 @@ const state = {
   positions: [],
   allGroupsPnl: null,
   midEventTimer: null,
+  infoSummaryRefreshInFlight: false,
   alertSettings: [],
   alertHistory: [],
   alertNotificationTimer: null,
@@ -555,11 +556,18 @@ function stopInfoSummaryAutoRefresh() {
 
 function startInfoSummaryAutoRefresh() {
   stopInfoSummaryAutoRefresh();
-  state.infoSummaryTimer = window.setInterval(() => {
+  state.infoSummaryTimer = window.setInterval(async () => {
+    if (state.infoSummaryRefreshInFlight) return;
     if (state.activeModule === "info_summary") {
-      calculateAllInfo(false).then(() => {
+      state.infoSummaryRefreshInFlight = true;
+      try {
+        await calculateAllInfo(false);
         updateInfoStatus("自动刷新完成");
-      }).catch((error) => updateInfoStatus(error.message));
+      } catch (error) {
+        updateInfoStatus(error.message);
+      } finally {
+        state.infoSummaryRefreshInFlight = false;
+      }
     }
   }, 30000);
 }
