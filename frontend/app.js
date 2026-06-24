@@ -257,17 +257,17 @@ async function activateModule(code, subName) {
     return;
   }
   if (code === "data_visualization_data") {
-    pageTitle.textContent = "图表数据管理";
-    pageSubtitle.textContent = "数据可视化管理 / 图表数据管理";
     showOnly(dvDataPage);
     initDVData();
     await loadDVTable("inventory");
     return;
   }
   if (code === "data_visualization_chart") {
-    pageTitle.textContent = "数据展示";
-    pageSubtitle.textContent = "数据可视化管理 / 数据展示";
     showOnly(dvChartPage);
+    if (!dvState.dvChartInitialized) {
+      initDVChartYears();
+      dvState.dvChartInitialized = true;
+    }
     await loadDVChart();
     return;
   }
@@ -1746,6 +1746,7 @@ let dvState = {
   uploadFile: null,
   uploadFileName: "",
   previewData: null,
+  dvChartInitialized: false,
 };
 
 const DV_PAGE_SIZE = 50;
@@ -1754,6 +1755,9 @@ function initDVData() {
   if (dvState.currentMetric !== "inventory") {
     dvState.currentMetric = "inventory";
   }
+  dvDataTabs.querySelectorAll(".dv-tab").forEach((t) => t.classList.remove("active"));
+  const inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
+  if (inventoryTab) inventoryTab.classList.add("active");
 }
 
 // ── Tabs ──────────────────────────────────────────────
@@ -1990,6 +1994,8 @@ function initDVCanvasSize() {
 async function loadDVChart() {
   const metric = dvState.chartMetric;
 
+  // Wait for layout after showOnly before sizing canvas
+  await new Promise((resolve) => requestAnimationFrame(resolve));
   initDVCanvasSize();
   dvChartStatus.textContent = "";
   dvChartStatus.className = "dv-chart-status";
@@ -2180,7 +2186,5 @@ function initDVChartYears() {
   dvChartProduct.addEventListener("change", loadDVChart);
 }
 
-// Extend bootstrap to init DV chart years
+// DV chart years initialized lazily on first chart page activation
 const origBootstrap = bootstrap;
-// We don't override bootstrap, just init on first chart load
-initDVChartYears();

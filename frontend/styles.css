@@ -166,6 +166,9 @@ select {
   background: transparent;
   color: #dfe7ef;
   text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
 .menu-item:hover,
@@ -286,6 +289,8 @@ select {
 
 .page {
   padding: 20px 24px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .toolbar {
