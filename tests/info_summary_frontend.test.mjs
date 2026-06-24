@@ -33,5 +33,13 @@ test("info summary auto refresh skips overlapping runs", () => {
 test("info summary refresh uses one batched request every minute", () => {
   assert.match(appJs, /\/api\/info-summary\/calculate-all/);
   assert.match(appJs, /function buildInfoPayload\(card\)/);
+  assert.match(appJs, /const resultsByType = new Map\(\(result\.cards \|\| \[\]\)\.map\(\(item\) => \[item\.info_type, item\]\)\);/);
+  assert.match(appJs, /applyInfoResult\(card, item\);/);
   assert.match(appJs, /}, 60000\);/);
+});
+
+test("info summary batch payload uses the selected month controls", () => {
+  assert.match(appJs, /month: card\.querySelector\("\.info-month"\)\?\.value \|\| "09"/);
+  assert.match(appJs, /month1: card\.querySelector\("\.info-month1"\)\?\.value \|\| undefined/);
+  assert.match(appJs, /month2: card\.querySelector\("\.info-month2"\)\?\.value \|\| undefined/);
 });
