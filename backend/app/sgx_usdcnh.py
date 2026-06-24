@@ -126,11 +126,13 @@ def fetch_sgx_usdcnh_quote(
     month: int,
     timeout: float = 20.0,
     retries: int = 2,
+    force_refresh: bool = False,
 ) -> SgxUsdCnhQuote:
     symbol = barchart_symbol(year, month)
-    cached = cached_quote(symbol, SGX_CACHE_TTL_SECONDS, "sgx_cache")
-    if cached is not None:
-        return cached
+    if not force_refresh:
+        cached = cached_quote(symbol, SGX_CACHE_TTL_SECONDS, "sgx_cache")
+        if cached is not None:
+            return cached
 
     url = quote_url(symbol)
     opener = build_opener()
@@ -178,9 +180,9 @@ def fetch_sgx_usdcnh_quote(
     raise SgxUsdCnhFetchError(f"Failed to fetch {symbol}: {last_error}") from last_error
 
 
-def fetch_sgx_usdcnh_rate(contract: str, timeout: float = 20.0, retries: int = 2) -> Optional[float]:
+def fetch_sgx_usdcnh_rate(contract: str, timeout: float = 20.0, retries: int = 2, force_refresh: bool = False) -> Optional[float]:
     try:
         year, month = contract_year_month(contract)
-        return fetch_sgx_usdcnh_quote(year, month, timeout=timeout, retries=retries).last_price
+        return fetch_sgx_usdcnh_quote(year, month, timeout=timeout, retries=retries, force_refresh=force_refresh).last_price
     except (SgxUsdCnhFetchError, ValueError):
         return None

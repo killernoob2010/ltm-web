@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 import calendar
 import csv
@@ -117,6 +118,10 @@ class InfoCalculateIn(BaseModel):
     month1: Optional[str] = None
     year2: Optional[int] = None
     month2: Optional[str] = None
+
+
+class InfoCalculateAllIn(BaseModel):
+    items: List[InfoCalculateIn]
 
 
 class InfoBackfillIn(BaseModel):
@@ -349,6 +354,47 @@ def fetch_usdcnh_rate(contract: str = "", mock: bool = False) -> Optional[float]
         if rate is not None:
             return rate
     return adjusted_exchange_rate(fetch_sina_price("USD/CNY", "", mock), contract)
+
+
+class RealtimeQuoteProvider:
+    def __init__(self, mock: bool = False):
+        self.mock = mock
+        self._prices = {}
+        self._fx = {}
+
+    def get_price(self, variety: str, contract: str = "") -> Optional[float]:
+        key = (variety, contract)
+        if key not in self._prices:
+            self._prices[key] = fetch_sina_price(variety, contract, self.mock)
+        return self._prices[key]
+
+    def get_fx(self, contract: str = "") -> Optional[float]:
+        key = contract or ""
+        if key in self._fx:
+            return self._fx[key]
+        if self.mock:
+            rate = adjusted_exchange_rate(MOCK_PRICES.get("USD/CNY"), contract)
+        else:
+            rate = fetch_sgx_usdcnh_rate(contract, force_refresh=True) if contract else None
+            if rate is None:
+                rate = adjusted_exchange_rate(self.get_price("USD/CNY", ""), contract)
+        self._fx[key] = rate
+        return rate
+
+    def prefetch(self, dependencies: list[tuple[str, str, str]]) -> None:
+        unique_dependencies = list(dict.fromkeys(dependencies))
+        if not unique_dependencies:
+            return
+
+        def load(item: tuple[str, str, str]) -> None:
+            kind, variety, contract = item
+            if kind == "fx":
+                self.get_fx(contract)
+            else:
+                self.get_price(variety, contract)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(unique_dependencies))) as executor:
+            list(executor.map(load, unique_dependencies))
 
 
 def calculate_pnl(variety: str, direction: str, open_price: float, current_price: Optional[float], quantity: int, multiplier: int, contract: str) -> Optional[float]:
@@ -703,36 +749,81 @@ def all_groups_total_pnl() -> Optional[float]:
     return total
 
 
-def calculate_today_indicator(payload: InfoCalculateIn, mock: bool = False) -> dict:
+def realtime_dependencies_for_payload(payload: InfoCalculateIn) -> list[tuple[str, str, str]]:
+    yy = two_digit_year(payload.year)
+    month = payload.month.zfill(2)
+    if payload.info_type == "卷螺差":
+        return [("price", "HC", f"{yy}{month}"), ("price", "RB", f"{yy}{month}")]
+    if payload.info_type == "螺矿比":
+        rb_month = "10" if month == "09" else month
+        i_month = "09" if month == "09" else month
+        return [("price", "RB", f"{yy}{rb_month}"), ("price", "I", f"{yy}{i_month}")]
+    if payload.info_type == "煤矿比":
+        return [("price", "JM", f"{yy}{month}"), ("price", "I", f"{yy}{month}")]
+    if payload.info_type == "盘面钢厂利润":
+        rb_month = "10" if month == "09" else month
+        i_month = "09" if month == "09" else month
+        j_month = "09" if month == "09" else month
+        return [("price", "RB", f"{yy}{rb_month}"), ("price", "I", f"{yy}{i_month}"), ("price", "J", f"{yy}{j_month}")]
+    if payload.info_type in MONTH_DIFF_TYPES:
+        variety = "FE" if payload.info_type == "掉期月差" else "I"
+        year1 = two_digit_year(payload.year1 or payload.year)
+        year2 = two_digit_year(payload.year2 or payload.year)
+        month1 = (payload.month1 or "09").zfill(2)
+        month2 = (payload.month2 or "01").zfill(2)
+        return [("price", variety, f"{year1}{month1}"), ("price", variety, f"{year2}{month2}")]
+    if payload.info_type in ["内外盘差", "内外盘差2"]:
+        dependencies = []
+        for inner_month in INNER_OUTER_MONTHS:
+            dependencies.extend([
+                ("price", "I", f"{yy}{inner_month}"),
+                ("price", "FE", f"{yy}{inner_month}"),
+                ("fx", "USD/CNH", f"{yy}{inner_month}"),
+            ])
+        return dependencies
+    return []
+
+
+def calculate_today_indicator(payload: InfoCalculateIn, mock: bool = False, quote_provider: Optional[RealtimeQuoteProvider] = None) -> dict:
     yy = two_digit_year(payload.year)
     month = payload.month.zfill(2)
     value = None
     contracts = {}
 
+    def price(variety: str, contract: str = "") -> Optional[float]:
+        if quote_provider:
+            return quote_provider.get_price(variety, contract)
+        return fetch_sina_price(variety, contract, mock)
+
+    def fx_rate(contract: str = "") -> Optional[float]:
+        if quote_provider:
+            return quote_provider.get_fx(contract)
+        return fetch_usdcnh_rate(contract, mock)
+
     if payload.info_type == "卷螺差":
-        hc = fetch_sina_price("HC", f"{yy}{month}", mock)
-        rb = fetch_sina_price("RB", f"{yy}{month}", mock)
+        hc = price("HC", f"{yy}{month}")
+        rb = price("RB", f"{yy}{month}")
         contracts = {"HC": f"HC{yy}{month}", "RB": f"RB{yy}{month}"}
         value = hc - rb if hc is not None and rb is not None else None
     elif payload.info_type == "螺矿比":
         rb_month = "10" if month == "09" else month
         i_month = "09" if month == "09" else month
-        rb = fetch_sina_price("RB", f"{yy}{rb_month}", mock)
-        i = fetch_sina_price("I", f"{yy}{i_month}", mock)
+        rb = price("RB", f"{yy}{rb_month}")
+        i = price("I", f"{yy}{i_month}")
         contracts = {"RB": f"RB{yy}{rb_month}", "I": f"I{yy}{i_month}"}
         value = rb / i if rb is not None and i else None
     elif payload.info_type == "煤矿比":
-        jm = fetch_sina_price("JM", f"{yy}{month}", mock)
-        i = fetch_sina_price("I", f"{yy}{month}", mock)
+        jm = price("JM", f"{yy}{month}")
+        i = price("I", f"{yy}{month}")
         contracts = {"JM": f"JM{yy}{month}", "I": f"I{yy}{month}"}
         value = 1.88 * jm / i if jm is not None and i else None
     elif payload.info_type == "盘面钢厂利润":
         rb_month = "10" if month == "09" else month
         i_month = "09" if month == "09" else month
         j_month = "09" if month == "09" else month
-        rb = fetch_sina_price("RB", f"{yy}{rb_month}", mock)
-        i = fetch_sina_price("I", f"{yy}{i_month}", mock)
-        j = fetch_sina_price("J", f"{yy}{j_month}", mock)
+        rb = price("RB", f"{yy}{rb_month}")
+        i = price("I", f"{yy}{i_month}")
+        j = price("J", f"{yy}{j_month}")
         contracts = {"RB": f"RB{yy}{rb_month}", "I": f"I{yy}{i_month}", "J": f"J{yy}{j_month}"}
         value = (rb - 1.6 * i - 0.45 * j - 375) / 1.13 - 1035 if rb is not None and i is not None and j is not None else None
     elif payload.info_type in MONTH_DIFF_TYPES:
@@ -741,20 +832,20 @@ def calculate_today_indicator(payload: InfoCalculateIn, mock: bool = False) -> d
         year2 = two_digit_year(payload.year2 or payload.year)
         month1 = (payload.month1 or "09").zfill(2)
         month2 = (payload.month2 or "01").zfill(2)
-        p1 = fetch_sina_price(variety, f"{year1}{month1}", mock)
-        p2 = fetch_sina_price(variety, f"{year2}{month2}", mock)
+        p1 = price(variety, f"{year1}{month1}")
+        p2 = price(variety, f"{year2}{month2}")
         contracts = {f"{variety}1": f"{variety}{year1}{month1}", f"{variety}2": f"{variety}{year2}{month2}"}
         value = p1 - p2 if p1 is not None and p2 is not None else None
     elif payload.info_type == "内外盘差":
-        i = fetch_sina_price("I", f"{yy}{month}", mock)
-        fe = fetch_sina_price("FE", f"{yy}{month}", mock)
-        fx = fetch_usdcnh_rate(f"{yy}{month}", mock)
+        i = price("I", f"{yy}{month}")
+        fe = price("FE", f"{yy}{month}")
+        fx = fx_rate(f"{yy}{month}")
         contracts = {"I": f"I{yy}{month}", "FE": f"FE{yy}{month}", "USD/CNH": f"USD/CNH{yy}{month}"}
         value = (fx * 1.13 * fe - i) + 30 if i is not None and fe is not None and fx is not None else None
     elif payload.info_type == "内外盘差2":
-        i = fetch_sina_price("I", f"{yy}{month}", mock)
-        fe = fetch_sina_price("FE", f"{yy}{month}", mock)
-        fx = fetch_usdcnh_rate(f"{yy}{month}", mock)
+        i = price("I", f"{yy}{month}")
+        fe = price("FE", f"{yy}{month}")
+        fx = fx_rate(f"{yy}{month}")
         contracts = {"I": f"I{yy}{month}", "FE": f"FE{yy}{month}", "USD/CNH": f"USD/CNH{yy}{month}"}
         value = round((i / fx * 0.88 - fe), 2) if i is not None and fe is not None and fx else None
 
@@ -766,12 +857,12 @@ def calculate_today_indicator(payload: InfoCalculateIn, mock: bool = False) -> d
     }
 
 
-def calculate_inner_outer_months(payload: InfoCalculateIn, mock: bool = False) -> dict:
+def calculate_inner_outer_months(payload: InfoCalculateIn, mock: bool = False, quote_provider: Optional[RealtimeQuoteProvider] = None) -> dict:
     month_values = {}
     contracts = {}
     for month in INNER_OUTER_MONTHS:
-        monthly_payload = payload.copy(update={"month": month})
-        result = calculate_today_indicator(monthly_payload, mock=mock)
+        monthly_payload = payload.model_copy(update={"month": month})
+        result = calculate_today_indicator(monthly_payload, mock=mock, quote_provider=quote_provider)
         month_values[month] = result["today_value"]
         contracts[month] = result["contracts"]
     return {"month_values": month_values, "contracts": contracts}
@@ -1317,11 +1408,14 @@ def info_summary_config(user=Depends(current_user)):
     }
 
 
-@app.post("/api/info-summary/calculate")
-def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=Depends(current_user)):
-    require_edit("info_summary", user)
+def calculate_info_summary_payload(
+    payload: InfoCalculateIn,
+    mock: bool = False,
+    quote_provider: Optional[RealtimeQuoteProvider] = None,
+    fill_missing_history: bool = True,
+) -> dict:
     if payload.info_type in ["内外盘差", "内外盘差2"]:
-        realtime = calculate_inner_outer_months(payload, mock=mock)
+        realtime = calculate_inner_outer_months(payload, mock=mock, quote_provider=quote_provider)
         month_results = {}
         for month in INNER_OUTER_MONTHS:
             cached = get_cached_data(payload.info_type, payload.year, month, payload.calc_date)
@@ -1331,7 +1425,6 @@ def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=De
                 "today_value": realtime["month_values"].get(month),
                 "contracts": realtime["contracts"].get(month, {}),
             }
-        db.log_operation(user["id"], "info_summary", "计算指标", payload.info_type, "calculated_data", None)
         return {
             "info_type": payload.info_type,
             "calc_date": payload.calc_date,
@@ -1341,18 +1434,53 @@ def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=De
             "cache_hit": any(item["cache_hit"] for item in month_results.values()),
         }
 
-    realtime = calculate_today_indicator(payload, mock=mock)
+    realtime = calculate_today_indicator(payload, mock=mock, quote_provider=quote_provider)
     month_key = cache_month_key(payload)
     cached = get_cached_data(payload.info_type, payload.year, month_key, payload.calc_date)
-    if not cached or cached.get("t_1_value") is None or cached.get("std_value") is None:
+    if fill_missing_history and (not cached or cached.get("t_1_value") is None or cached.get("std_value") is None):
         cached = calculate_missing_cache_from_prices(payload) or get_latest_cached_data(
             payload.info_type,
             payload.year,
             month_key,
             payload.calc_date,
         ) or cached
-    db.log_operation(user["id"], "info_summary", "计算指标", payload.info_type, "calculated_data", None)
     return response_from_cache(payload, cached, realtime)
+
+
+@app.post("/api/info-summary/calculate-all")
+def calculate_info_summary_all(payload: InfoCalculateAllIn, mock: bool = False, user=Depends(current_user)):
+    require_edit("info_summary", user)
+    provider = RealtimeQuoteProvider(mock=mock)
+    dependencies = []
+    for item in payload.items:
+        dependencies.extend(realtime_dependencies_for_payload(item))
+    provider.prefetch(dependencies)
+    cards = [
+        calculate_info_summary_payload(
+            item,
+            mock=mock,
+            quote_provider=provider,
+            fill_missing_history=False,
+        )
+        for item in payload.items
+    ]
+    db.log_operation(user["id"], "info_summary", "批量计算指标", "全部", "calculated_data", None)
+    return {
+        "calc_date": payload.items[0].calc_date if payload.items else date.today().isoformat(),
+        "cards": cards,
+        "quote_status": {
+            "requested": len(dependencies),
+            "unique": len(set(dependencies)),
+        },
+    }
+
+
+@app.post("/api/info-summary/calculate")
+def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=Depends(current_user)):
+    require_edit("info_summary", user)
+    result = calculate_info_summary_payload(payload, mock=mock)
+    db.log_operation(user["id"], "info_summary", "计算指标", payload.info_type, "calculated_data", None)
+    return result
 
 
 @app.get("/api/info-summary/cache/counts")

@@ -377,11 +377,10 @@ function renderInfoCards() {
   });
 }
 
-async function calculateInfoCard(card, mock = false) {
-  const infoType = card.dataset.infoType;
+function buildInfoPayload(card) {
   const year = Number(card.querySelector(".info-year")?.value || card.querySelector(".info-year1")?.value || state.infoConfig.default_year);
-  const payload = {
-    info_type: infoType,
+  return {
+    info_type: card.dataset.infoType,
     year,
     month: card.querySelector(".info-month")?.value || "09",
     calc_date: card.querySelector(".info-date").value,
@@ -390,6 +389,17 @@ async function calculateInfoCard(card, mock = false) {
     year2: Number(card.querySelector(".info-year2")?.value || year),
     month2: card.querySelector(".info-month2")?.value || undefined,
   };
+}
+
+function applyInfoResult(card, result) {
+  const status = card.querySelector(".status-value");
+  fillInfoResult(card, result);
+  status.textContent = result.cache_hit ? "已读取缓存并刷新今日值" : "缓存未命中，已刷新今日值";
+}
+
+async function calculateInfoCard(card, mock = false) {
+  const infoType = card.dataset.infoType;
+  const payload = buildInfoPayload(card);
   const status = card.querySelector(".status-value");
   status.textContent = "计算中";
   try {
@@ -397,8 +407,7 @@ async function calculateInfoCard(card, mock = false) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    fillInfoResult(card, result);
-    status.textContent = result.cache_hit ? "已读取缓存并刷新今日值" : "缓存未命中，已刷新今日值";
+    applyInfoResult(card, result);
     updateInfoStatus(`${infoType} 已计算`);
   } catch (error) {
     status.textContent = error.message;
@@ -444,9 +453,23 @@ async function loadInfoHistory() {
 
 async function calculateAllInfo(mock = false) {
   const cards = [...infoCards.querySelectorAll(".info-section")];
+  cards.forEach((card) => {
+    card.querySelector(".status-value").textContent = "计算中";
+  });
+  const result = await api(`/api/info-summary/calculate-all${mock ? "?mock=true" : ""}`, {
+    method: "POST",
+    body: JSON.stringify({ items: cards.map(buildInfoPayload) }),
+  });
+  const resultsByType = new Map((result.cards || []).map((item) => [item.info_type, item]));
   for (const card of cards) {
-    await calculateInfoCard(card, mock);
+    const item = resultsByType.get(card.dataset.infoType);
+    if (item) {
+      applyInfoResult(card, item);
+    } else {
+      card.querySelector(".status-value").textContent = "未返回结果";
+    }
   }
+  updateInfoStatus("全部指标已计算");
 }
 
 function updateInfoStatus(message) {
@@ -569,7 +592,7 @@ function startInfoSummaryAutoRefresh() {
         state.infoSummaryRefreshInFlight = false;
       }
     }
-  }, 30000);
+  }, 60000);
 }
 
 function startMidEventAutoRefresh() {

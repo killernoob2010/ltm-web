@@ -14,7 +14,7 @@ test("info summary month dropdowns use per-type month options from backend confi
 });
 
 test("info summary JavaScript URL is cache busted", () => {
-  assert.match(indexHtml, /src="\/static\/app\.js\?v=info-summary-20260624"/);
+  assert.match(indexHtml, /src="\/static\/app\.js\?v=info-summary-2026062402"/);
 });
 
 test("info summary exposes historical cache refresh entry", () => {
@@ -28,4 +28,10 @@ test("info summary auto refresh skips overlapping runs", () => {
   assert.match(appJs, /if \(state\.infoSummaryRefreshInFlight\) return;/);
   assert.match(appJs, /state\.infoSummaryRefreshInFlight = true;/);
   assert.match(appJs, /finally\s*\{\s*state\.infoSummaryRefreshInFlight = false;/);
+});
+
+test("info summary refresh uses one batched request every minute", () => {
+  assert.match(appJs, /\/api\/info-summary\/calculate-all/);
+  assert.match(appJs, /function buildInfoPayload\(card\)/);
+  assert.match(appJs, /}, 60000\);/);
 });
