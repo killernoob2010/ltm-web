@@ -2014,9 +2014,9 @@ async function loadDVChart() {
 function renderDVChart(series) {
   initDVCanvasSize();
   var W, H, ctx;
-  W = canvas.parentElement.clientWidth;
+  W = dvChartCanvas.parentElement.clientWidth;
   H = 400;
-  ctx = canvas.getContext("2d");
+  ctx = dvChartCanvas.getContext("2d");
 
   const years = Object.keys(series);
   if (!years.length) {

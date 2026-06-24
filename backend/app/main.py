@@ -44,7 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
-app.include_router(data_visualization.router)
+app.include_router(data_visualization.router, prefix="/api")
 
 
 class LoginRequest(BaseModel):

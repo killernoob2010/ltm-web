@@ -708,3 +708,142 @@ dialog::backdrop {
 
 /* 用户管理选中行 */
 
+
+/* ── 数据可视化管理 ───────────────────────────────────── */
+.dv-tabs {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.dv-tab {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: #f3f5f7;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dv-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  border-bottom: 2px solid var(--primary);
+}
+
+.dv-tab:hover:not(.active) {
+  background: #e8ecf0;
+  color: var(--text);
+}
+
+.dv-value-cell {
+  cursor: pointer;
+  position: relative;
+}
+
+.dv-value-cell.manual-override {
+  background: #fef9e7;
+}
+
+.dv-value-cell.manual-override::after {
+  content: " ✎";
+  color: #b7950b;
+  font-size: 11px;
+}
+
+.dv-value-cell.missing-filled {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.dv-inline-input {
+  width: 100%;
+  min-height: 28px;
+  border: 2px solid var(--primary);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 14px;
+}
+
+.dv-chart-controls {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+  margin-left: auto;
+}
+
+.dv-chart-controls label {
+  width: auto;
+  grid-template-columns: auto;
+  font-size: 12px;
+}
+
+.dv-chart-controls select {
+  width: auto;
+  min-width: 80px;
+  min-height: 32px;
+}
+
+.dv-chart-controls select[multiple] {
+  min-height: 60px;
+}
+
+.chart-container {
+  position: relative;
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 8px;
+  min-height: 400px;
+}
+
+.chart-container canvas {
+  display: block;
+  width: 100%;
+}
+
+.dv-chart-status {
+  text-align: center;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.dv-preview-stats {
+  margin-bottom: 12px;
+  padding: 10px;
+  background: #f8fafb;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.dv-preview-section {
+  margin-top: 12px;
+}
+
+.dv-preview-section h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.dv-import-dialog {
+  max-width: 680px !important;
+}
+
+.empty-cell {
+  color: var(--muted);
+  text-align: center;
+  padding: 32px 0;
+}
+
+.error-cell {
+  color: var(--danger);
+  text-align: center;
+  padding: 32px 0;
+}

@@ -370,7 +370,7 @@ async def import_preview(
     payload: ImportRequest,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit("data_visualization", user)
+    dv_require_edit("data_visualization_data", user)
 
     import base64
     file_bytes = base64.b64decode(payload.file_data)
@@ -460,7 +460,7 @@ async def import_commit(
     payload: ImportRequest,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit("data_visualization", user)
+    dv_require_edit("data_visualization_data", user)
 
     import base64
     file_bytes = base64.b64decode(payload.file_data)
@@ -608,7 +608,7 @@ async def update_value(
     payload: ManualEditRequest,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit("data_visualization", user)
+    dv_require_edit("data_visualization_data", user)
 
     with db.connect() as conn:
         cur = conn.cursor()
