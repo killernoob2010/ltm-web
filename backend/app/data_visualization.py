@@ -82,6 +82,11 @@ def _row_to_dict(row) -> dict:
 
 
 def compute_business_week(d: date) -> Dict[str, Any]:
+    """计算业务周：周一起始，1月1日所在周为 W01。
+
+    修正跨年规则：若该周包含下一年的 1 月 1 日，则归属下一年 W01。
+    例：2024-12-30 → 2025 W01；2022-12-26 → 2023 W01。
+    """
     weekday = d.weekday()  # 0=Mon … 6=Sun
     week_start = d - timedelta(days=weekday)
     week_end = week_start + timedelta(days=6)
@@ -95,20 +100,28 @@ def compute_business_week(d: date) -> Dict[str, Any]:
         prev_jan1_weekday = prev_jan1.weekday()
         prev_jan1_week_start = prev_jan1 - timedelta(days=prev_jan1_weekday)
         week_no = ((week_start - prev_jan1_week_start).days // 7) + 1
-        return {
+        result = {
             "year": d.year - 1,
             "week_no": week_no,
             "week_start_date": week_start.isoformat(),
             "week_end_date": week_end.isoformat(),
         }
+    else:
+        week_no = ((week_start - jan1_week_start).days // 7) + 1
+        result = {
+            "year": d.year,
+            "week_no": week_no,
+            "week_start_date": week_start.isoformat(),
+            "week_end_date": week_end.isoformat(),
+        }
 
-    week_no = ((week_start - jan1_week_start).days // 7) + 1
-    return {
-        "year": d.year,
-        "week_no": week_no,
-        "week_start_date": week_start.isoformat(),
-        "week_end_date": week_end.isoformat(),
-    }
+    # 跨年修正：若该周包含下一年的 1 月 1 日，则归属下一年 W01
+    next_jan1 = date(d.year + 1, 1, 1)
+    if week_end >= next_jan1:
+        result["year"] = d.year + 1
+        result["week_no"] = 1
+
+    return result
 
 # ── Excel 解析 ────────────────────────────────────────────────────────
 

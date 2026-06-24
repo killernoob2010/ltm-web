@@ -1844,6 +1844,13 @@ function formatNumber(val) {
   return val.toFixed(2);
 }
 
+// 图表整数格式化
+function formatChartNumber(val) {
+  if (val == null) return "-";
+  if (Number.isInteger(val)) return val.toString();
+  return Math.round(val).toString();
+}
+
 // ── Inline edit ───────────────────────────────────────
 function attachInlineEdit() {
   dvDataTbody.querySelectorAll(".dv-value-cell").forEach((cell) => {
@@ -1853,8 +1860,8 @@ function attachInlineEdit() {
 
 function startInlineEdit(cell) {
   const tr = cell.closest("tr");
-  const id = parseInt(tr.dataset.id);
-  const current = tr.dataset.value;
+  const id = parseInt(cell.dataset.id);
+  const current = cell.dataset.value;
   const input = document.createElement("input");
   input.type = "number";
   input.step = "any";
