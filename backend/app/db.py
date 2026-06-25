@@ -23,7 +23,8 @@ MODULES = [
     ("信息预警管理", "mid_event_monitor", "事中风险监控"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
-    ("数据可视化管理", "data_visualization_data", "图表数据管理"),
+    ("数据可视化管理", "data_visualization_integration", "数据整合"),
+    ("数据可视化管理", "data_visualization_data", "数据管理"),
     ("数据可视化管理", "data_visualization_chart", "数据展示"),
 ]
 
@@ -315,6 +316,43 @@ def init_db() -> None:
                 FOREIGN KEY (data_point_id) REFERENCES dv_data_points(id)
             );
 
+            CREATE TABLE IF NOT EXISTS dv_integration_batches (
+                id SERIAL PRIMARY KEY,
+                file_names TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                point_count INTEGER NOT NULL DEFAULT 0,
+                apparent_demand_count INTEGER NOT NULL DEFAULT 0,
+                validation_summary TEXT,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_integrated_points (
+                id SERIAL PRIMARY KEY,
+                batch_id INTEGER,
+                week_start TEXT NOT NULL,
+                week_end TEXT,
+                business_year INTEGER,
+                business_week INTEGER,
+                week_label TEXT,
+                display_date TEXT NOT NULL,
+                metric_type TEXT NOT NULL,
+                source_country TEXT NOT NULL,
+                product TEXT NOT NULL,
+                category TEXT NOT NULL,
+                mainstream_status TEXT NOT NULL,
+                value DOUBLE PRECISION,
+                unit TEXT NOT NULL DEFAULT '万吨',
+                source_file TEXT,
+                source_sheet TEXT,
+                source_section TEXT,
+                is_calculable INTEGER NOT NULL DEFAULT 0,
+                validation_status TEXT,
+                note TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (batch_id) REFERENCES dv_integration_batches(id)
+            );
+
 
             CREATE TABLE IF NOT EXISTS daily_prices (
                 id SERIAL PRIMARY KEY,
@@ -524,6 +562,43 @@ def init_db() -> None:
                 FOREIGN KEY (data_point_id) REFERENCES dv_data_points(id)
             );
 
+            CREATE TABLE IF NOT EXISTS dv_integration_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_names TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                point_count INTEGER NOT NULL DEFAULT 0,
+                apparent_demand_count INTEGER NOT NULL DEFAULT 0,
+                validation_summary TEXT,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS dv_integrated_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER,
+                week_start TEXT NOT NULL,
+                week_end TEXT,
+                business_year INTEGER,
+                business_week INTEGER,
+                week_label TEXT,
+                display_date TEXT NOT NULL,
+                metric_type TEXT NOT NULL,
+                source_country TEXT NOT NULL,
+                product TEXT NOT NULL,
+                category TEXT NOT NULL,
+                mainstream_status TEXT NOT NULL,
+                value REAL,
+                unit TEXT NOT NULL DEFAULT '万吨',
+                source_file TEXT,
+                source_sheet TEXT,
+                source_section TEXT,
+                is_calculable INTEGER NOT NULL DEFAULT 0,
+                validation_status TEXT,
+                note TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (batch_id) REFERENCES dv_integration_batches(id)
+            );
+
 
             CREATE TABLE IF NOT EXISTS daily_prices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -585,6 +660,7 @@ def init_db() -> None:
         migrate_cache_schema(conn)
         migrate_alert_schema(conn)
         migrate_sh_junneng_schema(conn)
+        migrate_dv_integration_schema(conn)
 
         _exec(cur, "SELECT id FROM users WHERE name = ?", ("管理员",))
         admin = cur.fetchone()
@@ -724,6 +800,28 @@ def migrate_sh_junneng_schema(conn) -> None:
         ON sh_junneng_trades(status);
         """
     )
+
+
+def migrate_dv_integration_schema(conn) -> None:
+    columns = {
+        "week_end": "TEXT",
+        "business_year": "INTEGER",
+        "business_week": "INTEGER",
+        "week_label": "TEXT",
+    }
+    if _is_pg():
+        cur = conn.cursor()
+        for name, col_type in columns.items():
+            cur.execute(f"ALTER TABLE dv_integrated_points ADD COLUMN IF NOT EXISTS {name} {col_type}")
+        conn.commit()
+        return
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(dv_integrated_points)").fetchall()
+    }
+    for name, col_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE dv_integrated_points ADD COLUMN {name} {col_type}")
 
 
 def create_session(user_id: int) -> str:

@@ -4,12 +4,17 @@ Excel 解析、业务周计算、表需计算、导入预检/确认、数据查�
 """
 from __future__ import annotations
 
+import base64
+import io
+import json
 import os
 import tempfile
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from . import db
@@ -25,6 +30,27 @@ SHIPMENT_DATE_COL = 2   # B 列
 SHIPMENT_VAL_COL = 51   # AY 列
 INVENTORY_DATE_COL = 1  # A 列
 INVENTORY_VAL_COL = 2   # B 列
+LOCAL_MYSTEEL_DIR = Path("/Users/wangjingze/建龙/期货组/本地数据库")
+
+
+class ImportRequest(BaseModel):
+    file_data: str
+    file_name: str
+    overwrite_manual_ids: List[int] = []
+
+
+class ManualEditRequest(BaseModel):
+    data_point_id: int
+    new_value: float
+
+
+class IntegrationUploadFile(BaseModel):
+    file_name: str
+    file_data: str
+
+
+class IntegrationFilesRequest(BaseModel):
+    files: List[IntegrationUploadFile]
 
 # ── 权限（自包含，避免循环导入 main.py）───────────────────────────────
 
@@ -75,6 +101,671 @@ def _to_float(val: Any) -> Optional[float]:
 
 def _row_to_dict(row) -> dict:
     return dict(row) if row else {}
+
+
+def _week_start(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def _week_end(d: date) -> date:
+    return _week_start(d) + timedelta(days=6)
+
+
+def _parse_period_start(value: Any) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        left = str(value).split("-")[0].strip()
+        return datetime.strptime(left, "%Y/%m/%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _clean_number(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+MAINSTREAM_PRODUCTS = {
+    "PB粉", "纽曼粉", "麦克粉", "金布巴粉",
+    "巴混", "卡粉", "超特粉", "混合粉",
+    "PB块", "纽曼块", "澳大利亚球团",
+}
+
+
+AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
+    "PB粉": ("PB粉", "粉矿", "粗粉:PB粉"),
+    "PB块": ("PB块", "块矿", "块矿:PB块"),
+    "杨迪粉": ("杨迪粉", "粉矿", "粗粉:杨迪粉"),
+    "大杨迪": ("杨迪粉", "粉矿", "粗粉:杨迪粉"),
+    "混合粉": ("混合粉", "粉矿", "粗粉:混合粉"),
+    "纽曼块": ("纽曼块", "块矿", "块矿:纽曼块"),
+    "超特粉": ("超特粉", "粉矿", "粗粉:超特粉"),
+    "纽曼粉": ("纽曼粉", "粉矿", "粗粉:纽曼粉"),
+    "麦克粉": ("麦克粉", "粉矿", "粗粉:麦克粉"),
+    "金布巴粉": ("金布巴粉", "粉矿", "粗粉:金布巴粉"),
+    "罗布河粉": ("罗布河粉", "粉矿", "粗粉:罗布河粉"),
+    "国王粉": ("国王粉", "粉矿", "粗粉:国王粉"),
+    "Roy Hill粉": ("罗伊山粉", "粉矿", "粗粉:罗伊山粉"),
+    "ATLAS粉": ("Atlas粉", "粉矿", "粗粉:Atlas粉"),
+    "罗布河块": ("罗布河块", "块矿", "块矿:罗布河块"),
+    "卡拉拉粉": ("卡拉拉精粉", "精粉", "精粉:卡拉拉精粉"),
+    "Roy Hill块": ("罗伊山块", "块矿", "块矿:罗伊山块"),
+    "球团": ("澳大利亚球团", "球团", "球团:澳大利亚"),
+    "FMG 块矿": ("FMG块", "块矿", "块矿:FMG块"),
+    "西皮尔巴拉粉": ("西皮尔巴拉粉", "粉矿", "粗粉:西皮尔巴拉粉"),
+    "SP10粉": ("SP10粉", "粉矿", "粗粉:RTX粉(SP10粉)"),
+    "SP10块": ("SP10块", "块矿", "块矿:SP10块"),
+    "库宾块": ("库宾块", "块矿", "块矿:库宾块"),
+    "库兰精粉": ("库兰粉", "粉矿", "粗粉:库兰粉"),
+    "一刚粉": ("一钢粉", "粉矿", "粗粉:一钢粉"),
+    "一刚块": ("一钢块", "块矿", "块矿:一钢块"),
+    "中信泰富精粉": ("泰富精粉", "精粉", "精粉:泰富精粉"),
+    "铁桥精粉": ("铁桥精粉", "精粉", "精粉:铁桥精粉"),
+    "丝路粉": ("丝路粉", "粉矿", "粗粉:丝路粉"),
+    "RTX": None,
+    "RTX块": None,
+    "高锰粉矿": None,
+    "未知": None,
+    "库宾粉": None,
+}
+
+
+INVENTORY_RENAME = {
+    ("粗粉", "RTX粉(SP10粉)"): ("SP10粉", "粉矿", "澳洲"),
+    ("粗粉", "库兰粉"): ("库兰粉", "粉矿", "澳洲"),
+    ("粗粉", "一钢粉"): ("一钢粉", "粉矿", "澳洲"),
+    ("精粉", "泰富精粉"): ("泰富精粉", "精粉", "澳洲"),
+    ("球团", "澳大利亚"): ("澳大利亚球团", "球团", "澳洲"),
+}
+
+
+GLOBAL_SKIP_COUNTRIES = {"澳大利亚", "巴西", "总计"}
+
+
+def _category_for_inventory(sheet_name: str, header: str) -> str:
+    if sheet_name == "粗粉":
+        return "粉矿"
+    if sheet_name == "块矿":
+        return "块矿"
+    if sheet_name == "球团":
+        return "球团"
+    if sheet_name == "精粉":
+        return "精粉"
+    if "块" in header:
+        return "块矿"
+    if "球" in header:
+        return "球团"
+    if "精粉" in header:
+        return "精粉"
+    return "粉矿"
+
+
+def _source_country_for_product(product: str, category: str, sheet_name: str = "") -> str:
+    australia_tokens = (
+        "PB", "纽曼", "麦克", "金布巴", "超特", "混合", "杨迪", "罗布河",
+        "国王", "罗伊山", "Atlas", "ATLAS", "FMG", "SP10", "库宾",
+        "库兰", "一钢", "泰富", "铁桥", "丝路", "卡拉拉", "西皮尔巴拉", "澳大利亚",
+    )
+    brazil_tokens = ("卡粉", "巴混", "巴粗", "CSN", "托克", "米纳斯")
+    if any(token in product for token in australia_tokens):
+        return "澳洲"
+    if any(token in product for token in brazil_tokens):
+        return "巴西"
+    return product if sheet_name in {"球团", "精粉"} and len(product) <= 8 else "其他"
+
+
+def _mainstream_status(product: str) -> str:
+    return "主流" if product in MAINSTREAM_PRODUCTS else "非主流"
+
+
+def _make_point(
+    *,
+    week_start: date,
+    display_date: date,
+    metric_type: str,
+    source_country: str,
+    product: str,
+    category: str,
+    value: float,
+    source_file: str,
+    source_sheet: str,
+    source_section: str,
+    is_calculable: bool,
+    validation_status: str = "ok",
+    note: str = "",
+) -> Dict[str, Any]:
+    business_week = compute_business_week(week_start)
+    week_end = _week_end(week_start)
+    return {
+        "week_start": week_start.isoformat(),
+        "week_end": week_end.isoformat(),
+        "business_year": business_week["year"],
+        "business_week": business_week["week_no"],
+        "week_label": f"{business_week['year']} W{business_week['week_no']:02d}",
+        "display_date": display_date.isoformat(),
+        "metric_type": metric_type,
+        "source_country": source_country,
+        "product": product,
+        "category": category,
+        "mainstream_status": _mainstream_status(product),
+        "value": value,
+        "unit": "万吨",
+        "source_file": source_file,
+        "source_sheet": source_sheet,
+        "source_section": source_section,
+        "is_calculable": 1 if is_calculable else 0,
+        "validation_status": validation_status,
+        "note": note,
+    }
+
+
+def _find_col(ws, header_row: int, header_name: str) -> Optional[int]:
+    for col in range(1, ws.max_column + 1):
+        if str(ws.cell(header_row, col).value or "").strip() == header_name:
+            return col
+    return None
+
+
+def _iter_total_rows(ws) -> List[int]:
+    return [row for row in range(1, ws.max_row + 1) if ws.cell(row, 2).value == "总计"]
+
+
+def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "澳洲预计到达中国锚地量" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["澳洲预计到达中国锚地量"]
+    points: List[Dict[str, Any]] = []
+    headers = {col: str(ws.cell(20, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+    for row in range(21, ws.max_row + 1):
+        period_start = _parse_period_start(ws.cell(row, 1).value)
+        if period_start is None:
+            continue
+        for col, raw_product in headers.items():
+            if not raw_product or raw_product == "总计":
+                continue
+            mapping = AUSTRALIA_PRODUCT_MAP.get(raw_product)
+            if mapping is None:
+                continue
+            value = _clean_number(ws.cell(row, col).value)
+            if value is None:
+                continue
+            product, category, _inventory_key = mapping
+            points.append(_make_point(
+                week_start=period_start,
+                display_date=period_start,
+                metric_type="shipment",
+                source_country="澳洲",
+                product=product,
+                category=category,
+                value=value,
+                source_file=path.name,
+                source_sheet="澳洲预计到达中国锚地量",
+                source_section="预计到中国锚地量（品种）",
+                is_calculable=True,
+                note="澳洲直接采用预计到中国锚地量",
+            ))
+    wb.close()
+    return points
+
+
+def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "巴西发货量" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["巴西发货量"]
+    china_col = _find_col(ws, 39, "中国大陆")
+    points: List[Dict[str, Any]] = []
+    if china_col is None:
+        wb.close()
+        return points
+    for row in range(40, ws.max_row + 1):
+        period_start = _parse_period_start(ws.cell(row, 1).value)
+        value = _clean_number(ws.cell(row, china_col).value)
+        if period_start is None or value is None:
+            continue
+        arrival_week = period_start + timedelta(weeks=6)
+        points.append(_make_point(
+            week_start=arrival_week,
+            display_date=arrival_week,
+            metric_type="shipment",
+            source_country="巴西",
+            product="卡粉",
+            category="粉矿",
+            value=value * 0.75,
+            source_file=path.name,
+            source_sheet="巴西发货量",
+            source_section="中国大陆发运量×75%（6周后到港估算）",
+            is_calculable=True,
+            note="巴西卡粉按中国大陆发运量的75%估算，滞后6周",
+        ))
+    wb.close()
+    return points
+
+
+def _extract_global_shipments(path: Path) -> List[Dict[str, Any]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "全球铁矿石发运量" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["全球铁矿石发运量"]
+    points: List[Dict[str, Any]] = []
+    headers = {col: str(ws.cell(3, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+    for row in range(4, 10):
+        period_start = _parse_period_start(ws.cell(row, 1).value)
+        if period_start is None:
+            continue
+        for col, country in headers.items():
+            if not country or country in GLOBAL_SKIP_COUNTRIES:
+                continue
+            value = _clean_number(ws.cell(row, col).value)
+            if value is None:
+                continue
+            points.append(_make_point(
+                week_start=period_start,
+                display_date=period_start,
+                metric_type="shipment",
+                source_country=country,
+                product=country,
+                category="全品种",
+                value=value,
+                source_file=path.name,
+                source_sheet="全球铁矿石发运量",
+                source_section="铁矿石全球发运量",
+                is_calculable=False,
+                validation_status="record_only",
+                note="非澳巴全球发运只记录，不参与表需计算",
+            ))
+    wb.close()
+    return points
+
+
+def _inventory_product(sheet_name: str, header: str) -> Optional[tuple]:
+    if not header or "总计" in header:
+        return None
+    renamed = INVENTORY_RENAME.get((sheet_name, header))
+    if renamed:
+        return renamed
+    category = _category_for_inventory(sheet_name, header)
+    source_country = _source_country_for_product(header, category, sheet_name)
+    return header, category, source_country
+
+
+def _extract_inventory(path: Path) -> List[Dict[str, Any]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    points: List[Dict[str, Any]] = []
+    for sheet_name in ["粗粉", "块矿", "球团", "精粉"]:
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        headers = {col: str(ws.cell(1, col).value or "").strip() for col in range(4, ws.max_column + 1)}
+        for row in _iter_total_rows(ws):
+            raw_date = _to_date(ws.cell(row, 1).value)
+            if raw_date is None:
+                continue
+            week_start = _week_start(raw_date)
+            for col, header in headers.items():
+                product_info = _inventory_product(sheet_name, header)
+                if product_info is None:
+                    continue
+                value = _clean_number(ws.cell(row, col).value)
+                if value is None:
+                    continue
+                product, category, source_country = product_info
+                points.append(_make_point(
+                    week_start=week_start,
+                    display_date=raw_date,
+                    metric_type="inventory",
+                    source_country=source_country,
+                    product=product,
+                    category=category,
+                    value=value,
+                    source_file=path.name,
+                    source_sheet=sheet_name,
+                    source_section="总计行",
+                    is_calculable=source_country in {"澳洲", "巴西"},
+                    validation_status="ok",
+                ))
+    wb.close()
+    return points
+
+
+def _summarize_points(points: List[Dict[str, Any]], warnings: List[str]) -> Dict[str, Any]:
+    metrics: Dict[str, int] = {}
+    products: set = set()
+    weeks: set = set()
+    for point in points:
+        metrics[point["metric_type"]] = metrics.get(point["metric_type"], 0) + 1
+        products.add(point["product"])
+        weeks.add(point["week_start"])
+    return {
+        "total_points": len(points),
+        "metrics": metrics,
+        "product_count": len(products),
+        "week_count": len(weeks),
+        "warnings": warnings,
+        "samples": points[:20],
+    }
+
+
+def _add_apparent_demand(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    result = list(points)
+    inv: Dict[tuple, Dict[str, Any]] = {}
+    ship: Dict[tuple, Dict[str, Any]] = {}
+    for point in points:
+        key = (point["week_start"], point["source_country"], point["product"], point["category"])
+        if point["metric_type"] == "inventory":
+            inv[key] = point
+        elif point["metric_type"] == "shipment" and point["is_calculable"]:
+            ship[key] = point
+
+    product_keys = sorted({(p["source_country"], p["product"], p["category"]) for p in points if p["is_calculable"]})
+    for source_country, product, category in product_keys:
+        week_starts = sorted({
+            p["week_start"] for p in points
+            if p["source_country"] == source_country and p["product"] == product and p["category"] == category
+        })
+        for index, week_start in enumerate(week_starts):
+            cur_key = (week_start, source_country, product, category)
+            if cur_key not in ship or cur_key not in inv or index == 0:
+                continue
+            prev_week = week_starts[index - 1]
+            prev_key = (prev_week, source_country, product, category)
+            if prev_key not in inv:
+                continue
+            shipment_value = float(ship[cur_key]["value"] or 0)
+            inv_prev = float(inv[prev_key]["value"] or 0)
+            inv_cur = float(inv[cur_key]["value"] or 0)
+            value = shipment_value + inv_prev - inv_cur
+            base = ship[cur_key]
+            result.append(_make_point(
+                week_start=date.fromisoformat(week_start),
+                display_date=date.fromisoformat(week_start),
+                metric_type="apparent_demand",
+                source_country=source_country,
+                product=product,
+                category=category,
+                value=value,
+                source_file=base["source_file"],
+                source_sheet="系统计算",
+                source_section="表需",
+                is_calculable=True,
+                validation_status="ok",
+                note="表需=到港/估算到港+上周库存-本周库存",
+            ))
+    return result
+
+
+def integrate_mysteel_files(file_paths: List[Path]) -> Dict[str, Any]:
+    points: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    used = {"australia": False, "brazil": False, "global": False, "inventory": False}
+    for path in file_paths:
+        if not path.exists():
+            warnings.append(f"文件不存在: {path.name}")
+            continue
+        australia = _extract_australia_arrivals(path)
+        brazil = _extract_brazil_estimated_arrivals(path)
+        global_points = _extract_global_shipments(path)
+        inventory = _extract_inventory(path)
+        if australia:
+            used["australia"] = True
+        if brazil:
+            used["brazil"] = True
+        if global_points:
+            used["global"] = True
+        if inventory:
+            used["inventory"] = True
+        points.extend(australia)
+        points.extend(brazil)
+        points.extend(global_points)
+        points.extend(inventory)
+    for key, label in [
+        ("australia", "澳洲到港"),
+        ("brazil", "巴西中国大陆发运"),
+        ("global", "全球其他国家发运"),
+        ("inventory", "库存明细"),
+    ]:
+        if not used[key]:
+            warnings.append(f"未识别到{label}数据")
+    points = _add_apparent_demand(points)
+    return {"points": points, "summary": _summarize_points(points, warnings)}
+
+
+def _local_mysteel_files() -> List[Path]:
+    return sorted(LOCAL_MYSTEEL_DIR.glob("Mysteel*.xlsx"))
+
+
+def _write_uploads_to_tmp(files: List[IntegrationUploadFile]) -> List[Path]:
+    paths: List[Path] = []
+    for item in files:
+        suffix = ".xlsx" if item.file_name.lower().endswith(".xlsx") else ".xls"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(base64.b64decode(item.file_data))
+            paths.append(Path(tmp.name))
+    return paths
+
+
+def _cleanup_tmp(paths: List[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str], user_name: str) -> int:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(cur, "DELETE FROM dv_integrated_points")
+        db._exec(cur, "DELETE FROM dv_integration_batches")
+        batch_id = db._last_insert_id(
+            cur,
+            """INSERT INTO dv_integration_batches
+               (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+               VALUES (?, 'completed', ?, ?, ?, ?)""",
+            (
+                ", ".join(file_names),
+                len(points),
+                sum(1 for point in points if point["metric_type"] == "apparent_demand"),
+                json.dumps({"source": "mysteel"}, ensure_ascii=False),
+                user_name,
+            ),
+        )
+        for point in points:
+            db._exec(
+                cur,
+                """INSERT INTO dv_integrated_points
+                   (batch_id, week_start, week_end, business_year, business_week, week_label,
+                    display_date, metric_type, source_country, product,
+                    category, mainstream_status, value, unit, source_file, source_sheet,
+                    source_section, is_calculable, validation_status, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    batch_id,
+                    point["week_start"],
+                    point["week_end"],
+                    point["business_year"],
+                    point["business_week"],
+                    point["week_label"],
+                    point["display_date"],
+                    point["metric_type"],
+                    point["source_country"],
+                    point["product"],
+                    point["category"],
+                    point["mainstream_status"],
+                    point["value"],
+                    point["unit"],
+                    point["source_file"],
+                    point["source_sheet"],
+                    point["source_section"],
+                    point["is_calculable"],
+                    point["validation_status"],
+                    point["note"],
+                ),
+            )
+    return batch_id
+
+
+INTEGRATED_EXPORT_COLUMNS = [
+    ("week_start", "统计周一"),
+    ("week_end", "统计周日"),
+    ("business_year", "业务年份"),
+    ("business_week", "业务周次"),
+    ("week_label", "周次标签"),
+    ("display_date", "展示日期"),
+    ("metric_type", "数据类型"),
+    ("source_country", "来源/国家"),
+    ("product", "品种"),
+    ("category", "种类"),
+    ("mainstream_status", "主流/非主流"),
+    ("value", "数值"),
+    ("unit", "单位"),
+    ("source_file", "来源文件"),
+    ("source_sheet", "来源Sheet"),
+    ("source_section", "来源区域"),
+    ("is_calculable", "是否参与表需"),
+    ("validation_status", "校验状态"),
+    ("note", "备注"),
+]
+
+METRIC_SHEETS = [
+    ("shipment", "发运"),
+    ("inventory", "库存"),
+    ("apparent_demand", "表需"),
+]
+
+
+def _metric_label(metric: str) -> str:
+    if metric == "inventory":
+        return "库存"
+    if metric == "shipment":
+        return "发运/到港"
+    if metric == "apparent_demand":
+        return "表需"
+    return metric
+
+
+def _export_cell_value(item: Dict[str, Any], key: str) -> Any:
+    if key == "metric_type":
+        return _metric_label(item[key])
+    if key == "is_calculable":
+        return "是" if item[key] else "否"
+    return item[key]
+
+
+def _ensure_week_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    if item.get("business_year") and item.get("business_week") and item.get("week_label") and item.get("week_end"):
+        return item
+    week_start_value = item.get("week_start")
+    if week_start_value:
+        week_start_date = date.fromisoformat(week_start_value)
+        business_week = compute_business_week(week_start_date)
+        item["week_end"] = item.get("week_end") or _week_end(week_start_date).isoformat()
+        item["business_year"] = item.get("business_year") or business_week["year"]
+        item["business_week"] = item.get("business_week") or business_week["week_no"]
+        item["week_label"] = item.get("week_label") or f"{business_week['year']} W{business_week['week_no']:02d}"
+    return item
+
+
+def _append_integrated_rows(sheet, rows: List[Any], include_metric_type: bool = True) -> None:
+    columns = INTEGRATED_EXPORT_COLUMNS if include_metric_type else [
+        (key, label) for key, label in INTEGRATED_EXPORT_COLUMNS if key != "metric_type"
+    ]
+    sheet.append([label for _key, label in columns])
+    for row in rows:
+        item = _ensure_week_fields(_row_to_dict(row))
+        sheet.append([_export_cell_value(item, key) for key, _label in columns])
+
+
+def build_integrated_workbook_bytes() -> bytes:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        batch = db._exec(
+            cur,
+            "SELECT * FROM dv_integration_batches ORDER BY created_at DESC, id DESC LIMIT 1",
+        ).fetchone()
+        if not batch:
+            raise HTTPException(status_code=404, detail="暂无可导出的整合结果")
+        rows = db._exec(
+            cur,
+            """SELECT *
+               FROM dv_integrated_points
+               WHERE batch_id = ?
+               ORDER BY week_start, metric_type, source_country, category, product, id""",
+            (batch["id"],),
+        ).fetchall()
+        metrics = db._exec(
+            cur,
+            """SELECT metric_type, COUNT(*) AS c
+               FROM dv_integrated_points
+               WHERE batch_id = ?
+               GROUP BY metric_type""",
+            (batch["id"],),
+        ).fetchall()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "整合明细"
+    _append_integrated_rows(ws, rows, include_metric_type=True)
+
+    metric_sheets = []
+    for metric_type, sheet_name in METRIC_SHEETS:
+        sheet = wb.create_sheet(sheet_name)
+        metric_rows = [row for row in rows if row["metric_type"] == metric_type]
+        _append_integrated_rows(sheet, metric_rows, include_metric_type=False)
+        metric_sheets.append(sheet)
+
+    info = wb.create_sheet("批次信息")
+    metric_counts = {row["metric_type"]: row["c"] for row in metrics}
+    info_rows = [
+        ("批次ID", batch["id"]),
+        ("来源文件", batch["file_names"]),
+        ("状态", batch["status"]),
+        ("数据点总数", batch["point_count"]),
+        ("库存条数", metric_counts.get("inventory", 0)),
+        ("发运/到港条数", metric_counts.get("shipment", 0)),
+        ("表需条数", metric_counts.get("apparent_demand", 0)),
+        ("创建人", batch["created_by"]),
+        ("创建时间", batch["created_at"]),
+    ]
+    for item in info_rows:
+        info.append(item)
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    for sheet in [ws, *metric_sheets, info]:
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        sheet.freeze_panes = "A2"
+        for col_idx, column_cells in enumerate(sheet.columns, start=1):
+            max_len = max(len(str(cell.value or "")) for cell in column_cells)
+            sheet.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 10), 36)
+
+    output = io.BytesIO()
+    wb.save(output)
+    wb.close()
+    return output.getvalue()
 
 
 # ── 业务周计算 ────────────────────────────────────────────────────────
@@ -408,10 +1099,109 @@ def _now_expr() -> str:
 
 # ── GET /api/data-visualization/years ──────────────────────────────────
 
+
+@router.get("/data-visualization/integration/local-preview")
+async def integration_local_preview(user=Depends(dv_current_user)):
+    file_paths = _local_mysteel_files()
+    result = integrate_mysteel_files(file_paths)
+    return {
+        "files": [path.name for path in file_paths],
+        "summary": result["summary"],
+    }
+
+
+@router.post("/data-visualization/integration/local-commit")
+async def integration_local_commit(user=Depends(dv_current_user)):
+    dv_require_edit("data_visualization_integration", user)
+    file_paths = _local_mysteel_files()
+    result = integrate_mysteel_files(file_paths)
+    batch_id = _save_integrated_points(result["points"], [path.name for path in file_paths], user["name"])
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "files": [path.name for path in file_paths],
+        "summary": result["summary"],
+    }
+
+
+@router.post("/data-visualization/integration/preview")
+async def integration_upload_preview(payload: IntegrationFilesRequest, user=Depends(dv_current_user)):
+    tmp_paths = _write_uploads_to_tmp(payload.files)
+    try:
+        result = integrate_mysteel_files(tmp_paths)
+        source_names = {path.name: item.file_name for path, item in zip(tmp_paths, payload.files)}
+        for point in result["summary"]["samples"]:
+            point["source_file"] = source_names.get(point["source_file"], point["source_file"])
+    finally:
+        _cleanup_tmp(tmp_paths)
+    return {
+        "files": [item.file_name for item in payload.files],
+        "summary": result["summary"],
+    }
+
+
+@router.post("/data-visualization/integration/commit")
+async def integration_upload_commit(payload: IntegrationFilesRequest, user=Depends(dv_current_user)):
+    dv_require_edit("data_visualization_integration", user)
+    tmp_paths = _write_uploads_to_tmp(payload.files)
+    try:
+        result = integrate_mysteel_files(tmp_paths)
+        source_names = {path.name: item.file_name for path, item in zip(tmp_paths, payload.files)}
+        for point in result["points"]:
+            point["source_file"] = source_names.get(point["source_file"], point["source_file"])
+        for point in result["summary"]["samples"]:
+            point["source_file"] = source_names.get(point["source_file"], point["source_file"])
+        batch_id = _save_integrated_points(result["points"], [item.file_name for item in payload.files], user["name"])
+    finally:
+        _cleanup_tmp(tmp_paths)
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "files": [item.file_name for item in payload.files],
+        "summary": result["summary"],
+    }
+
+
+@router.get("/data-visualization/integration/latest")
+async def integration_latest(user=Depends(dv_current_user)):
+    with db.connect() as conn:
+        cur = conn.cursor()
+        batch = db._exec(
+            cur,
+            "SELECT * FROM dv_integration_batches ORDER BY created_at DESC, id DESC LIMIT 1",
+        ).fetchone()
+        rows = db._exec(
+            cur,
+            """SELECT metric_type, COUNT(*) AS c
+               FROM dv_integrated_points GROUP BY metric_type ORDER BY metric_type""",
+        ).fetchall()
+    return {
+        "batch": _row_to_dict(batch),
+        "metrics": [_row_to_dict(row) for row in rows],
+    }
+
+
+@router.get("/data-visualization/integration/export")
+async def integration_export(user=Depends(dv_current_user)):
+    content = build_integrated_workbook_bytes()
+    filename = f"iron_ore_integrated_{date.today().isoformat()}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @router.get("/data-visualization/years")
 async def get_years(user=Depends(dv_current_user)):
     with db.connect() as conn:
         cur = conn.cursor()
+        integrated_rows = db._exec(
+            cur,
+            "SELECT DISTINCT SUBSTR(week_start, 1, 4) AS year FROM dv_integrated_points ORDER BY year"
+        ).fetchall()
+        if integrated_rows:
+            return {"years": [int(r["year"]) for r in integrated_rows if r["year"]]}
         rows = db._exec(
             cur,
             "SELECT DISTINCT year FROM dv_week_keys ORDER BY year"
@@ -637,6 +1427,60 @@ async def get_table(
 
     with db.connect() as conn:
         cur = conn.cursor()
+        integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
+        if integrated_count:
+            sql = """SELECT week_start, display_date, source_country, product, category,
+                            mainstream_status, value, is_calculable, validation_status, note
+                     FROM dv_integrated_points WHERE metric_type = ?"""
+            params: List[Any] = [metric]
+            if year_list:
+                placeholders = ",".join("?" for _ in year_list)
+                sql += f" AND SUBSTR(week_start, 1, 4) IN ({placeholders})"
+                params.extend([str(year) for year in year_list])
+            sql += " ORDER BY week_start, source_country, product, category"
+            rows = db._exec(cur, sql, tuple(params)).fetchall()
+            product_categories: Dict[str, set] = {}
+            for row in rows:
+                product_categories.setdefault(row["product"], set()).add(row["category"])
+            label_by_row = {}
+            products: List[str] = []
+            for row in rows:
+                label = row["product"]
+                if len(product_categories[row["product"]]) > 1:
+                    label = f"{row['product']}（{row['category']}）"
+                label_by_row[id(row)] = label
+                if label not in products:
+                    products.append(label)
+            week_map: Dict[str, Dict] = {}
+            for row in rows:
+                key = row["week_start"]
+                if key not in week_map:
+                    bw = compute_business_week(date.fromisoformat(row["week_start"]))
+                    week_map[key] = {
+                        "date": row["display_date"],
+                        "week": f"{bw['year']} W{bw['week_no']:02d}",
+                    }
+                    for product in products:
+                        week_map[key][product] = {
+                            "id": None,
+                            "value": None,
+                            "is_manual_override": False,
+                            "is_missing_filled": False,
+                            "source": None,
+                            "updated_by": None,
+                            "updated_at": None,
+                        }
+                label = label_by_row[id(row)]
+                week_map[key][label] = {
+                    "id": None,
+                    "value": row["value"],
+                    "is_manual_override": False,
+                    "is_missing_filled": not bool(row["is_calculable"]) and metric == "apparent_demand",
+                    "source": f"{row['source_country']} / {row['category']} / {row['mainstream_status']}",
+                    "updated_by": row["validation_status"],
+                    "updated_at": row["note"],
+                }
+            return {"metric": metric, "products": products, "data": list(week_map.values())}
 
         base_sql = """SELECT wk.display_date, wk.year, wk.week_no, dp.id, dp.product,
                         dp.display_value, dp.is_manual_override, dp.is_missing_filled,
@@ -744,6 +1588,44 @@ async def get_chart(
 
     with db.connect() as conn:
         cur = conn.cursor()
+        integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
+        if integrated_count:
+            params_i: List[Any] = [metric]
+            sql_i = """SELECT week_start, display_date, source_country, product, category, value,
+                              is_calculable, validation_status
+                       FROM dv_integrated_points WHERE metric_type = ?"""
+            if product_list:
+                placeholders_p = ",".join("?" for _ in product_list)
+                sql_i += f" AND product IN ({placeholders_p})"
+                params_i.extend(product_list)
+            if year_list:
+                placeholders_y = ",".join("?" for _ in year_list)
+                sql_i += f" AND SUBSTR(week_start, 1, 4) IN ({placeholders_y})"
+                params_i.extend([str(year) for year in year_list])
+            sql_i += " ORDER BY product, category, week_start"
+            rows_i = db._exec(cur, sql_i, tuple(params_i)).fetchall()
+            product_categories: Dict[str, set] = {}
+            for row in rows_i:
+                product_categories.setdefault(row["product"], set()).add(row["category"])
+            result_i: Dict[str, Dict[str, List[Dict]]] = {}
+            for row in rows_i:
+                label = row["product"]
+                if len(product_categories[row["product"]]) > 1:
+                    label = f"{row['product']}（{row['category']}）"
+                year = row["week_start"][:4]
+                if label not in result_i:
+                    result_i[label] = {}
+                if year not in result_i[label]:
+                    result_i[label][year] = []
+                bw = compute_business_week(date.fromisoformat(row["week_start"]))
+                result_i[label][year].append({
+                    "week_no": bw["week_no"],
+                    "display_date": row["display_date"],
+                    "value": row["value"],
+                    "is_manual_override": False,
+                    "is_missing_filled": not bool(row["is_calculable"]) and metric == "apparent_demand",
+                })
+            return {"metric": metric, "series": result_i}
 
         params: List[Any] = [metric]
         sql = """SELECT wk.year, wk.week_no, wk.display_date, dp.product,

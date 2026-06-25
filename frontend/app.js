@@ -40,6 +40,17 @@ const riskAlertPage = document.querySelector("#riskAlertPage");
 const userManagementPage = document.querySelector("#userManagementPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
+const dvIntegrationPage = document.querySelector("#dvIntegrationPage");
+const dvLocalPreviewBtn = document.querySelector("#dvLocalPreviewBtn");
+const dvLocalCommitBtn = document.querySelector("#dvLocalCommitBtn");
+const dvIntegrationFiles = document.querySelector("#dvIntegrationFiles");
+const dvUploadCommitBtn = document.querySelector("#dvUploadCommitBtn");
+const dvExportBtn = document.querySelector("#dvExportBtn");
+const dvIntegrationStatus = document.querySelector("#dvIntegrationStatus");
+const dvIntegrationBatchInfo = document.querySelector("#dvIntegrationBatchInfo");
+const dvIntegrationSummary = document.querySelector("#dvIntegrationSummary");
+const dvIntegrationSamples = document.querySelector("#dvIntegrationSamples");
+const dvIntegrationSampleCount = document.querySelector("#dvIntegrationSampleCount");
 const dvDataPage = document.querySelector("#dvDataPage");
 const dvChartPage = document.querySelector("#dvChartPage");
 const dvDataTabs = document.querySelector("#dvDataTabs");
@@ -222,7 +233,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -261,6 +272,11 @@ async function activateModule(code, subName) {
   if (code === "user_management") {
     showOnly(userManagementPage);
     await loadUserManagement();
+    return;
+  }
+  if (code === "data_visualization_integration") {
+    showOnly(dvIntegrationPage);
+    await loadDVIntegrationLatest();
     return;
   }
   if (code === "data_visualization_data") {
@@ -1746,6 +1762,8 @@ closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 // 数据可视化管理
 // ═══════════════════════════════════════════════════════════════
 
+let dvIntegrationUploadFiles = [];
+
 let dvState = {
   currentMetric: "inventory",
   chartMetric: "inventory",
@@ -1760,6 +1778,182 @@ let dvState = {
 };
 
 const DV_PAGE_SIZE = 50;
+
+async function loadDVIntegrationLatest() {
+  try {
+    const result = await api("/api/data-visualization/integration/latest");
+    if (result.batch && result.batch.id) {
+      dvIntegrationBatchInfo.textContent = "批次 " + result.batch.id + "｜" + (result.batch.created_at || "");
+      dvIntegrationStatus.textContent = "已读取最近整合结果";
+      const metrics = {};
+      (result.metrics || []).forEach(function(row) { metrics[row.metric_type] = row.c; });
+      renderDVIntegrationSummary({
+        total_points: result.batch.point_count || 0,
+        metrics: metrics,
+        product_count: "-",
+        week_count: "-",
+        warnings: [],
+        samples: [],
+      }, []);
+    } else {
+      dvIntegrationBatchInfo.textContent = "";
+      dvIntegrationSummary.innerHTML = '<div class="empty-cell">暂无整合结果</div>';
+      dvIntegrationSamples.innerHTML = '<tr><td colspan="9" class="empty-cell">暂无样例数据</td></tr>';
+      dvIntegrationSampleCount.textContent = "";
+      dvIntegrationStatus.textContent = "待整合";
+    }
+  } catch (error) {
+    dvIntegrationStatus.textContent = error.message;
+  }
+}
+
+function renderDVIntegrationSummary(summary, files) {
+  const metrics = summary.metrics || {};
+  const items = [
+    ["文件数", files.length || "-"],
+    ["标准数据点", summary.total_points || 0],
+    ["库存", metrics.inventory || 0],
+    ["发运/到港", metrics.shipment || 0],
+    ["表需", metrics.apparent_demand || 0],
+    ["品种数", summary.product_count || "-"],
+    ["周数", summary.week_count || "-"],
+  ];
+  dvIntegrationSummary.innerHTML = items.map(function(item) {
+    return '<div class="dv-summary-item"><span>' + item[0] + '</span><strong>' + item[1] + '</strong></div>';
+  }).join("");
+  if (summary.warnings && summary.warnings.length) {
+    dvIntegrationSummary.innerHTML += '<div class="error-cell">' + summary.warnings.join("；") + '</div>';
+  }
+  const samples = summary.samples || [];
+  dvIntegrationSampleCount.textContent = samples.length ? "展示前 " + samples.length + " 条" : "";
+  dvIntegrationSamples.innerHTML = samples.length ? samples.map(function(row) {
+    return '<tr>' +
+      '<td>' + row.week_start + '</td>' +
+      '<td>' + (row.week_label || "") + '</td>' +
+      '<td>' + metricLabel(row.metric_type) + '</td>' +
+      '<td>' + row.source_country + '</td>' +
+      '<td>' + row.product + '</td>' +
+      '<td>' + row.category + '</td>' +
+      '<td>' + row.mainstream_status + '</td>' +
+      '<td>' + formatNumber(row.value) + '</td>' +
+      '<td>' + row.source_sheet + ' / ' + row.source_section + '</td>' +
+      '</tr>';
+  }).join("") : '<tr><td colspan="9" class="empty-cell">暂无样例数据</td></tr>';
+}
+
+function metricLabel(metric) {
+  if (metric === "inventory") return "库存";
+  if (metric === "shipment") return "发运/到港";
+  if (metric === "apparent_demand") return "表需";
+  return metric;
+}
+
+async function fileToIntegrationPayload(file) {
+  const base64 = await new Promise(function(resolve, reject) {
+    const reader = new FileReader();
+    reader.onload = function() {
+      const result = reader.result || "";
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.substring(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  return { file_name: file.name, file_data: base64 };
+}
+
+async function previewLocalIntegration() {
+  dvIntegrationStatus.textContent = "正在读取本地模板...";
+  const result = await api("/api/data-visualization/integration/local-preview");
+  renderDVIntegrationSummary(result.summary, result.files || []);
+  dvIntegrationStatus.textContent = "本地模板预览完成";
+}
+
+async function commitLocalIntegration() {
+  dvIntegrationStatus.textContent = "正在写入本地整合结果...";
+  const result = await api("/api/data-visualization/integration/local-commit", { method: "POST" });
+  renderDVIntegrationSummary(result.summary, result.files || []);
+  dvIntegrationBatchInfo.textContent = "批次 " + result.batch_id;
+  dvIntegrationStatus.textContent = "本地整合结果已写入";
+  dvState.dvDataFilterInitialized = false;
+  dvState.dvChartControlsInitialized = false;
+}
+
+async function previewUploadedIntegration() {
+  const files = Array.from(dvIntegrationFiles.files || []);
+  if (!files.length) return;
+  dvIntegrationStatus.textContent = "正在解析上传文件...";
+  dvIntegrationUploadFiles = [];
+  for (const file of files) {
+    dvIntegrationUploadFiles.push(await fileToIntegrationPayload(file));
+  }
+  const result = await api("/api/data-visualization/integration/preview", {
+    method: "POST",
+    body: JSON.stringify({ files: dvIntegrationUploadFiles }),
+  });
+  renderDVIntegrationSummary(result.summary, result.files || []);
+  dvUploadCommitBtn.disabled = false;
+  dvIntegrationStatus.textContent = "上传文件预览完成";
+}
+
+async function commitUploadedIntegration() {
+  if (!dvIntegrationUploadFiles.length) return;
+  dvIntegrationStatus.textContent = "正在写入上传整合结果...";
+  const result = await api("/api/data-visualization/integration/commit", {
+    method: "POST",
+    body: JSON.stringify({ files: dvIntegrationUploadFiles }),
+  });
+  renderDVIntegrationSummary(result.summary, result.files || []);
+  dvIntegrationBatchInfo.textContent = "批次 " + result.batch_id;
+  dvIntegrationStatus.textContent = "上传整合结果已写入";
+  dvUploadCommitBtn.disabled = true;
+  dvState.dvDataFilterInitialized = false;
+  dvState.dvChartControlsInitialized = false;
+}
+
+async function exportIntegratedExcel() {
+  dvIntegrationStatus.textContent = "正在生成整合 Excel...";
+  const headers = {};
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  const response = await fetch("/api/data-visualization/integration/export", { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "下载失败");
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `iron_ore_integrated_${today()}.xlsx`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  dvIntegrationStatus.textContent = "整合 Excel 已下载";
+}
+
+dvLocalPreviewBtn.addEventListener("click", function() {
+  previewLocalIntegration().catch(function(error) { dvIntegrationStatus.textContent = error.message; });
+});
+
+dvLocalCommitBtn.addEventListener("click", function() {
+  commitLocalIntegration().catch(function(error) { dvIntegrationStatus.textContent = error.message; });
+});
+
+dvIntegrationFiles.addEventListener("change", function() {
+  previewUploadedIntegration().catch(function(error) {
+    dvUploadCommitBtn.disabled = true;
+    dvIntegrationStatus.textContent = error.message;
+  });
+});
+
+dvUploadCommitBtn.addEventListener("click", function() {
+  commitUploadedIntegration().catch(function(error) { dvIntegrationStatus.textContent = error.message; });
+});
+
+dvExportBtn.addEventListener("click", function() {
+  exportIntegratedExcel().catch(function(error) { dvIntegrationStatus.textContent = error.message; });
+});
 
 // ── Helpers ────────────────────────────────────────────────────────────
 function getCheckedValues(container) {
