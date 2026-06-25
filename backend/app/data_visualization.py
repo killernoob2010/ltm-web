@@ -1423,13 +1423,6 @@ async def get_years(user=Depends(dv_current_user)):
 
 # ── POST /api/data-visualization/import/preview ───────────────────────
 
-@router.post("/data-visualization/import/preview")
-
-# ── POST /api/data-visualization/import/integrated/preview ─────────────
-
-@router.post('/data-visualization/import/integrated/preview')
-# ── GET /api/data-visualization/filters ──────────────────────────────
-
 @router.get("/data-visualization/filters")
 async def get_filters(user=Depends(dv_current_user)):
     """返回整合结果中可用的筛选选项。"""
@@ -1468,6 +1461,8 @@ async def get_filters(user=Depends(dv_current_user)):
         }
 
 
+# ── POST /api/data-visualization/import/integrated/preview ─────────────
+@router.post('/data-visualization/import/integrated/preview')
 
 async def import_integrated_preview(
     payload: ImportRequest,
@@ -1526,6 +1521,8 @@ async def import_integrated_commit(
         'message': f'已导入 {len(rows)} 条数据',
     }
 
+# ── POST /api/data-visualization/import/preview ───────────────────────
+@router.post("/data-visualization/import/preview")
 
 async def import_preview(
     payload: ImportRequest,
