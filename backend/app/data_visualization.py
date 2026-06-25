@@ -185,6 +185,7 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
 
     for row in shipments:
         row["_bw"] = compute_business_week(date.fromisoformat(row["date"]))
+        row["_date_obj"] = date.fromisoformat(row["date"])
     for row in inventories:
         row["_bw"] = compute_business_week(date.fromisoformat(row["date"]))
 
@@ -199,33 +200,30 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
     for si, s_row in enumerate(shipments):
         if si in used_shipment:
             continue
-        s_date = date.fromisoformat(s_row["date"])
-        s_bw = s_row["_bw"]
-        for ii, i_row in enumerate(inventories):
-            if ii in used_inventory:
-                continue
+        best_match = _find_nearest_inventory(s_row, inventories, used_inventory, max_gap_days=4)
+        if best_match is not None:
+            ii, i_row = best_match
+            used_shipment.add(si)
+            used_inventory.add(ii)
+            s_bw = s_row["_bw"]
+            s_date = s_row["_date_obj"]
             i_date = date.fromisoformat(i_row["date"])
-            i_bw = i_row["_bw"]
-            if s_bw["year"] == i_bw["year"] and s_bw["week_no"] == i_bw["week_no"]:
-                if abs((s_date - i_date).days) <= 4:
-                    used_shipment.add(si)
-                    used_inventory.add(ii)
-                    key_str = f"{s_bw['year']}_{s_bw['week_no']}_{s_row['date']}_{i_row['date']}"
-                    wk_id = week_key_map.get(key_str)
-                    if wk_id is None:
-                        wk_id = _upsert_week_key(
-                            cur, s_bw["year"], s_bw["week_no"],
-                            s_bw["week_start_date"], s_bw["week_end_date"],
-                            s_row["date"], i_row["date"], s_row["date"],
-                        )
-                        week_key_map[key_str] = wk_id
-                        week_keys.append({
-                            "id": wk_id, "year": s_bw["year"], "week_no": s_bw["week_no"],
-                            "display_date": s_row["date"], "shipment_date": s_row["date"],
-                            "inventory_date": i_row["date"],
-                        })
-                    pairs.append({"shipment_row": s_row, "inventory_row": i_row, "week_key_id": wk_id})
-                    break
+            key_str = f"{s_bw['year']}_{s_bw['week_no']}_{s_row['date']}_{i_row['date']}"
+            wk_id = week_key_map.get(key_str)
+            if wk_id is None:
+                # 合并周使用发运的 ISO 周作为 week_no（发运是财务报告周基准）
+                wk_id = _upsert_week_key(
+                    cur, s_bw["year"], s_bw["week_no"],
+                    s_bw["week_start_date"], s_bw["week_end_date"],
+                    s_row["date"], i_row["date"], s_row["date"],
+                )
+                week_key_map[key_str] = wk_id
+                week_keys.append({
+                    "id": wk_id, "year": s_bw["year"], "week_no": s_bw["week_no"],
+                    "display_date": s_row["date"], "shipment_date": s_row["date"],
+                    "inventory_date": i_row["date"],
+                })
+            pairs.append({"shipment_row": s_row, "inventory_row": i_row, "week_key_id": wk_id})
 
     for si, s_row in enumerate(shipments):
         if si in used_shipment:
@@ -270,6 +268,35 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
     return {"week_keys": week_keys, "pairs": pairs}
 
 
+def _find_nearest_inventory(s_row, inventories, used_inventory, max_gap_days=4):
+    """在未匹配库存中找到最接近发运日期的记录，不超过 max_gap_days 天。
+
+    优先匹配发运日期之后 0~max_gap_days 天内的库存（常规 周日→周二=2天）；
+    若无，取之前最近的。
+    返回 (inventory_index, inventory_row) 或 None。
+    """
+    s_date = date.fromisoformat(s_row["date"])
+    best_after = None   # (idx, row, gap)
+    best_before = None  # (idx, row, gap)
+
+    for ii, i_row in enumerate(inventories):
+        if ii in used_inventory:
+            continue
+        i_date = date.fromisoformat(i_row["date"])
+        gap = (i_date - s_date).days
+        if abs(gap) <= max_gap_days:
+            if gap >= 0 and (best_after is None or gap < best_after[2]):
+                best_after = (ii, i_row, gap)
+            elif gap < 0 and (best_before is None or abs(gap) < best_before[2]):
+                best_before = (ii, i_row, abs(gap))
+
+    if best_after:
+        return (best_after[0], best_after[1])
+    if best_before:
+        return (best_before[0], best_before[1])
+    return None
+
+
 # ── 表需重算 ──────────────────────────────────────────────────────────
 # 表需(t) = 发运(t-2) + 库存(t-1) - 库存(t)
 
@@ -311,12 +338,15 @@ def recalc_apparent_demand(conn) -> None:
         if key is not None:
             metric_by_week[pt["metric_type"]][key] = dict(pt)
 
-    def _prev_week_key(key: tuple) -> tuple:
-        """返回上一个业务周的 (year, week_no)。"""
-        year, wn = key
-        if wn > 1:
-            return (year, wn - 1)
-        return (year - 1, 52)
+    sorted_ship_keys: List[tuple] = sorted(metric_by_week["shipment"].keys())
+    sorted_inv_keys: List[tuple] = sorted(metric_by_week["inventory"].keys())
+
+    def _nth_prev_in_sorted(cur: tuple, sorted_keys: List[tuple], n: int = 1) -> tuple | None:
+        """返回 sorted_keys 中小于 cur 的第 n 个 key（跳过缺口）。"""
+        import bisect
+        idx = bisect.bisect_left(sorted_keys, cur)
+        target = idx - n
+        return sorted_keys[target] if target >= 0 else None
 
     for wk in weeks:
         wid = wk["id"]
@@ -325,15 +355,12 @@ def recalc_apparent_demand(conn) -> None:
         if ad_pt.get("is_manual_override"):
             continue
 
-        # 按业务周号查找：发运找 t-2 周，库存找 t-1 周
-        prev_2_key = _prev_week_key(_prev_week_key(cur_key))
-        prev_1_key = _prev_week_key(cur_key)
+        # 按排序位置查找前驱数据点（跳过 ISO 周号缺口）
+        sp_key = _nth_prev_in_sorted(cur_key, sorted_ship_keys, 2)
+        shipment_val = float(metric_by_week["shipment"][sp_key]["display_value"]) if sp_key else 0.0
 
-        sp = metric_by_week["shipment"].get(prev_2_key)
-        shipment_val = float(sp["display_value"]) if (sp and sp.get("display_value") is not None) else 0.0
-
-        ip = metric_by_week["inventory"].get(prev_1_key)
-        inv_prev = float(ip["display_value"]) if (ip and ip.get("display_value") is not None) else 0.0
+        ip_key = _nth_prev_in_sorted(cur_key, sorted_inv_keys, 1)
+        inv_prev = float(metric_by_week["inventory"][ip_key]["display_value"]) if ip_key else 0.0
 
         ip_t = metric_by_week["inventory"].get(cur_key)
         inv_t = float(ip_t["display_value"]) if (ip_t and ip_t.get("display_value") is not None) else 0.0
@@ -341,7 +368,7 @@ def recalc_apparent_demand(conn) -> None:
         demand = shipment_val + inv_prev - inv_t
 
         # 缺少任一输入数据点则标记为缺失
-        is_missing = sp is None or ip is None or ip_t is None
+        is_missing = sp_key is None or ip_key is None or ip_t is None
 
         if not ad_pt:
             db._exec(
