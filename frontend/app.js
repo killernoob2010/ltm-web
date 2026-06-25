@@ -2215,7 +2215,22 @@ function startInlineEdit(cell) {
 
 // ── Excel import ───────────────────────────────────────────────────────
 dvImportBtn.addEventListener("click", function() { dvImportDialog.showModal(); });
-dvCancelImportBtn.addEventListener("click", function() { dvImportDialog.close(); });
+dvCancelImportBtn.addEventListener("click", function() {
+  dvImportFile.value = '';
+  dvState.previewData = null;
+  dvState.uploadFile = null;
+  dvPreviewContent.innerHTML = '';
+  dvCommitImportBtn.disabled = true;
+  dvImportDialog.close();
+});
+
+dvImportDialog.addEventListener("close", function() {
+  dvImportFile.value = '';
+  dvState.previewData = null;
+  dvState.uploadFile = null;
+  dvPreviewContent.innerHTML = '';
+  dvCommitImportBtn.disabled = true;
+});
 
 dvImportFile.addEventListener("change", async function() {
   var file = dvImportFile.files[0];
@@ -2299,6 +2314,9 @@ dvCommitImportBtn.addEventListener("click", async function() {
     });
     dvState.previewData = null;
     dvState.uploadFile = null;
+    dvImportFile.value = '';
+    dvState.dvDataFilterInitialized = false;
+    dvState.dvChartControlsInitialized = false;
     loadDVTable(dvState.currentMetric);
     loadDVDataFilters();
     dvImportDialog.close();

@@ -1724,7 +1724,7 @@ async def import_commit(
 @router.get("/data-visualization/table")
 @router.get("/data-visualization/table")
 async def get_table(
-    metric: str = Query(..., regex="^(inventory|shipment|apparent_demand)$"),
+    metric: str = Query(..., pattern="^(inventory|shipment|apparent_demand)$"),
     years: str = "",
     products: str = "",
     categories: str = "",
@@ -1909,7 +1909,7 @@ async def update_value(
 
 @router.get("/data-visualization/chart")
 async def get_chart(
-    metric: str = Query(..., regex="^(inventory|shipment|apparent_demand)$"),
+    metric: str = Query(..., pattern="^(inventory|shipment|apparent_demand)$"),
     years: str = "",
     products: str = "",
     categories: str = "",
