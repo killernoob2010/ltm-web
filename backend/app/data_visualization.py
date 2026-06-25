@@ -192,6 +192,7 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
     week_key_map: Dict[str, int] = {}
     week_keys: List[Dict] = []
     pairs: List[Dict] = []
+    bw_wk_map: Dict[tuple, int] = {}  # (year, week_no) -> week_key_id, 防同 ISO 周重复
     cur = conn.cursor()
 
     used_shipment: set = set()
@@ -223,6 +224,7 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
                     "display_date": s_row["date"], "shipment_date": s_row["date"],
                     "inventory_date": i_row["date"],
                 })
+                bw_wk_map[(s_bw["year"], s_bw["week_no"])] = wk_id
             pairs.append({"shipment_row": s_row, "inventory_row": i_row, "week_key_id": wk_id})
 
     for si, s_row in enumerate(shipments):
@@ -232,6 +234,10 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
         key_str = f"{s_bw['year']}_{s_bw['week_no']}_{s_row['date']}_none"
         wk_id = week_key_map.get(key_str)
         if wk_id is None:
+            # 已有合并周覆盖了此 ISO 周，复用其 week_key_id 避免重复
+            existing_wk = bw_wk_map.get((s_bw["year"], s_bw["week_no"]))
+            if existing_wk is not None:
+                continue
             wk_id = _upsert_week_key(
                 cur, s_bw["year"], s_bw["week_no"],
                 s_bw["week_start_date"], s_bw["week_end_date"],
@@ -252,6 +258,10 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
         key_str = f"{i_bw['year']}_{i_bw['week_no']}_none_{i_row['date']}"
         wk_id = week_key_map.get(key_str)
         if wk_id is None:
+            # 已有合并周覆盖了此 ISO 周，复用其 week_key_id 避免重复
+            existing_wk = bw_wk_map.get((i_bw["year"], i_bw["week_no"]))
+            if existing_wk is not None:
+                continue
             wk_id = _upsert_week_key(
                 cur, i_bw["year"], i_bw["week_no"],
                 i_bw["week_start_date"], i_bw["week_end_date"],
@@ -265,6 +275,7 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
             })
         pairs.append({"shipment_row": None, "inventory_row": i_row, "week_key_id": wk_id})
 
+    conn.commit()
     return {"week_keys": week_keys, "pairs": pairs}
 
 
