@@ -2024,42 +2024,48 @@ function initDVData() {
   if (inventoryTab) inventoryTab.classList.add("active");
 
   if (!dvState.dvDataFilterInitialized) {
-    dvState.dvDataFilterInitialized = true;
-    api("/api/data-visualization/filters").then(function(filters) {
-      buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
-      buildCheckboxes(dvDataProductCheckboxes, filters.products || [], function() { loadDVTable(dvState.currentMetric); });
-      buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); });
-      buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); });
-      buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); });
-
-      // Wire all/none buttons for products
-      dvDataProductAll.onclick = function() {
-        selectAllCheckboxes(dvDataProductCheckboxes);
-        loadDVTable(dvState.currentMetric);
-      };
-      dvDataProductNone.onclick = function() {
-        selectNoneCheckboxes(dvDataProductCheckboxes);
-        loadDVTable(dvState.currentMetric);
-      };
-
-      // Wire year all/none buttons
-      dvDataYearAll.addEventListener("click", function() {
-        selectAllCheckboxes(dvDataYearCheckboxes);
-        loadDVTable(dvState.currentMetric);
-      });
-      dvDataYearNone.addEventListener("click", function() {
-        selectNoneCheckboxes(dvDataYearCheckboxes);
-        loadDVTable(dvState.currentMetric);
-      });
-
-      // Show all filters container
-      var filterRows = document.querySelectorAll("#dvDataPage .dv-filter-row");
-      filterRows.forEach(function(row) { row.style.display = "flex"; });
-    }).catch(function(err) {
-      console.error("加载筛选选项失败:", err);
-    });
+    loadDVDataFilters();
   }
 }
+
+function loadDVDataFilters() {
+  dvState.dvDataFilterInitialized = true;
+  api("/api/data-visualization/filters").then(function(filters) {
+    buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
+    buildCheckboxes(dvDataProductCheckboxes, filters.products || [], function() { loadDVTable(dvState.currentMetric); });
+    buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); });
+    buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); });
+    buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); });
+
+    // Wire all/none buttons for products
+    dvDataProductAll.onclick = function() {
+      selectAllCheckboxes(dvDataProductCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    };
+    dvDataProductNone.onclick = function() {
+      selectNoneCheckboxes(dvDataProductCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    };
+
+    // Wire year all/none buttons
+    dvDataYearAll.addEventListener("click", function() {
+      selectAllCheckboxes(dvDataYearCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    });
+    dvDataYearNone.addEventListener("click", function() {
+      selectNoneCheckboxes(dvDataYearCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    });
+
+    // Show all filters container
+    var filterRows = document.querySelectorAll("#dvDataPage .dv-filter-row");
+    filterRows.forEach(function(row) { row.style.display = "flex"; });
+  }).catch(function(err) {
+    console.error("加载筛选选项失败:", err);
+  });
+}
+
+
 
 // ── Tabs ──────────────────────────────────────────────────────────────
 dvDataTabs.addEventListener("click", function(e) {
@@ -2294,6 +2300,7 @@ dvCommitImportBtn.addEventListener("click", async function() {
     dvState.previewData = null;
     dvState.uploadFile = null;
     loadDVTable(dvState.currentMetric);
+    loadDVDataFilters();
     dvImportDialog.close();
   } catch (err) {
     alert("导入失败: " + err.message);
