@@ -275,6 +275,13 @@ def match_and_merge_weeks(parsed: Dict[str, List[Dict]], conn) -> Dict[str, Any]
 
 
 def recalc_apparent_demand(conn) -> None:
+    """重新计算所有表需数据点。
+
+    表需(t) = 发运(t-2) + 库存(t-1) - 库存(t)
+
+    使用 (year, week_no) 二维索引替代位置偏移，避免 weeks 数组中
+    合并周/纯发运周/纯库存周交错排列导致的「上一周」指错行问题。
+    """
     cur = conn.cursor()
     weeks = db._exec(
         cur,
@@ -284,8 +291,6 @@ def recalc_apparent_demand(conn) -> None:
     if not weeks:
         return
 
-    week_id_to_idx = {wk["id"]: i for i, wk in enumerate(weeks)}
-
     all_points = db._exec(
         cur,
         """SELECT id, week_key_id, metric_type, display_value, is_manual_override
@@ -294,41 +299,51 @@ def recalc_apparent_demand(conn) -> None:
         (PRODUCT,),
     ).fetchall()
 
-    point_map: Dict[str, Dict[int, dict]] = {"shipment": {}, "inventory": {}, "apparent_demand": {}}
-    for pt in all_points:
-        point_map[pt["metric_type"]][pt["week_key_id"]] = dict(pt)
+    # week_key_id -> (year, week_no)
+    week_id_info: Dict[int, tuple] = {wk["id"]: (wk["year"], wk["week_no"]) for wk in weeks}
 
-    for t_idx, wk in enumerate(weeks):
+    # 按 (year, week_no) 索引数据点，每种指标独立
+    metric_by_week: Dict[str, Dict[tuple, dict]] = {
+        "shipment": {}, "inventory": {}, "apparent_demand": {},
+    }
+    for pt in all_points:
+        key = week_id_info.get(pt["week_key_id"])
+        if key is not None:
+            metric_by_week[pt["metric_type"]][key] = dict(pt)
+
+    def _prev_week_key(key: tuple) -> tuple:
+        """返回上一个业务周的 (year, week_no)。"""
+        year, wn = key
+        if wn > 1:
+            return (year, wn - 1)
+        return (year - 1, 52)
+
+    for wk in weeks:
         wid = wk["id"]
-        ad_pt = point_map["apparent_demand"].get(wid)
-        if ad_pt and ad_pt["is_manual_override"]:
+        cur_key = (wk["year"], wk["week_no"])
+        ad_pt = metric_by_week["apparent_demand"].get(cur_key, {})
+        if ad_pt.get("is_manual_override"):
             continue
 
-        shipment_val = 0.0
-        inv_prev = 0.0
-        inv_t = 0.0
+        # 按业务周号查找：发运找 t-2 周，库存找 t-1 周
+        prev_2_key = _prev_week_key(_prev_week_key(cur_key))
+        prev_1_key = _prev_week_key(cur_key)
 
-        if t_idx >= 2:
-            sp = point_map["shipment"].get(weeks[t_idx - 2]["id"])
-            if sp and sp["display_value"] is not None:
-                shipment_val = float(sp["display_value"])
-        if t_idx >= 1:
-            ip = point_map["inventory"].get(weeks[t_idx - 1]["id"])
-            if ip and ip["display_value"] is not None:
-                inv_prev = float(ip["display_value"])
-        ip_t = point_map["inventory"].get(wid)
-        if ip_t and ip_t["display_value"] is not None:
-            inv_t = float(ip_t["display_value"])
+        sp = metric_by_week["shipment"].get(prev_2_key)
+        shipment_val = float(sp["display_value"]) if (sp and sp.get("display_value") is not None) else 0.0
+
+        ip = metric_by_week["inventory"].get(prev_1_key)
+        inv_prev = float(ip["display_value"]) if (ip and ip.get("display_value") is not None) else 0.0
+
+        ip_t = metric_by_week["inventory"].get(cur_key)
+        inv_t = float(ip_t["display_value"]) if (ip_t and ip_t.get("display_value") is not None) else 0.0
 
         demand = shipment_val + inv_prev - inv_t
 
-        is_missing = (
-            (t_idx >= 2 and point_map["shipment"].get(weeks[t_idx - 2]["id"]) is None)
-            or (t_idx >= 1 and point_map["inventory"].get(weeks[t_idx - 1]["id"]) is None)
-            or point_map["inventory"].get(wid) is None
-        )
+        # 缺少任一输入数据点则标记为缺失
+        is_missing = sp is None or ip is None or ip_t is None
 
-        if ad_pt is None:
+        if not ad_pt:
             db._exec(
                 cur,
                 """INSERT INTO dv_data_points
@@ -339,7 +354,6 @@ def recalc_apparent_demand(conn) -> None:
                 (wid, PRODUCT, demand, demand, 1 if is_missing else 0),
             )
         else:
-            old_val = ad_pt["display_value"]
             db._exec(
                 cur,
                 """UPDATE dv_data_points
@@ -348,30 +362,6 @@ def recalc_apparent_demand(conn) -> None:
                    WHERE id = ?""",
                 (demand, demand, 1 if is_missing else 0, ad_pt["id"]),
             )
-            if old_val != demand:
-                db._exec(
-                    cur,
-                    """INSERT INTO dv_change_log
-                       (data_point_id, old_value, new_value, operation_type, note, created_at)
-                       VALUES (?, ?, ?, 'recalculation', '表需自动重算', CURRENT_TIMESTAMP)""",
-                    (ad_pt["id"], old_val, demand),
-                )
-
-
-# ══════════════════════════════════════════════════════════════════════
-# API 端点
-# ══════════════════════════════════════════════════════════════════════
-
-class ImportRequest(BaseModel):
-    file_data: str  # base64 encoded
-    file_name: str
-    overwrite_manual_ids: List[int] = []
-
-class ManualEditRequest(BaseModel):
-    data_point_id: int
-    new_value: float
-
-
 def _now_expr() -> str:
     """返回 cross-db 的当前时间表达式。"""
     return "CURRENT_TIMESTAMP"
