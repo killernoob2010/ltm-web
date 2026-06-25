@@ -67,6 +67,15 @@ const dvChartYearAll = document.querySelector("#dvChartYearAll");
 const dvChartYearNone = document.querySelector("#dvChartYearNone");
 const dvChartProductAll = document.querySelector("#dvChartProductAll");
 const dvChartProductNone = document.querySelector("#dvChartProductNone");
+const dvDataProductCheckboxes = document.querySelector("#dvDataProductCheckboxes");
+const dvDataCategoryCheckboxes = document.querySelector("#dvDataCategoryCheckboxes");
+const dvDataCountryCheckboxes = document.querySelector("#dvDataCountryCheckboxes");
+const dvDataMainstreamCheckboxes = document.querySelector("#dvDataMainstreamCheckboxes");
+const dvDataProductAll = document.querySelector("#dvDataProductAll");
+const dvDataProductNone = document.querySelector("#dvDataProductNone");
+const dvChartCategoryCheckboxes = document.querySelector("#dvChartCategoryCheckboxes");
+const dvChartCountryCheckboxes = document.querySelector("#dvChartCountryCheckboxes");
+const dvChartMainstreamCheckboxes = document.querySelector("#dvChartMainstreamCheckboxes");
 const dvImportBtn = document.querySelector("#dvImportBtn");
 const dvImportDialog = document.querySelector("#dvImportDialog");
 const dvPreviewContent = document.querySelector("#dvPreviewContent");
@@ -1990,20 +1999,18 @@ async function buildYearCheckboxes(container, onChange) {
   }
 }
 
-var DV_PRODUCT_LIST = ["卡粉", "纽曼粉", "麦克粉", "PB粉", "金布巴粉", "超特粉", "混合粉", "杨迪粉", "罗伊山粉", "巴西粗粉", "乌克兰精粉", "俄罗斯精粉", "IOC6"];
-
-async function buildProductCheckboxes(container, onChange) {
+function buildCheckboxes(container, items, onChange, checkedDefault) {
   container.innerHTML = "";
-  DV_PRODUCT_LIST.forEach(function(p) {
+  items.forEach(function(item) {
     var label = document.createElement("label");
     label.className = "dv-checkbox-label";
     var cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.value = p;
-    cb.checked = (p === "卡粉");
+    cb.value = item;
+    cb.checked = !!checkedDefault;
     cb.addEventListener("change", onChange);
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(p));
+    label.appendChild(document.createTextNode(item));
     container.appendChild(label);
   });
 }
@@ -2016,18 +2023,41 @@ function initDVData() {
   var inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
   if (inventoryTab) inventoryTab.classList.add("active");
 
-  // Init data table year filter (once)
   if (!dvState.dvDataFilterInitialized) {
-    buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
-    dvDataYearAll.addEventListener("click", function() {
-      selectAllCheckboxes(dvDataYearCheckboxes);
-      loadDVTable(dvState.currentMetric);
-    });
-    dvDataYearNone.addEventListener("click", function() {
-      selectNoneCheckboxes(dvDataYearCheckboxes);
-      loadDVTable(dvState.currentMetric);
-    });
     dvState.dvDataFilterInitialized = true;
+    api("/api/data-visualization/filters").then(function(filters) {
+      buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
+      buildCheckboxes(dvDataProductCheckboxes, filters.products || [], function() { loadDVTable(dvState.currentMetric); });
+      buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); });
+      buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); });
+      buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); });
+
+      // Wire all/none buttons for products
+      dvDataProductAll.onclick = function() {
+        selectAllCheckboxes(dvDataProductCheckboxes);
+        loadDVTable(dvState.currentMetric);
+      };
+      dvDataProductNone.onclick = function() {
+        selectNoneCheckboxes(dvDataProductCheckboxes);
+        loadDVTable(dvState.currentMetric);
+      };
+
+      // Wire year all/none buttons
+      dvDataYearAll.addEventListener("click", function() {
+        selectAllCheckboxes(dvDataYearCheckboxes);
+        loadDVTable(dvState.currentMetric);
+      });
+      dvDataYearNone.addEventListener("click", function() {
+        selectNoneCheckboxes(dvDataYearCheckboxes);
+        loadDVTable(dvState.currentMetric);
+      });
+
+      // Show all filters container
+      var filterRows = document.querySelectorAll("#dvDataPage .dv-filter-row");
+      filterRows.forEach(function(row) { row.style.display = "flex"; });
+    }).catch(function(err) {
+      console.error("加载筛选选项失败:", err);
+    });
   }
 }
 
@@ -2054,9 +2084,16 @@ dvChartTabs.addEventListener("click", function(e) {
 async function loadDVTable(metric) {
   try {
     var yearsArr = getCheckedValues(dvDataYearCheckboxes);
-    var yearsStr = yearsArr.join(",");
+    var productsArr = getCheckedValues(dvDataProductCheckboxes);
+    var categoriesArr = getCheckedValues(dvDataCategoryCheckboxes);
+    var countriesArr = getCheckedValues(dvDataCountryCheckboxes);
+    var mainstreamArr = getCheckedValues(dvDataMainstreamCheckboxes);
     var url = "/api/data-visualization/table?metric=" + encodeURIComponent(metric);
-    if (yearsStr) url += "&years=" + encodeURIComponent(yearsStr);
+    if (yearsArr.length) url += "&years=" + encodeURIComponent(yearsArr.join(","));
+    if (productsArr.length) url += "&products=" + encodeURIComponent(productsArr.join(","));
+    if (categoriesArr.length) url += "&categories=" + encodeURIComponent(categoriesArr.join(","));
+    if (countriesArr.length) url += "&source_countries=" + encodeURIComponent(countriesArr.join(","));
+    if (mainstreamArr.length) url += "&mainstream_status=" + encodeURIComponent(mainstreamArr.join(","));
     var result = await api(url);
     renderDVTable(result);
   } catch (err) {
@@ -2199,7 +2236,7 @@ dvImportFile.addEventListener("change", async function() {
     if (state.token) headers.Authorization = "Bearer " + state.token;
     headers["Content-Type"] = "application/json";
 
-    var response = await fetch("/api/data-visualization/import/preview", {
+    var response = await fetch("/api/data-visualization/import/integrated/preview", {
       method: "POST",
       headers: headers,
       body: JSON.stringify({ file_data: base64, file_name: file.name }),
@@ -2213,20 +2250,27 @@ dvImportFile.addEventListener("change", async function() {
     var preview = await response.json();
     dvState.previewData = preview;
 
+    var summary = preview.summary || {};
+    var errors = preview.errors || [];
     var html = '<div class="dv-preview-stats">';
     html += '<div>文件: ' + file.name + '</div>';
-    html += '<div>指标: ' + (preview.metric_types || []).join(", ") + '</div>';
-    html += '<div>日期范围: ' + (preview.date_start || "-") + ' ~ ' + (preview.date_end || "-") + '</div>';
-    html += '<div>可导入行数: ' + (preview.insert_count || 0) + ' | 覆盖行数: ' + (preview.overwrite_count || 0) + ' | 错误行数: ' + (preview.error_count || 0) + '</div>';
-    if (preview.errors && preview.errors.length) {
-      html += '<div style="color:#dc2626;margin-top:6px;">错误详情:</div>';
-      preview.errors.forEach(function(err) {
+    html += '<div>数据点总数: ' + (summary.total_points || 0) + '</div>';
+    html += '<div>库存: ' + (summary.inventory_count || 0) + ' | 发运/到港: ' + (summary.shipment_count || 0) + ' | 表需: ' + (summary.apparent_demand_count || 0) + '</div>';
+    html += '<div>品种数: ' + (summary.product_count || 0) + ' | 种类数: ' + (summary.category_count || 0) + ' | 来源/国家数: ' + (summary.country_count || 0) + '</div>';
+    html += '<div>周数: ' + (summary.week_count || 0) + ' | 空值数: ' + (summary.null_count || 0) + '</div>';
+    html += '<div>日期范围: ' + (summary.date_min || "-") + ' ~ ' + (summary.date_max || "-") + '</div>';
+    if (errors.length) {
+      html += '<div style="color:#dc2626;margin-top:6px;">错误详情 (' + errors.length + ' 条):</div>';
+      errors.slice(0, 15).forEach(function(err) {
         html += '<div style="color:#dc2626;font-size:12px;">行' + err.row + ': ' + err.message + '</div>';
       });
+      if (errors.length > 15) {
+        html += '<div style="color:#dc2626;font-size:12px;">... 还有 ' + (errors.length - 15) + ' 条错误</div>';
+      }
     }
     html += '</div>';
     dvPreviewContent.innerHTML = html;
-    dvCommitImportBtn.disabled = (preview.insert_count + preview.overwrite_count) === 0;
+    dvCommitImportBtn.disabled = (summary.total_points || 0) === 0;
   } catch (err) {
     dvPreviewContent.innerHTML = '<div class="error-cell">解析失败: ' + err.message + '</div>';
     dvCommitImportBtn.disabled = true;
@@ -2240,7 +2284,7 @@ dvCommitImportBtn.addEventListener("click", async function() {
   dvCommitImportBtn.textContent = "导入中...";
 
   try {
-    await api("/api/data-visualization/import/commit", {
+    await api("/api/data-visualization/import/integrated/commit", {
       method: "POST",
       body: JSON.stringify({
         file_data: dvState.uploadFile,
@@ -2286,11 +2330,15 @@ async function loadDVChart() {
   try {
     var yearsArr = getCheckedValues(dvChartYearCheckboxes);
     var productsArr = getCheckedValues(dvChartProductCheckboxes);
-    var yearsStr = yearsArr.join(",");
-    var productsStr = productsArr.join(",");
+    var categoriesArr = getCheckedValues(dvChartCategoryCheckboxes);
+    var countriesArr = getCheckedValues(dvChartCountryCheckboxes);
+    var mainstreamArr = getCheckedValues(dvChartMainstreamCheckboxes);
     var url = "/api/data-visualization/chart?metric=" + encodeURIComponent(metric);
-    if (yearsStr) url += "&years=" + encodeURIComponent(yearsStr);
-    if (productsStr) url += "&products=" + encodeURIComponent(productsStr);
+    if (yearsArr.length) url += "&years=" + encodeURIComponent(yearsArr.join(","));
+    if (productsArr.length) url += "&products=" + encodeURIComponent(productsArr.join(","));
+    if (categoriesArr.length) url += "&categories=" + encodeURIComponent(categoriesArr.join(","));
+    if (countriesArr.length) url += "&source_countries=" + encodeURIComponent(countriesArr.join(","));
+    if (mainstreamArr.length) url += "&mainstream_status=" + encodeURIComponent(mainstreamArr.join(","));
     var result = await api(url);
     renderDVChart(result.series);
   } catch (err) {
@@ -2531,24 +2579,31 @@ function calcNiceStep(yMax) {
 
 // ── Chart controls init ────────────────────────────────────────────────
 function initDVChartControls() {
-  buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
-  buildProductCheckboxes(dvChartProductCheckboxes, loadDVChart);
+  api("/api/data-visualization/filters").then(function(filters) {
+    buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
+    buildCheckboxes(dvChartProductCheckboxes, filters.products || [], loadDVChart);
+    buildCheckboxes(dvChartCategoryCheckboxes, filters.categories || [], loadDVChart);
+    buildCheckboxes(dvChartCountryCheckboxes, filters.source_countries || [], loadDVChart);
+    buildCheckboxes(dvChartMainstreamCheckboxes, filters.mainstream_statuses || [], loadDVChart);
 
-  dvChartYearAll.addEventListener("click", function() {
-    selectAllCheckboxes(dvChartYearCheckboxes);
-    loadDVChart();
-  });
-  dvChartYearNone.addEventListener("click", function() {
-    selectNoneCheckboxes(dvChartYearCheckboxes);
-    loadDVChart();
-  });
-  dvChartProductAll.addEventListener("click", function() {
-    selectAllCheckboxes(dvChartProductCheckboxes);
-    loadDVChart();
-  });
-  dvChartProductNone.addEventListener("click", function() {
-    selectNoneCheckboxes(dvChartProductCheckboxes);
-    loadDVChart();
+    dvChartYearAll.addEventListener("click", function() {
+      selectAllCheckboxes(dvChartYearCheckboxes);
+      loadDVChart();
+    });
+    dvChartYearNone.addEventListener("click", function() {
+      selectNoneCheckboxes(dvChartYearCheckboxes);
+      loadDVChart();
+    });
+    dvChartProductAll.addEventListener("click", function() {
+      selectAllCheckboxes(dvChartProductCheckboxes);
+      loadDVChart();
+    });
+    dvChartProductNone.addEventListener("click", function() {
+      selectNoneCheckboxes(dvChartProductCheckboxes);
+      loadDVChart();
+    });
+  }).catch(function(err) {
+    console.error("加载图表筛选选项失败:", err);
   });
 }
 
