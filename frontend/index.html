@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-integration-export-20260625" />
+    <link rel="stylesheet" href="/static/styles.css?v=dv-filter-update-20260625" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -403,6 +403,24 @@
             <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataYearAll">全选</button>
             <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataYearNone">全不选</button>
           </div>
+          <div class="dv-filter-row" id="dvDataProductFilter">
+            <span class="dv-filter-label">品种：</span>
+            <div class="dv-checkbox-group" id="dvDataProductCheckboxes"></div>
+            <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataProductAll">全选</button>
+            <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataProductNone">全不选</button>
+          </div>
+          <div class="dv-filter-row" id="dvDataCategoryFilter">
+            <span class="dv-filter-label">种类：</span>
+            <div class="dv-checkbox-group" id="dvDataCategoryCheckboxes"></div>
+          </div>
+          <div class="dv-filter-row" id="dvDataCountryFilter">
+            <span class="dv-filter-label">来源/国家：</span>
+            <div class="dv-checkbox-group" id="dvDataCountryCheckboxes"></div>
+          </div>
+          <div class="dv-filter-row" id="dvDataMainstreamFilter">
+            <span class="dv-filter-label">主流/非主流：</span>
+            <div class="dv-checkbox-group" id="dvDataMainstreamCheckboxes"></div>
+          </div>
         <div class="table-wrap">
            <table id="dvDataTable">
              <thead id="dvDataThead">
@@ -439,6 +457,24 @@
                   <button type="button" class="dv-filter-btn dv-filter-none" id="dvChartProductNone">全不选</button>
                 </div>
                 <div class="dv-checkbox-group" id="dvChartProductCheckboxes"></div>
+              </div>
+              <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>种类</span>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartCategoryCheckboxes"></div>
+              </div>
+              <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>来源/国家</span>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartCountryCheckboxes"></div>
+              </div>
+              <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>主流/非主流</span>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartMainstreamCheckboxes"></div>
               </div>
             </div>
           </div>
@@ -823,9 +859,9 @@
     <!-- 导入预检对话框 -->
     <dialog id="dvImportDialog">
       <form method="dialog" class="dialog-form dv-import-dialog">
-        <h2>导入预检</h2>
+        <h2>导入预检 — 整合版 Excel</h2>
         <div class="form-field">
-          <label>选择 Excel 文件：</label>
+          <label>选择整合版 Excel（含「整合明细」sheet）：</label>
           <input type="file" id="dvImportFile" accept=".xlsx,.xls">
         </div>
         <div id="dvPreviewContent"></div>
@@ -847,6 +883,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-integration-export-20260625"></script>
+    <script src="/static/app.js?v=dv-filter-update-20260625"></script>
   </body>
 </html>

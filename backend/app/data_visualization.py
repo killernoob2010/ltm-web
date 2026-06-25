@@ -33,6 +33,28 @@ INVENTORY_VAL_COL = 2   # B 列
 LOCAL_MYSTEEL_DIR = Path("/Users/wangjingze/建龙/期货组/本地数据库")
 
 
+_INTEGRATED_FIELDS = {
+    "统计周一": "week_start", "统计周日": "week_end",
+    "业务年份": "business_year", "业务周次": "business_week",
+    "周次标签": "week_label", "展示日期": "display_date",
+    "数据类型": "metric_type", "来源/国家": "source_country",
+    "品种": "product", "种类": "category",
+    "主流/非主流": "mainstream_status", "数值": "value",
+    "单位": "unit", "来源文件": "source_file",
+    "来源Sheet": "source_sheet", "来源区域": "source_section",
+    "是否参与表需": "is_calculable", "校验状态": "validation_status",
+    "备注": "note",
+}
+
+_METRIC_TYPE_CN = {
+    "库存": "inventory", "发运/到港": "shipment", "表需": "apparent_demand",
+}
+
+_REQUIRED_INTEGRATED_FIELDS = [
+    "week_start", "display_date", "metric_type",
+    "source_country", "product", "category", "mainstream_status",
+]
+
 class ImportRequest(BaseModel):
     file_data: str
     file_name: str
@@ -567,6 +589,196 @@ def _cleanup_tmp(paths: List[Path]) -> None:
             path.unlink()
         except OSError:
             pass
+
+
+def _parse_integrated_excel(file_path):
+    import openpyxl
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    sheet_name = '整合明细'
+    if sheet_name not in wb.sheetnames:
+        wb.close()
+        return {'rows': [], 'errors': [{'row': 0, 'message': f'未找到「{sheet_name}」sheet'}], 'summary': {}}
+
+    ws = wb[sheet_name]
+    headers = []
+    for col in range(1, ws.max_column + 1):
+        hval = ws.cell(row=1, column=col).value
+        headers.append(str(hval).strip() if hval is not None else '')
+
+    col_map = {}
+    for idx, header in enumerate(headers):
+        field = _INTEGRATED_FIELDS.get(header)
+        if field:
+            col_map[idx + 1] = field
+
+    if not col_map:
+        wb.close()
+        return {'rows': [], 'errors': [{'row': 0, 'message': '整合明细表头无法识别'}], 'summary': {}}
+
+    rows = []
+    errors = []
+    for row_idx in range(2, ws.max_row + 1):
+        row_data = {}
+        for col_idx, field in col_map.items():
+            raw = ws.cell(row=row_idx, column=col_idx).value
+            if field == 'business_year':
+                try:
+                    row_data[field] = int(raw) if raw is not None else None
+                except (ValueError, TypeError):
+                    row_data[field] = None
+            elif field == 'business_week':
+                try:
+                    row_data[field] = int(raw) if raw is not None else None
+                except (ValueError, TypeError):
+                    row_data[field] = None
+            elif field == 'is_calculable':
+                val = str(raw).strip() if raw is not None else ''
+                row_data[field] = 1 if val == '是' else 0
+            elif field == 'value':
+                try:
+                    row_data[field] = float(raw) if raw is not None else None
+                except (ValueError, TypeError):
+                    row_data[field] = None
+            elif field in ('week_start', 'week_end', 'display_date'):
+                if isinstance(raw, (__import__('datetime').date, __import__('datetime').datetime)):
+                    if hasattr(raw, 'isoformat'):
+                        row_data[field] = raw.isoformat()
+                    else:
+                        row_data[field] = raw.strftime('%Y-%m-%d')
+                else:
+                    row_data[field] = str(raw).strip() if raw else ''
+            elif field == 'metric_type':
+                val = str(raw).strip() if raw else ''
+                row_data[field] = _METRIC_TYPE_CN.get(val, val)
+            else:
+                row_data[field] = str(raw).strip() if raw else ''
+
+        missing = [f for f in _REQUIRED_INTEGRATED_FIELDS if not row_data.get(f)]
+        if missing:
+            errors.append({'row': row_idx, 'message': f'缺少必填字段: {", ".join(missing)}'})
+            continue
+        rows.append(row_data)
+
+    summary = _summarize_integrated_rows(rows)
+    wb.close()
+    return {'rows': rows, 'errors': errors, 'summary': summary}
+
+
+def _summarize_integrated_rows(rows):
+    if not rows:
+        return {
+            'total_points': 0, 'inventory_count': 0, 'shipment_count': 0,
+            'apparent_demand_count': 0, 'product_count': 0, 'category_count': 0,
+            'country_count': 0, 'week_count': 0, 'null_count': 0,
+            'date_min': '', 'date_max': '', 'years': [],
+        }
+    products = set()
+    categories = set()
+    countries = set()
+    weeks = set()
+    metric_counts = {'inventory': 0, 'shipment': 0, 'apparent_demand': 0}
+    null_count = 0
+    dates = []
+    for row in rows:
+        products.add(row.get('product', ''))
+        categories.add(row.get('category', ''))
+        countries.add(row.get('source_country', ''))
+        weeks.add(row.get('week_start', ''))
+        mt = row.get('metric_type', '')
+        if mt in metric_counts:
+            metric_counts[mt] += 1
+        if row.get('value') is None:
+            null_count += 1
+        d = row.get('display_date', '')
+        if d:
+            dates.append(d)
+    years = sorted(set(w[:4] for w in weeks if w and len(w) >= 4))
+    return {
+        'total_points': len(rows),
+        'inventory_count': metric_counts['inventory'],
+        'shipment_count': metric_counts['shipment'],
+        'apparent_demand_count': metric_counts['apparent_demand'],
+        'product_count': len([p for p in products if p]),
+        'category_count': len([c for c in categories if c]),
+        'country_count': len([c for c in countries if c]),
+        'week_count': len([w for w in weeks if w]),
+        'null_count': null_count,
+        'date_min': min(dates) if dates else '',
+        'date_max': max(dates) if dates else '',
+        'years': years,
+    }
+
+
+
+def _import_integrated_points(rows, file_name, user_name):
+    """按唯一业务 key upsert 到 dv_integrated_points，新建批次记录。"""
+    with db.connect() as conn:
+        cur = conn.cursor()
+        batch_id = db._last_insert_id(
+            cur,
+            """INSERT INTO dv_integration_batches
+               (file_names, status, point_count, apparent_demand_count, created_by)
+               VALUES (?, 'committed', ?, ?, ?)""",
+            (file_name, len(rows), sum(1 for r in rows if r.get('metric_type') == 'apparent_demand'), user_name),
+        )
+        upset_count = 0
+        insert_count = 0
+        for row in rows:
+            existing = db._exec(
+                cur,
+                """SELECT id FROM dv_integrated_points
+                   WHERE week_start = ? AND metric_type = ? AND source_country = ?
+                   AND product = ? AND category = ? AND batch_id IS NOT NULL
+                   LIMIT 1""",
+                (row['week_start'], row['metric_type'], row['source_country'],
+                 row['product'], row['category']),
+            ).fetchone()
+            if existing:
+                db._exec(
+                    cur,
+                    """UPDATE dv_integrated_points
+                       SET week_end = ?, business_year = ?, business_week = ?,
+                           week_label = ?, display_date = ?, value = ?,
+                           mainstream_status = ?, unit = ?, source_file = ?,
+                           source_sheet = ?, source_section = ?,
+                           is_calculable = ?, validation_status = ?, note = ?,
+                           batch_id = ?
+                       WHERE id = ?""",
+                    (row.get('week_end', ''), row.get('business_year'), row.get('business_week'),
+                     row.get('week_label', ''), row.get('display_date', ''), row.get('value'),
+                     row.get('mainstream_status', ''), row.get('unit', '万吨'), row.get('source_file', ''),
+                     row.get('source_sheet', ''), row.get('source_section', ''),
+                     row.get('is_calculable', 0), row.get('validation_status', ''), row.get('note', ''),
+                     batch_id, existing['id']),
+                )
+                upset_count += 1
+            else:
+                db._exec(
+                    cur,
+                    """INSERT INTO dv_integrated_points
+                       (batch_id, week_start, week_end, business_year, business_week,
+                        week_label, display_date, metric_type, source_country, product,
+                        category, mainstream_status, value, unit, source_file,
+                        source_sheet, source_section, is_calculable, validation_status, note)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, row['week_start'], row.get('week_end', ''),
+                     row.get('business_year'), row.get('business_week'),
+                     row.get('week_label', ''), row.get('display_date', ''),
+                     row['metric_type'], row['source_country'], row['product'],
+                     row['category'], row.get('mainstream_status', ''),
+                     row.get('value'), row.get('unit', '万吨'),
+                     row.get('source_file', ''), row.get('source_sheet', ''),
+                     row.get('source_section', ''), row.get('is_calculable', 0),
+                     row.get('validation_status', ''), row.get('note', '')),
+                )
+                insert_count += 1
+        db._exec(
+            cur,
+            """UPDATE dv_integration_batches SET point_count = ?, validation_summary = ? WHERE id = ?""",
+            (len(rows), f'upserted:{upset_count} inserted:{insert_count}', batch_id),
+        )
+        conn.commit()
+    return batch_id
 
 
 def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str], user_name: str) -> int:
@@ -1212,6 +1424,109 @@ async def get_years(user=Depends(dv_current_user)):
 # ── POST /api/data-visualization/import/preview ───────────────────────
 
 @router.post("/data-visualization/import/preview")
+
+# ── POST /api/data-visualization/import/integrated/preview ─────────────
+
+@router.post('/data-visualization/import/integrated/preview')
+# ── GET /api/data-visualization/filters ──────────────────────────────
+
+@router.get("/data-visualization/filters")
+async def get_filters(user=Depends(dv_current_user)):
+    """返回整合结果中可用的筛选选项。"""
+    with db.connect() as conn:
+        cur = conn.cursor()
+        integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
+        if integrated_count:
+            products = [r["val"] for r in db._exec(cur,
+                "SELECT DISTINCT product AS val FROM dv_integrated_points ORDER BY val").fetchall()]
+            categories = [r["val"] for r in db._exec(cur,
+                "SELECT DISTINCT category AS val FROM dv_integrated_points ORDER BY val").fetchall()]
+            countries = [r["val"] for r in db._exec(cur,
+                "SELECT DISTINCT source_country AS val FROM dv_integrated_points ORDER BY val").fetchall()]
+            mainstreams = [r["val"] for r in db._exec(cur,
+                "SELECT DISTINCT mainstream_status AS val FROM dv_integrated_points ORDER BY val").fetchall()]
+            years = [r["year"] for r in db._exec(cur,
+                "SELECT DISTINCT business_year AS year FROM dv_integrated_points ORDER BY year").fetchall() if r["year"]]
+            return {
+                "products": products,
+                "categories": categories,
+                "source_countries": countries,
+                "mainstream_statuses": mainstreams,
+                "years": years,
+            }
+        # fallback to old dv_data_points
+        products = [r["product"] for r in db._exec(cur,
+            "SELECT DISTINCT product FROM dv_data_points ORDER BY product").fetchall()]
+        years = [r["year"] for r in db._exec(cur,
+            "SELECT DISTINCT year FROM dv_week_keys ORDER BY year").fetchall()]
+        return {
+            "products": products or list(DV_PRODUCTS),
+            "categories": [],
+            "source_countries": [],
+            "mainstream_statuses": [],
+            "years": years,
+        }
+
+
+
+async def import_integrated_preview(
+    payload: ImportRequest,
+    user=Depends(dv_current_user),
+):
+    dv_require_edit('data_visualization_data', user)
+
+    import base64
+    file_bytes = base64.b64decode(payload.file_data)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = _parse_integrated_excel(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    return {
+        'file_name': payload.file_name,
+        'summary': result['summary'],
+        'errors': result['errors'],
+        'sample_count': min(len(result['rows']), 20),
+        'sample_rows': result['rows'][:20],
+    }
+
+
+# ── POST /api/data-visualization/import/integrated/commit ──────────────
+
+@router.post('/data-visualization/import/integrated/commit')
+async def import_integrated_commit(
+    payload: ImportRequest,
+    user=Depends(dv_current_user),
+):
+    dv_require_edit('data_visualization_data', user)
+
+    import base64
+    file_bytes = base64.b64decode(payload.file_data)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = _parse_integrated_excel(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    rows = result['rows']
+    if result['errors']:
+        raise HTTPException(status_code=400, detail=f'整合 Excel 存在 {len(result["errors"])} 条错误，无法导入')
+
+    batch_id = _import_integrated_points(rows, payload.file_name, user['name'])
+    return {
+        'batch_id': batch_id,
+        'summary': result['summary'],
+        'message': f'已导入 {len(rows)} 条数据',
+    }
+
+
 async def import_preview(
     payload: ImportRequest,
     user=Depends(dv_current_user),
@@ -1410,9 +1725,14 @@ async def import_commit(
 # ── GET /api/data-visualization/table ─────────────────────────────────
 
 @router.get("/data-visualization/table")
+@router.get("/data-visualization/table")
 async def get_table(
     metric: str = Query(..., regex="^(inventory|shipment|apparent_demand)$"),
     years: str = "",
+    products: str = "",
+    categories: str = "",
+    source_countries: str = "",
+    mainstream_status: str = "",
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
@@ -1425,53 +1745,75 @@ async def get_table(
                 except ValueError:
                     pass
 
+    product_list = [p.strip() for p in products.split(",") if p.strip()] if products else []
+    category_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else []
+    country_list = [c.strip() for c in source_countries.split(",") if c.strip()] if source_countries else []
+    mainstream_val = mainstream_status.strip() if mainstream_status else ""
+
     with db.connect() as conn:
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
-            sql = """SELECT week_start, display_date, source_country, product, category,
+            sql = """SELECT week_start, week_label, business_year, business_week,
+                            display_date, source_country, product, category,
                             mainstream_status, value, is_calculable, validation_status, note
                      FROM dv_integrated_points WHERE metric_type = ?"""
             params: List[Any] = [metric]
             if year_list:
                 placeholders = ",".join("?" for _ in year_list)
-                sql += f" AND SUBSTR(week_start, 1, 4) IN ({placeholders})"
-                params.extend([str(year) for year in year_list])
-            sql += " ORDER BY week_start, source_country, product, category"
+                sql += f" AND business_year IN ({placeholders})"
+                params.extend(year_list)
+            if product_list:
+                placeholders = ",".join("?" for _ in product_list)
+                sql += f" AND product IN ({placeholders})"
+                params.extend(product_list)
+            if category_list:
+                placeholders = ",".join("?" for _ in category_list)
+                sql += f" AND category IN ({placeholders})"
+                params.extend(category_list)
+            if country_list:
+                placeholders = ",".join("?" for _ in country_list)
+                sql += f" AND source_country IN ({placeholders})"
+                params.extend(country_list)
+            if mainstream_val:
+                sql += " AND mainstream_status = ?"
+                params.append(mainstream_val)
+            sql += " ORDER BY week_start, product, category"
             rows = db._exec(cur, sql, tuple(params)).fetchall()
+
+            # 按 (product, category) 构建稳定标签
             product_categories: Dict[str, set] = {}
             for row in rows:
                 product_categories.setdefault(row["product"], set()).add(row["category"])
-            label_by_row = {}
-            products: List[str] = []
+
+            label_map: Dict[tuple, str] = {}
+            products_ordered: List[str] = []
             for row in rows:
-                label = row["product"]
-                if len(product_categories[row["product"]]) > 1:
-                    label = f"{row['product']}（{row['category']}）"
-                label_by_row[id(row)] = label
-                if label not in products:
-                    products.append(label)
+                key = (row["product"], row["category"])
+                if key not in label_map:
+                    if len(product_categories[row["product"]]) > 1:
+                        label = f"{row['product']}（{row['category']}）"
+                    else:
+                        label = row["product"]
+                    label_map[key] = label
+                    products_ordered.append(label)
+
             week_map: Dict[str, Dict] = {}
             for row in rows:
-                key = row["week_start"]
-                if key not in week_map:
-                    bw = compute_business_week(date.fromisoformat(row["week_start"]))
-                    week_map[key] = {
+                ws = row["week_start"]
+                if ws not in week_map:
+                    week_map[ws] = {
                         "date": row["display_date"],
-                        "week": f"{bw['year']} W{bw['week_no']:02d}",
+                        "week": row["week_label"] or f"{row['business_year']} W{row['business_week']:02d}",
                     }
-                    for product in products:
-                        week_map[key][product] = {
-                            "id": None,
-                            "value": None,
-                            "is_manual_override": False,
-                            "is_missing_filled": False,
-                            "source": None,
-                            "updated_by": None,
-                            "updated_at": None,
+                    for p in products_ordered:
+                        week_map[ws][p] = {
+                            "id": None, "value": None,
+                            "is_manual_override": False, "is_missing_filled": False,
+                            "source": None, "updated_by": None, "updated_at": None,
                         }
-                label = label_by_row[id(row)]
-                week_map[key][label] = {
+                label = label_map[(row["product"], row["category"])]
+                week_map[ws][label] = {
                     "id": None,
                     "value": row["value"],
                     "is_manual_override": False,
@@ -1480,25 +1822,28 @@ async def get_table(
                     "updated_by": row["validation_status"],
                     "updated_at": row["note"],
                 }
-            return {"metric": metric, "products": products, "data": list(week_map.values())}
+            return {"metric": metric, "products": products_ordered, "data": list(week_map.values())}
 
+        # fallback: old dv_data_points path
         base_sql = """SELECT wk.display_date, wk.year, wk.week_no, dp.id, dp.product,
                         dp.display_value, dp.is_manual_override, dp.is_missing_filled,
                         dp.source, dp.updated_by, dp.updated_at
                  FROM dv_data_points dp
                  JOIN dv_week_keys wk ON wk.id = dp.week_key_id
                  WHERE dp.metric_type = ?"""
-
         params: List[Any] = [metric]
         if year_list:
             placeholders = ",".join("?" for _ in year_list)
             base_sql += f" AND wk.year IN ({placeholders})"
             params.extend(year_list)
-
+        if product_list:
+            placeholders = ",".join("?" for _ in product_list)
+            base_sql += f" AND dp.product IN ({placeholders})"
+            params.extend(product_list)
         base_sql += " ORDER BY wk.display_date, dp.product"
         rows = db._exec(cur, base_sql, tuple(params)).fetchall()
 
-    products = list(DV_PRODUCTS)
+    products = product_list if product_list else list(DV_PRODUCTS)
     week_map: Dict[str, Dict] = {}
     for r in rows:
         key = r["display_date"]
@@ -1570,6 +1915,9 @@ async def get_chart(
     metric: str = Query(..., regex="^(inventory|shipment|apparent_demand)$"),
     years: str = "",
     products: str = "",
+    categories: str = "",
+    source_countries: str = "",
+    mainstream_status: str = "",
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
@@ -1585,13 +1933,17 @@ async def get_chart(
     product_list: List[str] = []
     if products:
         product_list = [p.strip() for p in products.split(",") if p.strip()]
+    category_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else []
+    country_list = [c.strip() for c in source_countries.split(",") if c.strip()] if source_countries else []
+    mainstream_val = mainstream_status.strip() if mainstream_status else ""
 
     with db.connect() as conn:
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
             params_i: List[Any] = [metric]
-            sql_i = """SELECT week_start, display_date, source_country, product, category, value,
+            sql_i = """SELECT week_start, display_date, business_year, business_week,
+                              source_country, product, category, value,
                               is_calculable, validation_status
                        FROM dv_integrated_points WHERE metric_type = ?"""
             if product_list:
@@ -1600,8 +1952,19 @@ async def get_chart(
                 params_i.extend(product_list)
             if year_list:
                 placeholders_y = ",".join("?" for _ in year_list)
-                sql_i += f" AND SUBSTR(week_start, 1, 4) IN ({placeholders_y})"
-                params_i.extend([str(year) for year in year_list])
+                sql_i += f" AND business_year IN ({placeholders_y})"
+                params_i.extend(year_list)
+            if category_list:
+                placeholders_c = ",".join("?" for _ in category_list)
+                sql_i += f" AND category IN ({placeholders_c})"
+                params_i.extend(category_list)
+            if country_list:
+                placeholders_n = ",".join("?" for _ in country_list)
+                sql_i += f" AND source_country IN ({placeholders_n})"
+                params_i.extend(country_list)
+            if mainstream_val:
+                sql_i += " AND mainstream_status = ?"
+                params_i.append(mainstream_val)
             sql_i += " ORDER BY product, category, week_start"
             rows_i = db._exec(cur, sql_i, tuple(params_i)).fetchall()
             product_categories: Dict[str, set] = {}
@@ -1612,14 +1975,13 @@ async def get_chart(
                 label = row["product"]
                 if len(product_categories[row["product"]]) > 1:
                     label = f"{row['product']}（{row['category']}）"
-                year = row["week_start"][:4]
+                year = str(row["business_year"]) if row["business_year"] else row["week_start"][:4]
                 if label not in result_i:
                     result_i[label] = {}
                 if year not in result_i[label]:
                     result_i[label][year] = []
-                bw = compute_business_week(date.fromisoformat(row["week_start"]))
                 result_i[label][year].append({
-                    "week_no": bw["week_no"],
+                    "week_no": row["business_week"] if row["business_week"] else 0,
                     "display_date": row["display_date"],
                     "value": row["value"],
                     "is_manual_override": False,
@@ -1669,6 +2031,7 @@ async def get_chart(
         result[prod] = {str(k): v for k, v in sorted(by_year.items())}
 
     return {"metric": metric, "series": result}
+
 
 
 # ── GET /api/data-visualization/import-batches ────────────────────────
