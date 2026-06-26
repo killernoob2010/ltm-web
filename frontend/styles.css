@@ -144,8 +144,7 @@ select {
   font-size: 17px;
 }
 
-.brand span,
-.menu-group-title {
+.brand span {
   color: var(--sidebar-muted);
   font-size: 12px;
 }
@@ -155,7 +154,39 @@ select {
 }
 
 .menu-group-title {
-  margin: 0 0 8px 8px;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--sidebar-muted);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-group-title:hover {
+  color: #fff;
+}
+
+.menu-group-toggle {
+  width: 16px;
+  color: #9fb0c0;
+  text-align: center;
+  font-size: 13px;
+}
+
+.menu-group-items {
+  display: block;
+}
+
+.menu-group.collapsed .menu-group-items {
+  display: none;
 }
 
 .menu-item {

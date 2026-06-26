@@ -4,6 +4,12 @@ import { test } from "node:test";
 
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
+const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
+const dbPy = readFileSync(new URL("../backend/app/db.py", import.meta.url), "utf8");
+const integrationSection = indexHtml.slice(
+  indexHtml.indexOf('id="dvIntegrationPage"'),
+  indexHtml.indexOf('id="dvDataPage"'),
+);
 
 test("data visualization filters preserve empty selections", () => {
   assert.match(appJs, /function appendMultiSelectParam\(/);
@@ -28,12 +34,13 @@ test("data visualization integration summary separates shipment and arrival", ()
 });
 
 test("data integration page keeps only upload and download actions", () => {
-  assert.match(indexHtml, /上传 Excel/);
-  assert.match(indexHtml, /下载整合 Excel/);
-  assert.doesNotMatch(indexHtml, /读取本地模板/);
-  assert.doesNotMatch(indexHtml, /写入本地整合结果/);
-  assert.doesNotMatch(indexHtml, /写入上传结果/);
-  assert.doesNotMatch(indexHtml, /id="dvIntegrationSamples"/);
+  assert.match(integrationSection, /导入 Excel/);
+  assert.match(integrationSection, /下载整合 Excel/);
+  assert.doesNotMatch(integrationSection, /上传 Excel/);
+  assert.doesNotMatch(integrationSection, /读取本地模板/);
+  assert.doesNotMatch(integrationSection, /写入本地整合结果/);
+  assert.doesNotMatch(integrationSection, /写入上传结果/);
+  assert.doesNotMatch(integrationSection, /id="dvIntegrationSamples"/);
 });
 
 test("data integration upload automatically commits uploaded files", () => {
@@ -42,6 +49,19 @@ test("data integration upload automatically commits uploaded files", () => {
   assert.doesNotMatch(appJs, /dvUploadCommitBtn/);
   assert.doesNotMatch(appJs, /previewLocalIntegration/);
   assert.doesNotMatch(appJs, /commitLocalIntegration/);
+});
+
+test("sidebar groups put data visualization before admin", () => {
+  assert.ok(dbPy.indexOf('("数据可视化管理", "data_visualization_integration"') < dbPy.indexOf('("后台管理", "user_management"'));
+});
+
+test("sidebar groups are collapsible and visually emphasize group titles", () => {
+  assert.match(appJs, /menu-group-toggle/);
+  assert.match(appJs, /menu-group-items/);
+  assert.match(appJs, /collapsedMenuGroups/);
+  assert.match(stylesCss, /\.menu-group-title/);
+  assert.match(stylesCss, /font-size: 14px/);
+  assert.match(stylesCss, /\.menu-group\.collapsed \.menu-group-items/);
 });
 
 test("data visualization chart filters use product pools instead of always-flat filters", () => {

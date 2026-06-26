@@ -23,6 +23,7 @@ const state = {
   shJunnengSections: { today_trades: [], current_trades: [], settled_trades: [], totals: {} },
   selectedShJunnengId: null,
   settledOverview: { trades: [], totals: {}, contracts: [] },
+  collapsedMenuGroups: new Set(),
 };
 
 const loginView = document.querySelector("#loginView");
@@ -234,15 +235,34 @@ function renderMenu() {
   menu.innerHTML = "";
   for (const group of state.modules) {
     const wrapper = document.createElement("section");
-    wrapper.className = "menu-group";
-    wrapper.innerHTML = `<p class="menu-group-title">${group.group}</p>`;
+    const isCollapsed = state.collapsedMenuGroups.has(group.group);
+    wrapper.className = `menu-group ${isCollapsed ? "collapsed" : ""}`;
+
+    const titleButton = document.createElement("button");
+    titleButton.type = "button";
+    titleButton.className = "menu-group-title";
+    titleButton.setAttribute("aria-expanded", String(!isCollapsed));
+    titleButton.innerHTML = `<span>${group.group}</span><span class="menu-group-toggle">${isCollapsed ? "+" : "−"}</span>`;
+    titleButton.addEventListener("click", function() {
+      if (state.collapsedMenuGroups.has(group.group)) {
+        state.collapsedMenuGroups.delete(group.group);
+      } else {
+        state.collapsedMenuGroups.add(group.group);
+      }
+      renderMenu();
+    });
+    wrapper.appendChild(titleButton);
+
+    const itemsWrap = document.createElement("div");
+    itemsWrap.className = "menu-group-items";
     for (const item of group.items) {
       const button = document.createElement("button");
       button.className = `menu-item ${item.code === state.activeModule ? "active" : ""}`;
       button.textContent = item.name;
       button.addEventListener("click", () => activateModule(item.code, item.name));
-      wrapper.appendChild(button);
+      itemsWrap.appendChild(button);
     }
+    wrapper.appendChild(itemsWrap);
     menu.appendChild(wrapper);
   }
 }
@@ -256,8 +276,9 @@ async function activateModule(code, subName) {
   state.activeModule = code;
   stopMidEventAutoRefresh();
   stopInfoSummaryAutoRefresh();
-  renderMenu();
   const label = moduleLabel(code);
+  if (label.group) state.collapsedMenuGroups.delete(label.group);
+  renderMenu();
   pageTitle.textContent = label.name;
   pageSubtitle.textContent = `${label.group} / ${label.name}`;
 
