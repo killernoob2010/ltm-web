@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-filter-layout-20260626b" />
+    <link rel="stylesheet" href="/static/styles.css?v=dv-filter-layout-20260626c" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -400,7 +400,7 @@
         </div>
         <div class="dv-chart-controls-row">
           <div class="dv-chart-controls">
-            <label>
+            <label class="dv-control-field dv-product-pool-field">
               品种池
               <select id="dvDataProductPool">
                 <option value="mainstream">主流矿</option>
@@ -409,7 +409,7 @@
                 <option value="custom">自定义</option>
               </select>
             </label>
-            <div class="dv-checkbox-panel">
+            <div class="dv-checkbox-panel dv-year-panel">
               <div class="dv-checkbox-panel-header">
                 <span>年份</span>
                 <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataYearAll">全选</button>
@@ -417,7 +417,7 @@
               </div>
               <div class="dv-checkbox-group" id="dvDataYearCheckboxes"></div>
             </div>
-            <div class="dv-checkbox-panel">
+            <div class="dv-checkbox-panel dv-product-panel">
               <div class="dv-checkbox-panel-header">
                 <span>品种</span>
                 <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataProductAll">全选</button>
@@ -428,19 +428,19 @@
             <details class="dv-advanced-filters dv-data-advanced-filters">
               <summary>高级筛选</summary>
               <div class="dv-advanced-filter-grid">
-                <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel dv-category-panel">
                   <div class="dv-checkbox-panel-header">
                     <span>种类</span>
                   </div>
                   <div class="dv-checkbox-group" id="dvDataCategoryCheckboxes"></div>
                 </div>
-                <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel dv-country-panel">
                   <div class="dv-checkbox-panel-header">
                     <span>来源/国家</span>
                   </div>
                   <div class="dv-checkbox-group" id="dvDataCountryCheckboxes"></div>
                 </div>
-                <div class="dv-checkbox-panel">
+                <div class="dv-checkbox-panel dv-mainstream-panel">
                   <div class="dv-checkbox-panel-header">
                     <span>主流/非主流</span>
                   </div>
@@ -472,14 +472,14 @@
          </div>
          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
-              <label>
+              <label class="dv-control-field dv-view-mode-field">
                 视图模式
                 <select id="dvChartViewMode">
                   <option value="atlas">全品种图谱</option>
                   <option value="compare">品种对比图</option>
                 </select>
               </label>
-              <label>
+              <label class="dv-control-field dv-product-pool-field">
                 品种池
                 <select id="dvChartProductPool">
                   <option value="mainstream">主流矿</option>
@@ -488,7 +488,7 @@
                   <option value="custom">自定义</option>
                 </select>
               </label>
-              <div class="dv-checkbox-panel">
+              <div class="dv-checkbox-panel dv-year-panel">
                 <div class="dv-checkbox-panel-header">
                   <span>年份</span>
                   <button type="button" class="dv-filter-btn dv-filter-all" id="dvChartYearAll">全选</button>
@@ -496,7 +496,7 @@
                 </div>
                 <div class="dv-checkbox-group" id="dvChartYearCheckboxes"></div>
               </div>
-              <div class="dv-checkbox-panel">
+              <div class="dv-checkbox-panel dv-product-panel">
                 <div class="dv-checkbox-panel-header">
                   <span>品种</span>
                   <button type="button" class="dv-filter-btn dv-filter-all" id="dvChartProductAll">全选</button>
@@ -507,19 +507,19 @@
               <details class="dv-advanced-filters">
                 <summary>高级筛选</summary>
                 <div class="dv-advanced-filter-grid">
-                  <div class="dv-checkbox-panel">
+                  <div class="dv-checkbox-panel dv-category-panel">
                     <div class="dv-checkbox-panel-header">
                       <span>种类</span>
                     </div>
                     <div class="dv-checkbox-group" id="dvChartCategoryCheckboxes"></div>
                   </div>
-                  <div class="dv-checkbox-panel">
+                  <div class="dv-checkbox-panel dv-country-panel">
                     <div class="dv-checkbox-panel-header">
                       <span>来源/国家</span>
                     </div>
                     <div class="dv-checkbox-group" id="dvChartCountryCheckboxes"></div>
                   </div>
-                  <div class="dv-checkbox-panel">
+                  <div class="dv-checkbox-panel dv-mainstream-panel">
                     <div class="dv-checkbox-panel-header">
                       <span>主流/非主流</span>
                     </div>
@@ -934,6 +934,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-filter-layout-20260626b"></script>
+    <script src="/static/app.js?v=dv-filter-layout-20260626c"></script>
   </body>
 </html>

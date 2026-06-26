@@ -810,13 +810,13 @@ dialog::backdrop {
 
 .dv-chart-controls {
   display: grid;
-  grid-template-columns: max-content max-content minmax(140px, max-content) minmax(0, 1fr);
-  gap: 10px 18px;
+  grid-template-columns: max-content max-content minmax(150px, max-content) minmax(0, 1fr);
+  gap: 14px 32px;
   align-items: start;
   width: 100%;
 }
 
-.dv-chart-controls > label {
+.dv-chart-controls > .dv-control-field {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -837,6 +837,34 @@ dialog::backdrop {
   padding: 3px 28px 3px 8px;
   font-size: 13px;
   background: var(--surface);
+}
+
+.dv-view-mode-field {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.dv-product-pool-field {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+#dvDataPage .dv-product-pool-field {
+  grid-column: 1;
+}
+
+.dv-year-panel {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+#dvDataPage .dv-year-panel {
+  grid-column: 2;
+}
+
+.dv-product-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
 }
 
 .dv-chart-controls select[multiple] {
@@ -1049,6 +1077,7 @@ dialog::backdrop {
 
 .dv-advanced-filters {
   grid-column: 1 / -1;
+  grid-row: 3;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 7px 9px;
@@ -1064,9 +1093,24 @@ dialog::backdrop {
 
 .dv-advanced-filter-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  grid-template-columns: minmax(220px, max-content) minmax(220px, max-content) minmax(0, 1fr);
+  gap: 14px 40px;
   margin-top: 10px;
+}
+
+.dv-category-panel {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.dv-mainstream-panel {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.dv-country-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
 }
 
 @media (max-width: 1100px) {
@@ -1074,7 +1118,25 @@ dialog::backdrop {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .dv-view-mode-field,
+  .dv-product-pool-field,
+  #dvDataPage .dv-product-pool-field,
+  .dv-year-panel,
+  #dvDataPage .dv-year-panel,
+  .dv-product-panel,
+  .dv-advanced-filters {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
   .dv-advanced-filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dv-category-panel,
+  .dv-mainstream-panel,
+  .dv-country-panel {
+    grid-column: 1;
+    grid-row: auto;
   }
 }
