@@ -9,6 +9,7 @@ import io
 import json
 import os
 import tempfile
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -56,10 +57,12 @@ _REQUIRED_INTEGRATED_FIELDS = [
     "week_start", "display_date", "metric_type",
     "source_country", "product", "category", "mainstream_status",
 ]
+_INTEGRATED_PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / "ltm_dv_import_previews"
 
 class ImportRequest(BaseModel):
-    file_data: str
+    file_data: Optional[str] = None
     file_name: str
+    preview_id: Optional[str] = None
     overwrite_manual_ids: List[int] = []
 
 
@@ -743,6 +746,39 @@ def _summarize_integrated_rows(rows):
         'date_max': max(dates) if dates else '',
         'years': years,
     }
+
+
+def _integrated_preview_cache_path(preview_id: str) -> Path:
+    safe_id = "".join(ch for ch in preview_id if ch.isalnum() or ch in ("-", "_"))
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="预检缓存编号无效")
+    return _INTEGRATED_PREVIEW_CACHE_DIR / f"{safe_id}.json"
+
+
+def _save_integrated_preview_cache(result, file_name):
+    _INTEGRATED_PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    preview_id = uuid.uuid4().hex
+    path = _integrated_preview_cache_path(preview_id)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "file_name": file_name,
+                "rows": result["rows"],
+                "errors": result["errors"],
+                "summary": result["summary"],
+            },
+            fh,
+            ensure_ascii=False,
+        )
+    return preview_id
+
+
+def _load_integrated_preview_cache(preview_id: str):
+    path = _integrated_preview_cache_path(preview_id)
+    if not path.exists():
+        raise HTTPException(status_code=400, detail="预检结果已失效，请重新选择文件预检")
+    with path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 
@@ -1524,6 +1560,8 @@ async def import_integrated_preview(
     user=Depends(dv_current_user),
 ):
     dv_require_edit('data_visualization_data', user)
+    if not payload.file_data:
+        raise HTTPException(status_code=400, detail="请先选择整合 Excel 文件")
 
     import base64
     file_bytes = base64.b64decode(payload.file_data)
@@ -1535,8 +1573,10 @@ async def import_integrated_preview(
         result = _parse_integrated_excel(tmp_path)
     finally:
         os.unlink(tmp_path)
+    preview_id = _save_integrated_preview_cache(result, payload.file_name)
 
     return {
+        'preview_id': preview_id,
         'file_name': payload.file_name,
         'summary': result['summary'],
         'errors': result['errors'],
@@ -1554,22 +1594,34 @@ async def import_integrated_commit(
 ):
     dv_require_edit('data_visualization_data', user)
 
-    import base64
-    file_bytes = base64.b64decode(payload.file_data)
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
+    if payload.preview_id:
+        cached = _load_integrated_preview_cache(payload.preview_id)
+        result = {
+            'rows': cached.get('rows', []),
+            'errors': cached.get('errors', []),
+            'summary': cached.get('summary', {}),
+        }
+        file_name = cached.get('file_name') or payload.file_name
+    else:
+        if not payload.file_data:
+            raise HTTPException(status_code=400, detail="预检结果已失效，请重新选择文件预检")
+        import base64
+        file_bytes = base64.b64decode(payload.file_data)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
 
-    try:
-        result = _parse_integrated_excel(tmp_path)
-    finally:
-        os.unlink(tmp_path)
+        try:
+            result = _parse_integrated_excel(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+        file_name = payload.file_name
 
     rows = result['rows']
     if result['errors']:
         raise HTTPException(status_code=400, detail=f'整合 Excel 存在 {len(result["errors"])} 条错误，无法导入')
 
-    batch_id = _import_integrated_points(rows, payload.file_name, user['name'])
+    batch_id = _import_integrated_points(rows, file_name, user['name'])
     return {
         'batch_id': batch_id,
         'summary': result['summary'],

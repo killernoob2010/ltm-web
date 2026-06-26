@@ -2314,8 +2314,6 @@ dvImportFile.addEventListener("change", async function() {
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-    dvState.uploadFile = base64;
-
     var headers = {};
     if (state.token) headers.Authorization = "Bearer " + state.token;
     headers["Content-Type"] = "application/json";
@@ -2333,6 +2331,7 @@ dvImportFile.addEventListener("change", async function() {
 
     var preview = await response.json();
     dvState.previewData = preview;
+    dvState.uploadFile = null;
 
     var summary = preview.summary || {};
     var errors = preview.errors || [];
@@ -2376,8 +2375,8 @@ dvCommitImportBtn.addEventListener("click", async function() {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
-        file_data: dvState.uploadFile,
         file_name: dvState.uploadFileName,
+        preview_id: dvState.previewData.preview_id,
       }),
     });
     dvState.previewData = null;

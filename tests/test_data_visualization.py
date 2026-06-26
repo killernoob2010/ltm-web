@@ -6,6 +6,8 @@ from app.data_visualization import (
     compute_business_week,
     _parse_integrated_excel,
     _import_integrated_points,
+    _load_integrated_preview_cache,
+    _save_integrated_preview_cache,
     _split_filter_values,
     _to_date,
     _to_float,
@@ -159,6 +161,22 @@ def test_integrated_import_replaces_previous_batch(tmp_path, monkeypatch):
     assert batch_count == 1
     assert point["value"] == 120.0
     assert point["source_file"] == "second.xlsx"
+
+
+def test_integrated_preview_cache_roundtrip():
+    result = {
+        "rows": [{"week_start": "2026-06-01", "metric_type": "inventory"}],
+        "errors": [],
+        "summary": {"total_points": 1},
+    }
+
+    preview_id = _save_integrated_preview_cache(result, "historical.xlsx")
+    cached = _load_integrated_preview_cache(preview_id)
+
+    assert cached["file_name"] == "historical.xlsx"
+    assert cached["rows"] == result["rows"]
+    assert cached["errors"] == []
+    assert cached["summary"]["total_points"] == 1
 
 
 def test_integrate_mysteel_files_local_templates():
