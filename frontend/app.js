@@ -1789,6 +1789,7 @@ let dvState = {
   lastChartData: null,
   chartFilters: null,
   dataFilters: null,
+  highlightedLineKey: null,
 };
 
 const DV_PAGE_SIZE = 50;
@@ -2455,7 +2456,7 @@ async function loadDVChart() {
 }
 
 function renderDVChart(series, viewMode) {
-  // series = { "卡粉": { "2023": [{week_no, display_date, value}, ...], ... }, ... }
+  // series = { "卡粉": { "2023": [{week_no, display_date, value, is_missing_filled}, ...], ... }, ... }
   initDVCanvasSize();
   var W, H, ctx;
   W = dvChartCanvas.parentElement.clientWidth;
@@ -2474,7 +2475,7 @@ function renderDVChart(series, viewMode) {
   }
 
   // Collect all (product, year) → data point arrays
-  var lines = []; // [{product, year, points: [{week_no, value, display_date}]}]
+  var lines = []; // [{product, year, points: [{week_no, value, display_date, is_missing_filled}]}]
   var allVals = [];
 
   for (var pi = 0; pi < products.length; pi++) {
@@ -2487,10 +2488,18 @@ function renderDVChart(series, viewMode) {
       lines.push({
         product: prod,
         year: yr,
-        points: pts.map(function(p) { return { week_no: p.week_no, value: p.value, display_date: p.display_date }; })
+        points: pts.map(function(p) {
+          return {
+            week_no: p.week_no,
+            value: p.value,
+            display_date: p.display_date,
+            is_missing_filled: !!p.is_missing_filled
+          };
+        })
       });
       for (var i = 0; i < pts.length; i++) {
-        allVals.push(pts[i].value);
+        var numericValue = getChartPointNumericValue(pts[i]);
+        if (numericValue !== null) allVals.push(numericValue);
       }
     }
   }
@@ -2574,13 +2583,20 @@ function renderDVChart(series, viewMode) {
   }
 
   // Draw lines
-  var highlightedYear = dvState.highlightedYear || null;
+  var highlightedLineKey = dvState.highlightedLineKey || null;
+  var availableLineKeys = lines.map(function(line) {
+    return products.length > 1 ? (line.product + " " + line.year) : line.year;
+  });
+  if (highlightedLineKey && availableLineKeys.indexOf(highlightedLineKey) < 0) {
+    highlightedLineKey = null;
+    dvState.highlightedLineKey = null;
+  }
   for (var li2 = 0; li2 < lines.length; li2++) {
     var line = lines[li2];
     var lineKey = products.length > 1 ? (line.product + " " + line.year) : line.year;
     var color = lineColorMap[lineKey] || yearColorMap[line.year];
-    var alpha = highlightedYear && highlightedYear !== line.year ? 0.12 : 1;
-    var lineW = highlightedYear === line.year ? 3 : 1.8;
+    var alpha = highlightedLineKey && highlightedLineKey !== lineKey ? 0.12 : 1;
+    var lineW = highlightedLineKey === lineKey ? 3 : 1.8;
 
     ctx.strokeStyle = color;
     ctx.globalAlpha = alpha;
@@ -2591,20 +2607,35 @@ function renderDVChart(series, viewMode) {
     var pts2 = line.points;
     var firstPoint = true;
     for (var pi3 = 0; pi3 < pts2.length; pi3++) {
+      if (isMissingChartPoint(pts2[pi3])) {
+        firstPoint = true;
+        continue;
+      }
       var x = xScale(pts2[pi3].week_no);
-      var y2 = yScale(pts2[pi3].value);
+      var y2 = yScale(getChartPointNumericValue(pts2[pi3]));
       if (firstPoint) { ctx.moveTo(x, y2); firstPoint = false; }
       else ctx.lineTo(x, y2);
     }
     ctx.stroke();
     ctx.setLineDash([]);
+    for (var missIndex = 0; missIndex < pts2.length; missIndex++) {
+      if (isMissingChartPoint(pts2[missIndex])) {
+        drawMissingChartMarker(ctx, xScale(pts2[missIndex].week_no), dpad.top + chartH - 8, color, highlightedLineKey === lineKey ? 4 : 3);
+      }
+    }
     ctx.globalAlpha = 1;
 
     // Single-product chart keeps a small line-end year label. Multi-product charts use a legend to avoid overlap.
-    if (pts2.length && products.length === 1) {
-      var lastP = pts2[pts2.length - 1];
+    var lastP = null;
+    for (var lastIndex = pts2.length - 1; lastIndex >= 0; lastIndex--) {
+      if (!isMissingChartPoint(pts2[lastIndex])) {
+        lastP = pts2[lastIndex];
+        break;
+      }
+    }
+    if (lastP && products.length === 1) {
       var lx = xScale(lastP.week_no);
-      var ly = yScale(lastP.value);
+      var ly = yScale(getChartPointNumericValue(lastP));
       ctx.fillStyle = color;
       ctx.font = "bold 11px sans-serif";
       ctx.textAlign = "left";
@@ -2617,16 +2648,21 @@ function renderDVChart(series, viewMode) {
   }
 
   // Draw data point nodes for highlighted line
-  if (highlightedYear) {
+  if (highlightedLineKey) {
     for (var li3 = 0; li3 < lines.length; li3++) {
-      if (lines[li3].year === highlightedYear) {
+      var nodeLineKey = products.length > 1 ? (lines[li3].product + " " + lines[li3].year) : lines[li3].year;
+      if (nodeLineKey === highlightedLineKey) {
         var hpts = lines[li3].points;
         ctx.fillStyle = products.length > 1
-          ? (lineColorMap[lines[li3].product + " " + lines[li3].year] || yearColorMap[highlightedYear])
-          : yearColorMap[highlightedYear];
+          ? (lineColorMap[nodeLineKey] || yearColorMap[lines[li3].year])
+          : yearColorMap[lines[li3].year];
         for (var pi4 = 0; pi4 < hpts.length; pi4++) {
           var px = xScale(hpts[pi4].week_no);
-          var py = yScale(hpts[pi4].value);
+          if (isMissingChartPoint(hpts[pi4])) {
+            drawMissingChartMarker(ctx, px, dpad.top + chartH - 8, ctx.fillStyle, 4);
+            continue;
+          }
+          var py = yScale(getChartPointNumericValue(hpts[pi4]));
           ctx.beginPath();
           ctx.arc(px, py, 3, 0, Math.PI * 2);
           ctx.fill();
@@ -2636,28 +2672,39 @@ function renderDVChart(series, viewMode) {
     }
   }
 
-  // Click to highlight a year
+  // Click to highlight one product-year line.
   dvChartCanvas.onclick = function(e) {
     var rect = dvChartCanvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
 
-    var closestYr = null;
+    var closestLineKey = null;
     var closestDist = Infinity;
     for (var li3 = 0; li3 < lines.length; li3++) {
       var ln = lines[li3];
+      var clickLineKey = products.length > 1 ? (ln.product + " " + ln.year) : ln.year;
+      var prevValid = null;
       for (var pi4 = 0; pi4 < ln.points.length; pi4++) {
+        if (isMissingChartPoint(ln.points[pi4])) {
+          prevValid = null;
+          continue;
+        }
         var px = xScale(ln.points[pi4].week_no);
-        var py = yScale(ln.points[pi4].value);
+        var py = yScale(getChartPointNumericValue(ln.points[pi4]));
         var dist = Math.hypot(mx - px, my - py);
+        if (prevValid) {
+          dist = Math.min(dist, distanceToSegment(mx, my, xScale(prevValid.week_no), yScale(getChartPointNumericValue(prevValid)), px, py));
+        }
         if (dist < closestDist && dist < 30) {
           closestDist = dist;
-          closestYr = ln.year;
+          closestLineKey = clickLineKey;
         }
+        prevValid = ln.points[pi4];
       }
     }
-    if (closestYr) {
-      dvState.highlightedYear = dvState.highlightedYear === closestYr ? null : closestYr;
+    if (closestLineKey) {
+      dvState.highlightedLineKey = dvState.highlightedLineKey === closestLineKey ? null : closestLineKey;
+      dvState.highlightedYear = null;
       renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
     }
   };
@@ -2673,9 +2720,11 @@ function renderDVChart(series, viewMode) {
       var ln2 = lines[li4];
       for (var pi5 = 0; pi5 < ln2.points.length; pi5++) {
         var px2 = xScale(ln2.points[pi5].week_no);
-        var py2 = yScale(ln2.points[pi5].value);
+        var py2 = isMissingChartPoint(ln2.points[pi5])
+          ? dpad.top + chartH - 8
+          : yScale(getChartPointNumericValue(ln2.points[pi5]));
         if (Math.hypot(mx - px2, my - py2) < 15) {
-          tooltip = ln2.points[pi5].display_date + " | W" + String(ln2.points[pi5].week_no).padStart(2, "0") + " | " + ln2.product + " | " + ln2.year + " | " + formatChartNumber(ln2.points[pi5].value);
+          tooltip = formatDVChartTooltip(ln2.points[pi5], ln2.product);
           break;
         }
       }
@@ -2684,11 +2733,57 @@ function renderDVChart(series, viewMode) {
   };
 }
 
+function isMissingChartPoint(point) {
+  if (!point) return true;
+  if (point.is_missing_filled) return true;
+  if (point.value === null || point.value === undefined || point.value === "") return true;
+  return !Number.isFinite(Number(point.value));
+}
+
+function getChartPointNumericValue(point) {
+  if (isMissingChartPoint(point)) return null;
+  return Number(point.value);
+}
+
+function formatDVChartTooltip(point, product) {
+  var parts = [];
+  if (point.display_date) parts.push(point.display_date);
+  parts.push("Week " + (point.week_no || "--"));
+  parts.push(product);
+  parts.push(isMissingChartPoint(point) ? "无数据" : formatChartNumber(getChartPointNumericValue(point)));
+  return parts.join(" | ");
+}
+
+function drawMissingChartMarker(ctx, x, y, color, radius) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = "#ffffff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - radius + 1, y + radius - 1);
+  ctx.lineTo(x + radius - 1, y - radius + 1);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  var dx = x2 - x1;
+  var dy = y2 - y1;
+  if (dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+  var t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
 function renderDVChartAtlas(ctx, W, H, series, products) {
   var cols = W >= 1100 ? 3 : (W >= 760 ? 2 : 1);
-  var panelGap = 18;
+  var panelGap = 28;
   var panelW = (W - panelGap * (cols - 1)) / cols;
-  var panelH = 220;
+  var panelH = 190;
   var rows = Math.ceil(products.length / cols);
   var dpr = window.devicePixelRatio || 1;
   dvChartCanvas.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) * dpr;
@@ -2710,18 +2805,33 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
   });
 
   var hitPoints = [];
+  var highlightedLineKey = dvState.highlightedLineKey || null;
+  var availableLineKeys = [];
+  products.forEach(function(product) {
+    Object.keys(series[product] || {}).forEach(function(year) {
+      availableLineKeys.push(product + " " + year);
+    });
+  });
+  if (highlightedLineKey && availableLineKeys.indexOf(highlightedLineKey) < 0) {
+    highlightedLineKey = null;
+    dvState.highlightedLineKey = null;
+  }
+
   products.forEach(function(product, index) {
     var col = index % cols;
     var row = Math.floor(index / cols);
     var x0 = col * (panelW + panelGap);
     var y0 = row * (panelH + panelGap);
-    var pad = { top: 24, right: 16, bottom: 30, left: 44 };
+    var pad = { top: 22, right: 34, bottom: 28, left: 40 };
     var chartW = panelW - pad.left - pad.right;
     var chartH = panelH - pad.top - pad.bottom;
     var productSeries = series[product] || {};
     var vals = [];
     Object.keys(productSeries).forEach(function(year) {
-      productSeries[year].forEach(function(point) { vals.push(point.value); });
+      productSeries[year].forEach(function(point) {
+        var numericValue = getChartPointNumericValue(point);
+        if (numericValue !== null) vals.push(numericValue);
+      });
     });
     if (!vals.length) return;
     var yMin = Math.min.apply(null, vals);
@@ -2755,27 +2865,48 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
     Object.keys(productSeries).sort().forEach(function(year) {
       var pts = productSeries[year];
       var color = yearColorMap[year];
-      var highlightedYear = dvState.highlightedYear || null;
-      var alpha = highlightedYear && highlightedYear !== year ? 0.16 : 1;
+      var lineKey = product + " " + year;
+      var alpha = highlightedLineKey && highlightedLineKey !== lineKey ? 0.16 : 1;
       ctx.strokeStyle = color;
       ctx.globalAlpha = alpha;
-      ctx.lineWidth = highlightedYear === year ? 2.6 : 1.4;
+      ctx.lineWidth = highlightedLineKey === lineKey ? 2.6 : 1.4;
       ctx.beginPath();
-      pts.forEach(function(point, pointIndex) {
+      var firstValidPoint = true;
+      pts.forEach(function(point) {
+        if (isMissingChartPoint(point)) {
+          firstValidPoint = true;
+          return;
+        }
         var px = xScale(point.week_no);
-        var py = yScale(point.value);
-        if (pointIndex === 0) ctx.moveTo(px, py);
+        var py = yScale(getChartPointNumericValue(point));
+        if (firstValidPoint) {
+          ctx.moveTo(px, py);
+          firstValidPoint = false;
+        }
         else ctx.lineTo(px, py);
-        if (!highlightedYear || highlightedYear === year) {
-          hitPoints.push({ x: px, y: py, year: year, product: product, point: point });
+        if (!highlightedLineKey || highlightedLineKey === lineKey) {
+          hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
         }
       });
       ctx.stroke();
-      if (highlightedYear === year) {
+      pts.forEach(function(point) {
+        if (!isMissingChartPoint(point)) return;
+        var px = xScale(point.week_no);
+        var py = y0 + pad.top + chartH - 7;
+        drawMissingChartMarker(ctx, px, py, color, highlightedLineKey === lineKey ? 4 : 3);
+        if (!highlightedLineKey || highlightedLineKey === lineKey) {
+          hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
+        }
+      });
+      if (highlightedLineKey === lineKey) {
         ctx.fillStyle = color;
         pts.forEach(function(point) {
+          if (isMissingChartPoint(point)) {
+            drawMissingChartMarker(ctx, xScale(point.week_no), y0 + pad.top + chartH - 7, color, 4);
+            return;
+          }
           ctx.beginPath();
-          ctx.arc(xScale(point.week_no), yScale(point.value), 2.5, 0, Math.PI * 2);
+          ctx.arc(xScale(point.week_no), yScale(getChartPointNumericValue(point)), 2.5, 0, Math.PI * 2);
           ctx.fill();
         });
       }
@@ -2787,11 +2918,59 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
     var rect = dvChartCanvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
-    var closest = hitPoints.find(function(item) {
-      return Math.hypot(mx - item.x, my - item.y) < 16;
+    var closest = null;
+    var closestDist = Infinity;
+    products.forEach(function(product, index) {
+      var col = index % cols;
+      var row = Math.floor(index / cols);
+      var x0 = col * (panelW + panelGap);
+      var y0 = row * (panelH + panelGap);
+      var pad = { top: 22, right: 34, bottom: 28, left: 40 };
+      var chartW = panelW - pad.left - pad.right;
+      var chartH = panelH - pad.top - pad.bottom;
+      var productSeries = series[product] || {};
+      var vals = [];
+      Object.keys(productSeries).forEach(function(year) {
+        productSeries[year].forEach(function(point) {
+          var numericValue = getChartPointNumericValue(point);
+          if (numericValue !== null) vals.push(numericValue);
+        });
+      });
+      if (!vals.length) return;
+      var yMin = Math.min.apply(null, vals);
+      var yMax = Math.max.apply(null, vals);
+      var yPad = (yMax - yMin) * 0.08 || 20;
+      yMin = Math.max(0, yMin - yPad);
+      yMax = yMax + yPad;
+      function xScaleClick(weekNo) { return x0 + pad.left + ((weekNo - 1) / 51) * chartW; }
+      function yScaleClick(value) { return y0 + pad.top + chartH - ((value - yMin) / (yMax - yMin)) * chartH; }
+
+      Object.keys(productSeries).sort().forEach(function(year) {
+        var pts = productSeries[year];
+        var lineKey = product + " " + year;
+        var prevValid = null;
+        for (var pi = 0; pi < pts.length; pi++) {
+          if (isMissingChartPoint(pts[pi])) {
+            prevValid = null;
+            continue;
+          }
+          var px = xScaleClick(pts[pi].week_no);
+          var py = yScaleClick(getChartPointNumericValue(pts[pi]));
+          var dist = Math.hypot(mx - px, my - py);
+          if (prevValid) {
+            dist = Math.min(dist, distanceToSegment(mx, my, xScaleClick(prevValid.week_no), yScaleClick(getChartPointNumericValue(prevValid)), px, py));
+          }
+          if (dist < closestDist && dist < 18) {
+            closestDist = dist;
+            closest = { lineKey: lineKey };
+          }
+          prevValid = pts[pi];
+        }
+      });
     });
     if (closest) {
-      dvState.highlightedYear = dvState.highlightedYear === closest.year ? null : closest.year;
+      dvState.highlightedLineKey = dvState.highlightedLineKey === closest.lineKey ? null : closest.lineKey;
+      dvState.highlightedYear = null;
       renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
     }
   };
@@ -2804,7 +2983,7 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
       return Math.hypot(mx - item.x, my - item.y) < 12;
     });
     dvChartCanvas.title = closest
-      ? closest.point.display_date + " | W" + String(closest.point.week_no).padStart(2, "0") + " | " + closest.product + " | " + closest.year + " | " + formatChartNumber(closest.point.value)
+      ? formatDVChartTooltip(closest.point, closest.product)
       : "";
   };
 }

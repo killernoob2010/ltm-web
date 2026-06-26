@@ -2089,10 +2089,19 @@ async def get_chart(
                             "value": 0.0,
                             "is_manual_override": False,
                             "is_missing_filled": False,
+                            "_has_value": False,
                         }
-                    aggregate[key]["value"] += float(row["value"] or 0)
+                    is_missing = row["value"] is None or (not bool(row["is_calculable"]) and metric == "apparent_demand")
+                    if is_missing:
+                        aggregate[key]["is_missing_filled"] = True
+                    else:
+                        aggregate[key]["value"] += float(row["value"])
+                        aggregate[key]["_has_value"] = True
                 result_agg: Dict[str, Dict[str, List[Dict]]] = {}
                 for (label, year, _week_no, _display_date), item in sorted(aggregate.items()):
+                    has_value = item.pop("_has_value", False)
+                    if item["is_missing_filled"] or not has_value:
+                        item["value"] = None
                     result_agg.setdefault(label, {}).setdefault(year, []).append(item)
                 return {"metric": metric, "series": result_agg}
 

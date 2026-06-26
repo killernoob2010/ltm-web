@@ -45,3 +45,11 @@ test("integrated import commit shows progress and times out instead of hanging f
   assert.match(appJs, /AbortController/);
   assert.match(appJs, /导入超时/);
 });
+
+test("data visualization chart treats missing points as gaps", () => {
+  assert.match(appJs, /function isMissingChartPoint\(point\)/);
+  assert.match(appJs, /function formatDVChartTooltip\(point, product\)/);
+  assert.match(appJs, /isMissingChartPoint\(point\) \? "无数据"/);
+  assert.match(appJs, /firstPoint = true;\s+continue;/);
+  assert.doesNotMatch(appJs, /ln2\.product \+ " \| " \+ ln2\.year \+ " \| " \+ formatChartNumber/);
+});
