@@ -60,7 +60,8 @@ test("sidebar groups are collapsible and visually emphasize group titles", () =>
   assert.match(appJs, /menu-group-items/);
   assert.match(appJs, /collapsedMenuGroups/);
   assert.match(stylesCss, /\.menu-group-title/);
-  assert.match(stylesCss, /font-size: 14px/);
+  assert.match(stylesCss, /font-size: 15px/);
+  assert.match(stylesCss, /\.menu-item \{\s+width: 100%;[\s\S]*font-size: 14px/);
   assert.match(stylesCss, /\.menu-group\.collapsed \.menu-group-items/);
 });
 
