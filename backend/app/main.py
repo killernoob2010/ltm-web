@@ -29,6 +29,7 @@ from .cache_service import (
 )
 from .info_summary_backfill import BackfillRequest, run_all_info_summary_backfills, get_last_backfill_status
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
+from . import data_visualization
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -43,6 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+app.include_router(data_visualization.router, prefix="/api")
 
 
 class LoginRequest(BaseModel):
@@ -1060,7 +1062,14 @@ def calculate_missing_cache_from_prices(payload: InfoCalculateIn) -> Optional[di
 
 @app.on_event("startup")
 def startup() -> None:
-    db.init_db()
+    def initialize_database() -> None:
+        try:
+            db.init_db()
+            data_visualization.seed_dv_data()
+        except Exception as exc:
+            print(f"[startup] database initialization skipped: {exc}")
+
+    threading.Thread(target=initialize_database, daemon=True).start()
     start_alert_monitor()
 
 

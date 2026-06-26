@@ -17,5 +17,5 @@ test("positive PnL is red and negative PnL is green", () => {
 });
 
 test("PnL color stylesheet URL is cache busted", () => {
-  assert.match(indexHtml, /href="\/static\/styles\.css\?v=pnl-colors-\d+"/);
+  assert.match(indexHtml, /href="\/static\/styles\.css\?v=[^"]+"/);
 });

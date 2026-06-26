@@ -123,7 +123,7 @@ select {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
 }
@@ -144,8 +144,7 @@ select {
   font-size: 17px;
 }
 
-.brand span,
-.menu-group-title {
+.brand span {
   color: var(--sidebar-muted);
   font-size: 12px;
 }
@@ -155,7 +154,41 @@ select {
 }
 
 .menu-group-title {
-  margin: 0 0 8px 8px;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f7fb;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-group-title:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.menu-group-toggle {
+  width: 16px;
+  color: #9fb0c0;
+  text-align: center;
+  font-size: 13px;
+}
+
+.menu-group-items {
+  display: block;
+}
+
+.menu-group.collapsed .menu-group-items {
+  display: none;
 }
 
 .menu-item {
@@ -166,6 +199,10 @@ select {
   background: transparent;
   color: #dfe7ef;
   text-align: left;
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
 .menu-item:hover,
@@ -174,6 +211,7 @@ select {
 }
 
 .workspace {
+  overflow: hidden;
   min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -286,6 +324,8 @@ select {
 
 .page {
   padding: 20px 24px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .toolbar {
@@ -708,3 +748,464 @@ dialog::backdrop {
 
 /* 用户管理选中行 */
 
+
+/* ── 数据可视化管理 ───────────────────────────────────── */
+
+.dv-tabs {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.dv-tabs-after-filters {
+  margin: 12px 0 0;
+}
+
+.dv-chart-tabs-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.dv-year-legend {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dv-year-legend-item {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.dv-year-legend-swatch {
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.dv-tab {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: #f3f5f7;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dv-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  border-bottom: 2px solid var(--primary);
+}
+
+.dv-tab:hover:not(.active) {
+  background: #e8ecf0;
+  color: var(--text);
+}
+
+.dv-value-cell {
+  cursor: pointer;
+  position: relative;
+  min-width: 48px;
+  max-width: 72px;
+  padding: 4px 8px;
+  font-size: 13px;
+  text-align: right;
+}
+
+.dv-value-cell.manual-override {
+  background: #fef9e7;
+}
+
+.dv-value-cell.manual-override::after {
+  content: " ✎";
+  color: #b7950b;
+  font-size: 11px;
+}
+
+.dv-value-cell.missing-filled {
+  color: var(--muted);
+  font-style: italic;
+}
+
+#dvDataTable th {
+  min-width: 48px;
+  max-width: 72px;
+  padding: 6px 8px;
+  font-size: 13px;
+  text-align: right;
+}
+
+#dvDataTable th:first-child,
+#dvDataTable th:nth-child(2) {
+  text-align: center;
+  min-width: 72px;
+  max-width: 88px;
+}
+
+.dv-inline-input {
+  width: 100%;
+  min-height: 28px;
+  border: 2px solid var(--primary);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 14px;
+}
+
+.dv-chart-controls-row {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 6px;
+  margin-top: 8px;
+  background: #f8fafc;
+}
+
+.dv-chart-controls {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(150px, max-content) minmax(0, 1fr);
+  gap: 14px 32px;
+  align-items: start;
+  width: 100%;
+}
+
+.dv-chart-controls > .dv-control-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 7px;
+  min-height: 32px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dv-chart-controls select {
+  min-width: 128px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 28px 3px 8px;
+  font-size: 13px;
+  background: var(--surface);
+}
+
+.dv-view-mode-field {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.dv-product-pool-field {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+#dvDataPage .dv-product-pool-field {
+  grid-column: 1;
+}
+
+.dv-year-panel {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+#dvDataPage .dv-year-panel {
+  grid-column: 2;
+}
+
+.dv-product-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.dv-chart-controls select[multiple] {
+  min-height: 100px;
+  min-width: 84px;
+}
+
+.chart-container {
+  position: relative;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 12px;
+  height: min(62vh, 620px);
+  min-height: 420px;
+  overflow: auto;
+}
+
+.chart-container canvas {
+  display: block;
+  width: 100%;
+  min-width: 760px;
+}
+
+.dv-chart-status {
+  text-align: center;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.dv-preview-stats {
+  margin-bottom: 12px;
+  padding: 10px;
+  background: #f8fafb;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.dv-preview-section {
+  margin-top: 12px;
+}
+
+.dv-preview-section h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.dv-import-dialog {
+  max-width: 680px !important;
+}
+
+.file-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.dv-integration-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.dv-summary-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.dv-summary-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.dv-summary-item strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.empty-cell {
+  color: var(--muted);
+  text-align: center;
+  padding: 32px 0;
+}
+
+.error-cell {
+  color: var(--danger);
+  text-align: center;
+}
+
+.dv-chart-hint {
+  color: var(--muted);
+  font-size: 12px;
+  align-self: center;
+}
+
+
+/* ── DV filter row (data table year filter) ── */
+.dv-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+}
+
+.dv-filter-label {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+  min-width: 36px;
+}
+
+.dv-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.dv-checkbox-label {
+  display: inline-flex;
+  flex-flow: row nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid #cfd8e3;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text);
+  cursor: pointer;
+  background: #fff;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.dv-checkbox-label:hover {
+  background: #eef2ff;
+  border-color: var(--primary);
+}
+
+.dv-checkbox-label input[type="checkbox"] {
+  flex: 0 0 12px;
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  min-height: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.dv-filter-btn {
+  min-width: 48px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dv-filter-btn:hover {
+  background: #eef2ff;
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+/* ── DV checkbox panel (chart controls) ── */
+.dv-checkbox-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.dv-checkbox-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dv-checkbox-panel-header .dv-filter-btn {
+  min-height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.dv-advanced-filters {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 7px 9px;
+  background: #fff;
+}
+
+.dv-advanced-filters summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dv-advanced-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, max-content) minmax(220px, max-content) minmax(0, 1fr);
+  gap: 14px 40px;
+  margin-top: 10px;
+}
+
+.dv-category-panel {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.dv-mainstream-panel {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.dv-country-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+@media (max-width: 1100px) {
+  .dv-chart-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dv-view-mode-field,
+  .dv-product-pool-field,
+  #dvDataPage .dv-product-pool-field,
+  .dv-year-panel,
+  #dvDataPage .dv-year-panel,
+  .dv-product-panel,
+  .dv-advanced-filters {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
+  .dv-advanced-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dv-category-panel,
+  .dv-mainstream-panel,
+  .dv-country-panel {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}

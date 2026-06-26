@@ -13,6 +13,7 @@ const state = {
   alertSettings: [],
   alertHistory: [],
   alertNotificationTimer: null,
+  alertNotificationInFlight: false,
   lastNotificationIds: new Set(),
   midConfig: { varieties: [], contracts: [] },
   infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], month_options_by_type: {}, inner_months: [] },
@@ -22,6 +23,7 @@ const state = {
   shJunnengSections: { today_trades: [], current_trades: [], settled_trades: [], totals: {} },
   selectedShJunnengId: null,
   settledOverview: { trades: [], totals: {}, contracts: [] },
+  collapsedMenuGroups: new Set(),
 };
 
 const loginView = document.querySelector("#loginView");
@@ -40,6 +42,47 @@ const riskAlertPage = document.querySelector("#riskAlertPage");
 const userManagementPage = document.querySelector("#userManagementPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
+const dvIntegrationPage = document.querySelector("#dvIntegrationPage");
+const dvIntegrationFiles = document.querySelector("#dvIntegrationFiles");
+const dvExportBtn = document.querySelector("#dvExportBtn");
+const dvIntegrationFileInfo = document.querySelector("#dvIntegrationFileInfo");
+const dvIntegrationStatus = document.querySelector("#dvIntegrationStatus");
+const dvIntegrationBatchInfo = document.querySelector("#dvIntegrationBatchInfo");
+const dvIntegrationSummary = document.querySelector("#dvIntegrationSummary");
+const dvDataPage = document.querySelector("#dvDataPage");
+const dvChartPage = document.querySelector("#dvChartPage");
+const dvDataTabs = document.querySelector("#dvDataTabs");
+const dvDataTbody = document.querySelector("#dvDataTbody");
+const dvChartTabs = document.querySelector("#dvChartTabs");
+const dvChartCanvas = document.querySelector("#dvChartCanvas");
+const dvChartStatus = document.querySelector("#dvChartStatus");
+const dvChartYearLegend = document.querySelector("#dvChartYearLegend");
+const dvChartViewMode = document.querySelector("#dvChartViewMode");
+const dvChartProductPool = document.querySelector("#dvChartProductPool");
+const dvDataProductPool = document.querySelector("#dvDataProductPool");
+const dvChartYearCheckboxes = document.querySelector("#dvChartYearCheckboxes");
+const dvChartProductCheckboxes = document.querySelector("#dvChartProductCheckboxes");
+const dvDataYearCheckboxes = document.querySelector("#dvDataYearCheckboxes");
+const dvDataYearAll = document.querySelector("#dvDataYearAll");
+const dvDataYearNone = document.querySelector("#dvDataYearNone");
+const dvChartYearAll = document.querySelector("#dvChartYearAll");
+const dvChartYearNone = document.querySelector("#dvChartYearNone");
+const dvChartProductAll = document.querySelector("#dvChartProductAll");
+const dvChartProductNone = document.querySelector("#dvChartProductNone");
+const dvDataProductCheckboxes = document.querySelector("#dvDataProductCheckboxes");
+const dvDataCategoryCheckboxes = document.querySelector("#dvDataCategoryCheckboxes");
+const dvDataCountryCheckboxes = document.querySelector("#dvDataCountryCheckboxes");
+const dvDataMainstreamCheckboxes = document.querySelector("#dvDataMainstreamCheckboxes");
+const dvDataProductAll = document.querySelector("#dvDataProductAll");
+const dvDataProductNone = document.querySelector("#dvDataProductNone");
+const dvChartCategoryCheckboxes = document.querySelector("#dvChartCategoryCheckboxes");
+const dvChartCountryCheckboxes = document.querySelector("#dvChartCountryCheckboxes");
+const dvChartMainstreamCheckboxes = document.querySelector("#dvChartMainstreamCheckboxes");
+const dvImportBtn = document.querySelector("#dvImportBtn");
+const dvImportDialog = document.querySelector("#dvImportDialog");
+const dvPreviewContent = document.querySelector("#dvPreviewContent");
+const dvCancelImportBtn = document.querySelector("#dvCancelImportBtn");
+const dvCommitImportBtn = document.querySelector("#dvCommitImportBtn");
 
 const infoCards = document.querySelector("#infoCards");
 const indicatorsTable = document.querySelector("#indicatorsTable");
@@ -121,6 +164,11 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function formatDateOnly(value) {
+  if (!value) return "-";
+  return String(value).slice(0, 10);
+}
+
 function money(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
@@ -187,30 +235,50 @@ function renderMenu() {
   menu.innerHTML = "";
   for (const group of state.modules) {
     const wrapper = document.createElement("section");
-    wrapper.className = "menu-group";
-    wrapper.innerHTML = `<p class="menu-group-title">${group.group}</p>`;
+    const isCollapsed = state.collapsedMenuGroups.has(group.group);
+    wrapper.className = `menu-group ${isCollapsed ? "collapsed" : ""}`;
+
+    const titleButton = document.createElement("button");
+    titleButton.type = "button";
+    titleButton.className = "menu-group-title";
+    titleButton.setAttribute("aria-expanded", String(!isCollapsed));
+    titleButton.innerHTML = `<span>${group.group}</span><span class="menu-group-toggle">${isCollapsed ? "+" : "−"}</span>`;
+    titleButton.addEventListener("click", function() {
+      if (state.collapsedMenuGroups.has(group.group)) {
+        state.collapsedMenuGroups.delete(group.group);
+      } else {
+        state.collapsedMenuGroups.add(group.group);
+      }
+      renderMenu();
+    });
+    wrapper.appendChild(titleButton);
+
+    const itemsWrap = document.createElement("div");
+    itemsWrap.className = "menu-group-items";
     for (const item of group.items) {
       const button = document.createElement("button");
       button.className = `menu-item ${item.code === state.activeModule ? "active" : ""}`;
       button.textContent = item.name;
-      button.addEventListener("click", () => activateModule(item.code));
-      wrapper.appendChild(button);
+      button.addEventListener("click", () => activateModule(item.code, item.name));
+      itemsWrap.appendChild(button);
     }
+    wrapper.appendChild(itemsWrap);
     menu.appendChild(wrapper);
   }
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
-async function activateModule(code) {
+async function activateModule(code, subName) {
   state.activeModule = code;
   stopMidEventAutoRefresh();
   stopInfoSummaryAutoRefresh();
-  renderMenu();
   const label = moduleLabel(code);
+  if (label.group) state.collapsedMenuGroups.delete(label.group);
+  renderMenu();
   pageTitle.textContent = label.name;
   pageSubtitle.textContent = `${label.group} / ${label.name}`;
 
@@ -240,6 +308,26 @@ async function activateModule(code) {
   if (code === "user_management") {
     showOnly(userManagementPage);
     await loadUserManagement();
+    return;
+  }
+  if (code === "data_visualization_integration") {
+    showOnly(dvIntegrationPage);
+    await loadDVIntegrationLatest();
+    return;
+  }
+  if (code === "data_visualization_data") {
+    showOnly(dvDataPage);
+    initDVData();
+    await loadDVTable("inventory");
+    return;
+  }
+  if (code === "data_visualization_chart") {
+    showOnly(dvChartPage);
+    if (!dvState.dvChartControlsInitialized) {
+      await initDVChartControls();
+      dvState.dvChartControlsInitialized = true;
+    }
+    await loadDVChart();
     return;
   }
 
@@ -1040,32 +1128,38 @@ function alertMessage(item) {
 
 async function loadNotifications(showNewToast = true) {
   if (!state.token) return;
-  const payload = await api("/api/risk-alert/notifications");
-  const items = payload.items || [];
-  notificationBadge.textContent = String(payload.count || 0);
-  notificationBadge.classList.toggle("hidden", !payload.count);
-  notificationList.innerHTML = items.length
-    ? items.map((item) => `
-      <button class="notification-item" data-id="${item.id}">
-        <strong>${item.info_type || "-"}</strong>
-        <span>${alertMessage(item)}</span>
-        <small>${item.alert_time || ""}</small>
-      </button>
-    `).join("")
-    : `<p class="empty-notification">暂无未读预警</p>`;
-  notificationList.querySelectorAll(".notification-item").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
-      await loadNotifications(false);
-      if (state.activeModule === "risk_alert") await loadRiskAlert();
+  if (state.alertNotificationInFlight) return;
+  state.alertNotificationInFlight = true;
+  try {
+    const payload = await api("/api/risk-alert/notifications");
+    const items = payload.items || [];
+    notificationBadge.textContent = String(payload.count || 0);
+    notificationBadge.classList.toggle("hidden", !payload.count);
+    notificationList.innerHTML = items.length
+      ? items.map((item) => `
+        <button class="notification-item" data-id="${item.id}">
+          <strong>${item.info_type || "-"}</strong>
+          <span>${alertMessage(item)}</span>
+          <small>${item.alert_time || ""}</small>
+        </button>
+      `).join("")
+      : `<p class="empty-notification">暂无未读预警</p>`;
+    notificationList.querySelectorAll(".notification-item").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
+        await loadNotifications(false);
+        if (state.activeModule === "risk_alert") await loadRiskAlert();
+      });
     });
-  });
-  if (showNewToast) {
-    for (const item of items) {
-      if (!state.lastNotificationIds.has(item.id)) showToast(alertMessage(item));
+    if (showNewToast) {
+      for (const item of items) {
+        if (!state.lastNotificationIds.has(item.id)) showToast(alertMessage(item));
+      }
     }
+    state.lastNotificationIds = new Set(items.map((item) => item.id));
+  } finally {
+    state.alertNotificationInFlight = false;
   }
-  state.lastNotificationIds = new Set(items.map((item) => item.id));
 }
 
 function startAlertNotifications() {
@@ -1073,7 +1167,7 @@ function startAlertNotifications() {
   loadNotifications(false).catch(() => {});
   state.alertNotificationTimer = window.setInterval(() => {
     loadNotifications(true).catch(() => {});
-  }, 5000);
+  }, 30000);
 }
 
 function stopAlertNotifications() {
@@ -1081,6 +1175,7 @@ function stopAlertNotifications() {
     window.clearInterval(state.alertNotificationTimer);
     state.alertNotificationTimer = null;
   }
+  state.alertNotificationInFlight = false;
 }
 
 async function loadRiskAlert() {
@@ -1705,3 +1800,1296 @@ cancelPermissionBtn.addEventListener("click", () => permissionDialog.close());
 searchLogsBtn.addEventListener("click", loadLogs);
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
+
+// ═══════════════════════════════════════════════════════════════
+// 数据可视化管理
+// ═══════════════════════════════════════════════════════════════
+
+let dvIntegrationUploadFiles = [];
+
+let dvState = {
+  currentMetric: "inventory",
+  chartMetric: "inventory",
+  selectedYears: [],
+  uploadFile: null,
+  uploadFileName: "",
+  previewData: null,
+  dvDataFilterInitialized: false,
+  dvChartControlsInitialized: false,
+  highlightedYear: null,
+  lastChartData: null,
+  chartFilters: null,
+  dataFilters: null,
+  highlightedLineKey: null,
+};
+
+const DV_PAGE_SIZE = 50;
+const DV_YEAR_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706", "#be185d", "#475569", "#15803d", "#b45309"];
+const DV_MONTH_AXIS_TICKS = [
+  { week: 3, label: "1月" },
+  { week: 7, label: "2月" },
+  { week: 11, label: "3月" },
+  { week: 16, label: "4月" },
+  { week: 20, label: "5月" },
+  { week: 24, label: "6月" },
+  { week: 29, label: "7月" },
+  { week: 33, label: "8月" },
+  { week: 37, label: "9月" },
+  { week: 42, label: "10月" },
+  { week: 46, label: "11月" },
+  { week: 50, label: "12月" },
+];
+const DV_CHART_PRODUCT_POOL_LABELS = {
+  mainstream: "主流矿",
+  non_mainstream: "非主流矿",
+  aggregate: "整体对比",
+  custom: "自定义",
+};
+
+async function loadDVIntegrationLatest() {
+  try {
+    const result = await api("/api/data-visualization/integration/latest");
+    if (result.batch && result.batch.id) {
+      dvIntegrationBatchInfo.textContent = "批次 " + result.batch.id + "｜" + (result.batch.created_at || "");
+      dvIntegrationStatus.textContent = "已读取最近整合结果";
+      const metrics = {};
+      (result.metrics || []).forEach(function(row) { metrics[row.metric_type] = row.c; });
+      const summary = result.summary || {};
+      summary.metrics = metrics;
+      renderDVIntegrationSummary(summary, [], result.merge_summary || {});
+    } else {
+      dvIntegrationBatchInfo.textContent = "";
+      dvIntegrationSummary.innerHTML = '<div class="empty-cell">暂无整合结果</div>';
+      if (dvIntegrationFileInfo) dvIntegrationFileInfo.textContent = "";
+      dvIntegrationStatus.textContent = "待整合";
+    }
+  } catch (error) {
+    dvIntegrationStatus.textContent = error.message;
+  }
+}
+
+function renderDVIntegrationSummary(summary, files, mergeSummary) {
+  const metrics = summary.metrics || {};
+  const merge = mergeSummary || {};
+  const items = [
+    ["文件数", files.length || "-"],
+    ["标准数据点", summary.total_points || 0],
+    ["库存", metrics.inventory || summary.inventory_count || 0],
+    ["发运", metrics.shipment || summary.shipment_count || 0],
+    ["到港", metrics.arrival || summary.arrival_count || 0],
+    ["表需", metrics.apparent_demand || summary.apparent_demand_count || 0],
+    ["品种数", summary.product_count || "-"],
+    ["周数", summary.week_count || "-"],
+    ["本次新增", merge.inserted || 0],
+    ["本次覆盖", merge.updated || 0],
+    ["本次跳过", merge.skipped || 0],
+    ["空值未覆盖", merge.skipped_blank_overwrite || 0],
+  ];
+  dvIntegrationSummary.innerHTML = items.map(function(item) {
+    return '<div class="dv-summary-item"><span>' + item[0] + '</span><strong>' + item[1] + '</strong></div>';
+  }).join("");
+  if (summary.warnings && summary.warnings.length) {
+    dvIntegrationSummary.innerHTML += '<div class="error-cell">' + summary.warnings.join("；") + '</div>';
+  }
+}
+
+async function fileToIntegrationPayload(file) {
+  const base64 = await new Promise(function(resolve, reject) {
+    const reader = new FileReader();
+    reader.onload = function() {
+      const result = reader.result || "";
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.substring(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  return { file_name: file.name, file_data: base64 };
+}
+
+async function uploadAndCommitIntegration() {
+  const files = Array.from(dvIntegrationFiles.files || []);
+  if (!files.length) return;
+  dvIntegrationStatus.textContent = "正在上传并整合...";
+  if (dvIntegrationFileInfo) dvIntegrationFileInfo.textContent = files.map(function(file) { return file.name; }).join("，");
+  dvIntegrationFiles.disabled = true;
+  dvIntegrationUploadFiles = [];
+  try {
+    for (const file of files) {
+      dvIntegrationUploadFiles.push(await fileToIntegrationPayload(file));
+    }
+    const result = await api("/api/data-visualization/integration/commit", {
+      method: "POST",
+      body: JSON.stringify({ files: dvIntegrationUploadFiles }),
+    });
+    renderDVIntegrationSummary(result.summary, result.files || [], result.merge_summary || {});
+    dvIntegrationBatchInfo.textContent = "批次 " + result.batch_id;
+    dvIntegrationStatus.textContent = "上传文件已整合，可下载 Excel";
+    dvState.dvDataFilterInitialized = false;
+    dvState.dvChartControlsInitialized = false;
+  } finally {
+    dvIntegrationUploadFiles = [];
+    dvIntegrationFiles.disabled = false;
+    dvIntegrationFiles.value = "";
+  }
+}
+
+async function exportIntegratedExcel() {
+  dvIntegrationStatus.textContent = "正在生成整合 Excel...";
+  const headers = {};
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  const response = await fetch("/api/data-visualization/integration/export", { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "下载失败");
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `iron_ore_integrated_${today()}.xlsx`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  dvIntegrationStatus.textContent = "整合 Excel 已下载";
+}
+
+dvIntegrationFiles.addEventListener("change", function() {
+  uploadAndCommitIntegration().catch(function(error) {
+    dvIntegrationStatus.textContent = error.message;
+  });
+});
+
+dvExportBtn.addEventListener("click", function() {
+  exportIntegratedExcel().catch(function(error) { dvIntegrationStatus.textContent = error.message; });
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────
+function getCheckedValues(container) {
+  var checked = container.querySelectorAll('input[type="checkbox"]:checked');
+  return Array.from(checked).map(function(cb) { return cb.value; });
+}
+
+function appendMultiSelectParam(url, paramName, selectedValues, totalCount) {
+  if (totalCount === 0 || selectedValues.length === totalCount) return url;
+  if (selectedValues.length === 0) {
+    return url + "&" + paramName + "=__EMPTY__";
+  }
+  return url + "&" + paramName + "=" + encodeURIComponent(selectedValues.join(","));
+}
+
+function selectAllCheckboxes(container) {
+  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = true; });
+}
+function selectNoneCheckboxes(container) {
+  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = false; });
+}
+
+async function buildYearCheckboxes(container, onChange) {
+  try {
+    var result = await api("/api/data-visualization/years");
+    var years = result.years || [];
+    container.innerHTML = "";
+    years.forEach(function(y) {
+      var label = document.createElement("label");
+      label.className = "dv-checkbox-label";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = String(y);
+      cb.checked = true;
+      cb.addEventListener("change", onChange);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(String(y)));
+      container.appendChild(label);
+    });
+  } catch (err) {
+    console.error("加载年份列表失败:", err);
+  }
+}
+
+function buildCheckboxes(container, items, onChange, checkedDefault) {
+  container.innerHTML = "";
+  items.forEach(function(item) {
+    var label = document.createElement("label");
+    label.className = "dv-checkbox-label";
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = item;
+    cb.checked = !!checkedDefault;
+    cb.addEventListener("change", onChange);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(item));
+    container.appendChild(label);
+  });
+}
+
+function initDVData() {
+  if (dvState.currentMetric !== "inventory") {
+    dvState.currentMetric = "inventory";
+  }
+  dvDataTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
+  var inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
+  if (inventoryTab) inventoryTab.classList.add("active");
+
+  if (!dvState.dvDataFilterInitialized) {
+    loadDVDataFilters();
+  }
+}
+
+function loadDVDataFilters() {
+  dvState.dvDataFilterInitialized = true;
+  api("/api/data-visualization/filters").then(function(filters) {
+    dvState.dataFilters = filters;
+    buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
+    applyDVDataProductPool();
+    buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); }, true);
+
+    if (dvDataProductPool) {
+      dvDataProductPool.onchange = function() {
+        applyDVDataProductPool();
+        loadDVTable(dvState.currentMetric);
+      };
+    }
+    dvDataProductAll.onclick = function() {
+      selectAllCheckboxes(dvDataProductCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    };
+    dvDataProductNone.onclick = function() {
+      selectNoneCheckboxes(dvDataProductCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    };
+
+    dvDataYearAll.onclick = function() {
+      selectAllCheckboxes(dvDataYearCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    };
+    dvDataYearNone.onclick = function() {
+      selectNoneCheckboxes(dvDataYearCheckboxes);
+      loadDVTable(dvState.currentMetric);
+    };
+  }).catch(function(err) {
+    console.error("加载筛选选项失败:", err);
+  });
+}
+
+function applyDVDataProductPool() {
+  var filters = dvState.dataFilters || {};
+  var pools = filters.product_pools || {};
+  var pool = dvDataProductPool ? dvDataProductPool.value : "mainstream";
+  var items = [];
+  if (pool === "mainstream") items = pools.mainstream || filters.products || [];
+  else if (pool === "non_mainstream") items = pools.non_mainstream || [];
+  else if (pool === "aggregate") items = pools.aggregate || ["主流矿合计", "非主流矿合计"];
+  else items = pools.custom || filters.products || [];
+
+  buildCheckboxes(dvDataProductCheckboxes, items, function() { loadDVTable(dvState.currentMetric); }, true);
+  if (pool === "aggregate") {
+    dvDataProductAll.disabled = true;
+    dvDataProductNone.disabled = true;
+  } else {
+    dvDataProductAll.disabled = false;
+    dvDataProductNone.disabled = false;
+  }
+}
+
+
+
+// ── Tabs ──────────────────────────────────────────────────────────────
+dvDataTabs.addEventListener("click", function(e) {
+  var tab = e.target.closest(".dv-tab");
+  if (!tab) return;
+  dvDataTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
+  tab.classList.add("active");
+  dvState.currentMetric = tab.dataset.metric;
+  loadDVTable(dvState.currentMetric);
+});
+
+dvChartTabs.addEventListener("click", function(e) {
+  var tab = e.target.closest(".dv-tab");
+  if (!tab) return;
+  dvChartTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
+  tab.classList.add("active");
+  dvState.chartMetric = tab.dataset.metric;
+  loadDVChart();
+});
+
+// ── Table loading ─────────────────────────────────────────────────────
+async function loadDVTable(metric) {
+  try {
+    var yearsArr = getCheckedValues(dvDataYearCheckboxes);
+    var productsArr = getCheckedValues(dvDataProductCheckboxes);
+    var categoriesArr = getCheckedValues(dvDataCategoryCheckboxes);
+    var countriesArr = getCheckedValues(dvDataCountryCheckboxes);
+    var mainstreamArr = getCheckedValues(dvDataMainstreamCheckboxes);
+    var productPool = dvDataProductPool ? dvDataProductPool.value : "mainstream";
+    var url = "/api/data-visualization/table?metric=" + encodeURIComponent(metric);
+    url = appendMultiSelectParam(url, "years", yearsArr, dvDataYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    if (productPool === "aggregate") {
+      url += "&product_pool=aggregate";
+    } else {
+      url += "&product_pool=" + encodeURIComponent(productPool);
+      if (productPool === "custom") {
+        url = appendMultiSelectParam(url, "products", productsArr, dvDataProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+      } else if (productsArr.length === 0) {
+        url += "&products=__EMPTY__";
+      } else {
+        url += "&products=" + encodeURIComponent(productsArr.join(","));
+      }
+    }
+    url = appendMultiSelectParam(url, "categories", categoriesArr, dvDataCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "source_countries", countriesArr, dvDataCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    var result = await api(url);
+    renderDVTable(result);
+  } catch (err) {
+    dvDataTbody.innerHTML = '<tr><td colspan="14" class="error-cell">加载失败: ' + err.message + '</td></tr>';
+  }
+}
+
+function renderDVTable(result) {
+  var data = result.data || [];
+  var products = result.products || [];
+  var productCount = products.length;
+
+  if (!data.length) {
+    dvDataTbody.innerHTML = '<tr><td colspan="' + (2 + productCount) + '" class="empty-cell">暂无数据，请先导入</td></tr>';
+    return;
+  }
+
+  var thead = document.querySelector('#dvDataTable thead');
+  if (thead) {
+    thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
+      products.map(function(p) { return '<th>' + p + '</th>'; }).join('') +
+      '</tr>';
+  }
+
+  dvDataTbody.innerHTML = data
+    .map(function(row) {
+      var cells = '';
+      for (var pi = 0; pi < products.length; pi++) {
+        var p = products[pi];
+        var pd = row[p] || {};
+        var val = pd.value;
+        var id = pd.id || '';
+        var cls = 'dv-value-cell';
+        if (pd.is_manual_override) cls += ' manual-override';
+        if (pd.is_missing_filled) cls += ' missing-filled';
+        var title = tooltipText(pd);
+        cells += '<td class="' + cls + '" data-id="' + id + '" data-value="' + (val != null ? val : '') + '" title="' + title + '">' +
+          (val != null ? formatNumber(val) : '-') + '</td>';
+      }
+      return '<tr><td>' + formatDateOnly(row.date) + '</td><td>' + row.week + '</td>' + cells + '</tr>';
+    })
+    .join('');
+
+  attachInlineEdit();
+}
+
+function tooltipText(row) {
+  var parts = [];
+  if (row.is_manual_override) parts.push("人工修正");
+  if (row.is_missing_filled) parts.push("缺失补0");
+  if (row.source) parts.push("来源: " + row.source);
+  if (row.updated_by) parts.push("修改人: " + row.updated_by);
+  return parts.join(" | ");
+}
+
+function formatNumber(val) {
+  if (val == null) return "-";
+  if (Number.isInteger(val)) return val.toString();
+  return val.toFixed(2);
+}
+
+function formatChartNumber(val) {
+  if (val == null) return "-";
+  if (Number.isInteger(val)) return val.toString();
+  return Math.round(val).toString();
+}
+
+function buildYearColorMap(years) {
+  var map = {};
+  years.forEach(function(year, index) {
+    map[year] = DV_YEAR_COLORS[index % DV_YEAR_COLORS.length];
+  });
+  return map;
+}
+
+function updateDVChartYearLegend(years, yearColorMap, visible) {
+  if (!dvChartYearLegend) return;
+  if (!visible || !years.length) {
+    dvChartYearLegend.innerHTML = "";
+    return;
+  }
+  dvChartYearLegend.innerHTML = years.map(function(year) {
+    return '<span class="dv-year-legend-item"><span class="dv-year-legend-swatch" style="background:' +
+      yearColorMap[year] + '"></span>' + year + '</span>';
+  }).join('');
+}
+
+function drawDVMonthAxis(ctx, xScale, y) {
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "center";
+  DV_MONTH_AXIS_TICKS.forEach(function(tick) {
+    ctx.fillText(tick.label, xScale(tick.week), y);
+  });
+}
+
+// ── Inline edit ────────────────────────────────────────────────────────
+function attachInlineEdit() {
+  dvDataTbody.querySelectorAll(".dv-value-cell").forEach(function(cell) {
+    if (!cell.dataset.id) return;
+    cell.addEventListener("dblclick", function() { startInlineEdit(cell); });
+  });
+}
+
+function startInlineEdit(cell) {
+  var tr = cell.closest("tr");
+  var id = parseInt(cell.dataset.id);
+  var current = cell.dataset.value;
+  var input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.value = current;
+  input.className = "dv-inline-input";
+  cell.textContent = "";
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+
+  var save = async function() {
+    var val = parseFloat(input.value);
+    if (isNaN(val)) {
+      cell.textContent = current || "-";
+      return;
+    }
+    try {
+      await api("/api/data-visualization/value", {
+        method: "PUT",
+        body: JSON.stringify({ data_point_id: id, new_value: val }),
+      });
+      loadDVTable(dvState.currentMetric);
+    } catch (err) {
+      cell.textContent = current || "-";
+      alert("保存失败: " + err.message);
+    }
+  };
+
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", function(e) {
+    if (e.key === "Enter") { input.blur(); }
+    if (e.key === "Escape") { cell.textContent = current || "-"; }
+  });
+}
+
+// ── Excel import ───────────────────────────────────────────────────────
+dvImportBtn.addEventListener("click", function() { dvImportDialog.showModal(); });
+dvCancelImportBtn.addEventListener("click", function() {
+  dvImportFile.value = '';
+  dvState.previewData = null;
+  dvState.uploadFile = null;
+  dvPreviewContent.innerHTML = '';
+  dvCommitImportBtn.disabled = true;
+  dvImportDialog.close();
+});
+
+dvImportDialog.addEventListener("close", function() {
+  dvImportFile.value = '';
+  dvState.previewData = null;
+  dvState.uploadFile = null;
+  dvPreviewContent.innerHTML = '';
+  dvCommitImportBtn.disabled = true;
+});
+
+dvImportFile.addEventListener("change", async function() {
+  var file = dvImportFile.files[0];
+  if (!file) return;
+
+  dvState.uploadFileName = file.name;
+  dvPreviewContent.innerHTML = '<div class="dv-chart-status">正在解析文件...</div>';
+
+  try {
+    // Read file as base64 to match backend ImportRequest model
+    var base64 = await new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() {
+        var result = reader.result;
+        var comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.substring(comma + 1) : result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    var headers = {};
+    if (state.token) headers.Authorization = "Bearer " + state.token;
+    headers["Content-Type"] = "application/json";
+
+    var response = await fetch("/api/data-visualization/import/integrated/preview", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ file_data: base64, file_name: file.name }),
+    });
+
+    if (!response.ok) {
+      var errPayload = await response.json().catch(function() { return {}; });
+      throw new Error(errPayload.detail || "预览失败");
+    }
+
+    var preview = await response.json();
+    dvState.previewData = preview;
+    dvState.uploadFile = null;
+
+    var summary = preview.summary || {};
+    var errors = preview.errors || [];
+    var html = '<div class="dv-preview-stats">';
+    html += '<div>文件: ' + file.name + '</div>';
+    html += '<div>数据点总数: ' + (summary.total_points || 0) + '</div>';
+    html += '<div>库存: ' + (summary.inventory_count || 0) + ' | 发运: ' + (summary.shipment_count || 0) + ' | 到港: ' + (summary.arrival_count || 0) + ' | 表需: ' + (summary.apparent_demand_count || 0) + '</div>';
+    html += '<div>品种数: ' + (summary.product_count || 0) + ' | 种类数: ' + (summary.category_count || 0) + ' | 来源/国家数: ' + (summary.country_count || 0) + '</div>';
+    html += '<div>周数: ' + (summary.week_count || 0) + ' | 空值数: ' + (summary.null_count || 0) + '</div>';
+    html += '<div>重复业务 key 数: ' + (summary.duplicate_key_count || 0) + '</div>';
+    html += '<div>日期范围: ' + (summary.date_min || "-") + ' ~ ' + (summary.date_max || "-") + '</div>';
+    if (errors.length) {
+      html += '<div style="color:#dc2626;margin-top:6px;">错误详情 (' + errors.length + ' 条):</div>';
+      errors.slice(0, 15).forEach(function(err) {
+        html += '<div style="color:#dc2626;font-size:12px;">行' + err.row + ': ' + err.message + '</div>';
+      });
+      if (errors.length > 15) {
+        html += '<div style="color:#dc2626;font-size:12px;">... 还有 ' + (errors.length - 15) + ' 条错误</div>';
+      }
+    }
+    html += '</div>';
+    dvPreviewContent.innerHTML = html;
+    dvCommitImportBtn.disabled = (summary.total_points || 0) === 0;
+  } catch (err) {
+    dvPreviewContent.innerHTML = '<div class="error-cell">解析失败: ' + err.message + '</div>';
+    dvCommitImportBtn.disabled = true;
+  }
+});
+
+dvCommitImportBtn.addEventListener("click", async function() {
+  if (!dvState.previewData) return;
+
+  dvCommitImportBtn.disabled = true;
+  dvCommitImportBtn.textContent = "导入中，请稍候...";
+  dvPreviewContent.innerHTML = '<div class="dv-chart-status">导入中，请稍候，数据较多时可能需要 1-2 分钟...</div>';
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() { controller.abort(); }, 180000);
+
+  try {
+    await api("/api/data-visualization/import/integrated/commit", {
+      method: "POST",
+      signal: controller.signal,
+      body: JSON.stringify({
+        file_name: dvState.uploadFileName,
+        preview_id: dvState.previewData.preview_id,
+      }),
+    });
+    dvState.previewData = null;
+    dvState.uploadFile = null;
+    dvImportFile.value = '';
+    dvState.dvDataFilterInitialized = false;
+    dvState.dvChartControlsInitialized = false;
+    loadDVTable(dvState.currentMetric);
+    loadDVDataFilters();
+    dvImportDialog.close();
+  } catch (err) {
+    if (err.name === "AbortError") {
+      dvPreviewContent.innerHTML = '<div class="error-cell">导入超时，请稍后刷新数据管理页面确认是否已写入，或重新导入。</div>';
+    } else {
+      dvPreviewContent.innerHTML = '<div class="error-cell">导入失败: ' + err.message + '</div>';
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    dvCommitImportBtn.disabled = false;
+    dvCommitImportBtn.textContent = "确认导入";
+  }
+});
+
+// ── Chart canvas ───────────────────────────────────────────────────────
+function initDVCanvasSize() {
+  var canvas = dvChartCanvas;
+  var dpr = window.devicePixelRatio || 1;
+  var container = canvas.parentElement;
+  var W = container.clientWidth;
+  var H = 400;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  var ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+}
+
+// ── Chart loading ──────────────────────────────────────────────────────
+async function loadDVChart() {
+  var metric = dvState.chartMetric;
+  var viewMode = dvChartViewMode ? dvChartViewMode.value : "atlas";
+  var productPool = dvChartProductPool ? dvChartProductPool.value : "mainstream";
+
+  await new Promise(function(resolve) { requestAnimationFrame(resolve); });
+  initDVCanvasSize();
+  dvChartStatus.textContent = "";
+  dvChartStatus.className = "dv-chart-status";
+  try {
+    var yearsArr = getCheckedValues(dvChartYearCheckboxes);
+    var productsArr = getCheckedValues(dvChartProductCheckboxes);
+    var categoriesArr = getCheckedValues(dvChartCategoryCheckboxes);
+    var countriesArr = getCheckedValues(dvChartCountryCheckboxes);
+    var mainstreamArr = getCheckedValues(dvChartMainstreamCheckboxes);
+    var url = "/api/data-visualization/chart?metric=" + encodeURIComponent(metric);
+    url = appendMultiSelectParam(url, "years", yearsArr, dvChartYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    if (productPool === "aggregate") {
+      url += "&product_pool=aggregate";
+    } else {
+      url += "&product_pool=" + encodeURIComponent(productPool);
+      if (productPool === "custom") {
+        url = appendMultiSelectParam(url, "products", productsArr, dvChartProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+      } else if (productsArr.length === 0) {
+        url += "&products=__EMPTY__";
+      } else {
+        url += "&products=" + encodeURIComponent(productsArr.join(","));
+      }
+    }
+    url = appendMultiSelectParam(url, "categories", categoriesArr, dvChartCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "source_countries", countriesArr, dvChartCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    var result = await api(url);
+    renderDVChart(result.series, viewMode);
+  } catch (err) {
+    console.error("图表加载失败:", err);
+    var canvas = dvChartCanvas;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无数据，请先导入数据", canvas.width / (window.devicePixelRatio || 1) / 2, 200);
+  }
+}
+
+function renderDVChart(series, viewMode) {
+  // series = { "卡粉": { "2023": [{week_no, display_date, value, is_missing_filled}, ...], ... }, ... }
+  initDVCanvasSize();
+  var W, H, ctx;
+  W = dvChartCanvas.parentElement.clientWidth;
+  H = 400;
+  ctx = dvChartCanvas.getContext("2d");
+
+  dvState.lastChartData = series;
+
+  var products = Object.keys(series);
+  updateDVChartYearLegend([], {}, false);
+  if (!products.length) {
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无数据，请先导入数据", W / 2, H / 2);
+    return;
+  }
+
+  // Collect all (product, year) → data point arrays
+  var lines = []; // [{product, year, points: [{week_no, value, display_date, is_missing_filled}]}]
+  var allVals = [];
+
+  for (var pi = 0; pi < products.length; pi++) {
+    var prod = products[pi];
+    var productSeries = series[prod] || {};
+    var years = Object.keys(productSeries).sort();
+    for (var yi = 0; yi < years.length; yi++) {
+      var yr = years[yi];
+      var pts = productSeries[yr];
+      lines.push({
+        product: prod,
+        year: yr,
+        points: pts.map(function(p) {
+          return {
+            week_no: p.week_no,
+            value: p.value,
+            display_date: p.display_date,
+            is_missing_filled: !!p.is_missing_filled
+          };
+        })
+      });
+      for (var i = 0; i < pts.length; i++) {
+        var numericValue = getChartPointNumericValue(pts[i]);
+        if (numericValue !== null) allVals.push(numericValue);
+      }
+    }
+  }
+
+  if (!allVals.length) {
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无数据", W / 2, H / 2);
+    return;
+  }
+
+  if (viewMode === "atlas" && products.length > 1) {
+    renderDVChartAtlas(ctx, W, H, series, products);
+    return;
+  }
+
+  var dpad = { top: 30, right: products.length > 1 ? 180 : 110, bottom: 60, left: 60 };
+  var chartW = W - dpad.left - dpad.right;
+  var chartH = H - dpad.top - dpad.bottom;
+
+  // X-axis: week numbers 1-52
+  var maxWeek = 52;
+  function xScale(wn) { return dpad.left + ((wn - 1) / (maxWeek - 1)) * chartW; }
+
+  // Y-axis: auto-scale from data minimum, not forced from 0
+  var yMin = Math.min.apply(null, allVals);
+  var yMax = Math.max.apply(null, allVals);
+  var yPad = (yMax - yMin) * 0.08 || 50;
+  yMin = Math.max(0, yMin - yPad);
+  yMax = yMax + yPad;
+  function yScale(v) { return dpad.top + chartH - ((v - yMin) / (yMax - yMin)) * chartH; }
+
+  var niceStep = calcNiceStep(yMax - yMin);
+  var yTicks = [];
+  for (var v = yMin; v <= yMax + niceStep * 0.5; v += niceStep) {
+    yTicks.push(v);
+  }
+
+  var yearColorMap = {};
+  var lineColorMap = {};
+  var legendItems = [];
+  var allYears = [];
+  for (var li = 0; li < lines.length; li++) {
+    var yr2 = lines[li].year;
+    if (allYears.indexOf(yr2) < 0) allYears.push(yr2);
+  }
+  allYears.sort();
+  for (var yi2 = 0; yi2 < allYears.length; yi2++) {
+    yearColorMap[allYears[yi2]] = DV_YEAR_COLORS[yi2 % DV_YEAR_COLORS.length];
+  }
+  for (var liColor = 0; liColor < lines.length; liColor++) {
+    var legendKey = products.length > 1 ? (lines[liColor].product + " " + lines[liColor].year) : lines[liColor].year;
+    var legendColor = products.length > 1 ? DV_YEAR_COLORS[liColor % DV_YEAR_COLORS.length] : yearColorMap[lines[liColor].year];
+    lineColorMap[legendKey] = legendColor;
+    legendItems.push({ label: legendKey, color: legendColor });
+  }
+
+  // Grid lines + Y labels
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.lineWidth = 1;
+  for (var ti = 0; ti < yTicks.length; ti++) {
+    var y = yScale(yTicks[ti]);
+    ctx.beginPath();
+    ctx.moveTo(dpad.left, y);
+    ctx.lineTo(W - dpad.right, y);
+    ctx.stroke();
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(formatChartNumber(yTicks[ti]), dpad.left - 6, y + 4);
+  }
+
+  drawDVMonthAxis(ctx, xScale, dpad.top + chartH + 14);
+
+  // Draw lines
+  var highlightedLineKey = dvState.highlightedLineKey || null;
+  var availableLineKeys = lines.map(function(line) {
+    return products.length > 1 ? (line.product + " " + line.year) : line.year;
+  });
+  if (highlightedLineKey && availableLineKeys.indexOf(highlightedLineKey) < 0) {
+    highlightedLineKey = null;
+    dvState.highlightedLineKey = null;
+  }
+  for (var li2 = 0; li2 < lines.length; li2++) {
+    var line = lines[li2];
+    var lineKey = products.length > 1 ? (line.product + " " + line.year) : line.year;
+    var color = lineColorMap[lineKey] || yearColorMap[line.year];
+    var alpha = highlightedLineKey && highlightedLineKey !== lineKey ? 0.12 : 1;
+    var lineW = highlightedLineKey === lineKey ? 3 : 1.8;
+
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = lineW;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+
+    var pts2 = line.points;
+    var firstPoint = true;
+    for (var pi3 = 0; pi3 < pts2.length; pi3++) {
+      if (isMissingChartPoint(pts2[pi3])) {
+        firstPoint = true;
+        continue;
+      }
+      var x = xScale(pts2[pi3].week_no);
+      var y2 = yScale(getChartPointNumericValue(pts2[pi3]));
+      if (firstPoint) { ctx.moveTo(x, y2); firstPoint = false; }
+      else ctx.lineTo(x, y2);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (var missIndex = 0; missIndex < pts2.length; missIndex++) {
+      if (isMissingChartPoint(pts2[missIndex])) {
+        drawMissingChartMarker(ctx, xScale(pts2[missIndex].week_no), dpad.top + chartH - 8, color, highlightedLineKey === lineKey ? 4 : 3);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Single-product chart keeps a small line-end year label. Multi-product charts use a legend to avoid overlap.
+    var lastP = null;
+    for (var lastIndex = pts2.length - 1; lastIndex >= 0; lastIndex--) {
+      if (!isMissingChartPoint(pts2[lastIndex])) {
+        lastP = pts2[lastIndex];
+        break;
+      }
+    }
+    if (lastP && products.length === 1) {
+      var lx = xScale(lastP.week_no);
+      var ly = yScale(getChartPointNumericValue(lastP));
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(line.year, lx + 4, ly - 4);
+    }
+  }
+
+  if (products.length > 1) {
+    drawDVChartLegend(ctx, legendItems, W - dpad.right + 18, dpad.top, dpad.right - 24, chartH);
+  }
+
+  // Draw data point nodes for highlighted line
+  if (highlightedLineKey) {
+    for (var li3 = 0; li3 < lines.length; li3++) {
+      var nodeLineKey = products.length > 1 ? (lines[li3].product + " " + lines[li3].year) : lines[li3].year;
+      if (nodeLineKey === highlightedLineKey) {
+        var hpts = lines[li3].points;
+        ctx.fillStyle = products.length > 1
+          ? (lineColorMap[nodeLineKey] || yearColorMap[lines[li3].year])
+          : yearColorMap[lines[li3].year];
+        for (var pi4 = 0; pi4 < hpts.length; pi4++) {
+          var px = xScale(hpts[pi4].week_no);
+          if (isMissingChartPoint(hpts[pi4])) {
+            drawMissingChartMarker(ctx, px, dpad.top + chartH - 8, ctx.fillStyle, 4);
+            continue;
+          }
+          var py = yScale(getChartPointNumericValue(hpts[pi4]));
+          ctx.beginPath();
+          ctx.arc(px, py, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
+    }
+  }
+
+  // Click to highlight one product-year line.
+  dvChartCanvas.onclick = function(e) {
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+
+    var closestLineKey = null;
+    var closestDist = Infinity;
+    for (var li3 = 0; li3 < lines.length; li3++) {
+      var ln = lines[li3];
+      var clickLineKey = products.length > 1 ? (ln.product + " " + ln.year) : ln.year;
+      var prevValid = null;
+      for (var pi4 = 0; pi4 < ln.points.length; pi4++) {
+        if (isMissingChartPoint(ln.points[pi4])) {
+          prevValid = null;
+          continue;
+        }
+        var px = xScale(ln.points[pi4].week_no);
+        var py = yScale(getChartPointNumericValue(ln.points[pi4]));
+        var dist = Math.hypot(mx - px, my - py);
+        if (prevValid) {
+          dist = Math.min(dist, distanceToSegment(mx, my, xScale(prevValid.week_no), yScale(getChartPointNumericValue(prevValid)), px, py));
+        }
+        if (dist < closestDist && dist < 30) {
+          closestDist = dist;
+          closestLineKey = clickLineKey;
+        }
+        prevValid = ln.points[pi4];
+      }
+    }
+    if (closestLineKey) {
+      dvState.highlightedLineKey = dvState.highlightedLineKey === closestLineKey ? null : closestLineKey;
+      dvState.highlightedYear = null;
+      renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
+    }
+  };
+
+  // Hover tooltip
+  dvChartCanvas.onmousemove = function(e) {
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var tooltip = "";
+
+    for (var li4 = 0; li4 < lines.length; li4++) {
+      var ln2 = lines[li4];
+      for (var pi5 = 0; pi5 < ln2.points.length; pi5++) {
+        var px2 = xScale(ln2.points[pi5].week_no);
+        var py2 = isMissingChartPoint(ln2.points[pi5])
+          ? dpad.top + chartH - 8
+          : yScale(getChartPointNumericValue(ln2.points[pi5]));
+        if (Math.hypot(mx - px2, my - py2) < 15) {
+          tooltip = formatDVChartTooltip(ln2.points[pi5], ln2.product);
+          break;
+        }
+      }
+    }
+    dvChartCanvas.title = tooltip;
+  };
+}
+
+function isMissingChartPoint(point) {
+  if (!point) return true;
+  if (point.is_missing_filled) return true;
+  if (point.value === null || point.value === undefined || point.value === "") return true;
+  return !Number.isFinite(Number(point.value));
+}
+
+function getChartPointNumericValue(point) {
+  if (isMissingChartPoint(point)) return null;
+  return Number(point.value);
+}
+
+function formatDVChartTooltip(point, product) {
+  var parts = [];
+  if (point.display_date) parts.push(formatDateOnly(point.display_date));
+  parts.push("Week " + (point.week_no || "--"));
+  parts.push(product);
+  parts.push(isMissingChartPoint(point) ? "无数据" : formatChartNumber(getChartPointNumericValue(point)));
+  return parts.join(" | ");
+}
+
+function drawMissingChartMarker(ctx, x, y, color, radius) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = "#ffffff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - radius + 1, y + radius - 1);
+  ctx.lineTo(x + radius - 1, y - radius + 1);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  var dx = x2 - x1;
+  var dy = y2 - y1;
+  if (dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+  var t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function renderDVChartAtlas(ctx, W, H, series, products) {
+  var cols = W >= 1100 ? 3 : (W >= 760 ? 2 : 1);
+  var panelGap = 28;
+  var panelW = (W - panelGap * (cols - 1)) / cols;
+  var panelH = 190;
+  var rows = Math.ceil(products.length / cols);
+  var dpr = window.devicePixelRatio || 1;
+  dvChartCanvas.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) * dpr;
+  dvChartCanvas.style.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, dvChartCanvas.height / dpr);
+
+  var years = [];
+  products.forEach(function(product) {
+    Object.keys(series[product] || {}).forEach(function(year) {
+      if (years.indexOf(year) < 0) years.push(year);
+    });
+  });
+  years.sort();
+  var yearColorMap = buildYearColorMap(years);
+  updateDVChartYearLegend(years, yearColorMap, true);
+
+  var hitPoints = [];
+  var highlightedYear = dvState.highlightedYear || null;
+  if (highlightedYear && years.indexOf(highlightedYear) < 0) {
+    highlightedYear = null;
+    dvState.highlightedYear = null;
+  }
+  dvState.highlightedLineKey = null;
+
+  products.forEach(function(product, index) {
+    var col = index % cols;
+    var row = Math.floor(index / cols);
+    var x0 = col * (panelW + panelGap);
+    var y0 = row * (panelH + panelGap);
+    var pad = { top: 22, right: 34, bottom: 28, left: 40 };
+    var chartW = panelW - pad.left - pad.right;
+    var chartH = panelH - pad.top - pad.bottom;
+    var productSeries = series[product] || {};
+    var vals = [];
+    Object.keys(productSeries).forEach(function(year) {
+      productSeries[year].forEach(function(point) {
+        var numericValue = getChartPointNumericValue(point);
+        if (numericValue !== null) vals.push(numericValue);
+      });
+    });
+    if (!vals.length) return;
+    var yMin = Math.min.apply(null, vals);
+    var yMax = Math.max.apply(null, vals);
+    var yPad = (yMax - yMin) * 0.08 || 20;
+    yMin = Math.max(0, yMin - yPad);
+    yMax = yMax + yPad;
+    function xScale(weekNo) { return x0 + pad.left + ((weekNo - 1) / 51) * chartW; }
+    function yScale(value) { return y0 + pad.top + chartH - ((value - yMin) / (yMax - yMin)) * chartH; }
+
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 12px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(product, x0 + pad.left, y0 + 14);
+    ctx.strokeStyle = "#e5e7eb";
+    ctx.lineWidth = 1;
+    for (var grid = 0; grid < 4; grid++) {
+      var gy = y0 + pad.top + (grid / 3) * chartH;
+      ctx.beginPath();
+      ctx.moveTo(x0 + pad.left, gy);
+      ctx.lineTo(x0 + pad.left + chartW, gy);
+      ctx.stroke();
+    }
+    drawDVMonthAxis(ctx, xScale, y0 + pad.top + chartH + 18);
+
+    Object.keys(productSeries).sort().forEach(function(year) {
+      var pts = productSeries[year];
+      var color = yearColorMap[year];
+      var lineKey = product + " " + year;
+      var isHighlightedYear = highlightedYear === year;
+      var alpha = highlightedYear && !isHighlightedYear ? 0.14 : 1;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = isHighlightedYear ? 2.6 : 1.4;
+      ctx.beginPath();
+      var firstValidPoint = true;
+      pts.forEach(function(point) {
+        if (isMissingChartPoint(point)) {
+          firstValidPoint = true;
+          return;
+        }
+        var px = xScale(point.week_no);
+        var py = yScale(getChartPointNumericValue(point));
+        if (firstValidPoint) {
+          ctx.moveTo(px, py);
+          firstValidPoint = false;
+        }
+        else ctx.lineTo(px, py);
+        hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
+      });
+      ctx.stroke();
+      pts.forEach(function(point) {
+        if (!isMissingChartPoint(point)) return;
+        var px = xScale(point.week_no);
+        var py = y0 + pad.top + chartH - 7;
+        drawMissingChartMarker(ctx, px, py, color, isHighlightedYear ? 4 : 3);
+        hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
+      });
+      if (isHighlightedYear) {
+        ctx.fillStyle = color;
+        pts.forEach(function(point) {
+          if (isMissingChartPoint(point)) {
+            drawMissingChartMarker(ctx, xScale(point.week_no), y0 + pad.top + chartH - 7, color, 4);
+            return;
+          }
+          ctx.beginPath();
+          ctx.arc(xScale(point.week_no), yScale(getChartPointNumericValue(point)), 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+      ctx.globalAlpha = 1;
+    });
+  });
+
+  dvChartCanvas.onclick = function(e) {
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var closest = null;
+    var closestDist = Infinity;
+    products.forEach(function(product, index) {
+      var col = index % cols;
+      var row = Math.floor(index / cols);
+      var x0 = col * (panelW + panelGap);
+      var y0 = row * (panelH + panelGap);
+      var pad = { top: 22, right: 34, bottom: 28, left: 40 };
+      var chartW = panelW - pad.left - pad.right;
+      var chartH = panelH - pad.top - pad.bottom;
+      var productSeries = series[product] || {};
+      var vals = [];
+      Object.keys(productSeries).forEach(function(year) {
+        productSeries[year].forEach(function(point) {
+          var numericValue = getChartPointNumericValue(point);
+          if (numericValue !== null) vals.push(numericValue);
+        });
+      });
+      if (!vals.length) return;
+      var yMin = Math.min.apply(null, vals);
+      var yMax = Math.max.apply(null, vals);
+      var yPad = (yMax - yMin) * 0.08 || 20;
+      yMin = Math.max(0, yMin - yPad);
+      yMax = yMax + yPad;
+      function xScaleClick(weekNo) { return x0 + pad.left + ((weekNo - 1) / 51) * chartW; }
+      function yScaleClick(value) { return y0 + pad.top + chartH - ((value - yMin) / (yMax - yMin)) * chartH; }
+
+      Object.keys(productSeries).sort().forEach(function(year) {
+        var pts = productSeries[year];
+        var lineKey = product + " " + year;
+        var prevValid = null;
+        for (var pi = 0; pi < pts.length; pi++) {
+          if (isMissingChartPoint(pts[pi])) {
+            prevValid = null;
+            continue;
+          }
+          var px = xScaleClick(pts[pi].week_no);
+          var py = yScaleClick(getChartPointNumericValue(pts[pi]));
+          var dist = Math.hypot(mx - px, my - py);
+          if (prevValid) {
+            dist = Math.min(dist, distanceToSegment(mx, my, xScaleClick(prevValid.week_no), yScaleClick(getChartPointNumericValue(prevValid)), px, py));
+          }
+          if (dist < closestDist && dist < 30) {
+            closestDist = dist;
+            closest = { lineKey: lineKey, year: year };
+          }
+          prevValid = pts[pi];
+        }
+      });
+    });
+    if (closest) {
+      dvState.highlightedYear = dvState.highlightedYear === closest.year ? null : closest.year;
+      dvState.highlightedLineKey = null;
+      renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
+    }
+  };
+
+  dvChartCanvas.onmousemove = function(e) {
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var closest = hitPoints.find(function(item) {
+      return Math.hypot(mx - item.x, my - item.y) < 12;
+    });
+    dvChartCanvas.title = closest
+      ? formatDVChartTooltip(closest.point, closest.product)
+      : "";
+  };
+}
+
+function drawDVChartLegend(ctx, items, x, y, maxW, maxH) {
+  ctx.save();
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#374151";
+  ctx.fillText("图例", x, y + 6);
+
+  var rowH = 17;
+  var startY = y + 26;
+  var maxRows = Math.max(1, Math.floor((maxH - 26) / rowH));
+  var visibleItems = items.slice(0, maxRows);
+  visibleItems.forEach(function(item, index) {
+    var yy = startY + index * rowH;
+    ctx.strokeStyle = item.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, yy);
+    ctx.lineTo(x + 16, yy);
+    ctx.stroke();
+    ctx.fillStyle = "#374151";
+    ctx.fillText(truncateCanvasText(ctx, item.label, maxW - 24), x + 22, yy);
+  });
+  if (items.length > visibleItems.length) {
+    ctx.fillStyle = "#6b7280";
+    ctx.fillText("+" + (items.length - visibleItems.length) + " 项", x, startY + visibleItems.length * rowH);
+  }
+  ctx.restore();
+}
+
+function truncateCanvasText(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  var output = text;
+  while (output.length > 1 && ctx.measureText(output + "...").width > maxW) {
+    output = output.slice(0, -1);
+  }
+  return output + "...";
+}
+
+function calcNiceStep(yMax) {
+  if (yMax <= 200) return 50;
+  if (yMax <= 500) return 100;
+  if (yMax <= 1000) return 200;
+  if (yMax <= 2000) return 400;
+  if (yMax <= 5000) return 500;
+  return Math.pow(10, Math.floor(Math.log10(yMax))) / 2;
+}
+
+function applyDVChartProductPool() {
+  var filters = dvState.chartFilters || {};
+  var pools = filters.product_pools || {};
+  var pool = dvChartProductPool ? dvChartProductPool.value : "mainstream";
+  var items = [];
+  if (pool === "mainstream") items = pools.mainstream || filters.products || [];
+  else if (pool === "non_mainstream") items = pools.non_mainstream || [];
+  else if (pool === "aggregate") items = pools.aggregate || ["主流矿合计", "非主流矿合计"];
+  else items = pools.custom || filters.products || [];
+
+  buildCheckboxes(dvChartProductCheckboxes, items, loadDVChart, true);
+  if (pool === "aggregate") {
+    dvChartProductAll.disabled = true;
+    dvChartProductNone.disabled = true;
+  } else {
+    dvChartProductAll.disabled = false;
+    dvChartProductNone.disabled = false;
+  }
+}
+
+// ── Chart controls init ────────────────────────────────────────────────
+async function initDVChartControls() {
+  try {
+    var filters = await api("/api/data-visualization/filters");
+    dvState.chartFilters = filters;
+    await buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
+    applyDVChartProductPool();
+    buildCheckboxes(dvChartCategoryCheckboxes, filters.categories || [], loadDVChart, true);
+    buildCheckboxes(dvChartCountryCheckboxes, filters.source_countries || [], loadDVChart, true);
+    buildCheckboxes(dvChartMainstreamCheckboxes, filters.mainstream_statuses || [], loadDVChart, true);
+
+    if (dvChartViewMode) {
+      dvChartViewMode.addEventListener("change", loadDVChart);
+    }
+    if (dvChartProductPool) {
+      dvChartProductPool.addEventListener("change", function() {
+        applyDVChartProductPool();
+        loadDVChart();
+      });
+    }
+
+    dvChartYearAll.addEventListener("click", function() {
+      selectAllCheckboxes(dvChartYearCheckboxes);
+      loadDVChart();
+    });
+    dvChartYearNone.addEventListener("click", function() {
+      selectNoneCheckboxes(dvChartYearCheckboxes);
+      loadDVChart();
+    });
+    dvChartProductAll.addEventListener("click", function() {
+      selectAllCheckboxes(dvChartProductCheckboxes);
+      loadDVChart();
+    });
+    dvChartProductNone.addEventListener("click", function() {
+      selectNoneCheckboxes(dvChartProductCheckboxes);
+      loadDVChart();
+    });
+  } catch (err) {
+    console.error("加载图表筛选选项失败:", err);
+  }
+}
+
+// DV controls initialized lazily on first chart page activation

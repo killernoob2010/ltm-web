@@ -14,7 +14,7 @@ test("info summary month dropdowns use per-type month options from backend confi
 });
 
 test("info summary JavaScript URL is cache busted", () => {
-  assert.match(indexHtml, /src="\/static\/app\.js\?v=info-summary-2026062402"/);
+  assert.match(indexHtml, /src="\/static\/app\.js\?v=[^"]+"/);
 });
 
 test("info summary exposes historical cache refresh entry", () => {
@@ -42,4 +42,12 @@ test("info summary batch payload uses the selected month controls", () => {
   assert.match(appJs, /month: card\.querySelector\("\.info-month"\)\?\.value \|\| "09"/);
   assert.match(appJs, /month1: card\.querySelector\("\.info-month1"\)\?\.value \|\| undefined/);
   assert.match(appJs, /month2: card\.querySelector\("\.info-month2"\)\?\.value \|\| undefined/);
+});
+
+test("risk alert notifications avoid overlapping fast polling", () => {
+  assert.match(appJs, /alertNotificationInFlight:\s*false/);
+  assert.match(appJs, /if \(state\.alertNotificationInFlight\) return;/);
+  assert.match(appJs, /state\.alertNotificationInFlight = true;/);
+  assert.match(appJs, /finally\s*\{\s*state\.alertNotificationInFlight = false;/);
+  assert.match(appJs, /}, 30000\);/);
 });

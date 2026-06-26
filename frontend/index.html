@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=pnl-colors-20260623" />
+    <link rel="stylesheet" href="/static/styles.css?v=sidebar-title-bg-20260626" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -23,6 +23,9 @@
           <p id="loginError" class="error-text"></p>
         </form>
       </section>
+
+
+      <!-- 数据可视化管理 - 图表数据管理 -->
     </main>
 
     <main id="appView" class="app-shell hidden">
@@ -337,6 +340,177 @@
             <p>该模块的 Web 页面框架已预留，后续会按迁移顺序接入具体功能。</p>
           </section>
         </section>
+
+        <!-- 数据可视化管理 - 数据整合 -->
+        <section id="dvIntegrationPage" class="page hidden">
+          <div class="toolbar">
+            <label class="file-button">
+              导入 Excel
+              <input type="file" id="dvIntegrationFiles" accept=".xlsx,.xls" multiple hidden />
+            </label>
+            <button type="button" id="dvExportBtn" class="secondary">下载整合 Excel</button>
+            <span id="dvIntegrationFileInfo" class="toolbar-status"></span>
+            <span id="dvIntegrationStatus" class="toolbar-status">待整合</span>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>整合概览</h2>
+              <span id="dvIntegrationBatchInfo"></span>
+            </div>
+            <div id="dvIntegrationSummary" class="dv-integration-summary"></div>
+          </section>
+        </section>
+
+       <!-- 数据可视化管理 - 图表数据管理 -->
+      <section id="dvDataPage" class="page hidden">
+        <div class="toolbar">
+          <button type="button" id="dvImportBtn">📥 导入 Excel</button>
+        </div>
+        <div class="dv-chart-controls-row">
+          <div class="dv-chart-controls">
+            <label class="dv-control-field dv-product-pool-field">
+              品种池
+              <select id="dvDataProductPool">
+                <option value="mainstream">主流矿</option>
+                <option value="non_mainstream">非主流矿</option>
+                <option value="aggregate">整体对比</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <div class="dv-checkbox-panel dv-year-panel">
+              <div class="dv-checkbox-panel-header">
+                <span>年份</span>
+                <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataYearAll">全选</button>
+                <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataYearNone">全不选</button>
+              </div>
+              <div class="dv-checkbox-group" id="dvDataYearCheckboxes"></div>
+            </div>
+            <div class="dv-checkbox-panel dv-product-panel">
+              <div class="dv-checkbox-panel-header">
+                <span>品种</span>
+                <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataProductAll">全选</button>
+                <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataProductNone">全不选</button>
+              </div>
+              <div class="dv-checkbox-group" id="dvDataProductCheckboxes"></div>
+            </div>
+            <details class="dv-advanced-filters dv-data-advanced-filters">
+              <summary>高级筛选</summary>
+              <div class="dv-advanced-filter-grid">
+                <div class="dv-checkbox-panel dv-category-panel">
+                  <div class="dv-checkbox-panel-header">
+                    <span>种类</span>
+                  </div>
+                  <div class="dv-checkbox-group" id="dvDataCategoryCheckboxes"></div>
+                </div>
+                <div class="dv-checkbox-panel dv-country-panel">
+                  <div class="dv-checkbox-panel-header">
+                    <span>来源/国家</span>
+                  </div>
+                  <div class="dv-checkbox-group" id="dvDataCountryCheckboxes"></div>
+                </div>
+                <div class="dv-checkbox-panel dv-mainstream-panel">
+                  <div class="dv-checkbox-panel-header">
+                    <span>主流/非主流</span>
+                  </div>
+                  <div class="dv-checkbox-group" id="dvDataMainstreamCheckboxes"></div>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="dv-tabs dv-tabs-after-filters" id="dvDataTabs">
+          <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
+          <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
+          <button type="button" class="dv-tab" data-metric="arrival">到港数据</button>
+          <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
+        </div>
+        <div class="table-wrap">
+           <table id="dvDataTable">
+             <thead id="dvDataThead">
+               <tr><th>日期</th><th>周次</th><th>品种</th></tr>
+             </thead>
+             <tbody id="dvDataTbody"></tbody>
+           </table>
+        </div>
+      </section>
+
+        <!-- 数据可视化管理 - 数据展示 -->
+        <section id="dvChartPage" class="page hidden">
+         <div class="dv-chart-controls-row">
+            <div class="dv-chart-controls">
+              <label class="dv-control-field dv-view-mode-field">
+                视图模式
+                <select id="dvChartViewMode">
+                  <option value="atlas">全品种图谱</option>
+                  <option value="compare">品种对比图</option>
+                </select>
+              </label>
+              <label class="dv-control-field dv-product-pool-field">
+                品种池
+                <select id="dvChartProductPool">
+                  <option value="mainstream">主流矿</option>
+                  <option value="non_mainstream">非主流矿</option>
+                  <option value="aggregate">整体对比</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              <div class="dv-checkbox-panel dv-year-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>年份</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="dvChartYearAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="dvChartYearNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartYearCheckboxes"></div>
+              </div>
+              <div class="dv-checkbox-panel dv-product-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>品种</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="dvChartProductAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="dvChartProductNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="dvChartProductCheckboxes"></div>
+              </div>
+              <details class="dv-advanced-filters">
+                <summary>高级筛选</summary>
+                <div class="dv-advanced-filter-grid">
+                  <div class="dv-checkbox-panel dv-category-panel">
+                    <div class="dv-checkbox-panel-header">
+                      <span>种类</span>
+                    </div>
+                    <div class="dv-checkbox-group" id="dvChartCategoryCheckboxes"></div>
+                  </div>
+                  <div class="dv-checkbox-panel dv-country-panel">
+                    <div class="dv-checkbox-panel-header">
+                      <span>来源/国家</span>
+                    </div>
+                    <div class="dv-checkbox-group" id="dvChartCountryCheckboxes"></div>
+                  </div>
+                  <div class="dv-checkbox-panel dv-mainstream-panel">
+                    <div class="dv-checkbox-panel-header">
+                      <span>主流/非主流</span>
+                    </div>
+                    <div class="dv-checkbox-group" id="dvChartMainstreamCheckboxes"></div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+          <div class="dv-chart-tabs-row dv-tabs-after-filters">
+            <div class="dv-tabs" id="dvChartTabs">
+              <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
+              <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
+              <button type="button" class="dv-tab" data-metric="arrival">到港图表</button>
+              <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
+            </div>
+            <div id="dvChartYearLegend" class="dv-year-legend"></div>
+          </div>
+          <div class="chart-container">
+            <div id="dvChartStatus" class="dv-chart-status"></div>
+            <canvas id="dvChartCanvas"></canvas>
+          </div>
+        </section>
+
+
       </section>
     </main>
 
@@ -708,6 +882,22 @@
       </form>
     </dialog>
 
+    <!-- 导入预检对话框 -->
+    <dialog id="dvImportDialog">
+      <form method="dialog" class="dialog-form dv-import-dialog">
+        <h2>导入预检 — 整合版 Excel</h2>
+        <div class="form-field">
+          <label>选择整合版 Excel（含「整合明细」sheet）：</label>
+          <input type="file" id="dvImportFile" accept=".xlsx,.xls">
+        </div>
+        <div id="dvPreviewContent"></div>
+        <div class="dialog-actions">
+          <button type="button" id="dvCancelImportBtn" class="secondary">取消</button>
+          <button type="button" id="dvCommitImportBtn">确认导入</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="confirmDialog">
       <form method="dialog" class="dialog-form">
         <h2 id="confirmTitle">确认操作</h2>
@@ -719,6 +909,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=info-summary-2026062402"></script>
+    <script src="/static/app.js?v=sidebar-title-bg-20260626"></script>
   </body>
 </html>
