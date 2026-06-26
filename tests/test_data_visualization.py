@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 from app.data_visualization import (
     compute_business_week,
     _parse_integrated_excel,
+    _import_integrated_points,
     _split_filter_values,
     _to_date,
     _to_float,
@@ -114,6 +115,50 @@ def test_parse_integrated_excel_accepts_arrival_metric(tmp_path):
     assert result["errors"] == []
     assert result["rows"][0]["metric_type"] == "arrival"
     assert result["summary"]["arrival_count"] == 1
+
+
+def test_integrated_import_replaces_previous_batch(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+    rows = [
+        {
+            "week_start": "2026-06-01",
+            "week_end": "2026-06-07",
+            "business_year": 2026,
+            "business_week": 23,
+            "week_label": "2026 W23",
+            "display_date": "2026-06-02",
+            "metric_type": "inventory",
+            "source_country": "澳洲",
+            "product": "PB粉",
+            "category": "粉矿",
+            "mainstream_status": "主流",
+            "value": 100.0,
+            "unit": "万吨",
+            "source_file": "first.xlsx",
+            "source_sheet": "整合明细",
+            "source_section": "测试",
+            "is_calculable": 1,
+            "validation_status": "ok",
+            "note": "",
+        }
+    ]
+    _import_integrated_points(rows, "first.xlsx", "pytest")
+    second_rows = [dict(rows[0], value=120.0, source_file="second.xlsx")]
+
+    _import_integrated_points(second_rows, "second.xlsx", "pytest")
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        point_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
+        batch_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integration_batches").fetchone()["c"]
+        point = db._exec(cur, "SELECT value, source_file FROM dv_integrated_points").fetchone()
+
+    assert point_count == 1
+    assert batch_count == 1
+    assert point["value"] == 120.0
+    assert point["source_file"] == "second.xlsx"
 
 
 def test_integrate_mysteel_files_local_templates():

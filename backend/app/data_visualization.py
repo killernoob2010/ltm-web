@@ -747,72 +747,69 @@ def _summarize_integrated_rows(rows):
 
 
 def _import_integrated_points(rows, file_name, user_name):
-    """按唯一业务 key upsert 到 dv_integrated_points，新建批次记录。"""
+    """Replace integrated data with the uploaded standard Excel in one batch."""
     with db.connect() as conn:
         cur = conn.cursor()
+        db._exec(cur, "DELETE FROM dv_integrated_points")
+        db._exec(cur, "DELETE FROM dv_integration_batches")
         batch_id = db._last_insert_id(
             cur,
             """INSERT INTO dv_integration_batches
-               (file_names, status, point_count, apparent_demand_count, created_by)
-               VALUES (?, 'committed', ?, ?, ?)""",
-            (file_name, len(rows), sum(1 for r in rows if r.get('metric_type') == 'apparent_demand'), user_name),
+               (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+               VALUES (?, 'committed', ?, ?, ?, ?)""",
+            (
+                file_name,
+                len(rows),
+                sum(1 for r in rows if r.get('metric_type') == 'apparent_demand'),
+                json.dumps({"source": "integrated_import", "inserted": len(rows)}, ensure_ascii=False),
+                user_name,
+            ),
         )
-        upset_count = 0
-        insert_count = 0
-        for row in rows:
-            existing = db._exec(
-                cur,
-                """SELECT id FROM dv_integrated_points
-                   WHERE week_start = ? AND metric_type = ? AND source_country = ?
-                   AND product = ? AND category = ? AND batch_id IS NOT NULL
-                   LIMIT 1""",
-                (row['week_start'], row['metric_type'], row['source_country'],
-                 row['product'], row['category']),
-            ).fetchone()
-            if existing:
-                db._exec(
+        values = [
+            (
+                batch_id,
+                row['week_start'],
+                row.get('week_end', ''),
+                row.get('business_year'),
+                row.get('business_week'),
+                row.get('week_label', ''),
+                row.get('display_date', ''),
+                row['metric_type'],
+                row['source_country'],
+                row['product'],
+                row['category'],
+                row.get('mainstream_status', ''),
+                row.get('value'),
+                row.get('unit', '万吨'),
+                row.get('source_file', ''),
+                row.get('source_sheet', ''),
+                row.get('source_section', ''),
+                row.get('is_calculable', 0),
+                row.get('validation_status', ''),
+                row.get('note', ''),
+            )
+            for row in rows
+        ]
+        insert_sql = """INSERT INTO dv_integrated_points
+           (batch_id, week_start, week_end, business_year, business_week,
+            week_label, display_date, metric_type, source_country, product,
+            category, mainstream_status, value, unit, source_file,
+            source_sheet, source_section, is_calculable, validation_status, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        if values:
+            if db._is_pg():
+                from psycopg2.extras import execute_values
+                execute_values(
                     cur,
-                    """UPDATE dv_integrated_points
-                       SET week_end = ?, business_year = ?, business_week = ?,
-                           week_label = ?, display_date = ?, value = ?,
-                           mainstream_status = ?, unit = ?, source_file = ?,
-                           source_sheet = ?, source_section = ?,
-                           is_calculable = ?, validation_status = ?, note = ?,
-                           batch_id = ?
-                       WHERE id = ?""",
-                    (row.get('week_end', ''), row.get('business_year'), row.get('business_week'),
-                     row.get('week_label', ''), row.get('display_date', ''), row.get('value'),
-                     row.get('mainstream_status', ''), row.get('unit', '万吨'), row.get('source_file', ''),
-                     row.get('source_sheet', ''), row.get('source_section', ''),
-                     row.get('is_calculable', 0), row.get('validation_status', ''), row.get('note', ''),
-                     batch_id, existing['id']),
+                    insert_sql.replace("?", "%s").replace(
+                        "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        "%s",
+                    ),
+                    values,
+                    page_size=1000,
                 )
-                upset_count += 1
             else:
-                db._exec(
-                    cur,
-                    """INSERT INTO dv_integrated_points
-                       (batch_id, week_start, week_end, business_year, business_week,
-                        week_label, display_date, metric_type, source_country, product,
-                        category, mainstream_status, value, unit, source_file,
-                        source_sheet, source_section, is_calculable, validation_status, note)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (batch_id, row['week_start'], row.get('week_end', ''),
-                     row.get('business_year'), row.get('business_week'),
-                     row.get('week_label', ''), row.get('display_date', ''),
-                     row['metric_type'], row['source_country'], row['product'],
-                     row['category'], row.get('mainstream_status', ''),
-                     row.get('value'), row.get('unit', '万吨'),
-                     row.get('source_file', ''), row.get('source_sheet', ''),
-                     row.get('source_section', ''), row.get('is_calculable', 0),
-                     row.get('validation_status', ''), row.get('note', '')),
-                )
-                insert_count += 1
-        db._exec(
-            cur,
-            """UPDATE dv_integration_batches SET point_count = ?, validation_summary = ? WHERE id = ?""",
-            (len(rows), f'upserted:{upset_count} inserted:{insert_count}', batch_id),
-        )
+                db._executemany(cur, insert_sql, values)
         conn.commit()
     return batch_id
 
