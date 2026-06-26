@@ -43,3 +43,11 @@ test("info summary batch payload uses the selected month controls", () => {
   assert.match(appJs, /month1: card\.querySelector\("\.info-month1"\)\?\.value \|\| undefined/);
   assert.match(appJs, /month2: card\.querySelector\("\.info-month2"\)\?\.value \|\| undefined/);
 });
+
+test("risk alert notifications avoid overlapping fast polling", () => {
+  assert.match(appJs, /alertNotificationInFlight:\s*false/);
+  assert.match(appJs, /if \(state\.alertNotificationInFlight\) return;/);
+  assert.match(appJs, /state\.alertNotificationInFlight = true;/);
+  assert.match(appJs, /finally\s*\{\s*state\.alertNotificationInFlight = false;/);
+  assert.match(appJs, /}, 30000\);/);
+});

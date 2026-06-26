@@ -1062,8 +1062,14 @@ def calculate_missing_cache_from_prices(payload: InfoCalculateIn) -> Optional[di
 
 @app.on_event("startup")
 def startup() -> None:
-    db.init_db()
-    data_visualization.seed_dv_data()
+    def initialize_database() -> None:
+        try:
+            db.init_db()
+            data_visualization.seed_dv_data()
+        except Exception as exc:
+            print(f"[startup] database initialization skipped: {exc}")
+
+    threading.Thread(target=initialize_database, daemon=True).start()
     start_alert_monitor()
 
 

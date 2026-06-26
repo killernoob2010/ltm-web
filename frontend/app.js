@@ -13,6 +13,7 @@ const state = {
   alertSettings: [],
   alertHistory: [],
   alertNotificationTimer: null,
+  alertNotificationInFlight: false,
   lastNotificationIds: new Set(),
   midConfig: { varieties: [], contracts: [] },
   infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], month_options_by_type: {}, inner_months: [] },
@@ -1104,32 +1105,38 @@ function alertMessage(item) {
 
 async function loadNotifications(showNewToast = true) {
   if (!state.token) return;
-  const payload = await api("/api/risk-alert/notifications");
-  const items = payload.items || [];
-  notificationBadge.textContent = String(payload.count || 0);
-  notificationBadge.classList.toggle("hidden", !payload.count);
-  notificationList.innerHTML = items.length
-    ? items.map((item) => `
-      <button class="notification-item" data-id="${item.id}">
-        <strong>${item.info_type || "-"}</strong>
-        <span>${alertMessage(item)}</span>
-        <small>${item.alert_time || ""}</small>
-      </button>
-    `).join("")
-    : `<p class="empty-notification">暂无未读预警</p>`;
-  notificationList.querySelectorAll(".notification-item").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
-      await loadNotifications(false);
-      if (state.activeModule === "risk_alert") await loadRiskAlert();
+  if (state.alertNotificationInFlight) return;
+  state.alertNotificationInFlight = true;
+  try {
+    const payload = await api("/api/risk-alert/notifications");
+    const items = payload.items || [];
+    notificationBadge.textContent = String(payload.count || 0);
+    notificationBadge.classList.toggle("hidden", !payload.count);
+    notificationList.innerHTML = items.length
+      ? items.map((item) => `
+        <button class="notification-item" data-id="${item.id}">
+          <strong>${item.info_type || "-"}</strong>
+          <span>${alertMessage(item)}</span>
+          <small>${item.alert_time || ""}</small>
+        </button>
+      `).join("")
+      : `<p class="empty-notification">暂无未读预警</p>`;
+    notificationList.querySelectorAll(".notification-item").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
+        await loadNotifications(false);
+        if (state.activeModule === "risk_alert") await loadRiskAlert();
+      });
     });
-  });
-  if (showNewToast) {
-    for (const item of items) {
-      if (!state.lastNotificationIds.has(item.id)) showToast(alertMessage(item));
+    if (showNewToast) {
+      for (const item of items) {
+        if (!state.lastNotificationIds.has(item.id)) showToast(alertMessage(item));
+      }
     }
+    state.lastNotificationIds = new Set(items.map((item) => item.id));
+  } finally {
+    state.alertNotificationInFlight = false;
   }
-  state.lastNotificationIds = new Set(items.map((item) => item.id));
 }
 
 function startAlertNotifications() {
@@ -1137,7 +1144,7 @@ function startAlertNotifications() {
   loadNotifications(false).catch(() => {});
   state.alertNotificationTimer = window.setInterval(() => {
     loadNotifications(true).catch(() => {});
-  }, 5000);
+  }, 30000);
 }
 
 function stopAlertNotifications() {
@@ -1145,6 +1152,7 @@ function stopAlertNotifications() {
     window.clearInterval(state.alertNotificationTimer);
     state.alertNotificationTimer = null;
   }
+  state.alertNotificationInFlight = false;
 }
 
 async function loadRiskAlert() {
