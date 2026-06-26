@@ -58,6 +58,8 @@ const dvDataTbody = document.querySelector("#dvDataTbody");
 const dvChartTabs = document.querySelector("#dvChartTabs");
 const dvChartCanvas = document.querySelector("#dvChartCanvas");
 const dvChartStatus = document.querySelector("#dvChartStatus");
+const dvChartViewMode = document.querySelector("#dvChartViewMode");
+const dvChartProductPool = document.querySelector("#dvChartProductPool");
 const dvChartYearCheckboxes = document.querySelector("#dvChartYearCheckboxes");
 const dvChartProductCheckboxes = document.querySelector("#dvChartProductCheckboxes");
 const dvDataYearCheckboxes = document.querySelector("#dvDataYearCheckboxes");
@@ -297,7 +299,7 @@ async function activateModule(code, subName) {
   if (code === "data_visualization_chart") {
     showOnly(dvChartPage);
     if (!dvState.dvChartControlsInitialized) {
-      initDVChartControls();
+      await initDVChartControls();
       dvState.dvChartControlsInitialized = true;
     }
     await loadDVChart();
@@ -1784,9 +1786,16 @@ let dvState = {
   dvChartControlsInitialized: false,
   highlightedYear: null,
   lastChartData: null,
+  chartFilters: null,
 };
 
 const DV_PAGE_SIZE = 50;
+const DV_CHART_PRODUCT_POOL_LABELS = {
+  mainstream: "主流矿",
+  non_mainstream: "非主流矿",
+  aggregate: "整体对比",
+  custom: "自定义",
+};
 
 async function loadDVIntegrationLatest() {
   try {
@@ -2357,6 +2366,8 @@ function initDVCanvasSize() {
 // ── Chart loading ──────────────────────────────────────────────────────
 async function loadDVChart() {
   var metric = dvState.chartMetric;
+  var viewMode = dvChartViewMode ? dvChartViewMode.value : "atlas";
+  var productPool = dvChartProductPool ? dvChartProductPool.value : "mainstream";
 
   await new Promise(function(resolve) { requestAnimationFrame(resolve); });
   initDVCanvasSize();
@@ -2370,12 +2381,23 @@ async function loadDVChart() {
     var mainstreamArr = getCheckedValues(dvChartMainstreamCheckboxes);
     var url = "/api/data-visualization/chart?metric=" + encodeURIComponent(metric);
     url = appendMultiSelectParam(url, "years", yearsArr, dvChartYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
-    url = appendMultiSelectParam(url, "products", productsArr, dvChartProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    if (productPool === "aggregate") {
+      url += "&product_pool=aggregate";
+    } else {
+      url += "&product_pool=" + encodeURIComponent(productPool);
+      if (productPool === "custom") {
+        url = appendMultiSelectParam(url, "products", productsArr, dvChartProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+      } else if (productsArr.length === 0) {
+        url += "&products=__EMPTY__";
+      } else {
+        url += "&products=" + encodeURIComponent(productsArr.join(","));
+      }
+    }
     url = appendMultiSelectParam(url, "categories", categoriesArr, dvChartCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     url = appendMultiSelectParam(url, "source_countries", countriesArr, dvChartCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     var result = await api(url);
-    renderDVChart(result.series);
+    renderDVChart(result.series, viewMode);
   } catch (err) {
     console.error("图表加载失败:", err);
     var canvas = dvChartCanvas;
@@ -2387,7 +2409,7 @@ async function loadDVChart() {
   }
 }
 
-function renderDVChart(series) {
+function renderDVChart(series, viewMode) {
   // series = { "卡粉": { "2023": [{week_no, display_date, value}, ...], ... }, ... }
   initDVCanvasSize();
   var W, H, ctx;
@@ -2433,6 +2455,11 @@ function renderDVChart(series) {
     ctx.font = "14px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("暂无数据", W / 2, H / 2);
+    return;
+  }
+
+  if (viewMode === "atlas" && products.length > 1) {
+    renderDVChartAtlas(ctx, W, H, series, products);
     return;
   }
 
@@ -2577,7 +2604,7 @@ function renderDVChart(series) {
     }
     if (closestYr) {
       dvState.highlightedYear = dvState.highlightedYear === closestYr ? null : closestYr;
-      renderDVChart(dvState.lastChartData);
+      renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
     }
   };
 
@@ -2603,6 +2630,131 @@ function renderDVChart(series) {
   };
 }
 
+function renderDVChartAtlas(ctx, W, H, series, products) {
+  var cols = W >= 1100 ? 3 : (W >= 760 ? 2 : 1);
+  var panelGap = 18;
+  var panelW = (W - panelGap * (cols - 1)) / cols;
+  var panelH = 220;
+  var rows = Math.ceil(products.length / cols);
+  var dpr = window.devicePixelRatio || 1;
+  dvChartCanvas.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) * dpr;
+  dvChartCanvas.style.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, dvChartCanvas.height / dpr);
+
+  var years = [];
+  products.forEach(function(product) {
+    Object.keys(series[product] || {}).forEach(function(year) {
+      if (years.indexOf(year) < 0) years.push(year);
+    });
+  });
+  years.sort();
+  var yearColors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706"];
+  var yearColorMap = {};
+  years.forEach(function(year, index) {
+    yearColorMap[year] = yearColors[index % yearColors.length];
+  });
+
+  var hitPoints = [];
+  products.forEach(function(product, index) {
+    var col = index % cols;
+    var row = Math.floor(index / cols);
+    var x0 = col * (panelW + panelGap);
+    var y0 = row * (panelH + panelGap);
+    var pad = { top: 24, right: 16, bottom: 30, left: 44 };
+    var chartW = panelW - pad.left - pad.right;
+    var chartH = panelH - pad.top - pad.bottom;
+    var productSeries = series[product] || {};
+    var vals = [];
+    Object.keys(productSeries).forEach(function(year) {
+      productSeries[year].forEach(function(point) { vals.push(point.value); });
+    });
+    if (!vals.length) return;
+    var yMin = Math.min.apply(null, vals);
+    var yMax = Math.max.apply(null, vals);
+    var yPad = (yMax - yMin) * 0.08 || 20;
+    yMin = Math.max(0, yMin - yPad);
+    yMax = yMax + yPad;
+    function xScale(weekNo) { return x0 + pad.left + ((weekNo - 1) / 51) * chartW; }
+    function yScale(value) { return y0 + pad.top + chartH - ((value - yMin) / (yMax - yMin)) * chartH; }
+
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 12px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(product, x0 + pad.left, y0 + 14);
+    ctx.strokeStyle = "#e5e7eb";
+    ctx.lineWidth = 1;
+    for (var grid = 0; grid < 4; grid++) {
+      var gy = y0 + pad.top + (grid / 3) * chartH;
+      ctx.beginPath();
+      ctx.moveTo(x0 + pad.left, gy);
+      ctx.lineTo(x0 + pad.left + chartW, gy);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    [1, 13, 26, 39, 52].forEach(function(weekNo) {
+      ctx.fillText("W" + String(weekNo).padStart(2, "0"), xScale(weekNo), y0 + pad.top + chartH + 18);
+    });
+
+    Object.keys(productSeries).sort().forEach(function(year) {
+      var pts = productSeries[year];
+      var color = yearColorMap[year];
+      var highlightedYear = dvState.highlightedYear || null;
+      var alpha = highlightedYear && highlightedYear !== year ? 0.16 : 1;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = highlightedYear === year ? 2.6 : 1.4;
+      ctx.beginPath();
+      pts.forEach(function(point, pointIndex) {
+        var px = xScale(point.week_no);
+        var py = yScale(point.value);
+        if (pointIndex === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+        if (!highlightedYear || highlightedYear === year) {
+          hitPoints.push({ x: px, y: py, year: year, product: product, point: point });
+        }
+      });
+      ctx.stroke();
+      if (highlightedYear === year) {
+        ctx.fillStyle = color;
+        pts.forEach(function(point) {
+          ctx.beginPath();
+          ctx.arc(xScale(point.week_no), yScale(point.value), 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+      ctx.globalAlpha = 1;
+    });
+  });
+
+  dvChartCanvas.onclick = function(e) {
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var closest = hitPoints.find(function(item) {
+      return Math.hypot(mx - item.x, my - item.y) < 16;
+    });
+    if (closest) {
+      dvState.highlightedYear = dvState.highlightedYear === closest.year ? null : closest.year;
+      renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
+    }
+  };
+
+  dvChartCanvas.onmousemove = function(e) {
+    var rect = dvChartCanvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var closest = hitPoints.find(function(item) {
+      return Math.hypot(mx - item.x, my - item.y) < 12;
+    });
+    dvChartCanvas.title = closest
+      ? closest.point.display_date + " | W" + String(closest.point.week_no).padStart(2, "0") + " | " + closest.product + " | " + closest.year + " | " + formatChartNumber(closest.point.value)
+      : "";
+  };
+}
+
 function calcNiceStep(yMax) {
   if (yMax <= 200) return 50;
   if (yMax <= 500) return 100;
@@ -2612,14 +2764,46 @@ function calcNiceStep(yMax) {
   return Math.pow(10, Math.floor(Math.log10(yMax))) / 2;
 }
 
+function applyDVChartProductPool() {
+  var filters = dvState.chartFilters || {};
+  var pools = filters.product_pools || {};
+  var pool = dvChartProductPool ? dvChartProductPool.value : "mainstream";
+  var items = [];
+  if (pool === "mainstream") items = pools.mainstream || filters.products || [];
+  else if (pool === "non_mainstream") items = pools.non_mainstream || [];
+  else if (pool === "aggregate") items = pools.aggregate || ["主流矿合计", "非主流矿合计"];
+  else items = pools.custom || filters.products || [];
+
+  buildCheckboxes(dvChartProductCheckboxes, items, loadDVChart, true);
+  if (pool === "aggregate") {
+    dvChartProductAll.disabled = true;
+    dvChartProductNone.disabled = true;
+  } else {
+    dvChartProductAll.disabled = false;
+    dvChartProductNone.disabled = false;
+  }
+}
+
 // ── Chart controls init ────────────────────────────────────────────────
-function initDVChartControls() {
-  api("/api/data-visualization/filters").then(function(filters) {
-    buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
-    buildCheckboxes(dvChartProductCheckboxes, filters.products || [], loadDVChart, true);
+async function initDVChartControls() {
+  try {
+    var filters = await api("/api/data-visualization/filters");
+    dvState.chartFilters = filters;
+    await buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
+    applyDVChartProductPool();
     buildCheckboxes(dvChartCategoryCheckboxes, filters.categories || [], loadDVChart, true);
     buildCheckboxes(dvChartCountryCheckboxes, filters.source_countries || [], loadDVChart, true);
     buildCheckboxes(dvChartMainstreamCheckboxes, filters.mainstream_statuses || [], loadDVChart, true);
+
+    if (dvChartViewMode) {
+      dvChartViewMode.addEventListener("change", loadDVChart);
+    }
+    if (dvChartProductPool) {
+      dvChartProductPool.addEventListener("change", function() {
+        applyDVChartProductPool();
+        loadDVChart();
+      });
+    }
 
     dvChartYearAll.addEventListener("click", function() {
       selectAllCheckboxes(dvChartYearCheckboxes);
@@ -2637,9 +2821,9 @@ function initDVChartControls() {
       selectNoneCheckboxes(dvChartProductCheckboxes);
       loadDVChart();
     });
-  }).catch(function(err) {
+  } catch (err) {
     console.error("加载图表筛选选项失败:", err);
-  });
+  }
 }
 
 // DV controls initialized lazily on first chart page activation

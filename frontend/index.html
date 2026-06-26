@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-filter-update-20260625" />
+    <link rel="stylesheet" href="/static/styles.css?v=dv-chart-redesign-20260626" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -394,6 +394,7 @@
           <div class="dv-tabs" id="dvDataTabs">
             <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
             <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
+            <button type="button" class="dv-tab" data-metric="arrival">到港数据</button>
             <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
           </div>
         </div>
@@ -437,11 +438,28 @@
             <div class="dv-tabs" id="dvChartTabs">
               <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
               <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
+              <button type="button" class="dv-tab" data-metric="arrival">到港图表</button>
               <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
            </div>
          </div>
          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
+              <label>
+                视图模式
+                <select id="dvChartViewMode">
+                  <option value="atlas">全品种图谱</option>
+                  <option value="compare">品种对比图</option>
+                </select>
+              </label>
+              <label>
+                品种池
+                <select id="dvChartProductPool">
+                  <option value="mainstream">主流矿</option>
+                  <option value="non_mainstream">非主流矿</option>
+                  <option value="aggregate">整体对比</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
               <div class="dv-checkbox-panel">
                 <div class="dv-checkbox-panel-header">
                   <span>年份</span>
@@ -458,24 +476,29 @@
                 </div>
                 <div class="dv-checkbox-group" id="dvChartProductCheckboxes"></div>
               </div>
-              <div class="dv-checkbox-panel">
-                <div class="dv-checkbox-panel-header">
-                  <span>种类</span>
+              <details class="dv-advanced-filters">
+                <summary>高级筛选</summary>
+                <div class="dv-advanced-filter-grid">
+                  <div class="dv-checkbox-panel">
+                    <div class="dv-checkbox-panel-header">
+                      <span>种类</span>
+                    </div>
+                    <div class="dv-checkbox-group" id="dvChartCategoryCheckboxes"></div>
+                  </div>
+                  <div class="dv-checkbox-panel">
+                    <div class="dv-checkbox-panel-header">
+                      <span>来源/国家</span>
+                    </div>
+                    <div class="dv-checkbox-group" id="dvChartCountryCheckboxes"></div>
+                  </div>
+                  <div class="dv-checkbox-panel">
+                    <div class="dv-checkbox-panel-header">
+                      <span>主流/非主流</span>
+                    </div>
+                    <div class="dv-checkbox-group" id="dvChartMainstreamCheckboxes"></div>
+                  </div>
                 </div>
-                <div class="dv-checkbox-group" id="dvChartCategoryCheckboxes"></div>
-              </div>
-              <div class="dv-checkbox-panel">
-                <div class="dv-checkbox-panel-header">
-                  <span>来源/国家</span>
-                </div>
-                <div class="dv-checkbox-group" id="dvChartCountryCheckboxes"></div>
-              </div>
-              <div class="dv-checkbox-panel">
-                <div class="dv-checkbox-panel-header">
-                  <span>主流/非主流</span>
-                </div>
-                <div class="dv-checkbox-group" id="dvChartMainstreamCheckboxes"></div>
-              </div>
+              </details>
             </div>
           </div>
           <div class="chart-container">
@@ -883,6 +906,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-filter-fix-20260626"></script>
+    <script src="/static/app.js?v=dv-chart-redesign-20260626"></script>
   </body>
 </html>

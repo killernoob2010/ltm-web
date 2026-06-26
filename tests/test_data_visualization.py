@@ -90,6 +90,32 @@ def test_parse_integrated_excel_reports_invalid_rows(tmp_path):
     assert len(result["rows"]) == 2
 
 
+def test_parse_integrated_excel_accepts_arrival_metric(tmp_path):
+    path = tmp_path / "arrival_integrated.xlsx"
+    headers = [
+        "统计周一", "统计周日", "业务年份", "业务周次", "周次标签", "展示日期",
+        "数据类型", "来源/国家", "品种", "种类", "主流/非主流", "数值",
+        "单位", "来源文件", "来源Sheet", "来源区域", "是否参与表需", "校验状态", "备注",
+    ]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "整合明细"
+    ws.append(headers)
+    ws.append([
+        "2026-06-01", "2026-06-07", 2026, 23, "2026 W23", "2026-06-02",
+        "到港", "澳洲", "PB粉", "粉矿", "主流", 100,
+        "万吨", "file.xlsx", "sheet", "区域", "是", "ok", "",
+    ])
+    wb.save(path)
+
+    result = _parse_integrated_excel(path)
+
+    assert result["errors"] == []
+    assert result["rows"][0]["metric_type"] == "arrival"
+    assert result["summary"]["arrival_count"] == 1
+
+
 def test_integrate_mysteel_files_local_templates():
     files = _local_mysteel_files()
     assert len(files) == 3
@@ -98,11 +124,32 @@ def test_integrate_mysteel_files_local_templates():
     sample = result["points"][0]
     assert metrics["inventory"] > 0
     assert metrics["shipment"] > 0
+    assert metrics["arrival"] > 0
     assert metrics["apparent_demand"] > 0
+    assert all(point["metric_type"] != "shipment" for point in result["points"] if "到中国" in point["source_section"])
     assert sample["week_end"]
     assert sample["business_year"]
     assert sample["business_week"]
     assert sample["week_label"]
     assert not result["summary"]["warnings"]
+
+
+def test_integrate_mysteel_files_limits_fixed_mysteel_template_sections():
+    result = integrate_mysteel_files(_local_mysteel_files())
+    australia_arrivals = [
+        point for point in result["points"]
+        if point["metric_type"] == "arrival" and point["source_country"] == "澳洲"
+    ]
+    brazil_arrivals = [
+        point for point in result["points"]
+        if point["metric_type"] == "arrival" and point["source_country"] == "巴西"
+    ]
+
+    assert len(australia_arrivals) == 181
+    assert len(brazil_arrivals) == 6
+    assert sorted({point["week_start"] for point in brazil_arrivals}) == [
+        "2026-06-22", "2026-06-29", "2026-07-06",
+        "2026-07-13", "2026-07-20", "2026-07-27",
+    ]
 
 print("All tests passed!")

@@ -47,9 +47,10 @@ _INTEGRATED_FIELDS = {
 }
 
 _METRIC_TYPE_CN = {
-    "库存": "inventory", "发运/到港": "shipment", "表需": "apparent_demand",
+    "库存": "inventory", "发运": "shipment", "发运/到港": "shipment",
+    "到港": "arrival", "表需": "apparent_demand",
 }
-_VALID_INTEGRATED_METRIC_TYPES = {"inventory", "shipment", "apparent_demand"}
+_VALID_INTEGRATED_METRIC_TYPES = {"inventory", "shipment", "arrival", "apparent_demand"}
 
 _REQUIRED_INTEGRATED_FIELDS = [
     "week_start", "display_date", "metric_type",
@@ -158,6 +159,13 @@ MAINSTREAM_PRODUCTS = {
     "巴混", "卡粉", "超特粉", "混合粉",
     "PB块", "纽曼块", "澳大利亚球团",
 }
+
+AUSTRALIA_ARRIVAL_HEADER_ROW = 20
+AUSTRALIA_ARRIVAL_START_ROW = 21
+AUSTRALIA_ARRIVAL_END_ROW = 27
+BRAZIL_DESTINATION_HEADER_ROW = 39
+BRAZIL_DESTINATION_START_ROW = 40
+BRAZIL_DESTINATION_END_ROW = 45
 
 
 AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
@@ -307,8 +315,8 @@ def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
         return []
     ws = wb["澳洲预计到达中国锚地量"]
     points: List[Dict[str, Any]] = []
-    headers = {col: str(ws.cell(20, col).value or "").strip() for col in range(2, ws.max_column + 1)}
-    for row in range(21, ws.max_row + 1):
+    headers = {col: str(ws.cell(AUSTRALIA_ARRIVAL_HEADER_ROW, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+    for row in range(AUSTRALIA_ARRIVAL_START_ROW, AUSTRALIA_ARRIVAL_END_ROW + 1):
         period_start = _parse_period_start(ws.cell(row, 1).value)
         if period_start is None:
             continue
@@ -325,7 +333,7 @@ def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
             points.append(_make_point(
                 week_start=period_start,
                 display_date=period_start,
-                metric_type="shipment",
+                metric_type="arrival",
                 source_country="澳洲",
                 product=product,
                 category=category,
@@ -334,7 +342,7 @@ def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
                 source_sheet="澳洲预计到达中国锚地量",
                 source_section="预计到中国锚地量（品种）",
                 is_calculable=True,
-                note="澳洲直接采用预计到中国锚地量",
+                note="澳洲直接采用预计到中国锚地量，归类为到港",
             ))
     wb.close()
     return points
@@ -348,12 +356,12 @@ def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
         wb.close()
         return []
     ws = wb["巴西发货量"]
-    china_col = _find_col(ws, 39, "中国大陆")
+    china_col = _find_col(ws, BRAZIL_DESTINATION_HEADER_ROW, "中国大陆")
     points: List[Dict[str, Any]] = []
     if china_col is None:
         wb.close()
         return points
-    for row in range(40, ws.max_row + 1):
+    for row in range(BRAZIL_DESTINATION_START_ROW, BRAZIL_DESTINATION_END_ROW + 1):
         period_start = _parse_period_start(ws.cell(row, 1).value)
         value = _clean_number(ws.cell(row, china_col).value)
         if period_start is None or value is None:
@@ -362,7 +370,7 @@ def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
         points.append(_make_point(
             week_start=arrival_week,
             display_date=arrival_week,
-            metric_type="shipment",
+            metric_type="arrival",
             source_country="巴西",
             product="卡粉",
             category="粉矿",
@@ -371,7 +379,7 @@ def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
             source_sheet="巴西发货量",
             source_section="中国大陆发运量×75%（6周后到港估算）",
             is_calculable=True,
-            note="巴西卡粉按中国大陆发运量的75%估算，滞后6周",
+            note="巴西卡粉按中国大陆发运量的75%折算到港，滞后6周",
         ))
     wb.close()
     return points
@@ -494,7 +502,7 @@ def _add_apparent_demand(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         key = (point["week_start"], point["source_country"], point["product"], point["category"])
         if point["metric_type"] == "inventory":
             inv[key] = point
-        elif point["metric_type"] == "shipment" and point["is_calculable"]:
+        elif point["metric_type"] == "arrival" and point["is_calculable"]:
             ship[key] = point
 
     product_keys = sorted({(p["source_country"], p["product"], p["category"]) for p in points if p["is_calculable"]})
@@ -695,7 +703,7 @@ def _summarize_integrated_rows(rows):
     if not rows:
         return {
             'total_points': 0, 'inventory_count': 0, 'shipment_count': 0,
-            'apparent_demand_count': 0, 'product_count': 0, 'category_count': 0,
+            'arrival_count': 0, 'apparent_demand_count': 0, 'product_count': 0, 'category_count': 0,
             'country_count': 0, 'week_count': 0, 'null_count': 0,
             'date_min': '', 'date_max': '', 'years': [],
         }
@@ -703,7 +711,7 @@ def _summarize_integrated_rows(rows):
     categories = set()
     countries = set()
     weeks = set()
-    metric_counts = {'inventory': 0, 'shipment': 0, 'apparent_demand': 0}
+    metric_counts = {'inventory': 0, 'shipment': 0, 'arrival': 0, 'apparent_demand': 0}
     null_count = 0
     dates = []
     for row in rows:
@@ -724,6 +732,7 @@ def _summarize_integrated_rows(rows):
         'total_points': len(rows),
         'inventory_count': metric_counts['inventory'],
         'shipment_count': metric_counts['shipment'],
+        'arrival_count': metric_counts['arrival'],
         'apparent_demand_count': metric_counts['apparent_demand'],
         'product_count': len([p for p in products if p]),
         'category_count': len([c for c in categories if c]),
@@ -885,6 +894,7 @@ INTEGRATED_EXPORT_COLUMNS = [
 
 METRIC_SHEETS = [
     ("shipment", "发运"),
+    ("arrival", "到港"),
     ("inventory", "库存"),
     ("apparent_demand", "表需"),
 ]
@@ -894,7 +904,9 @@ def _metric_label(metric: str) -> str:
     if metric == "inventory":
         return "库存"
     if metric == "shipment":
-        return "发运/到港"
+        return "发运"
+    if metric == "arrival":
+        return "到港"
     if metric == "apparent_demand":
         return "表需"
     return metric
@@ -982,7 +994,8 @@ def build_integrated_workbook_bytes() -> bytes:
         ("状态", batch["status"]),
         ("数据点总数", batch["point_count"]),
         ("库存条数", metric_counts.get("inventory", 0)),
-        ("发运/到港条数", metric_counts.get("shipment", 0)),
+        ("发运条数", metric_counts.get("shipment", 0)),
+        ("到港条数", metric_counts.get("arrival", 0)),
         ("表需条数", metric_counts.get("apparent_demand", 0)),
         ("创建人", batch["created_by"]),
         ("创建时间", batch["created_at"]),
@@ -1465,6 +1478,12 @@ async def get_filters(user=Depends(dv_current_user)):
                 "SELECT DISTINCT source_country AS val FROM dv_integrated_points ORDER BY val").fetchall()]
             mainstreams = [r["val"] for r in db._exec(cur,
                 "SELECT DISTINCT mainstream_status AS val FROM dv_integrated_points ORDER BY val").fetchall()]
+            mainstream_products = [r["val"] for r in db._exec(cur,
+                """SELECT DISTINCT product AS val FROM dv_integrated_points
+                   WHERE mainstream_status = '主流' ORDER BY val""").fetchall()]
+            non_mainstream_products = [r["val"] for r in db._exec(cur,
+                """SELECT DISTINCT product AS val FROM dv_integrated_points
+                   WHERE mainstream_status = '非主流' ORDER BY val""").fetchall()]
             years = [r["year"] for r in db._exec(cur,
                 "SELECT DISTINCT business_year AS year FROM dv_integrated_points ORDER BY year").fetchall() if r["year"]]
             return {
@@ -1473,6 +1492,12 @@ async def get_filters(user=Depends(dv_current_user)):
                 "source_countries": countries,
                 "mainstream_statuses": mainstreams,
                 "years": years,
+                "product_pools": {
+                    "mainstream": mainstream_products,
+                    "non_mainstream": non_mainstream_products,
+                    "aggregate": ["主流矿合计", "非主流矿合计"],
+                    "custom": products,
+                },
             }
         # fallback to old dv_data_points
         products = [r["product"] for r in db._exec(cur,
@@ -1485,6 +1510,12 @@ async def get_filters(user=Depends(dv_current_user)):
             "source_countries": [],
             "mainstream_statuses": [],
             "years": years,
+            "product_pools": {
+                "mainstream": products or list(DV_PRODUCTS),
+                "non_mainstream": [],
+                "aggregate": [],
+                "custom": products or list(DV_PRODUCTS),
+            },
         }
 
 
@@ -1751,7 +1782,7 @@ async def import_commit(
 @router.get("/data-visualization/table")
 @router.get("/data-visualization/table")
 async def get_table(
-    metric: str = Query(..., pattern="^(inventory|shipment|apparent_demand)$"),
+    metric: str = Query(..., pattern="^(inventory|shipment|arrival|apparent_demand)$"),
     years: str = "",
     products: str = "",
     categories: str = "",
@@ -1948,12 +1979,13 @@ async def update_value(
 
 @router.get("/data-visualization/chart")
 async def get_chart(
-    metric: str = Query(..., pattern="^(inventory|shipment|apparent_demand)$"),
+    metric: str = Query(..., pattern="^(inventory|shipment|arrival|apparent_demand)$"),
     years: str = "",
     products: str = "",
     categories: str = "",
     source_countries: str = "",
     mainstream_status: str = "",
+    product_pool: str = "",
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
@@ -2013,6 +2045,27 @@ async def get_chart(
                 params_i.extend(mainstream_list)
             sql_i += " ORDER BY product, category, week_start"
             rows_i = db._exec(cur, sql_i, tuple(params_i)).fetchall()
+            if product_pool == "aggregate":
+                aggregate: Dict[tuple, Dict[str, Any]] = {}
+                for row in rows_i:
+                    status = row["mainstream_status"] or "非主流"
+                    label = "主流矿合计" if status == "主流" else "非主流矿合计"
+                    year = str(row["business_year"]) if row["business_year"] else row["week_start"][:4]
+                    key = (label, year, row["business_week"], row["display_date"])
+                    if key not in aggregate:
+                        aggregate[key] = {
+                            "week_no": row["business_week"] if row["business_week"] else 0,
+                            "display_date": row["display_date"],
+                            "value": 0.0,
+                            "is_manual_override": False,
+                            "is_missing_filled": False,
+                        }
+                    aggregate[key]["value"] += float(row["value"] or 0)
+                result_agg: Dict[str, Dict[str, List[Dict]]] = {}
+                for (label, year, _week_no, _display_date), item in sorted(aggregate.items()):
+                    result_agg.setdefault(label, {}).setdefault(year, []).append(item)
+                return {"metric": metric, "series": result_agg}
+
             product_categories: Dict[str, set] = {}
             for row in rows_i:
                 product_categories.setdefault(row["product"], set()).add(row["category"])

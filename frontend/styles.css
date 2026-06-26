@@ -808,7 +808,7 @@ dialog::backdrop {
 .dv-chart-controls {
   display: flex;
   gap: 20px;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
 }
 
@@ -1024,4 +1024,26 @@ dialog::backdrop {
   min-height: 22px;
   padding: 0 8px;
   font-size: 11px;
+}
+
+.dv-advanced-filters {
+  flex-basis: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #f8fafc;
+}
+
+.dv-advanced-filters summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dv-advanced-filter-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 10px;
 }
