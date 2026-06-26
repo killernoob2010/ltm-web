@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-atlas-year-hit-20260626" />
+    <link rel="stylesheet" href="/static/styles.css?v=dv-integration-auto-merge-20260626" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -344,14 +344,12 @@
         <!-- 数据可视化管理 - 数据整合 -->
         <section id="dvIntegrationPage" class="page hidden">
           <div class="toolbar">
-            <button type="button" id="dvLocalPreviewBtn">读取本地模板</button>
-            <button type="button" id="dvLocalCommitBtn" class="secondary">写入本地整合结果</button>
-            <label class="file-button secondary">
+            <label class="file-button">
               上传 Excel
               <input type="file" id="dvIntegrationFiles" accept=".xlsx,.xls" multiple hidden />
             </label>
-            <button type="button" id="dvUploadCommitBtn" class="secondary" disabled>写入上传结果</button>
             <button type="button" id="dvExportBtn" class="secondary">下载整合 Excel</button>
+            <span id="dvIntegrationFileInfo" class="toolbar-status"></span>
             <span id="dvIntegrationStatus" class="toolbar-status">待整合</span>
           </div>
           <section class="panel">
@@ -360,30 +358,6 @@
               <span id="dvIntegrationBatchInfo"></span>
             </div>
             <div id="dvIntegrationSummary" class="dv-integration-summary"></div>
-          </section>
-          <section class="panel">
-            <div class="panel-head">
-              <h2>样例数据</h2>
-              <span id="dvIntegrationSampleCount"></span>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>周起始</th>
-                    <th>周次</th>
-                    <th>类型</th>
-                    <th>来源</th>
-                    <th>品种</th>
-                    <th>种类</th>
-                    <th>主流</th>
-                    <th>数值</th>
-                    <th>来源区域</th>
-                  </tr>
-                </thead>
-                <tbody id="dvIntegrationSamples"></tbody>
-              </table>
-            </div>
           </section>
         </section>
 
@@ -935,6 +909,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-atlas-year-hit-20260626"></script>
+    <script src="/static/app.js?v=dv-integration-auto-merge-20260626"></script>
   </body>
 </html>

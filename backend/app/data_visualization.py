@@ -853,8 +853,6 @@ def _import_integrated_points(rows, file_name, user_name):
 def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str], user_name: str) -> int:
     with db.connect() as conn:
         cur = conn.cursor()
-        db._exec(cur, "DELETE FROM dv_integrated_points")
-        db._exec(cur, "DELETE FROM dv_integration_batches")
         batch_id = db._last_insert_id(
             cur,
             """INSERT INTO dv_integration_batches
@@ -862,13 +860,84 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
                VALUES (?, 'completed', ?, ?, ?, ?)""",
             (
                 ", ".join(file_names),
-                len(points),
+                0,
                 sum(1 for point in points if point["metric_type"] == "apparent_demand"),
-                json.dumps({"source": "mysteel"}, ensure_ascii=False),
+                json.dumps({"source": "mysteel", "inserted": 0, "updated": 0, "skipped": 0}, ensure_ascii=False),
                 user_name,
             ),
         )
+        merge_summary = {
+            "source": "mysteel",
+            "input_points": len(points),
+            "inserted": 0,
+            "updated": 0,
+            "skipped": 0,
+            "skipped_same_value": 0,
+            "skipped_blank_overwrite": 0,
+        }
         for point in points:
+            key_params = (
+                point["metric_type"],
+                point["source_country"],
+                point["product"],
+                point["category"],
+                point["mainstream_status"],
+                point["business_year"],
+                point["business_week"],
+            )
+            existing = db._exec(
+                cur,
+                """SELECT *
+                   FROM dv_integrated_points
+                   WHERE metric_type = ?
+                     AND source_country = ?
+                     AND product = ?
+                     AND category = ?
+                     AND mainstream_status = ?
+                     AND business_year = ?
+                     AND business_week = ?
+                   ORDER BY id DESC
+                   LIMIT 1""",
+                key_params,
+            ).fetchone()
+            new_value = point.get("value")
+            if existing:
+                old_value = existing["value"]
+                if new_value is None and old_value is not None:
+                    merge_summary["skipped"] += 1
+                    merge_summary["skipped_blank_overwrite"] += 1
+                    continue
+                if new_value == old_value:
+                    merge_summary["skipped"] += 1
+                    merge_summary["skipped_same_value"] += 1
+                    continue
+                db._exec(
+                    cur,
+                    """UPDATE dv_integrated_points
+                       SET batch_id = ?, week_start = ?, week_end = ?, week_label = ?,
+                           display_date = ?, value = ?, unit = ?, source_file = ?,
+                           source_sheet = ?, source_section = ?, is_calculable = ?,
+                           validation_status = ?, note = ?
+                       WHERE id = ?""",
+                    (
+                        batch_id,
+                        point["week_start"],
+                        point["week_end"],
+                        point["week_label"],
+                        point["display_date"],
+                        new_value,
+                        point["unit"],
+                        point["source_file"],
+                        point["source_sheet"],
+                        point["source_section"],
+                        point["is_calculable"],
+                        point["validation_status"],
+                        point["note"],
+                        existing["id"],
+                    ),
+                )
+                merge_summary["updated"] += 1
+                continue
             db._exec(
                 cur,
                 """INSERT INTO dv_integrated_points
@@ -900,6 +969,16 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
                     point["note"],
                 ),
             )
+            merge_summary["inserted"] += 1
+        current_total = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
+        db._exec(
+            cur,
+            """UPDATE dv_integration_batches
+               SET point_count = ?, validation_summary = ?
+               WHERE id = ?""",
+            (current_total, json.dumps(merge_summary, ensure_ascii=False), batch_id),
+        )
+        conn.commit()
     return batch_id
 
 
@@ -977,6 +1056,32 @@ def _append_integrated_rows(sheet, rows: List[Any], include_metric_type: bool = 
         sheet.append([_export_cell_value(item, key) for key, _label in columns])
 
 
+def _load_integration_batch_summary(batch_id: int) -> Dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        batch = db._exec(
+            cur,
+            "SELECT * FROM dv_integration_batches WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+        rows = db._exec(
+            cur,
+            "SELECT * FROM dv_integrated_points ORDER BY week_start, metric_type, source_country, category, product, id",
+        ).fetchall()
+    summary = _summarize_integrated_rows([_row_to_dict(row) for row in rows])
+    merge_summary = {}
+    if batch and batch["validation_summary"]:
+        try:
+            merge_summary = json.loads(batch["validation_summary"])
+        except json.JSONDecodeError:
+            merge_summary = {}
+    return {
+        "batch": _row_to_dict(batch),
+        "summary": summary,
+        "merge_summary": merge_summary,
+    }
+
+
 def build_integrated_workbook_bytes() -> bytes:
     import openpyxl
     from openpyxl.styles import Font, PatternFill
@@ -994,17 +1099,13 @@ def build_integrated_workbook_bytes() -> bytes:
             cur,
             """SELECT *
                FROM dv_integrated_points
-               WHERE batch_id = ?
                ORDER BY week_start, metric_type, source_country, category, product, id""",
-            (batch["id"],),
         ).fetchall()
         metrics = db._exec(
             cur,
             """SELECT metric_type, COUNT(*) AS c
                FROM dv_integrated_points
-               WHERE batch_id = ?
                GROUP BY metric_type""",
-            (batch["id"],),
         ).fetchall()
 
     wb = openpyxl.Workbook()
@@ -1439,11 +1540,13 @@ async def integration_upload_commit(payload: IntegrationFilesRequest, user=Depen
         batch_id = _save_integrated_points(result["points"], [item.file_name for item in payload.files], user["name"])
     finally:
         _cleanup_tmp(tmp_paths)
+    batch_summary = _load_integration_batch_summary(batch_id)
     return {
         "ok": True,
         "batch_id": batch_id,
         "files": [item.file_name for item in payload.files],
-        "summary": result["summary"],
+        "summary": batch_summary["summary"],
+        "merge_summary": batch_summary["merge_summary"],
     }
 
 
@@ -1460,9 +1563,21 @@ async def integration_latest(user=Depends(dv_current_user)):
             """SELECT metric_type, COUNT(*) AS c
                FROM dv_integrated_points GROUP BY metric_type ORDER BY metric_type""",
         ).fetchall()
+        point_rows = db._exec(
+            cur,
+            "SELECT * FROM dv_integrated_points ORDER BY week_start, metric_type, source_country, category, product, id",
+        ).fetchall()
+    merge_summary = {}
+    if batch and batch["validation_summary"]:
+        try:
+            merge_summary = json.loads(batch["validation_summary"])
+        except json.JSONDecodeError:
+            merge_summary = {}
     return {
         "batch": _row_to_dict(batch),
         "metrics": [_row_to_dict(row) for row in rows],
+        "summary": _summarize_integrated_rows([_row_to_dict(row) for row in point_rows]),
+        "merge_summary": merge_summary,
     }
 
 

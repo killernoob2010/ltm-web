@@ -22,9 +22,26 @@ test("data visualization chart page exposes arrival and chart modes", () => {
   assert.match(indexHtml, /品种对比图/);
 });
 
-test("data visualization integration labels separate shipment and arrival", () => {
-  assert.match(appJs, /if \(metric === "shipment"\) return "发运";/);
-  assert.match(appJs, /if \(metric === "arrival"\) return "到港";/);
+test("data visualization integration summary separates shipment and arrival", () => {
+  assert.match(appJs, /\["发运", metrics\.shipment \|\| summary\.shipment_count \|\| 0\]/);
+  assert.match(appJs, /\["到港", metrics\.arrival \|\| summary\.arrival_count \|\| 0\]/);
+});
+
+test("data integration page keeps only upload and download actions", () => {
+  assert.match(indexHtml, /上传 Excel/);
+  assert.match(indexHtml, /下载整合 Excel/);
+  assert.doesNotMatch(indexHtml, /读取本地模板/);
+  assert.doesNotMatch(indexHtml, /写入本地整合结果/);
+  assert.doesNotMatch(indexHtml, /写入上传结果/);
+  assert.doesNotMatch(indexHtml, /id="dvIntegrationSamples"/);
+});
+
+test("data integration upload automatically commits uploaded files", () => {
+  assert.match(appJs, /正在上传并整合/);
+  assert.match(appJs, /上传文件已整合，可下载 Excel/);
+  assert.doesNotMatch(appJs, /dvUploadCommitBtn/);
+  assert.doesNotMatch(appJs, /previewLocalIntegration/);
+  assert.doesNotMatch(appJs, /commitLocalIntegration/);
 });
 
 test("data visualization chart filters use product pools instead of always-flat filters", () => {

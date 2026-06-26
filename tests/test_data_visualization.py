@@ -6,17 +6,20 @@ from app.data_visualization import (
     compute_business_week,
     _parse_integrated_excel,
     _import_integrated_points,
+    _save_integrated_points,
     _load_integrated_preview_cache,
     _save_integrated_preview_cache,
     _split_filter_values,
     _to_date,
     _to_float,
+    build_integrated_workbook_bytes,
     integrate_mysteel_files,
     _local_mysteel_files,
 )
 
 from datetime import date
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from io import BytesIO
 
 
 def test_compute_business_week_w01():
@@ -161,6 +164,111 @@ def test_integrated_import_replaces_previous_batch(tmp_path, monkeypatch):
     assert batch_count == 1
     assert point["value"] == 120.0
     assert point["source_file"] == "second.xlsx"
+
+
+def test_save_integrated_points_merges_weekly_uploads(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "澳洲",
+        "product": "PB粉",
+        "category": "粉矿",
+        "mainstream_status": "主流",
+        "value": 100.0,
+        "unit": "万吨",
+        "source_file": "history.xlsx",
+        "source_sheet": "库存",
+        "source_section": "历史",
+        "is_calculable": 1,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([base_point], ["history.xlsx"], "pytest")
+
+    changed_duplicate = dict(base_point, value=120.0, source_file="week1.xlsx", source_section="周度修正")
+    blank_duplicate = dict(base_point, value=None, source_file="blank.xlsx", source_section="空值")
+    new_week = dict(base_point, business_week=24, week_start="2026-06-08", week_end="2026-06-14",
+                    week_label="2026 W24", display_date="2026-06-09", value=130.0,
+                    source_file="week1.xlsx")
+    batch_id = _save_integrated_points([changed_duplicate, blank_duplicate, new_week], ["week1.xlsx"], "pytest")
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        points = db._exec(
+            cur,
+            """SELECT business_week, value, source_file, source_section
+               FROM dv_integrated_points ORDER BY business_week""",
+        ).fetchall()
+        batch = db._exec(
+            cur,
+            "SELECT point_count, validation_summary FROM dv_integration_batches WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+
+    summary = __import__("json").loads(batch["validation_summary"])
+    assert len(points) == 2
+    assert points[0]["business_week"] == 23
+    assert points[0]["value"] == 120.0
+    assert points[0]["source_file"] == "week1.xlsx"
+    assert points[1]["business_week"] == 24
+    assert points[1]["value"] == 130.0
+    assert batch["point_count"] == 2
+    assert summary["inserted"] == 1
+    assert summary["updated"] == 1
+    assert summary["skipped"] == 1
+    assert summary["skipped_blank_overwrite"] == 1
+
+
+def test_integrated_export_downloads_current_full_history(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "澳洲",
+        "product": "PB粉",
+        "category": "粉矿",
+        "mainstream_status": "主流",
+        "value": 100.0,
+        "unit": "万吨",
+        "source_file": "history.xlsx",
+        "source_sheet": "库存",
+        "source_section": "历史",
+        "is_calculable": 1,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([point], ["history.xlsx"], "pytest")
+    _save_integrated_points([
+        dict(point, business_week=24, week_start="2026-06-08", week_end="2026-06-14",
+             week_label="2026 W24", display_date="2026-06-09", value=130.0,
+             source_file="week1.xlsx")
+    ], ["week1.xlsx"], "pytest")
+
+    workbook_bytes = build_integrated_workbook_bytes()
+    wb = load_workbook(BytesIO(workbook_bytes), read_only=True)
+    ws = wb["整合明细"]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+
+    assert len(rows) == 3
+    assert [row[3] for row in rows[1:]] == [23, 24]
 
 
 def test_integrated_preview_cache_roundtrip():
