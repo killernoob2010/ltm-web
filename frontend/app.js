@@ -60,6 +60,7 @@ const dvChartCanvas = document.querySelector("#dvChartCanvas");
 const dvChartStatus = document.querySelector("#dvChartStatus");
 const dvChartViewMode = document.querySelector("#dvChartViewMode");
 const dvChartProductPool = document.querySelector("#dvChartProductPool");
+const dvDataProductPool = document.querySelector("#dvDataProductPool");
 const dvChartYearCheckboxes = document.querySelector("#dvChartYearCheckboxes");
 const dvChartProductCheckboxes = document.querySelector("#dvChartProductCheckboxes");
 const dvDataYearCheckboxes = document.querySelector("#dvDataYearCheckboxes");
@@ -1787,6 +1788,7 @@ let dvState = {
   highlightedYear: null,
   lastChartData: null,
   chartFilters: null,
+  dataFilters: null,
 };
 
 const DV_PAGE_SIZE = 50;
@@ -2049,13 +2051,19 @@ function initDVData() {
 function loadDVDataFilters() {
   dvState.dvDataFilterInitialized = true;
   api("/api/data-visualization/filters").then(function(filters) {
+    dvState.dataFilters = filters;
     buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
-    buildCheckboxes(dvDataProductCheckboxes, filters.products || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    applyDVDataProductPool();
     buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); }, true);
     buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); }, true);
     buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); }, true);
 
-    // Wire all/none buttons for products
+    if (dvDataProductPool) {
+      dvDataProductPool.onchange = function() {
+        applyDVDataProductPool();
+        loadDVTable(dvState.currentMetric);
+      };
+    }
     dvDataProductAll.onclick = function() {
       selectAllCheckboxes(dvDataProductCheckboxes);
       loadDVTable(dvState.currentMetric);
@@ -2065,22 +2073,37 @@ function loadDVDataFilters() {
       loadDVTable(dvState.currentMetric);
     };
 
-    // Wire year all/none buttons
-    dvDataYearAll.addEventListener("click", function() {
+    dvDataYearAll.onclick = function() {
       selectAllCheckboxes(dvDataYearCheckboxes);
       loadDVTable(dvState.currentMetric);
-    });
-    dvDataYearNone.addEventListener("click", function() {
+    };
+    dvDataYearNone.onclick = function() {
       selectNoneCheckboxes(dvDataYearCheckboxes);
       loadDVTable(dvState.currentMetric);
-    });
-
-    // Show all filters container
-    var filterRows = document.querySelectorAll("#dvDataPage .dv-filter-row");
-    filterRows.forEach(function(row) { row.style.display = "flex"; });
+    };
   }).catch(function(err) {
     console.error("加载筛选选项失败:", err);
   });
+}
+
+function applyDVDataProductPool() {
+  var filters = dvState.dataFilters || {};
+  var pools = filters.product_pools || {};
+  var pool = dvDataProductPool ? dvDataProductPool.value : "mainstream";
+  var items = [];
+  if (pool === "mainstream") items = pools.mainstream || filters.products || [];
+  else if (pool === "non_mainstream") items = pools.non_mainstream || [];
+  else if (pool === "aggregate") items = pools.aggregate || ["主流矿合计", "非主流矿合计"];
+  else items = pools.custom || filters.products || [];
+
+  buildCheckboxes(dvDataProductCheckboxes, items, function() { loadDVTable(dvState.currentMetric); }, true);
+  if (pool === "aggregate") {
+    dvDataProductAll.disabled = true;
+    dvDataProductNone.disabled = true;
+  } else {
+    dvDataProductAll.disabled = false;
+    dvDataProductNone.disabled = false;
+  }
 }
 
 
@@ -2112,9 +2135,21 @@ async function loadDVTable(metric) {
     var categoriesArr = getCheckedValues(dvDataCategoryCheckboxes);
     var countriesArr = getCheckedValues(dvDataCountryCheckboxes);
     var mainstreamArr = getCheckedValues(dvDataMainstreamCheckboxes);
+    var productPool = dvDataProductPool ? dvDataProductPool.value : "mainstream";
     var url = "/api/data-visualization/table?metric=" + encodeURIComponent(metric);
     url = appendMultiSelectParam(url, "years", yearsArr, dvDataYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
-    url = appendMultiSelectParam(url, "products", productsArr, dvDataProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    if (productPool === "aggregate") {
+      url += "&product_pool=aggregate";
+    } else {
+      url += "&product_pool=" + encodeURIComponent(productPool);
+      if (productPool === "custom") {
+        url = appendMultiSelectParam(url, "products", productsArr, dvDataProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+      } else if (productsArr.length === 0) {
+        url += "&products=__EMPTY__";
+      } else {
+        url += "&products=" + encodeURIComponent(productsArr.join(","));
+      }
+    }
     url = appendMultiSelectParam(url, "categories", categoriesArr, dvDataCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     url = appendMultiSelectParam(url, "source_countries", countriesArr, dvDataCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
@@ -2295,7 +2330,7 @@ dvImportFile.addEventListener("change", async function() {
     var html = '<div class="dv-preview-stats">';
     html += '<div>文件: ' + file.name + '</div>';
     html += '<div>数据点总数: ' + (summary.total_points || 0) + '</div>';
-    html += '<div>库存: ' + (summary.inventory_count || 0) + ' | 发运/到港: ' + (summary.shipment_count || 0) + ' | 表需: ' + (summary.apparent_demand_count || 0) + '</div>';
+    html += '<div>库存: ' + (summary.inventory_count || 0) + ' | 发运: ' + (summary.shipment_count || 0) + ' | 到港: ' + (summary.arrival_count || 0) + ' | 表需: ' + (summary.apparent_demand_count || 0) + '</div>';
     html += '<div>品种数: ' + (summary.product_count || 0) + ' | 种类数: ' + (summary.category_count || 0) + ' | 来源/国家数: ' + (summary.country_count || 0) + '</div>';
     html += '<div>周数: ' + (summary.week_count || 0) + ' | 空值数: ' + (summary.null_count || 0) + '</div>';
     html += '<div>重复业务 key 数: ' + (summary.duplicate_key_count || 0) + '</div>';
@@ -2322,11 +2357,15 @@ dvCommitImportBtn.addEventListener("click", async function() {
   if (!dvState.previewData) return;
 
   dvCommitImportBtn.disabled = true;
-  dvCommitImportBtn.textContent = "导入中...";
+  dvCommitImportBtn.textContent = "导入中，请稍候...";
+  dvPreviewContent.innerHTML = '<div class="dv-chart-status">导入中，请稍候，数据较多时可能需要 1-2 分钟...</div>';
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() { controller.abort(); }, 180000);
 
   try {
     await api("/api/data-visualization/import/integrated/commit", {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         file_data: dvState.uploadFile,
         file_name: dvState.uploadFileName,
@@ -2341,8 +2380,13 @@ dvCommitImportBtn.addEventListener("click", async function() {
     loadDVDataFilters();
     dvImportDialog.close();
   } catch (err) {
-    alert("导入失败: " + err.message);
+    if (err.name === "AbortError") {
+      dvPreviewContent.innerHTML = '<div class="error-cell">导入超时，请稍后刷新数据管理页面确认是否已写入，或重新导入。</div>';
+    } else {
+      dvPreviewContent.innerHTML = '<div class="error-cell">导入失败: ' + err.message + '</div>';
+    }
   } finally {
+    clearTimeout(timeoutId);
     dvCommitImportBtn.disabled = false;
     dvCommitImportBtn.textContent = "确认导入";
   }

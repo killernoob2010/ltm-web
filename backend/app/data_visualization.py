@@ -1780,7 +1780,6 @@ async def import_commit(
 # ── GET /api/data-visualization/table ─────────────────────────────────
 
 @router.get("/data-visualization/table")
-@router.get("/data-visualization/table")
 async def get_table(
     metric: str = Query(..., pattern="^(inventory|shipment|arrival|apparent_demand)$"),
     years: str = "",
@@ -1788,6 +1787,7 @@ async def get_table(
     categories: str = "",
     source_countries: str = "",
     mainstream_status: str = "",
+    product_pool: str = "",
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
@@ -1847,6 +1847,36 @@ async def get_table(
                 params.extend(mainstream_list)
             sql += " ORDER BY week_start, product, category"
             rows = db._exec(cur, sql, tuple(params)).fetchall()
+
+            if product_pool == "aggregate":
+                products_ordered = ["主流矿合计", "非主流矿合计"]
+                week_map: Dict[str, Dict] = {}
+                for row in rows:
+                    ws = row["week_start"]
+                    if ws not in week_map:
+                        week_map[ws] = {
+                            "date": row["display_date"],
+                            "week": row["week_label"] or f"{row['business_year']} W{row['business_week']:02d}",
+                        }
+                        for p in products_ordered:
+                            week_map[ws][p] = {
+                                "id": None, "value": None,
+                                "is_manual_override": False, "is_missing_filled": False,
+                                "source": None, "updated_by": None, "updated_at": None,
+                            }
+                    status = row["mainstream_status"] or "非主流"
+                    label = "主流矿合计" if status == "主流" else "非主流矿合计"
+                    current = week_map[ws][label]["value"] or 0
+                    week_map[ws][label] = {
+                        "id": None,
+                        "value": current + float(row["value"] or 0),
+                        "is_manual_override": False,
+                        "is_missing_filled": False,
+                        "source": "整合数据汇总",
+                        "updated_by": row["validation_status"],
+                        "updated_at": None,
+                    }
+                return {"metric": metric, "products": products_ordered, "data": list(week_map.values())}
 
             # 按 (product, category) 构建稳定标签
             product_categories: Dict[str, set] = {}
@@ -2020,7 +2050,7 @@ async def get_chart(
                 return {"metric": metric, "series": {}}
             params_i: List[Any] = [metric]
             sql_i = """SELECT week_start, display_date, business_year, business_week,
-                              source_country, product, category, value,
+                              source_country, product, category, mainstream_status, value,
                               is_calculable, validation_status
                        FROM dv_integrated_points WHERE metric_type = ?"""
             if product_list:

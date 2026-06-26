@@ -32,3 +32,16 @@ test("data visualization chart filters use product pools instead of always-flat 
   assert.match(appJs, /function applyDVChartProductPool/);
   assert.match(appJs, /整体对比/);
 });
+
+test("data visualization data page uses product pools and advanced filters", () => {
+  assert.match(indexHtml, /dvDataProductPool/);
+  assert.match(indexHtml, /dv-data-advanced-filters/);
+  assert.match(appJs, /function applyDVDataProductPool/);
+  assert.match(appJs, /product_pool=aggregate/);
+});
+
+test("integrated import commit shows progress and times out instead of hanging forever", () => {
+  assert.match(appJs, /导入中，请稍候/);
+  assert.match(appJs, /AbortController/);
+  assert.match(appJs, /导入超时/);
+});

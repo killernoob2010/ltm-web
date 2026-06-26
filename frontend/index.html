@@ -398,30 +398,58 @@
             <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
           </div>
         </div>
-          <div class="dv-filter-row" id="dvDataYearFilter">
-            <span class="dv-filter-label">年份：</span>
-            <div class="dv-checkbox-group" id="dvDataYearCheckboxes"></div>
-            <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataYearAll">全选</button>
-            <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataYearNone">全不选</button>
+        <div class="dv-chart-controls-row">
+          <div class="dv-chart-controls">
+            <label>
+              品种池
+              <select id="dvDataProductPool">
+                <option value="mainstream">主流矿</option>
+                <option value="non_mainstream">非主流矿</option>
+                <option value="aggregate">整体对比</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <div class="dv-checkbox-panel">
+              <div class="dv-checkbox-panel-header">
+                <span>年份</span>
+                <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataYearAll">全选</button>
+                <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataYearNone">全不选</button>
+              </div>
+              <div class="dv-checkbox-group" id="dvDataYearCheckboxes"></div>
+            </div>
+            <div class="dv-checkbox-panel">
+              <div class="dv-checkbox-panel-header">
+                <span>品种</span>
+                <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataProductAll">全选</button>
+                <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataProductNone">全不选</button>
+              </div>
+              <div class="dv-checkbox-group" id="dvDataProductCheckboxes"></div>
+            </div>
+            <details class="dv-advanced-filters dv-data-advanced-filters">
+              <summary>高级筛选</summary>
+              <div class="dv-advanced-filter-grid">
+                <div class="dv-checkbox-panel">
+                  <div class="dv-checkbox-panel-header">
+                    <span>种类</span>
+                  </div>
+                  <div class="dv-checkbox-group" id="dvDataCategoryCheckboxes"></div>
+                </div>
+                <div class="dv-checkbox-panel">
+                  <div class="dv-checkbox-panel-header">
+                    <span>来源/国家</span>
+                  </div>
+                  <div class="dv-checkbox-group" id="dvDataCountryCheckboxes"></div>
+                </div>
+                <div class="dv-checkbox-panel">
+                  <div class="dv-checkbox-panel-header">
+                    <span>主流/非主流</span>
+                  </div>
+                  <div class="dv-checkbox-group" id="dvDataMainstreamCheckboxes"></div>
+                </div>
+              </div>
+            </details>
           </div>
-          <div class="dv-filter-row" id="dvDataProductFilter">
-            <span class="dv-filter-label">品种：</span>
-            <div class="dv-checkbox-group" id="dvDataProductCheckboxes"></div>
-            <button type="button" class="dv-filter-btn dv-filter-all" id="dvDataProductAll">全选</button>
-            <button type="button" class="dv-filter-btn dv-filter-none" id="dvDataProductNone">全不选</button>
-          </div>
-          <div class="dv-filter-row" id="dvDataCategoryFilter">
-            <span class="dv-filter-label">种类：</span>
-            <div class="dv-checkbox-group" id="dvDataCategoryCheckboxes"></div>
-          </div>
-          <div class="dv-filter-row" id="dvDataCountryFilter">
-            <span class="dv-filter-label">来源/国家：</span>
-            <div class="dv-checkbox-group" id="dvDataCountryCheckboxes"></div>
-          </div>
-          <div class="dv-filter-row" id="dvDataMainstreamFilter">
-            <span class="dv-filter-label">主流/非主流：</span>
-            <div class="dv-checkbox-group" id="dvDataMainstreamCheckboxes"></div>
-          </div>
+        </div>
         <div class="table-wrap">
            <table id="dvDataTable">
              <thead id="dvDataThead">
@@ -906,6 +934,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-chart-redesign-20260626b"></script>
+    <script src="/static/app.js?v=dv-data-filter-import-20260626"></script>
   </body>
 </html>
