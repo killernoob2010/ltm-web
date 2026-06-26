@@ -2,9 +2,18 @@
 import sys, os
 # Make backend/app a package by adding backend/ to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
-from app.data_visualization import compute_business_week, _to_date, _to_float, integrate_mysteel_files, _local_mysteel_files
+from app.data_visualization import (
+    compute_business_week,
+    _parse_integrated_excel,
+    _split_filter_values,
+    _to_date,
+    _to_float,
+    integrate_mysteel_files,
+    _local_mysteel_files,
+)
 
 from datetime import date
+from openpyxl import Workbook
 
 
 def test_compute_business_week_w01():
@@ -37,6 +46,48 @@ def test_to_float():
     assert _to_float(3.14) == 3.14
     assert _to_float(None) is None
     assert _to_float("abc") is None
+
+
+def test_split_filter_values_supports_multi_select():
+    assert _split_filter_values("主流,非主流") == ["主流", "非主流"]
+    assert _split_filter_values(" 主流 , , 非主流 ") == ["主流", "非主流"]
+    assert _split_filter_values("") == []
+
+
+def test_parse_integrated_excel_reports_invalid_rows(tmp_path):
+    path = tmp_path / "bad_integrated.xlsx"
+    headers = [
+        "统计周一", "统计周日", "业务年份", "业务周次", "周次标签", "展示日期",
+        "数据类型", "来源/国家", "品种", "种类", "主流/非主流", "数值",
+        "单位", "来源文件", "来源Sheet", "来源区域", "是否参与表需", "校验状态", "备注",
+    ]
+    row = [
+        "2026-06-01", "2026-06-07", 2026, 23, "2026 W23", "2026-06-02",
+        "库存", "澳洲", "PB粉", "粉矿", "主流", 100,
+        "万吨", "file.xlsx", "sheet", "区域", "是", "ok", "",
+    ]
+    invalid_metric = list(row)
+    invalid_metric[6] = "非法类型"
+    invalid_value = list(row)
+    invalid_value[8] = "纽曼粉"
+    invalid_value[11] = "abc"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "整合明细"
+    ws.append(headers)
+    ws.append(row)
+    ws.append(list(row))
+    ws.append(invalid_metric)
+    ws.append(invalid_value)
+    wb.save(path)
+
+    result = _parse_integrated_excel(path)
+    messages = [item["message"] for item in result["errors"]]
+    assert result["summary"]["duplicate_key_count"] == 1
+    assert any("数据类型无效" in message for message in messages)
+    assert any("数值不是数字" in message for message in messages)
+    assert len(result["rows"]) == 2
 
 
 def test_integrate_mysteel_files_local_templates():

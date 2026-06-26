@@ -1970,6 +1970,14 @@ function getCheckedValues(container) {
   return Array.from(checked).map(function(cb) { return cb.value; });
 }
 
+function appendMultiSelectParam(url, paramName, selectedValues, totalCount) {
+  if (totalCount === 0 || selectedValues.length === totalCount) return url;
+  if (selectedValues.length === 0) {
+    return url + "&" + paramName + "=__EMPTY__";
+  }
+  return url + "&" + paramName + "=" + encodeURIComponent(selectedValues.join(","));
+}
+
 function selectAllCheckboxes(container) {
   container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = true; });
 }
@@ -2032,10 +2040,10 @@ function loadDVDataFilters() {
   dvState.dvDataFilterInitialized = true;
   api("/api/data-visualization/filters").then(function(filters) {
     buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
-    buildCheckboxes(dvDataProductCheckboxes, filters.products || [], function() { loadDVTable(dvState.currentMetric); });
-    buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); });
-    buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); });
-    buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); });
+    buildCheckboxes(dvDataProductCheckboxes, filters.products || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); }, true);
 
     // Wire all/none buttons for products
     dvDataProductAll.onclick = function() {
@@ -2095,11 +2103,11 @@ async function loadDVTable(metric) {
     var countriesArr = getCheckedValues(dvDataCountryCheckboxes);
     var mainstreamArr = getCheckedValues(dvDataMainstreamCheckboxes);
     var url = "/api/data-visualization/table?metric=" + encodeURIComponent(metric);
-    if (yearsArr.length) url += "&years=" + encodeURIComponent(yearsArr.join(","));
-    if (productsArr.length) url += "&products=" + encodeURIComponent(productsArr.join(","));
-    if (categoriesArr.length) url += "&categories=" + encodeURIComponent(categoriesArr.join(","));
-    if (countriesArr.length) url += "&source_countries=" + encodeURIComponent(countriesArr.join(","));
-    if (mainstreamArr.length) url += "&mainstream_status=" + encodeURIComponent(mainstreamArr.join(","));
+    url = appendMultiSelectParam(url, "years", yearsArr, dvDataYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "products", productsArr, dvDataProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "categories", categoriesArr, dvDataCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "source_countries", countriesArr, dvDataCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     var result = await api(url);
     renderDVTable(result);
   } catch (err) {
@@ -2170,6 +2178,7 @@ function formatChartNumber(val) {
 // ── Inline edit ────────────────────────────────────────────────────────
 function attachInlineEdit() {
   dvDataTbody.querySelectorAll(".dv-value-cell").forEach(function(cell) {
+    if (!cell.dataset.id) return;
     cell.addEventListener("dblclick", function() { startInlineEdit(cell); });
   });
 }
@@ -2279,6 +2288,7 @@ dvImportFile.addEventListener("change", async function() {
     html += '<div>库存: ' + (summary.inventory_count || 0) + ' | 发运/到港: ' + (summary.shipment_count || 0) + ' | 表需: ' + (summary.apparent_demand_count || 0) + '</div>';
     html += '<div>品种数: ' + (summary.product_count || 0) + ' | 种类数: ' + (summary.category_count || 0) + ' | 来源/国家数: ' + (summary.country_count || 0) + '</div>';
     html += '<div>周数: ' + (summary.week_count || 0) + ' | 空值数: ' + (summary.null_count || 0) + '</div>';
+    html += '<div>重复业务 key 数: ' + (summary.duplicate_key_count || 0) + '</div>';
     html += '<div>日期范围: ' + (summary.date_min || "-") + ' ~ ' + (summary.date_max || "-") + '</div>';
     if (errors.length) {
       html += '<div style="color:#dc2626;margin-top:6px;">错误详情 (' + errors.length + ' 条):</div>';
@@ -2359,11 +2369,11 @@ async function loadDVChart() {
     var countriesArr = getCheckedValues(dvChartCountryCheckboxes);
     var mainstreamArr = getCheckedValues(dvChartMainstreamCheckboxes);
     var url = "/api/data-visualization/chart?metric=" + encodeURIComponent(metric);
-    if (yearsArr.length) url += "&years=" + encodeURIComponent(yearsArr.join(","));
-    if (productsArr.length) url += "&products=" + encodeURIComponent(productsArr.join(","));
-    if (categoriesArr.length) url += "&categories=" + encodeURIComponent(categoriesArr.join(","));
-    if (countriesArr.length) url += "&source_countries=" + encodeURIComponent(countriesArr.join(","));
-    if (mainstreamArr.length) url += "&mainstream_status=" + encodeURIComponent(mainstreamArr.join(","));
+    url = appendMultiSelectParam(url, "years", yearsArr, dvChartYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "products", productsArr, dvChartProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "categories", categoriesArr, dvChartCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "source_countries", countriesArr, dvChartCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     var result = await api(url);
     renderDVChart(result.series);
   } catch (err) {
@@ -2606,10 +2616,10 @@ function calcNiceStep(yMax) {
 function initDVChartControls() {
   api("/api/data-visualization/filters").then(function(filters) {
     buildYearCheckboxes(dvChartYearCheckboxes, loadDVChart);
-    buildCheckboxes(dvChartProductCheckboxes, filters.products || [], loadDVChart);
-    buildCheckboxes(dvChartCategoryCheckboxes, filters.categories || [], loadDVChart);
-    buildCheckboxes(dvChartCountryCheckboxes, filters.source_countries || [], loadDVChart);
-    buildCheckboxes(dvChartMainstreamCheckboxes, filters.mainstream_statuses || [], loadDVChart);
+    buildCheckboxes(dvChartProductCheckboxes, filters.products || [], loadDVChart, true);
+    buildCheckboxes(dvChartCategoryCheckboxes, filters.categories || [], loadDVChart, true);
+    buildCheckboxes(dvChartCountryCheckboxes, filters.source_countries || [], loadDVChart, true);
+    buildCheckboxes(dvChartMainstreamCheckboxes, filters.mainstream_statuses || [], loadDVChart, true);
 
     dvChartYearAll.addEventListener("click", function() {
       selectAllCheckboxes(dvChartYearCheckboxes);

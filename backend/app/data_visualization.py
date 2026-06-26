@@ -49,6 +49,7 @@ _INTEGRATED_FIELDS = {
 _METRIC_TYPE_CN = {
     "库存": "inventory", "发运/到港": "shipment", "表需": "apparent_demand",
 }
+_VALID_INTEGRATED_METRIC_TYPES = {"inventory", "shipment", "apparent_demand"}
 
 _REQUIRED_INTEGRATED_FIELDS = [
     "week_start", "display_date", "metric_type",
@@ -591,6 +592,10 @@ def _cleanup_tmp(paths: List[Path]) -> None:
             pass
 
 
+def _split_filter_values(value: str) -> List[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
 def _parse_integrated_excel(file_path):
     import openpyxl
     wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -617,8 +622,11 @@ def _parse_integrated_excel(file_path):
 
     rows = []
     errors = []
+    seen_keys = set()
+    duplicate_key_count = 0
     for row_idx in range(2, ws.max_row + 1):
         row_data = {}
+        value_parse_error = False
         for col_idx, field in col_map.items():
             raw = ws.cell(row=row_idx, column=col_idx).value
             if field == 'business_year':
@@ -639,6 +647,7 @@ def _parse_integrated_excel(file_path):
                     row_data[field] = float(raw) if raw is not None else None
                 except (ValueError, TypeError):
                     row_data[field] = None
+                    value_parse_error = True
             elif field in ('week_start', 'week_end', 'display_date'):
                 if isinstance(raw, (__import__('datetime').date, __import__('datetime').datetime)):
                     if hasattr(raw, 'isoformat'):
@@ -657,9 +666,27 @@ def _parse_integrated_excel(file_path):
         if missing:
             errors.append({'row': row_idx, 'message': f'缺少必填字段: {", ".join(missing)}'})
             continue
+        if row_data.get('metric_type') not in _VALID_INTEGRATED_METRIC_TYPES:
+            errors.append({'row': row_idx, 'message': f'数据类型无效: {row_data.get("metric_type")}'})
+            continue
+        if value_parse_error or row_data.get('value') is None:
+            errors.append({'row': row_idx, 'message': '数值不是数字'})
+            continue
+        business_key = (
+            row_data.get('week_start'),
+            row_data.get('metric_type'),
+            row_data.get('source_country'),
+            row_data.get('product'),
+            row_data.get('category'),
+        )
+        if business_key in seen_keys:
+            duplicate_key_count += 1
+        else:
+            seen_keys.add(business_key)
         rows.append(row_data)
 
     summary = _summarize_integrated_rows(rows)
+    summary['duplicate_key_count'] = duplicate_key_count
     wb.close()
     return {'rows': rows, 'errors': errors, 'summary': summary}
 
@@ -1733,24 +1760,35 @@ async def get_table(
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
+    years_empty_requested = False
     if years:
         for part in years.split(","):
             part = part.strip()
             if part:
+                if part == "__EMPTY__":
+                    years_empty_requested = True
+                    continue
                 try:
                     year_list.append(int(part))
                 except ValueError:
                     pass
 
-    product_list = [p.strip() for p in products.split(",") if p.strip()] if products else []
-    category_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else []
-    country_list = [c.strip() for c in source_countries.split(",") if c.strip()] if source_countries else []
-    mainstream_val = mainstream_status.strip() if mainstream_status else ""
+    product_list = _split_filter_values(products) if products else []
+    category_list = _split_filter_values(categories) if categories else []
+    country_list = _split_filter_values(source_countries) if source_countries else []
+    mainstream_list = _split_filter_values(mainstream_status) if mainstream_status else []
+    empty_filter_requested = years_empty_requested or "__EMPTY__" in product_list or "__EMPTY__" in category_list or "__EMPTY__" in country_list or "__EMPTY__" in mainstream_list
+    product_list = [item for item in product_list if item != "__EMPTY__"]
+    category_list = [item for item in category_list if item != "__EMPTY__"]
+    country_list = [item for item in country_list if item != "__EMPTY__"]
+    mainstream_list = [item for item in mainstream_list if item != "__EMPTY__"]
 
     with db.connect() as conn:
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
+            if empty_filter_requested:
+                return {"metric": metric, "products": [], "data": []}
             sql = """SELECT week_start, week_label, business_year, business_week,
                             display_date, source_country, product, category,
                             mainstream_status, value, is_calculable, validation_status, note
@@ -1772,9 +1810,10 @@ async def get_table(
                 placeholders = ",".join("?" for _ in country_list)
                 sql += f" AND source_country IN ({placeholders})"
                 params.extend(country_list)
-            if mainstream_val:
-                sql += " AND mainstream_status = ?"
-                params.append(mainstream_val)
+            if mainstream_list:
+                placeholders = ",".join("?" for _ in mainstream_list)
+                sql += f" AND mainstream_status IN ({placeholders})"
+                params.extend(mainstream_list)
             sql += " ORDER BY week_start, product, category"
             rows = db._exec(cur, sql, tuple(params)).fetchall()
 
@@ -1918,26 +1957,35 @@ async def get_chart(
     user=Depends(dv_current_user),
 ):
     year_list: List[int] = []
+    years_empty_requested = False
     if years:
         for part in years.split(","):
             part = part.strip()
             if part:
+                if part == "__EMPTY__":
+                    years_empty_requested = True
+                    continue
                 try:
                     year_list.append(int(part))
                 except ValueError:
                     pass
 
-    product_list: List[str] = []
-    if products:
-        product_list = [p.strip() for p in products.split(",") if p.strip()]
-    category_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else []
-    country_list = [c.strip() for c in source_countries.split(",") if c.strip()] if source_countries else []
-    mainstream_val = mainstream_status.strip() if mainstream_status else ""
+    product_list = _split_filter_values(products) if products else []
+    category_list = _split_filter_values(categories) if categories else []
+    country_list = _split_filter_values(source_countries) if source_countries else []
+    mainstream_list = _split_filter_values(mainstream_status) if mainstream_status else []
+    empty_filter_requested = years_empty_requested or "__EMPTY__" in product_list or "__EMPTY__" in category_list or "__EMPTY__" in country_list or "__EMPTY__" in mainstream_list
+    product_list = [item for item in product_list if item != "__EMPTY__"]
+    category_list = [item for item in category_list if item != "__EMPTY__"]
+    country_list = [item for item in country_list if item != "__EMPTY__"]
+    mainstream_list = [item for item in mainstream_list if item != "__EMPTY__"]
 
     with db.connect() as conn:
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
+            if empty_filter_requested:
+                return {"metric": metric, "series": {}}
             params_i: List[Any] = [metric]
             sql_i = """SELECT week_start, display_date, business_year, business_week,
                               source_country, product, category, value,
@@ -1959,9 +2007,10 @@ async def get_chart(
                 placeholders_n = ",".join("?" for _ in country_list)
                 sql_i += f" AND source_country IN ({placeholders_n})"
                 params_i.extend(country_list)
-            if mainstream_val:
-                sql_i += " AND mainstream_status = ?"
-                params_i.append(mainstream_val)
+            if mainstream_list:
+                placeholders_m = ",".join("?" for _ in mainstream_list)
+                sql_i += f" AND mainstream_status IN ({placeholders_m})"
+                params_i.extend(mainstream_list)
             sql_i += " ORDER BY product, category, week_start"
             rows_i = db._exec(cur, sql_i, tuple(params_i)).fetchall()
             product_categories: Dict[str, set] = {}
