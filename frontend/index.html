@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-import-preview-cache-20260626" />
+    <link rel="stylesheet" href="/static/styles.css?v=dv-filter-tabs-date-20260626" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -391,12 +391,6 @@
       <section id="dvDataPage" class="page hidden">
         <div class="toolbar">
           <button type="button" id="dvImportBtn">📥 导入 Excel</button>
-          <div class="dv-tabs" id="dvDataTabs">
-            <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
-            <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
-            <button type="button" class="dv-tab" data-metric="arrival">到港数据</button>
-            <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
-          </div>
         </div>
         <div class="dv-chart-controls-row">
           <div class="dv-chart-controls">
@@ -450,6 +444,12 @@
             </details>
           </div>
         </div>
+        <div class="dv-tabs dv-tabs-after-filters" id="dvDataTabs">
+          <button type="button" class="dv-tab active" data-metric="inventory">库存数据</button>
+          <button type="button" class="dv-tab" data-metric="shipment">发运数据</button>
+          <button type="button" class="dv-tab" data-metric="arrival">到港数据</button>
+          <button type="button" class="dv-tab" data-metric="apparent_demand">表需数据</button>
+        </div>
         <div class="table-wrap">
            <table id="dvDataTable">
              <thead id="dvDataThead">
@@ -462,14 +462,6 @@
 
         <!-- 数据可视化管理 - 数据展示 -->
         <section id="dvChartPage" class="page hidden">
-          <div class="toolbar">
-            <div class="dv-tabs" id="dvChartTabs">
-              <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
-              <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
-              <button type="button" class="dv-tab" data-metric="arrival">到港图表</button>
-              <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
-           </div>
-         </div>
          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
               <label class="dv-control-field dv-view-mode-field">
@@ -528,6 +520,12 @@
                 </div>
               </details>
             </div>
+          </div>
+          <div class="dv-tabs dv-tabs-after-filters" id="dvChartTabs">
+            <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
+            <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
+            <button type="button" class="dv-tab" data-metric="arrival">到港图表</button>
+            <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
           </div>
           <div class="chart-container">
             <div id="dvChartStatus" class="dv-chart-status"></div>
@@ -934,6 +932,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-import-preview-cache-20260626"></script>
+    <script src="/static/app.js?v=dv-filter-tabs-date-20260626"></script>
   </body>
 </html>

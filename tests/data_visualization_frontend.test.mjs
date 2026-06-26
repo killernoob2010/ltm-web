@@ -40,6 +40,18 @@ test("data visualization data page uses product pools and advanced filters", () 
   assert.match(appJs, /product_pool=aggregate/);
 });
 
+test("data visualization tabs are below filter controls", () => {
+  assert.ok(indexHtml.indexOf('id="dvDataTabs"') > indexHtml.indexOf('id="dvDataProductPool"'));
+  assert.ok(indexHtml.indexOf('id="dvChartTabs"') > indexHtml.indexOf('id="dvChartProductPool"'));
+  assert.match(indexHtml, /dv-tabs-after-filters/);
+});
+
+test("data visualization dates are displayed without timestamps", () => {
+  assert.match(appJs, /function formatDateOnly\(value\)/);
+  assert.match(appJs, /formatDateOnly\(row\.date\)/);
+  assert.match(appJs, /formatDateOnly\(point\.display_date\)/);
+});
+
 test("integrated import commit shows progress and times out instead of hanging forever", () => {
   assert.match(appJs, /导入中，请稍候/);
   assert.match(appJs, /AbortController/);

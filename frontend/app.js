@@ -166,6 +166,11 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function formatDateOnly(value) {
+  if (!value) return "-";
+  return String(value).slice(0, 10);
+}
+
 function money(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
@@ -2201,7 +2206,7 @@ function renderDVTable(result) {
         cells += '<td class="' + cls + '" data-id="' + id + '" data-value="' + (val != null ? val : '') + '" title="' + title + '">' +
           (val != null ? formatNumber(val) : '-') + '</td>';
       }
-      return '<tr><td>' + (row.date || '-') + '</td><td>' + row.week + '</td>' + cells + '</tr>';
+      return '<tr><td>' + formatDateOnly(row.date) + '</td><td>' + row.week + '</td>' + cells + '</tr>';
     })
     .join('');
 
@@ -2754,7 +2759,7 @@ function getChartPointNumericValue(point) {
 
 function formatDVChartTooltip(point, product) {
   var parts = [];
-  if (point.display_date) parts.push(point.display_date);
+  if (point.display_date) parts.push(formatDateOnly(point.display_date));
   parts.push("Week " + (point.week_no || "--"));
   parts.push(product);
   parts.push(isMissingChartPoint(point) ? "无数据" : formatChartNumber(getChartPointNumericValue(point)));
