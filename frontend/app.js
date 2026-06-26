@@ -2508,7 +2508,7 @@ function renderDVChart(series, viewMode) {
     return;
   }
 
-  var dpad = { top: 30, right: 110, bottom: 60, left: 60 };
+  var dpad = { top: 30, right: products.length > 1 ? 180 : 110, bottom: 60, left: 60 };
   var chartW = W - dpad.left - dpad.right;
   var chartH = H - dpad.top - dpad.bottom;
 
@@ -2530,9 +2530,10 @@ function renderDVChart(series, viewMode) {
     yTicks.push(v);
   }
 
-  // One color per year, shared across products
-  var yearColors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706"];
+  var yearColors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706", "#be185d", "#475569", "#15803d", "#b45309"];
   var yearColorMap = {};
+  var lineColorMap = {};
+  var legendItems = [];
   var allYears = [];
   for (var li = 0; li < lines.length; li++) {
     var yr2 = lines[li].year;
@@ -2541,6 +2542,12 @@ function renderDVChart(series, viewMode) {
   allYears.sort();
   for (var yi2 = 0; yi2 < allYears.length; yi2++) {
     yearColorMap[allYears[yi2]] = yearColors[yi2 % yearColors.length];
+  }
+  for (var liColor = 0; liColor < lines.length; liColor++) {
+    var legendKey = products.length > 1 ? (lines[liColor].product + " " + lines[liColor].year) : lines[liColor].year;
+    var legendColor = products.length > 1 ? yearColors[liColor % yearColors.length] : yearColorMap[lines[liColor].year];
+    lineColorMap[legendKey] = legendColor;
+    legendItems.push({ label: legendKey, color: legendColor });
   }
 
   // Grid lines + Y labels
@@ -2568,20 +2575,17 @@ function renderDVChart(series, viewMode) {
 
   // Draw lines
   var highlightedYear = dvState.highlightedYear || null;
-  var dashStyles = [[], [8, 4], [3, 3], [6, 3, 2, 3]];
   for (var li2 = 0; li2 < lines.length; li2++) {
     var line = lines[li2];
-    var color = yearColorMap[line.year];
+    var lineKey = products.length > 1 ? (line.product + " " + line.year) : line.year;
+    var color = lineColorMap[lineKey] || yearColorMap[line.year];
     var alpha = highlightedYear && highlightedYear !== line.year ? 0.12 : 1;
     var lineW = highlightedYear === line.year ? 3 : 1.8;
-    // Different products: different dash patterns
-    var prodIdx = products.indexOf(line.product);
-    var dash = dashStyles[prodIdx % dashStyles.length];
 
     ctx.strokeStyle = color;
     ctx.globalAlpha = alpha;
     ctx.lineWidth = lineW;
-    ctx.setLineDash(dash);
+    ctx.setLineDash([]);
     ctx.beginPath();
 
     var pts2 = line.points;
@@ -2596,17 +2600,20 @@ function renderDVChart(series, viewMode) {
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
-    // Label at end of line
-    if (pts2.length) {
+    // Single-product chart keeps a small line-end year label. Multi-product charts use a legend to avoid overlap.
+    if (pts2.length && products.length === 1) {
       var lastP = pts2[pts2.length - 1];
       var lx = xScale(lastP.week_no);
       var ly = yScale(lastP.value);
       ctx.fillStyle = color;
       ctx.font = "bold 11px sans-serif";
       ctx.textAlign = "left";
-      var labelText = products.length > 1 ? (line.product + " " + line.year) : line.year;
-      ctx.fillText(labelText, lx + 4, ly - 4);
+      ctx.fillText(line.year, lx + 4, ly - 4);
     }
+  }
+
+  if (products.length > 1) {
+    drawDVChartLegend(ctx, legendItems, W - dpad.right + 18, dpad.top, dpad.right - 24, chartH);
   }
 
   // Draw data point nodes for highlighted line
@@ -2614,7 +2621,9 @@ function renderDVChart(series, viewMode) {
     for (var li3 = 0; li3 < lines.length; li3++) {
       if (lines[li3].year === highlightedYear) {
         var hpts = lines[li3].points;
-        ctx.fillStyle = yearColorMap[highlightedYear];
+        ctx.fillStyle = products.length > 1
+          ? (lineColorMap[lines[li3].product + " " + lines[li3].year] || yearColorMap[highlightedYear])
+          : yearColorMap[highlightedYear];
         for (var pi4 = 0; pi4 < hpts.length; pi4++) {
           var px = xScale(hpts[pi4].week_no);
           var py = yScale(hpts[pi4].value);
@@ -2798,6 +2807,45 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
       ? closest.point.display_date + " | W" + String(closest.point.week_no).padStart(2, "0") + " | " + closest.product + " | " + closest.year + " | " + formatChartNumber(closest.point.value)
       : "";
   };
+}
+
+function drawDVChartLegend(ctx, items, x, y, maxW, maxH) {
+  ctx.save();
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#374151";
+  ctx.fillText("图例", x, y + 6);
+
+  var rowH = 17;
+  var startY = y + 26;
+  var maxRows = Math.max(1, Math.floor((maxH - 26) / rowH));
+  var visibleItems = items.slice(0, maxRows);
+  visibleItems.forEach(function(item, index) {
+    var yy = startY + index * rowH;
+    ctx.strokeStyle = item.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, yy);
+    ctx.lineTo(x + 16, yy);
+    ctx.stroke();
+    ctx.fillStyle = "#374151";
+    ctx.fillText(truncateCanvasText(ctx, item.label, maxW - 24), x + 22, yy);
+  });
+  if (items.length > visibleItems.length) {
+    ctx.fillStyle = "#6b7280";
+    ctx.fillText("+" + (items.length - visibleItems.length) + " 项", x, startY + visibleItems.length * rowH);
+  }
+  ctx.restore();
+}
+
+function truncateCanvasText(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  var output = text;
+  while (output.length > 1 && ctx.measureText(output + "...").width > maxW) {
+    output = output.slice(0, -1);
+  }
+  return output + "...";
 }
 
 function calcNiceStep(yMax) {
