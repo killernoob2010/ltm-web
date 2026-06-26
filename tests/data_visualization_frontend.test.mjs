@@ -22,6 +22,11 @@ test("data visualization chart page exposes arrival and chart modes", () => {
   assert.match(indexHtml, /品种对比图/);
 });
 
+test("data visualization integration labels separate shipment and arrival", () => {
+  assert.match(appJs, /if \(metric === "shipment"\) return "发运";/);
+  assert.match(appJs, /if \(metric === "arrival"\) return "到港";/);
+});
+
 test("data visualization chart filters use product pools instead of always-flat filters", () => {
   assert.match(indexHtml, /dvChartProductPool/);
   assert.match(appJs, /function applyDVChartProductPool/);

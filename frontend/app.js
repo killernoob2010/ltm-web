@@ -1861,7 +1861,8 @@ function renderDVIntegrationSummary(summary, files) {
 
 function metricLabel(metric) {
   if (metric === "inventory") return "库存";
-  if (metric === "shipment") return "发运/到港";
+  if (metric === "shipment") return "发运";
+  if (metric === "arrival") return "到港";
   if (metric === "apparent_demand") return "表需";
   return metric;
 }
