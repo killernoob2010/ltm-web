@@ -46,6 +46,29 @@ test("data visualization tabs are below filter controls", () => {
   assert.match(indexHtml, /dv-tabs-after-filters/);
 });
 
+test("data visualization atlas shows a shared year legend beside chart tabs", () => {
+  assert.match(indexHtml, /id="dvChartYearLegend"/);
+  assert.ok(indexHtml.indexOf('id="dvChartYearLegend"') > indexHtml.indexOf('id="dvChartTabs"'));
+  assert.match(appJs, /function updateDVChartYearLegend\(years, yearColorMap, visible\)/);
+  assert.match(appJs, /dv-year-legend-item/);
+});
+
+test("data visualization atlas highlights all charts for the selected year", () => {
+  assert.match(appJs, /highlightedYear/);
+  assert.match(appJs, /closest = \{ lineKey: lineKey, year: year \}/);
+  assert.match(appJs, /dist < closestDist && dist < 30/);
+  assert.match(appJs, /dvState\.highlightedYear === closest\.year/);
+  assert.match(appJs, /var isHighlightedYear = highlightedYear === year;/);
+});
+
+test("data visualization chart x axis uses month labels", () => {
+  assert.match(appJs, /const DV_MONTH_AXIS_TICKS = \[/);
+  assert.match(appJs, /label: "1月"/);
+  assert.match(appJs, /label: "12月"/);
+  assert.match(appJs, /function drawDVMonthAxis\(ctx, xScale, y\)/);
+  assert.doesNotMatch(appJs, /fillText\("W" \+ String\(weekNo\)/);
+});
+
 test("data visualization dates are displayed without timestamps", () => {
   assert.match(appJs, /function formatDateOnly\(value\)/);
   assert.match(appJs, /formatDateOnly\(row\.date\)/);

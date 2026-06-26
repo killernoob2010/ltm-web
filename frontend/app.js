@@ -59,6 +59,7 @@ const dvDataTbody = document.querySelector("#dvDataTbody");
 const dvChartTabs = document.querySelector("#dvChartTabs");
 const dvChartCanvas = document.querySelector("#dvChartCanvas");
 const dvChartStatus = document.querySelector("#dvChartStatus");
+const dvChartYearLegend = document.querySelector("#dvChartYearLegend");
 const dvChartViewMode = document.querySelector("#dvChartViewMode");
 const dvChartProductPool = document.querySelector("#dvChartProductPool");
 const dvDataProductPool = document.querySelector("#dvDataProductPool");
@@ -1806,6 +1807,21 @@ let dvState = {
 };
 
 const DV_PAGE_SIZE = 50;
+const DV_YEAR_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706", "#be185d", "#475569", "#15803d", "#b45309"];
+const DV_MONTH_AXIS_TICKS = [
+  { week: 3, label: "1月" },
+  { week: 7, label: "2月" },
+  { week: 11, label: "3月" },
+  { week: 16, label: "4月" },
+  { week: 20, label: "5月" },
+  { week: 24, label: "6月" },
+  { week: 29, label: "7月" },
+  { week: 33, label: "8月" },
+  { week: 37, label: "9月" },
+  { week: 42, label: "10月" },
+  { week: 46, label: "11月" },
+  { week: 50, label: "12月" },
+];
 const DV_CHART_PRODUCT_POOL_LABELS = {
   mainstream: "主流矿",
   non_mainstream: "非主流矿",
@@ -2234,6 +2250,35 @@ function formatChartNumber(val) {
   return Math.round(val).toString();
 }
 
+function buildYearColorMap(years) {
+  var map = {};
+  years.forEach(function(year, index) {
+    map[year] = DV_YEAR_COLORS[index % DV_YEAR_COLORS.length];
+  });
+  return map;
+}
+
+function updateDVChartYearLegend(years, yearColorMap, visible) {
+  if (!dvChartYearLegend) return;
+  if (!visible || !years.length) {
+    dvChartYearLegend.innerHTML = "";
+    return;
+  }
+  dvChartYearLegend.innerHTML = years.map(function(year) {
+    return '<span class="dv-year-legend-item"><span class="dv-year-legend-swatch" style="background:' +
+      yearColorMap[year] + '"></span>' + year + '</span>';
+  }).join('');
+}
+
+function drawDVMonthAxis(ctx, xScale, y) {
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "center";
+  DV_MONTH_AXIS_TICKS.forEach(function(tick) {
+    ctx.fillText(tick.label, xScale(tick.week), y);
+  });
+}
+
 // ── Inline edit ────────────────────────────────────────────────────────
 function attachInlineEdit() {
   dvDataTbody.querySelectorAll(".dv-value-cell").forEach(function(cell) {
@@ -2478,6 +2523,7 @@ function renderDVChart(series, viewMode) {
   dvState.lastChartData = series;
 
   var products = Object.keys(series);
+  updateDVChartYearLegend([], {}, false);
   if (!products.length) {
     ctx.fillStyle = "#9ca3af";
     ctx.font = "14px sans-serif";
@@ -2551,7 +2597,6 @@ function renderDVChart(series, viewMode) {
     yTicks.push(v);
   }
 
-  var yearColors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706", "#be185d", "#475569", "#15803d", "#b45309"];
   var yearColorMap = {};
   var lineColorMap = {};
   var legendItems = [];
@@ -2562,11 +2607,11 @@ function renderDVChart(series, viewMode) {
   }
   allYears.sort();
   for (var yi2 = 0; yi2 < allYears.length; yi2++) {
-    yearColorMap[allYears[yi2]] = yearColors[yi2 % yearColors.length];
+    yearColorMap[allYears[yi2]] = DV_YEAR_COLORS[yi2 % DV_YEAR_COLORS.length];
   }
   for (var liColor = 0; liColor < lines.length; liColor++) {
     var legendKey = products.length > 1 ? (lines[liColor].product + " " + lines[liColor].year) : lines[liColor].year;
-    var legendColor = products.length > 1 ? yearColors[liColor % yearColors.length] : yearColorMap[lines[liColor].year];
+    var legendColor = products.length > 1 ? DV_YEAR_COLORS[liColor % DV_YEAR_COLORS.length] : yearColorMap[lines[liColor].year];
     lineColorMap[legendKey] = legendColor;
     legendItems.push({ label: legendKey, color: legendColor });
   }
@@ -2586,13 +2631,7 @@ function renderDVChart(series, viewMode) {
     ctx.fillText(formatChartNumber(yTicks[ti]), dpad.left - 6, y + 4);
   }
 
-  // X-axis labels: every 4 weeks
-  ctx.fillStyle = "#6b7280";
-  ctx.font = "10px sans-serif";
-  ctx.textAlign = "center";
-  for (var w = 1; w <= maxWeek; w += 4) {
-    ctx.fillText("W" + String(w).padStart(2, "0"), xScale(w), dpad.top + chartH + 14);
-  }
+  drawDVMonthAxis(ctx, xScale, dpad.top + chartH + 14);
 
   // Draw lines
   var highlightedLineKey = dvState.highlightedLineKey || null;
@@ -2810,24 +2849,16 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
     });
   });
   years.sort();
-  var yearColors = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706"];
-  var yearColorMap = {};
-  years.forEach(function(year, index) {
-    yearColorMap[year] = yearColors[index % yearColors.length];
-  });
+  var yearColorMap = buildYearColorMap(years);
+  updateDVChartYearLegend(years, yearColorMap, true);
 
   var hitPoints = [];
-  var highlightedLineKey = dvState.highlightedLineKey || null;
-  var availableLineKeys = [];
-  products.forEach(function(product) {
-    Object.keys(series[product] || {}).forEach(function(year) {
-      availableLineKeys.push(product + " " + year);
-    });
-  });
-  if (highlightedLineKey && availableLineKeys.indexOf(highlightedLineKey) < 0) {
-    highlightedLineKey = null;
-    dvState.highlightedLineKey = null;
+  var highlightedYear = dvState.highlightedYear || null;
+  if (highlightedYear && years.indexOf(highlightedYear) < 0) {
+    highlightedYear = null;
+    dvState.highlightedYear = null;
   }
+  dvState.highlightedLineKey = null;
 
   products.forEach(function(product, index) {
     var col = index % cols;
@@ -2867,21 +2898,17 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
       ctx.lineTo(x0 + pad.left + chartW, gy);
       ctx.stroke();
     }
-    ctx.fillStyle = "#6b7280";
-    ctx.font = "10px sans-serif";
-    ctx.textAlign = "center";
-    [1, 13, 26, 39, 52].forEach(function(weekNo) {
-      ctx.fillText("W" + String(weekNo).padStart(2, "0"), xScale(weekNo), y0 + pad.top + chartH + 18);
-    });
+    drawDVMonthAxis(ctx, xScale, y0 + pad.top + chartH + 18);
 
     Object.keys(productSeries).sort().forEach(function(year) {
       var pts = productSeries[year];
       var color = yearColorMap[year];
       var lineKey = product + " " + year;
-      var alpha = highlightedLineKey && highlightedLineKey !== lineKey ? 0.16 : 1;
+      var isHighlightedYear = highlightedYear === year;
+      var alpha = highlightedYear && !isHighlightedYear ? 0.14 : 1;
       ctx.strokeStyle = color;
       ctx.globalAlpha = alpha;
-      ctx.lineWidth = highlightedLineKey === lineKey ? 2.6 : 1.4;
+      ctx.lineWidth = isHighlightedYear ? 2.6 : 1.4;
       ctx.beginPath();
       var firstValidPoint = true;
       pts.forEach(function(point) {
@@ -2896,21 +2923,17 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
           firstValidPoint = false;
         }
         else ctx.lineTo(px, py);
-        if (!highlightedLineKey || highlightedLineKey === lineKey) {
-          hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
-        }
+        hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
       });
       ctx.stroke();
       pts.forEach(function(point) {
         if (!isMissingChartPoint(point)) return;
         var px = xScale(point.week_no);
         var py = y0 + pad.top + chartH - 7;
-        drawMissingChartMarker(ctx, px, py, color, highlightedLineKey === lineKey ? 4 : 3);
-        if (!highlightedLineKey || highlightedLineKey === lineKey) {
-          hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
-        }
+        drawMissingChartMarker(ctx, px, py, color, isHighlightedYear ? 4 : 3);
+        hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
       });
-      if (highlightedLineKey === lineKey) {
+      if (isHighlightedYear) {
         ctx.fillStyle = color;
         pts.forEach(function(point) {
           if (isMissingChartPoint(point)) {
@@ -2972,17 +2995,17 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
           if (prevValid) {
             dist = Math.min(dist, distanceToSegment(mx, my, xScaleClick(prevValid.week_no), yScaleClick(getChartPointNumericValue(prevValid)), px, py));
           }
-          if (dist < closestDist && dist < 18) {
+          if (dist < closestDist && dist < 30) {
             closestDist = dist;
-            closest = { lineKey: lineKey };
+            closest = { lineKey: lineKey, year: year };
           }
           prevValid = pts[pi];
         }
       });
     });
     if (closest) {
-      dvState.highlightedLineKey = dvState.highlightedLineKey === closest.lineKey ? null : closest.lineKey;
-      dvState.highlightedYear = null;
+      dvState.highlightedYear = dvState.highlightedYear === closest.year ? null : closest.year;
+      dvState.highlightedLineKey = null;
       renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
     }
   };

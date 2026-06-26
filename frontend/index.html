@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-filter-tabs-date-20260626" />
+    <link rel="stylesheet" href="/static/styles.css?v=dv-atlas-year-hit-20260626" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -521,11 +521,14 @@
               </details>
             </div>
           </div>
-          <div class="dv-tabs dv-tabs-after-filters" id="dvChartTabs">
-            <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
-            <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
-            <button type="button" class="dv-tab" data-metric="arrival">到港图表</button>
-            <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
+          <div class="dv-chart-tabs-row dv-tabs-after-filters">
+            <div class="dv-tabs" id="dvChartTabs">
+              <button type="button" class="dv-tab active" data-metric="inventory">库存图表</button>
+              <button type="button" class="dv-tab" data-metric="shipment">发运图表</button>
+              <button type="button" class="dv-tab" data-metric="arrival">到港图表</button>
+              <button type="button" class="dv-tab" data-metric="apparent_demand">表需图表</button>
+            </div>
+            <div id="dvChartYearLegend" class="dv-year-legend"></div>
           </div>
           <div class="chart-container">
             <div id="dvChartStatus" class="dv-chart-status"></div>
@@ -932,6 +935,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-filter-tabs-date-20260626"></script>
+    <script src="/static/app.js?v=dv-atlas-year-hit-20260626"></script>
   </body>
 </html>

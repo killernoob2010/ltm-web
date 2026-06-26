@@ -727,6 +727,37 @@ dialog::backdrop {
   margin: 12px 0 0;
 }
 
+.dv-chart-tabs-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.dv-year-legend {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dv-year-legend-item {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.dv-year-legend-swatch {
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+}
+
 .dv-tab {
   min-height: 32px;
   padding: 0 12px;
