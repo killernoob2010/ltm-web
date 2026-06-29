@@ -80,6 +80,8 @@ test("sidebar groups put data visualization before admin", () => {
 
 test("shanghai junneng ledger close dialog supports partial close quantity", () => {
   assert.match(indexHtml, /id="shJunnengCloseQuantity"/);
+  assert.match(indexHtml, /id="shJunnengTradeQuantity"[^>]+step="0\.0001"/);
+  assert.match(indexHtml, /id="shJunnengCloseQuantity"[^>]+step="0\.0001"/);
   assert.match(appJs, /close_quantity: Number\(document\.querySelector\("#shJunnengCloseQuantity"\)\.value\)/);
   assert.match(appJs, /item\?\.remaining_quantity \?\? item\?\.hold_quantity/);
 });
