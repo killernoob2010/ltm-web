@@ -1157,6 +1157,10 @@ dialog::backdrop {
   font-size: 11px;
 }
 
+.dv-filter-disabled {
+  opacity: 0.55;
+}
+
 .dv-advanced-filters {
   grid-column: 1 / -1;
   grid-row: 3;

@@ -121,6 +121,22 @@ test("aggregate product pool sends selected aggregate products", () => {
   assert.doesNotMatch(appJs, /else if \(productsArr\.length === 0\) \{\s+\} else if \(productsArr\.length === 0\)/);
 });
 
+test("mainstream advanced filter only applies to custom product pools", () => {
+  assert.match(appJs, /function shouldApplyDVMainstreamFilter\(productPool\)/);
+  assert.match(appJs, /if \(shouldApplyDVMainstreamFilter\(productPool\)\) \{\s+url = appendMultiSelectParam\(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes/);
+  assert.match(appJs, /if \(shouldApplyDVMainstreamFilter\(productPool\)\) \{\s+url = appendMultiSelectParam\(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes/);
+  assert.match(appJs, /syncDVMainstreamAdvancedFilter\(dvDataMainstreamCheckboxes, pool\)/);
+  assert.match(appJs, /syncDVMainstreamAdvancedFilter\(dvChartMainstreamCheckboxes, pool\)/);
+});
+
+test("chart view mode controls rendering independently of selected product count", () => {
+  assert.match(appJs, /if \(viewMode === "atlas"\) \{\s+renderDVChartAtlas\(ctx, W, H, series, products\);/);
+  assert.doesNotMatch(appJs, /viewMode === "atlas" && products\.length > 1/);
+  assert.match(appJs, /var useProductYearLegend = viewMode === "compare";/);
+  assert.match(appJs, /var legendKey = useProductYearLegend \? \(lines\[liColor\]\.product \+ " " \+ lines\[liColor\]\.year\) : lines\[liColor\]\.year;/);
+  assert.match(appJs, /if \(useProductYearLegend\) \{\s+drawDVChartLegend/);
+});
+
 test("data visualization tabs are below filter controls", () => {
   assert.ok(indexHtml.indexOf('id="dvDataTabs"') > indexHtml.indexOf('id="dvDataProductPool"'));
   assert.ok(indexHtml.indexOf('id="dvChartTabs"') > indexHtml.indexOf('id="dvChartProductPool"'));

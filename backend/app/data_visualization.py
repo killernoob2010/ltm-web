@@ -2452,7 +2452,7 @@ async def get_table(
         if integrated_count:
             if empty_filter_requested:
                 return {"metric": metric, "products": [], "data": []}
-            aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, mainstream_list) if product_pool == "aggregate" else ([], [])
+            aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, []) if product_pool == "aggregate" else ([], [])
             if product_pool == "aggregate" and not aggregate_labels:
                 return {"metric": metric, "products": [], "data": []}
             sql = """SELECT week_start, week_label, business_year, business_week,
@@ -2674,7 +2674,7 @@ async def get_chart(
         if integrated_count:
             if empty_filter_requested:
                 return {"metric": metric, "series": {}}
-            aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, mainstream_list) if product_pool == "aggregate" else ([], [])
+            aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, []) if product_pool == "aggregate" else ([], [])
             if product_pool == "aggregate" and not aggregate_labels:
                 return {"metric": metric, "series": {}}
             params_i: List[Any] = [metric]
