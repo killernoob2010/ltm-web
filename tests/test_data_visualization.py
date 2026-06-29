@@ -499,6 +499,58 @@ def test_integrate_mysteel_files_treats_listed_blank_values_as_zero(tmp_path):
     assert values("inventory", "澳洲", "PB粉") == [0.0]
 
 
+def test_integrate_mysteel_files_calculates_demand_with_zero_values_only_when_pair_exists(tmp_path):
+    path = tmp_path / "zero_demand_mysteel.xlsx"
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws = wb.create_sheet("澳洲预计到达中国锚地量")
+    ws.append(["日期", "PB粉", "PB块", "混合粉"])
+    ws.append(["2026/6/1 - 2026/6/7", 5, 1, 2])
+    ws.append(["2026/6/8 - 2026/6/14", None, 1, 2])
+
+    ws = wb.create_sheet("粗粉")
+    ws.append([None, None, None, "PB粉"])
+    ws.append([date(2026, 6, 2), "总计", None, 10])
+    ws.append([date(2026, 6, 9), "总计", None, None])
+    ws.append([date(2026, 6, 16), "总计", None, 7])
+    wb.save(path)
+
+    result = integrate_mysteel_files([path])
+
+    arrival = [
+        point for point in result["points"]
+        if point["metric_type"] == "arrival"
+        and point["source_country"] == "澳洲"
+        and point["product"] == "PB粉"
+    ]
+    inventory = [
+        point for point in result["points"]
+        if point["metric_type"] == "inventory"
+        and point["source_country"] == "澳洲"
+        and point["product"] == "PB粉"
+    ]
+    apparent_demand = [
+        point for point in result["points"]
+        if point["metric_type"] == "apparent_demand"
+        and point["source_country"] == "澳洲"
+        and point["product"] == "PB粉"
+    ]
+
+    assert [(point["week_start"], point["value"]) for point in arrival] == [
+        ("2026-06-01", 5.0),
+        ("2026-06-08", 0.0),
+    ]
+    assert [(point["week_start"], point["value"]) for point in inventory] == [
+        ("2026-06-01", 10.0),
+        ("2026-06-08", 0.0),
+        ("2026-06-15", 7.0),
+    ]
+    assert [(point["week_start"], point["value"]) for point in apparent_demand] == [
+        ("2026-06-08", 10.0),
+    ]
+
+
 def test_integrate_mysteel_files_covers_current_template_sections():
     result = integrate_mysteel_files(_local_mysteel_files())
     australia_shipments = [
