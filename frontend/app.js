@@ -317,8 +317,7 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization_data") {
     showOnly(dvDataPage);
-    initDVData();
-    await loadDVTable("shipment");
+    await initDVData();
     return;
   }
   if (code === "data_visualization_chart") {
@@ -2024,7 +2023,7 @@ function buildCheckboxes(container, items, onChange, checkedDefault) {
   });
 }
 
-function initDVData() {
+async function initDVData() {
   if (dvState.currentMetric !== "shipment") {
     dvState.currentMetric = "shipment";
   }
@@ -2033,15 +2032,18 @@ function initDVData() {
   if (shipmentTab) shipmentTab.classList.add("active");
 
   if (!dvState.dvDataFilterInitialized) {
-    loadDVDataFilters();
+    await loadDVDataFilters();
+  } else {
+    await loadDVTable(dvState.currentMetric);
   }
 }
 
-function loadDVDataFilters() {
+async function loadDVDataFilters() {
   dvState.dvDataFilterInitialized = true;
-  api("/api/data-visualization/filters").then(function(filters) {
+  try {
+    var filters = await api("/api/data-visualization/filters");
     dvState.dataFilters = filters;
-    buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
+    await buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
     applyDVDataProductPool();
     buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); }, true);
     buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); }, true);
@@ -2070,9 +2072,10 @@ function loadDVDataFilters() {
       selectNoneCheckboxes(dvDataYearCheckboxes);
       loadDVTable(dvState.currentMetric);
     };
-  }).catch(function(err) {
+    await loadDVTable(dvState.currentMetric);
+  } catch (err) {
     console.error("加载筛选选项失败:", err);
-  });
+  }
 }
 
 function applyDVDataProductPool() {

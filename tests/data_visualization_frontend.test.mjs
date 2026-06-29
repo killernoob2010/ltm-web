@@ -44,7 +44,16 @@ test("data visualization metric tabs use shipment arrival inventory demand order
   assert.deepEqual(metricOrder("dvChartTabs"), ["shipment", "arrival", "inventory", "apparent_demand"]);
   assert.match(appJs, /currentMetric: "shipment"/);
   assert.match(appJs, /chartMetric: "shipment"/);
-  assert.match(appJs, /loadDVTable\("shipment"\)/);
+  assert.match(appJs, /await initDVData\(\);/);
+});
+
+test("data visualization data page waits for filters before loading table", () => {
+  assert.doesNotMatch(appJs, /initDVData\(\);\s*await loadDVTable\("shipment"\)/);
+  assert.match(appJs, /await initDVData\(\);/);
+  assert.match(appJs, /async function initDVData\(\)/);
+  assert.match(appJs, /async function loadDVDataFilters\(\)/);
+  assert.match(appJs, /await buildYearCheckboxes\(dvDataYearCheckboxes/);
+  assert.match(appJs, /await loadDVTable\(dvState\.currentMetric\);/);
 });
 
 test("data integration page keeps only upload and download actions", () => {
