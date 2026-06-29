@@ -819,8 +819,8 @@ dialog::backdrop {
 .dv-value-cell {
   cursor: pointer;
   position: relative;
-  min-width: 48px;
-  max-width: 72px;
+  min-width: 132px;
+  max-width: 160px;
   padding: 4px 8px;
   font-size: 13px;
   text-align: right;
@@ -842,11 +842,24 @@ dialog::backdrop {
 }
 
 #dvDataTable th {
-  min-width: 48px;
-  max-width: 72px;
   padding: 6px 8px;
   font-size: 13px;
-  text-align: right;
+  text-align: center;
+}
+
+#dvDataTable th:not(:first-child):not(:nth-child(2)) {
+  min-width: 132px;
+  max-width: 160px;
+  white-space: normal;
+  line-height: 1.25;
+  vertical-align: middle;
+}
+
+.dv-product-header {
+  display: inline-block;
+  max-width: 144px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 #dvDataTable th:first-child,

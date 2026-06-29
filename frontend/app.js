@@ -2165,7 +2165,9 @@ function renderDVTable(result) {
   var thead = document.querySelector('#dvDataTable thead');
   if (thead) {
     thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
-      products.map(function(p) { return '<th>' + p + '</th>'; }).join('') +
+      products.map(function(p) {
+        return '<th title="' + escapeHtml(p) + '"><span class="dv-product-header">' + formatDVProductHeaderLabel(p) + '</span></th>';
+      }).join('') +
       '</tr>';
   }
 
@@ -2189,6 +2191,19 @@ function renderDVTable(result) {
     .join('');
 
   attachInlineEdit();
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatDVProductHeaderLabel(label) {
+  return escapeHtml(label).replace(/（/g, "<br>（");
 }
 
 function tooltipText(row) {

@@ -102,6 +102,16 @@ test("data visualization data page uses product pools and advanced filters", () 
   assert.match(appJs, /product_pool=aggregate/);
 });
 
+test("data visualization table headers support long product names", () => {
+  assert.match(appJs, /function formatDVProductHeaderLabel\(label\)/);
+  assert.match(appJs, /class="dv-product-header"/);
+  assert.match(appJs, /title="/);
+  assert.match(stylesCss, /#dvDataTable th:not\(:first-child\):not\(:nth-child\(2\)\)/);
+  assert.match(stylesCss, /min-width: 132px/);
+  assert.match(stylesCss, /max-width: 160px/);
+  assert.match(stylesCss, /white-space: normal/);
+});
+
 test("data visualization tabs are below filter controls", () => {
   assert.ok(indexHtml.indexOf('id="dvDataTabs"') > indexHtml.indexOf('id="dvDataProductPool"'));
   assert.ok(indexHtml.indexOf('id="dvChartTabs"') > indexHtml.indexOf('id="dvChartProductPool"'));
