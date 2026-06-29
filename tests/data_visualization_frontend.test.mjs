@@ -33,6 +33,29 @@ test("data visualization integration summary separates shipment and arrival", ()
   assert.match(appJs, /\["到港", metrics\.arrival \|\| summary\.arrival_count \|\| 0\]/);
 });
 
+test("data visualization metric tabs use shipment arrival inventory demand order", () => {
+  const metricOrder = function(containerId) {
+    const start = indexHtml.indexOf(`id="${containerId}"`);
+    assert.notEqual(start, -1);
+    const end = indexHtml.indexOf("</div>", start);
+    return Array.from(indexHtml.slice(start, end).matchAll(/data-metric="([^"]+)"/g)).map((match) => match[1]);
+  };
+  assert.deepEqual(metricOrder("dvDataTabs"), ["shipment", "arrival", "inventory", "apparent_demand"]);
+  assert.deepEqual(metricOrder("dvChartTabs"), ["shipment", "arrival", "inventory", "apparent_demand"]);
+  assert.match(appJs, /currentMetric: "shipment"/);
+  assert.match(appJs, /chartMetric: "shipment"/);
+  assert.match(appJs, /await initDVData\(\);/);
+});
+
+test("data visualization data page waits for filters before loading table", () => {
+  assert.doesNotMatch(appJs, /initDVData\(\);\s*await loadDVTable\("shipment"\)/);
+  assert.match(appJs, /await initDVData\(\);/);
+  assert.match(appJs, /async function initDVData\(\)/);
+  assert.match(appJs, /async function loadDVDataFilters\(\)/);
+  assert.match(appJs, /await buildYearCheckboxes\(dvDataYearCheckboxes/);
+  assert.match(appJs, /await loadDVTable\(dvState\.currentMetric\);/);
+});
+
 test("data integration page keeps only upload and download actions", () => {
   assert.match(integrationSection, /导入 Excel/);
   assert.match(integrationSection, /下载整合 Excel/);
@@ -77,6 +100,41 @@ test("data visualization data page uses product pools and advanced filters", () 
   assert.match(indexHtml, /dv-data-advanced-filters/);
   assert.match(appJs, /function applyDVDataProductPool/);
   assert.match(appJs, /product_pool=aggregate/);
+});
+
+test("data visualization table headers support long product names", () => {
+  assert.match(appJs, /function formatDVProductHeaderLabel\(label\)/);
+  assert.match(appJs, /class="dv-product-header"/);
+  assert.match(appJs, /title="/);
+  assert.match(stylesCss, /#dvDataTable th:not\(:first-child\):not\(:nth-child\(2\)\)/);
+  assert.match(stylesCss, /min-width: 132px/);
+  assert.match(stylesCss, /max-width: 160px/);
+  assert.match(stylesCss, /white-space: normal/);
+  assert.match(stylesCss, /\.dv-value-cell \{[\s\S]*text-align: center;/);
+});
+
+test("aggregate product pool sends selected aggregate products", () => {
+  const tableAggregateBranch = /if \(productPool === "aggregate"\) \{\s+url \+= "&product_pool=aggregate";\s+url = appendMultiSelectParam\(url, "products", productsArr, dvDataProductCheckboxes\.querySelectorAll\('input\[type="checkbox"\]'\)\.length\);/;
+  const chartAggregateBranch = /if \(productPool === "aggregate"\) \{\s+url \+= "&product_pool=aggregate";\s+url = appendMultiSelectParam\(url, "products", productsArr, dvChartProductCheckboxes\.querySelectorAll\('input\[type="checkbox"\]'\)\.length\);/;
+  assert.match(appJs, tableAggregateBranch);
+  assert.match(appJs, chartAggregateBranch);
+  assert.doesNotMatch(appJs, /else if \(productsArr\.length === 0\) \{\s+\} else if \(productsArr\.length === 0\)/);
+});
+
+test("mainstream advanced filter only applies to custom product pools", () => {
+  assert.match(appJs, /function shouldApplyDVMainstreamFilter\(productPool\)/);
+  assert.match(appJs, /if \(shouldApplyDVMainstreamFilter\(productPool\)\) \{\s+url = appendMultiSelectParam\(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes/);
+  assert.match(appJs, /if \(shouldApplyDVMainstreamFilter\(productPool\)\) \{\s+url = appendMultiSelectParam\(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes/);
+  assert.match(appJs, /syncDVMainstreamAdvancedFilter\(dvDataMainstreamCheckboxes, pool\)/);
+  assert.match(appJs, /syncDVMainstreamAdvancedFilter\(dvChartMainstreamCheckboxes, pool\)/);
+});
+
+test("chart view mode controls rendering independently of selected product count", () => {
+  assert.match(appJs, /if \(viewMode === "atlas"\) \{\s+renderDVChartAtlas\(ctx, W, H, series, products\);/);
+  assert.doesNotMatch(appJs, /viewMode === "atlas" && products\.length > 1/);
+  assert.match(appJs, /var useProductYearLegend = viewMode === "compare";/);
+  assert.match(appJs, /var legendKey = useProductYearLegend \? \(lines\[liColor\]\.product \+ " " \+ lines\[liColor\]\.year\) : lines\[liColor\]\.year;/);
+  assert.match(appJs, /if \(useProductYearLegend\) \{\s+drawDVChartLegend/);
 });
 
 test("data visualization tabs are below filter controls", () => {

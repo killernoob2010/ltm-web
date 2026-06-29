@@ -317,8 +317,7 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization_data") {
     showOnly(dvDataPage);
-    initDVData();
-    await loadDVTable("inventory");
+    await initDVData();
     return;
   }
   if (code === "data_visualization_chart") {
@@ -1808,8 +1807,8 @@ closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 let dvIntegrationUploadFiles = [];
 
 let dvState = {
-  currentMetric: "inventory",
-  chartMetric: "inventory",
+  currentMetric: "shipment",
+  chartMetric: "shipment",
   selectedYears: [],
   uploadFile: null,
   uploadFileName: "",
@@ -2024,28 +2023,45 @@ function buildCheckboxes(container, items, onChange, checkedDefault) {
   });
 }
 
-function initDVData() {
-  if (dvState.currentMetric !== "inventory") {
-    dvState.currentMetric = "inventory";
+function shouldApplyDVMainstreamFilter(productPool) {
+  return productPool === "custom";
+}
+
+function syncDVMainstreamAdvancedFilter(container, productPool) {
+  var enabled = shouldApplyDVMainstreamFilter(productPool);
+  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+    cb.disabled = !enabled;
+  });
+  var panel = container.closest(".dv-checkbox-panel");
+  if (panel) panel.classList.toggle("dv-filter-disabled", !enabled);
+}
+
+async function initDVData() {
+  if (dvState.currentMetric !== "shipment") {
+    dvState.currentMetric = "shipment";
   }
   dvDataTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
-  var inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
-  if (inventoryTab) inventoryTab.classList.add("active");
+  var shipmentTab = dvDataTabs.querySelector('[data-metric="shipment"]');
+  if (shipmentTab) shipmentTab.classList.add("active");
 
   if (!dvState.dvDataFilterInitialized) {
-    loadDVDataFilters();
+    await loadDVDataFilters();
+  } else {
+    await loadDVTable(dvState.currentMetric);
   }
 }
 
-function loadDVDataFilters() {
+async function loadDVDataFilters() {
   dvState.dvDataFilterInitialized = true;
-  api("/api/data-visualization/filters").then(function(filters) {
+  try {
+    var filters = await api("/api/data-visualization/filters");
     dvState.dataFilters = filters;
-    buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
+    await buildYearCheckboxes(dvDataYearCheckboxes, function() { loadDVTable(dvState.currentMetric); });
     applyDVDataProductPool();
     buildCheckboxes(dvDataCategoryCheckboxes, filters.categories || [], function() { loadDVTable(dvState.currentMetric); }, true);
     buildCheckboxes(dvDataCountryCheckboxes, filters.source_countries || [], function() { loadDVTable(dvState.currentMetric); }, true);
     buildCheckboxes(dvDataMainstreamCheckboxes, filters.mainstream_statuses || [], function() { loadDVTable(dvState.currentMetric); }, true);
+    syncDVMainstreamAdvancedFilter(dvDataMainstreamCheckboxes, dvDataProductPool ? dvDataProductPool.value : "mainstream");
 
     if (dvDataProductPool) {
       dvDataProductPool.onchange = function() {
@@ -2070,9 +2086,10 @@ function loadDVDataFilters() {
       selectNoneCheckboxes(dvDataYearCheckboxes);
       loadDVTable(dvState.currentMetric);
     };
-  }).catch(function(err) {
+    await loadDVTable(dvState.currentMetric);
+  } catch (err) {
     console.error("加载筛选选项失败:", err);
-  });
+  }
 }
 
 function applyDVDataProductPool() {
@@ -2086,6 +2103,7 @@ function applyDVDataProductPool() {
   else items = pools.custom || filters.products || [];
 
   buildCheckboxes(dvDataProductCheckboxes, items, function() { loadDVTable(dvState.currentMetric); }, true);
+  syncDVMainstreamAdvancedFilter(dvDataMainstreamCheckboxes, pool);
   if (pool === "aggregate") {
     dvDataProductAll.disabled = true;
     dvDataProductNone.disabled = true;
@@ -2129,6 +2147,7 @@ async function loadDVTable(metric) {
     url = appendMultiSelectParam(url, "years", yearsArr, dvDataYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     if (productPool === "aggregate") {
       url += "&product_pool=aggregate";
+      url = appendMultiSelectParam(url, "products", productsArr, dvDataProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     } else {
       url += "&product_pool=" + encodeURIComponent(productPool);
       if (productPool === "custom") {
@@ -2141,7 +2160,9 @@ async function loadDVTable(metric) {
     }
     url = appendMultiSelectParam(url, "categories", categoriesArr, dvDataCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     url = appendMultiSelectParam(url, "source_countries", countriesArr, dvDataCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
-    url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    if (shouldApplyDVMainstreamFilter(productPool)) {
+      url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    }
     var result = await api(url);
     renderDVTable(result);
   } catch (err) {
@@ -2162,7 +2183,9 @@ function renderDVTable(result) {
   var thead = document.querySelector('#dvDataTable thead');
   if (thead) {
     thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
-      products.map(function(p) { return '<th>' + p + '</th>'; }).join('') +
+      products.map(function(p) {
+        return '<th title="' + escapeHtml(p) + '"><span class="dv-product-header">' + formatDVProductHeaderLabel(p) + '</span></th>';
+      }).join('') +
       '</tr>';
   }
 
@@ -2186,6 +2209,19 @@ function renderDVTable(result) {
     .join('');
 
   attachInlineEdit();
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatDVProductHeaderLabel(label) {
+  return escapeHtml(label).replace(/（/g, "<br>（");
 }
 
 function tooltipText(row) {
@@ -2215,6 +2251,15 @@ function buildYearColorMap(years) {
     map[year] = DV_YEAR_COLORS[index % DV_YEAR_COLORS.length];
   });
   return map;
+}
+
+function getStableChartColor(key) {
+  var hash = 0;
+  for (var i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  return DV_YEAR_COLORS[Math.abs(hash) % DV_YEAR_COLORS.length];
 }
 
 function updateDVChartYearLegend(years, yearColorMap, visible) {
@@ -2445,6 +2490,7 @@ async function loadDVChart() {
     url = appendMultiSelectParam(url, "years", yearsArr, dvChartYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     if (productPool === "aggregate") {
       url += "&product_pool=aggregate";
+      url = appendMultiSelectParam(url, "products", productsArr, dvChartProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     } else {
       url += "&product_pool=" + encodeURIComponent(productPool);
       if (productPool === "custom") {
@@ -2457,7 +2503,9 @@ async function loadDVChart() {
     }
     url = appendMultiSelectParam(url, "categories", categoriesArr, dvChartCategoryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     url = appendMultiSelectParam(url, "source_countries", countriesArr, dvChartCountryCheckboxes.querySelectorAll('input[type="checkbox"]').length);
-    url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    if (shouldApplyDVMainstreamFilter(productPool)) {
+      url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvChartMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
+    }
     var result = await api(url);
     renderDVChart(result.series, viewMode);
   } catch (err) {
@@ -2529,12 +2577,13 @@ function renderDVChart(series, viewMode) {
     return;
   }
 
-  if (viewMode === "atlas" && products.length > 1) {
+  if (viewMode === "atlas") {
     renderDVChartAtlas(ctx, W, H, series, products);
     return;
   }
 
-  var dpad = { top: 30, right: products.length > 1 ? 180 : 110, bottom: 60, left: 60 };
+  var useProductYearLegend = viewMode === "compare";
+  var dpad = { top: 30, right: useProductYearLegend ? 180 : 110, bottom: 60, left: 60 };
   var chartW = W - dpad.left - dpad.right;
   var chartH = H - dpad.top - dpad.bottom;
 
@@ -2569,8 +2618,8 @@ function renderDVChart(series, viewMode) {
     yearColorMap[allYears[yi2]] = DV_YEAR_COLORS[yi2 % DV_YEAR_COLORS.length];
   }
   for (var liColor = 0; liColor < lines.length; liColor++) {
-    var legendKey = products.length > 1 ? (lines[liColor].product + " " + lines[liColor].year) : lines[liColor].year;
-    var legendColor = products.length > 1 ? DV_YEAR_COLORS[liColor % DV_YEAR_COLORS.length] : yearColorMap[lines[liColor].year];
+    var legendKey = useProductYearLegend ? (lines[liColor].product + " " + lines[liColor].year) : lines[liColor].year;
+    var legendColor = useProductYearLegend ? getStableChartColor(legendKey) : yearColorMap[lines[liColor].year];
     lineColorMap[legendKey] = legendColor;
     legendItems.push({ label: legendKey, color: legendColor });
   }
@@ -2595,7 +2644,7 @@ function renderDVChart(series, viewMode) {
   // Draw lines
   var highlightedLineKey = dvState.highlightedLineKey || null;
   var availableLineKeys = lines.map(function(line) {
-    return products.length > 1 ? (line.product + " " + line.year) : line.year;
+    return useProductYearLegend ? (line.product + " " + line.year) : line.year;
   });
   if (highlightedLineKey && availableLineKeys.indexOf(highlightedLineKey) < 0) {
     highlightedLineKey = null;
@@ -2603,7 +2652,7 @@ function renderDVChart(series, viewMode) {
   }
   for (var li2 = 0; li2 < lines.length; li2++) {
     var line = lines[li2];
-    var lineKey = products.length > 1 ? (line.product + " " + line.year) : line.year;
+    var lineKey = useProductYearLegend ? (line.product + " " + line.year) : line.year;
     var color = lineColorMap[lineKey] || yearColorMap[line.year];
     var alpha = highlightedLineKey && highlightedLineKey !== lineKey ? 0.12 : 1;
     var lineW = highlightedLineKey === lineKey ? 3 : 1.8;
@@ -2643,7 +2692,7 @@ function renderDVChart(series, viewMode) {
         break;
       }
     }
-    if (lastP && products.length === 1) {
+    if (lastP && !useProductYearLegend) {
       var lx = xScale(lastP.week_no);
       var ly = yScale(getChartPointNumericValue(lastP));
       ctx.fillStyle = color;
@@ -2653,17 +2702,17 @@ function renderDVChart(series, viewMode) {
     }
   }
 
-  if (products.length > 1) {
+  if (useProductYearLegend) {
     drawDVChartLegend(ctx, legendItems, W - dpad.right + 18, dpad.top, dpad.right - 24, chartH);
   }
 
   // Draw data point nodes for highlighted line
   if (highlightedLineKey) {
     for (var li3 = 0; li3 < lines.length; li3++) {
-      var nodeLineKey = products.length > 1 ? (lines[li3].product + " " + lines[li3].year) : lines[li3].year;
+      var nodeLineKey = useProductYearLegend ? (lines[li3].product + " " + lines[li3].year) : lines[li3].year;
       if (nodeLineKey === highlightedLineKey) {
         var hpts = lines[li3].points;
-        ctx.fillStyle = products.length > 1
+        ctx.fillStyle = useProductYearLegend
           ? (lineColorMap[nodeLineKey] || yearColorMap[lines[li3].year])
           : yearColorMap[lines[li3].year];
         for (var pi4 = 0; pi4 < hpts.length; pi4++) {
@@ -2692,7 +2741,7 @@ function renderDVChart(series, viewMode) {
     var closestDist = Infinity;
     for (var li3 = 0; li3 < lines.length; li3++) {
       var ln = lines[li3];
-      var clickLineKey = products.length > 1 ? (ln.product + " " + ln.year) : ln.year;
+      var clickLineKey = useProductYearLegend ? (ln.product + " " + ln.year) : ln.year;
       var prevValid = null;
       for (var pi4 = 0; pi4 < ln.points.length; pi4++) {
         if (isMissingChartPoint(ln.points[pi4])) {
@@ -3041,6 +3090,7 @@ function applyDVChartProductPool() {
   else items = pools.custom || filters.products || [];
 
   buildCheckboxes(dvChartProductCheckboxes, items, loadDVChart, true);
+  syncDVMainstreamAdvancedFilter(dvChartMainstreamCheckboxes, pool);
   if (pool === "aggregate") {
     dvChartProductAll.disabled = true;
     dvChartProductNone.disabled = true;
@@ -3060,6 +3110,7 @@ async function initDVChartControls() {
     buildCheckboxes(dvChartCategoryCheckboxes, filters.categories || [], loadDVChart, true);
     buildCheckboxes(dvChartCountryCheckboxes, filters.source_countries || [], loadDVChart, true);
     buildCheckboxes(dvChartMainstreamCheckboxes, filters.mainstream_statuses || [], loadDVChart, true);
+    syncDVMainstreamAdvancedFilter(dvChartMainstreamCheckboxes, dvChartProductPool ? dvChartProductPool.value : "mainstream");
 
     if (dvChartViewMode) {
       dvChartViewMode.addEventListener("change", loadDVChart);
