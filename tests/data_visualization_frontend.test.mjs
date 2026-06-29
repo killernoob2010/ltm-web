@@ -33,6 +33,20 @@ test("data visualization integration summary separates shipment and arrival", ()
   assert.match(appJs, /\["到港", metrics\.arrival \|\| summary\.arrival_count \|\| 0\]/);
 });
 
+test("data visualization metric tabs use shipment arrival inventory demand order", () => {
+  const metricOrder = function(containerId) {
+    const start = indexHtml.indexOf(`id="${containerId}"`);
+    assert.notEqual(start, -1);
+    const end = indexHtml.indexOf("</div>", start);
+    return Array.from(indexHtml.slice(start, end).matchAll(/data-metric="([^"]+)"/g)).map((match) => match[1]);
+  };
+  assert.deepEqual(metricOrder("dvDataTabs"), ["shipment", "arrival", "inventory", "apparent_demand"]);
+  assert.deepEqual(metricOrder("dvChartTabs"), ["shipment", "arrival", "inventory", "apparent_demand"]);
+  assert.match(appJs, /currentMetric: "shipment"/);
+  assert.match(appJs, /chartMetric: "shipment"/);
+  assert.match(appJs, /loadDVTable\("shipment"\)/);
+});
+
 test("data integration page keeps only upload and download actions", () => {
   assert.match(integrationSection, /导入 Excel/);
   assert.match(integrationSection, /下载整合 Excel/);

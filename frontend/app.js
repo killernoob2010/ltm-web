@@ -318,7 +318,7 @@ async function activateModule(code, subName) {
   if (code === "data_visualization_data") {
     showOnly(dvDataPage);
     initDVData();
-    await loadDVTable("inventory");
+    await loadDVTable("shipment");
     return;
   }
   if (code === "data_visualization_chart") {
@@ -1808,8 +1808,8 @@ closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 let dvIntegrationUploadFiles = [];
 
 let dvState = {
-  currentMetric: "inventory",
-  chartMetric: "inventory",
+  currentMetric: "shipment",
+  chartMetric: "shipment",
   selectedYears: [],
   uploadFile: null,
   uploadFileName: "",
@@ -2025,12 +2025,12 @@ function buildCheckboxes(container, items, onChange, checkedDefault) {
 }
 
 function initDVData() {
-  if (dvState.currentMetric !== "inventory") {
-    dvState.currentMetric = "inventory";
+  if (dvState.currentMetric !== "shipment") {
+    dvState.currentMetric = "shipment";
   }
   dvDataTabs.querySelectorAll(".dv-tab").forEach(function(t) { t.classList.remove("active"); });
-  var inventoryTab = dvDataTabs.querySelector('[data-metric="inventory"]');
-  if (inventoryTab) inventoryTab.classList.add("active");
+  var shipmentTab = dvDataTabs.querySelector('[data-metric="shipment"]');
+  if (shipmentTab) shipmentTab.classList.add("active");
 
   if (!dvState.dvDataFilterInitialized) {
     loadDVDataFilters();
