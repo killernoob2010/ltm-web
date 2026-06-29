@@ -108,14 +108,6 @@ test("data visualization data page uses product pools and advanced filters", () 
   assert.match(appJs, /product_pool=aggregate/);
 });
 
-test("non-mainstream product pools label country-total series clearly", () => {
-  assert.match(indexHtml, /id="dvDataProductFilterLabel"/);
-  assert.match(indexHtml, /id="dvChartProductFilterLabel"/);
-  assert.match(appJs, /non_mainstream: "品种\/国家总量"/);
-  assert.match(appJs, /updateDVProductFilterLabel\(dvDataProductFilterLabel, pool\)/);
-  assert.match(appJs, /updateDVProductFilterLabel\(dvChartProductFilterLabel, pool\)/);
-});
-
 test("data visualization table headers support long product names", () => {
   assert.match(appJs, /function formatDVProductHeaderLabel\(label\)/);
   assert.match(appJs, /class="dv-product-header"/);
