@@ -551,6 +551,27 @@ def test_integrate_mysteel_files_calculates_demand_with_zero_values_only_when_pa
     ]
 
 
+def test_integrate_mysteel_files_normalizes_pellet_inventory_country_headers(tmp_path):
+    path = tmp_path / "pellet_inventory_mysteel.xlsx"
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws = wb.create_sheet("球团")
+    ws.append([None, None, None, "乌克兰", "印度"])
+    ws.append([date(2026, 6, 2), "总计", None, 0.00, 0.00])
+    wb.save(path)
+
+    result = integrate_mysteel_files([path])
+    inventory = {
+        (point["source_country"], point["product"]): point
+        for point in result["points"]
+        if point["metric_type"] == "inventory"
+    }
+
+    assert inventory[("乌克兰", "乌克兰球")]["value"] == 0.0
+    assert inventory[("印度", "印球")]["value"] == 0.0
+
+
 def test_integrate_mysteel_files_covers_current_template_sections():
     result = integrate_mysteel_files(_local_mysteel_files())
     australia_shipments = [
