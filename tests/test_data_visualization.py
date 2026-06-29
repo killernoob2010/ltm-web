@@ -257,6 +257,71 @@ def test_save_integrated_points_merges_weekly_uploads(tmp_path, monkeypatch):
     assert summary["skipped_blank_overwrite"] == 1
 
 
+def test_save_integrated_points_migrates_legacy_pellet_inventory_names(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    legacy_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "乌克兰",
+        "product": "乌克兰",
+        "category": "球团",
+        "mainstream_status": "非主流",
+        "value": 0.000015,
+        "unit": "万吨",
+        "source_file": "old_mysteel.xlsx",
+        "source_sheet": "球团",
+        "source_section": "总计行",
+        "is_calculable": 0,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([legacy_point], ["old_mysteel.xlsx"], "pytest")
+
+    corrected_point = dict(
+        legacy_point,
+        product="乌克兰球",
+        mainstream_status="主流",
+        value=0.0,
+        source_file="new_mysteel.xlsx",
+    )
+    batch_id = _save_integrated_points([corrected_point], ["new_mysteel.xlsx"], "pytest")
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        points = db._exec(
+            cur,
+            """SELECT source_country, product, mainstream_status, value, source_file
+               FROM dv_integrated_points
+               WHERE metric_type = 'inventory'
+                 AND source_country = '乌克兰'
+                 AND category = '球团'
+                 AND business_year = 2026
+                 AND business_week = 23""",
+        ).fetchall()
+        batch = db._exec(
+            cur,
+            "SELECT validation_summary FROM dv_integration_batches WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+
+    summary = __import__("json").loads(batch["validation_summary"])
+    assert len(points) == 1
+    assert points[0]["product"] == "乌克兰球"
+    assert points[0]["mainstream_status"] == "主流"
+    assert points[0]["value"] == 0.0
+    assert points[0]["source_file"] == "new_mysteel.xlsx"
+    assert summary["updated"] == 1
+    assert summary["inserted"] == 0
+
+
 def test_save_integrated_points_recalculates_apparent_demand_from_full_history(tmp_path, monkeypatch):
     from app import db
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")

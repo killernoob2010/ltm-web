@@ -251,6 +251,12 @@ INVENTORY_RENAME = {
 }
 
 
+LEGACY_INVENTORY_PRODUCT_RENAME = {
+    ("inventory", "球团", "乌克兰球"): "乌克兰",
+    ("inventory", "球团", "印球"): "印度",
+}
+
+
 GLOBAL_SKIP_COUNTRIES = {"澳大利亚", "巴西", "总计"}
 
 
@@ -329,6 +335,83 @@ def _make_point(
         "validation_status": validation_status,
         "note": note,
     }
+
+
+def _migrate_legacy_integrated_product_key(cur, point: Dict[str, Any]) -> None:
+    legacy_product = LEGACY_INVENTORY_PRODUCT_RENAME.get((
+        point["metric_type"],
+        point["category"],
+        point["product"],
+    ))
+    if not legacy_product:
+        return
+
+    canonical_params = (
+        point["metric_type"],
+        point["source_country"],
+        point["product"],
+        point["category"],
+        point["mainstream_status"],
+        point["business_year"],
+        point["business_week"],
+    )
+    canonical = db._exec(
+        cur,
+        """SELECT id
+           FROM dv_integrated_points
+           WHERE metric_type = ?
+             AND source_country = ?
+             AND product = ?
+             AND category = ?
+             AND mainstream_status = ?
+             AND business_year = ?
+             AND business_week = ?
+           ORDER BY id DESC
+           LIMIT 1""",
+        canonical_params,
+    ).fetchone()
+
+    legacy_params = (
+        point["metric_type"],
+        point["source_country"],
+        legacy_product,
+        point["category"],
+        point["business_year"],
+        point["business_week"],
+    )
+    legacy_rows = db._exec(
+        cur,
+        """SELECT id
+           FROM dv_integrated_points
+           WHERE metric_type = ?
+             AND source_country = ?
+             AND product = ?
+             AND category = ?
+             AND business_year = ?
+             AND business_week = ?
+           ORDER BY id DESC""",
+        legacy_params,
+    ).fetchall()
+    if not legacy_rows:
+        return
+
+    legacy_ids = [row["id"] for row in legacy_rows]
+    if canonical:
+        placeholders = ",".join("?" for _ in legacy_ids)
+        db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(legacy_ids))
+        return
+
+    keep_id, *delete_ids = legacy_ids
+    db._exec(
+        cur,
+        """UPDATE dv_integrated_points
+           SET product = ?, mainstream_status = ?
+           WHERE id = ?""",
+        (point["product"], point["mainstream_status"], keep_id),
+    )
+    if delete_ids:
+        placeholders = ",".join("?" for _ in delete_ids)
+        db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(delete_ids))
 
 
 def _find_col(ws, header_row: int, header_name: str) -> Optional[int]:
@@ -1112,6 +1195,7 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
             "skipped_blank_overwrite": 0,
         }
         for point in points:
+            _migrate_legacy_integrated_product_key(cur, point)
             key_params = (
                 point["metric_type"],
                 point["source_country"],
