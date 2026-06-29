@@ -158,6 +158,24 @@ def _normalize_integrated_point(point: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(point)
     for field in ("week_start", "week_end", "display_date"):
         item[field] = _normalize_date_value(item.get(field))
+    if item.get("metric_type") == "inventory":
+        source_country, product, category = _canonical_inventory_identity(
+            item.get("source_sheet", ""),
+            item.get("product", ""),
+            item.get("category", ""),
+            item.get("source_country", ""),
+        )
+        item["source_country"] = source_country
+        item["product"] = product
+        item["category"] = category
+    if item.get("product"):
+        item["mainstream_status"] = _mainstream_status(item["product"])
+    if item.get("metric_type") in {"arrival", "inventory"}:
+        item["is_calculable"] = 1 if _is_apparent_demand_candidate(
+            item.get("source_country", ""),
+            item.get("product", ""),
+            item.get("category", ""),
+        ) else 0
     return item
 
 
@@ -191,7 +209,7 @@ def _clean_number(value: Any) -> Optional[float]:
 MAINSTREAM_PRODUCTS = {
     "PB粉", "纽曼粉", "麦克粉", "金布巴粉",
     "巴混", "卡粉", "超特粉", "混合粉",
-    "PB块", "纽曼块", "澳大利亚球团", "乌克兰球", "印球",
+    "PB块", "纽曼块", "澳大利亚球团",
 }
 
 AUSTRALIA_ARRIVAL_HEADER_ROW = 20
@@ -240,20 +258,49 @@ AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
 }
 
 
+INVENTORY_SHEETS = {"粗粉", "块矿", "球团", "精粉"}
+INVENTORY_CATEGORIES = {"粉矿", "块矿", "球团", "精粉"}
+
 INVENTORY_RENAME = {
     ("粗粉", "RTX粉(SP10粉)"): ("SP10粉", "粉矿", "澳洲"),
-    ("粗粉", "库兰粉"): ("库兰粉", "粉矿", "澳洲"),
-    ("粗粉", "一钢粉"): ("一钢粉", "粉矿", "澳洲"),
-    ("精粉", "泰富精粉"): ("泰富精粉", "精粉", "澳洲"),
+    ("粗粉", "其他澳粉"): ("其他", "粉矿", "澳洲"),
+    ("粗粉", "其他巴粗"): ("其他", "粉矿", "巴西"),
+    ("粗粉", "其他粉矿"): ("其他", "粉矿", "其他"),
+    ("粗粉", "PMI粉"): ("PMI粉", "粉矿", "澳洲"),
+    ("粗粉", "RTBF/RTGF"): ("RTBF/RTGF", "粉矿", "澳洲"),
+    ("粗粉", "金宝粉"): ("金宝粉", "粉矿", "澳洲"),
+    ("粗粉", "哈扬粉"): ("哈扬粉", "粉矿", "澳洲"),
+    ("粗粉", "IOH4"): ("IOH4", "粉矿", "巴西"),
+    ("粗粉", "IOC6"): ("IOC6", "粉矿", "巴西"),
+    ("粗粉", "特卡粉"): ("特卡粉", "粉矿", "巴西"),
+    ("粗粉", "其他CSN粗粉"): ("其他CSN粗粉", "粉矿", "巴西"),
+    ("块矿", "澳块"): ("其他", "块矿", "澳洲"),
+    ("块矿", "巴块"): ("巴西", "块矿", "巴西"),
+    ("块矿", "PMI块"): ("PMI块", "块矿", "澳洲"),
+    ("块矿", "其他"): ("其他", "块矿", "其他"),
     ("球团", "澳大利亚"): ("澳大利亚球团", "球团", "澳洲"),
-    ("球团", "乌克兰"): ("乌克兰球", "球团", "乌克兰"),
-    ("球团", "印度"): ("印球", "球团", "印度"),
+    ("球团", "其他"): ("其他", "球团", "其他"),
+    ("精粉", "澳大利亚其他精粉"): ("其他", "精粉", "澳洲"),
+    ("精粉", "其他巴西精粉"): ("其他", "精粉", "巴西"),
+    ("精粉", "泰富精粉"): ("泰富精粉", "精粉", "澳洲"),
+    ("精粉", "铁桥精粉"): ("铁桥精粉", "精粉", "澳洲"),
+    ("精粉", "米纳斯精粉"): ("米纳斯精粉", "精粉", "巴西"),
+    ("精粉", "其他"): ("其他", "精粉", "其他"),
 }
 
+INVENTORY_COUNTRY_HEADERS = {
+    "印度", "南非", "毛里塔尼亚", "秘鲁", "伊朗", "新西兰", "马来西亚",
+    "印尼", "智利", "西班牙", "墨西哥", "塞拉利昂", "委内瑞拉",
+    "加拿大", "俄罗斯", "瑞典", "阿曼", "土耳其", "巴西", "乌克兰",
+}
 
-LEGACY_INVENTORY_PRODUCT_RENAME = {
-    ("inventory", "球团", "乌克兰球"): "乌克兰",
-    ("inventory", "球团", "印球"): "印度",
+INVENTORY_COUNTRY_ALIAS = {
+    "几内亚粉": "几内亚",
+}
+
+LEGACY_INVENTORY_IDENTITY_RENAME = {
+    ("inventory", "球团", "乌克兰球"): ("乌克兰", "乌克兰", "球团"),
+    ("inventory", "球团", "印球"): ("印度", "印度", "球团"),
 }
 
 
@@ -290,6 +337,55 @@ def _source_country_for_product(product: str, category: str, sheet_name: str = "
     if any(token in product for token in brazil_tokens):
         return "巴西"
     return product if sheet_name in {"球团", "精粉"} and len(product) <= 8 else "其他"
+
+
+AUSTRALIA_ARRIVAL_PRODUCTS = {
+    (mapped[0], mapped[1])
+    for mapped in AUSTRALIA_PRODUCT_MAP.values()
+    if mapped is not None
+}
+
+
+def _is_apparent_demand_candidate(source_country: str, product: str, category: str) -> bool:
+    if source_country == "澳洲" and (product, category) in AUSTRALIA_ARRIVAL_PRODUCTS:
+        return True
+    return source_country == "巴西" and product == "卡粉" and category == "粉矿"
+
+
+def _canonical_inventory_identity(
+    sheet_name: str,
+    product: str,
+    category: str = "",
+    source_country: str = "",
+) -> tuple:
+    sheet = sheet_name if sheet_name in INVENTORY_SHEETS else ""
+    inventory_category = category or _category_for_inventory(sheet, product)
+
+    legacy = LEGACY_INVENTORY_IDENTITY_RENAME.get(("inventory", inventory_category, product))
+    if legacy:
+        return legacy
+
+    if sheet:
+        renamed = INVENTORY_RENAME.get((sheet, product))
+        if renamed:
+            return renamed[2], renamed[0], renamed[1]
+        inventory_category = _category_for_inventory(sheet, product)
+    else:
+        for candidate_sheet in INVENTORY_SHEETS:
+            if _category_for_inventory(candidate_sheet, product) != inventory_category:
+                continue
+            renamed = INVENTORY_RENAME.get((candidate_sheet, product))
+            if renamed:
+                return renamed[2], renamed[0], renamed[1]
+
+    country = INVENTORY_COUNTRY_ALIAS.get(product)
+    if country:
+        return country, country, inventory_category
+    if product in INVENTORY_COUNTRY_HEADERS:
+        return product, product, inventory_category
+
+    source = source_country or _source_country_for_product(product, inventory_category, sheet)
+    return source, product, inventory_category
 
 
 def _mainstream_status(product: str) -> str:
@@ -338,12 +434,14 @@ def _make_point(
 
 
 def _migrate_legacy_integrated_product_key(cur, point: Dict[str, Any]) -> None:
-    legacy_product = LEGACY_INVENTORY_PRODUCT_RENAME.get((
-        point["metric_type"],
-        point["category"],
-        point["product"],
-    ))
-    if not legacy_product:
+    canonical_identity = (point["source_country"], point["product"], point["category"])
+    legacy_keys = [
+        (metric_type, legacy_category, legacy_product)
+        for (metric_type, legacy_category, legacy_product), renamed_identity
+        in LEGACY_INVENTORY_IDENTITY_RENAME.items()
+        if metric_type == point["metric_type"] and renamed_identity == canonical_identity
+    ]
+    if not legacy_keys:
         return
 
     canonical_params = (
@@ -371,27 +469,26 @@ def _migrate_legacy_integrated_product_key(cur, point: Dict[str, Any]) -> None:
         canonical_params,
     ).fetchone()
 
-    legacy_params = (
-        point["metric_type"],
-        point["source_country"],
-        legacy_product,
-        point["category"],
-        point["business_year"],
-        point["business_week"],
-    )
-    legacy_rows = db._exec(
-        cur,
-        """SELECT id
-           FROM dv_integrated_points
-           WHERE metric_type = ?
-             AND source_country = ?
-             AND product = ?
-             AND category = ?
-             AND business_year = ?
-             AND business_week = ?
-           ORDER BY id DESC""",
-        legacy_params,
-    ).fetchall()
+    legacy_rows = []
+    for metric_type, legacy_category, legacy_product in legacy_keys:
+        legacy_rows.extend(db._exec(
+            cur,
+            """SELECT id
+               FROM dv_integrated_points
+               WHERE metric_type = ?
+                 AND product = ?
+                 AND category = ?
+                 AND business_year = ?
+                 AND business_week = ?
+               ORDER BY id DESC""",
+            (
+                metric_type,
+                legacy_product,
+                legacy_category,
+                point["business_year"],
+                point["business_week"],
+            ),
+        ).fetchall())
     if not legacy_rows:
         return
 
@@ -405,9 +502,9 @@ def _migrate_legacy_integrated_product_key(cur, point: Dict[str, Any]) -> None:
     db._exec(
         cur,
         """UPDATE dv_integrated_points
-           SET product = ?, mainstream_status = ?
+           SET source_country = ?, product = ?, category = ?, mainstream_status = ?
            WHERE id = ?""",
-        (point["product"], point["mainstream_status"], keep_id),
+        (point["source_country"], point["product"], point["category"], point["mainstream_status"], keep_id),
     )
     if delete_ids:
         placeholders = ",".join("?" for _ in delete_ids)
@@ -686,12 +783,8 @@ def _extract_global_shipments(path: Path) -> List[Dict[str, Any]]:
 def _inventory_product(sheet_name: str, header: str) -> Optional[tuple]:
     if not header or "总计" in header:
         return None
-    renamed = INVENTORY_RENAME.get((sheet_name, header))
-    if renamed:
-        return renamed
-    category = _category_for_inventory(sheet_name, header)
-    source_country = _source_country_for_product(header, category, sheet_name)
-    return header, category, source_country
+    source_country, product, category = _canonical_inventory_identity(sheet_name, header)
+    return product, category, source_country
 
 
 def _extract_inventory(path: Path) -> List[Dict[str, Any]]:
@@ -728,7 +821,7 @@ def _extract_inventory(path: Path) -> List[Dict[str, Any]]:
                     source_file=path.name,
                     source_sheet=sheet_name,
                     source_section="总计行",
-                    is_calculable=source_country in {"澳洲", "巴西"},
+                    is_calculable=_is_apparent_demand_candidate(source_country, product, category),
                     validation_status="ok",
                 ))
     wb.close()
@@ -866,6 +959,38 @@ def _split_filter_values(value: str) -> List[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _integrated_product_labels(rows: List[Dict[str, Any]]) -> tuple:
+    product_categories: Dict[str, set] = {}
+    product_category_sources: Dict[tuple, set] = {}
+    for row in rows:
+        product_categories.setdefault(row["product"], set()).add(row["category"])
+        product_category_sources.setdefault((row["product"], row["category"]), set()).add(row["source_country"])
+
+    label_map: Dict[tuple, str] = {}
+    products_ordered: List[str] = []
+    for row in rows:
+        key = (row["source_country"], row["product"], row["category"])
+        if key in label_map:
+            continue
+        source_country, product, category = key
+        if product == "其他":
+            if source_country == "其他":
+                label = f"其他（{category}）"
+            else:
+                label = f"{source_country}（其他{category}）"
+        elif source_country == product and category in INVENTORY_CATEGORIES:
+            label = f"{product}（{category}）"
+        elif len(product_category_sources[(product, category)]) > 1:
+            label = f"{source_country} / {product}（{category}）"
+        elif len(product_categories[product]) > 1:
+            label = f"{product}（{category}）"
+        else:
+            label = product
+        label_map[key] = label
+        products_ordered.append(label)
+    return label_map, products_ordered
+
+
 def _parse_integrated_excel(file_path):
     import openpyxl
     wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -936,6 +1061,7 @@ def _parse_integrated_excel(file_path):
         if value_parse_error or row_data.get('value') is None:
             errors.append({'row': row_idx, 'message': '数值不是数字'})
             continue
+        row_data = _normalize_integrated_point(row_data)
         business_key = (
             row_data.get('week_start'),
             row_data.get('metric_type'),
@@ -2367,22 +2493,7 @@ async def get_table(
                     }
                 return {"metric": metric, "products": products_ordered, "data": list(week_map.values())}
 
-            # 按 (product, category) 构建稳定标签
-            product_categories: Dict[str, set] = {}
-            for row in rows:
-                product_categories.setdefault(row["product"], set()).add(row["category"])
-
-            label_map: Dict[tuple, str] = {}
-            products_ordered: List[str] = []
-            for row in rows:
-                key = (row["product"], row["category"])
-                if key not in label_map:
-                    if len(product_categories[row["product"]]) > 1:
-                        label = f"{row['product']}（{row['category']}）"
-                    else:
-                        label = row["product"]
-                    label_map[key] = label
-                    products_ordered.append(label)
+            label_map, products_ordered = _integrated_product_labels(rows)
 
             week_map: Dict[str, Dict] = {}
             for row in rows:
@@ -2398,7 +2509,7 @@ async def get_table(
                             "is_manual_override": False, "is_missing_filled": False,
                             "source": None, "updated_by": None, "updated_at": None,
                         }
-                label = label_map[(row["product"], row["category"])]
+                label = label_map[(row["source_country"], row["product"], row["category"])]
                 week_map[ws][label] = {
                     "id": None,
                     "value": row["value"],
@@ -2597,14 +2708,10 @@ async def get_chart(
                     result_agg.setdefault(label, {}).setdefault(year, []).append(item)
                 return {"metric": metric, "series": result_agg}
 
-            product_categories: Dict[str, set] = {}
-            for row in rows_i:
-                product_categories.setdefault(row["product"], set()).add(row["category"])
+            label_map_i, _products_ordered_i = _integrated_product_labels(rows_i)
             result_i: Dict[str, Dict[str, List[Dict]]] = {}
             for row in rows_i:
-                label = row["product"]
-                if len(product_categories[row["product"]]) > 1:
-                    label = f"{row['product']}（{row['category']}）"
+                label = label_map_i[(row["source_country"], row["product"], row["category"])]
                 year = str(row["business_year"]) if row["business_year"] else row["week_start"][:4]
                 if label not in result_i:
                     result_i[label] = {}

@@ -13,6 +13,7 @@ from app.data_visualization import (
     _to_date,
     _to_float,
     build_integrated_workbook_bytes,
+    get_chart,
     get_table,
     integrate_mysteel_files,
     _local_mysteel_files,
@@ -283,12 +284,52 @@ def test_save_integrated_points_migrates_legacy_pellet_inventory_names(tmp_path,
         "validation_status": "ok",
         "note": "",
     }
-    _save_integrated_points([legacy_point], ["old_mysteel.xlsx"], "pytest")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        old_batch_id = db._last_insert_id(
+            cur,
+            """INSERT INTO dv_integration_batches
+               (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+               VALUES (?, 'completed', 1, 0, '{}', ?)""",
+            ("old_mysteel.xlsx", "pytest"),
+        )
+        db._exec(
+            cur,
+            """INSERT INTO dv_integrated_points
+               (batch_id, week_start, week_end, business_year, business_week, week_label,
+                display_date, metric_type, source_country, product,
+                category, mainstream_status, value, unit, source_file,
+                source_sheet, source_section, is_calculable, validation_status, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                old_batch_id,
+                legacy_point["week_start"],
+                legacy_point["week_end"],
+                legacy_point["business_year"],
+                legacy_point["business_week"],
+                legacy_point["week_label"],
+                legacy_point["display_date"],
+                legacy_point["metric_type"],
+                legacy_point["source_country"],
+                "乌克兰球",
+                legacy_point["category"],
+                "主流",
+                legacy_point["value"],
+                legacy_point["unit"],
+                legacy_point["source_file"],
+                legacy_point["source_sheet"],
+                legacy_point["source_section"],
+                legacy_point["is_calculable"],
+                legacy_point["validation_status"],
+                legacy_point["note"],
+            ),
+        )
+        conn.commit()
 
     corrected_point = dict(
         legacy_point,
-        product="乌克兰球",
-        mainstream_status="主流",
+        product="乌克兰",
+        mainstream_status="非主流",
         value=0.0,
         source_file="new_mysteel.xlsx",
     )
@@ -314,8 +355,8 @@ def test_save_integrated_points_migrates_legacy_pellet_inventory_names(tmp_path,
 
     summary = __import__("json").loads(batch["validation_summary"])
     assert len(points) == 1
-    assert points[0]["product"] == "乌克兰球"
-    assert points[0]["mainstream_status"] == "主流"
+    assert points[0]["product"] == "乌克兰"
+    assert points[0]["mainstream_status"] == "非主流"
     assert points[0]["value"] == 0.0
     assert points[0]["source_file"] == "new_mysteel.xlsx"
     assert summary["updated"] == 1
@@ -417,6 +458,51 @@ def test_get_table_groups_same_business_week_with_mixed_date_formats(tmp_path, m
     assert result["data"][0]["week"] == "2026 W23"
     assert result["data"][0]["卡粉"]["value"] == 100.0
     assert result["data"][0]["PB粉"]["value"] == 200.0
+
+
+def test_get_table_and_chart_disambiguate_same_product_category_across_sources(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "澳洲",
+        "product": "其他",
+        "category": "粉矿",
+        "mainstream_status": "非主流",
+        "value": 12.0,
+        "unit": "万吨",
+        "source_file": "mysteel.xlsx",
+        "source_sheet": "粗粉",
+        "source_section": "总计行",
+        "is_calculable": 0,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([
+        base_point,
+        dict(base_point, source_country="巴西", value=34.0),
+        dict(base_point, source_country="其他", value=56.0),
+    ], ["mysteel.xlsx"], "pytest")
+
+    table = asyncio.run(get_table(metric="inventory", years="2026", products="其他", categories="粉矿", user={"role": "管理员"}))
+    row = table["data"][0]
+
+    assert table["products"] == ["澳洲（其他粉矿）", "巴西（其他粉矿）", "其他（粉矿）"]
+    assert row["澳洲（其他粉矿）"]["value"] == 12.0
+    assert row["巴西（其他粉矿）"]["value"] == 34.0
+    assert row["其他（粉矿）"]["value"] == 56.0
+
+    chart = asyncio.run(get_chart(metric="inventory", years="2026", products="其他", categories="粉矿", user={"role": "管理员"}))
+
+    assert sorted(chart["series"]) == ["其他（粉矿）", "巴西（其他粉矿）", "澳洲（其他粉矿）"]
 
 
 def test_integrated_export_downloads_current_full_history(tmp_path, monkeypatch):
@@ -628,13 +714,83 @@ def test_integrate_mysteel_files_normalizes_pellet_inventory_country_headers(tmp
 
     result = integrate_mysteel_files([path])
     inventory = {
-        (point["source_country"], point["product"]): point
+        (point["source_country"], point["product"], point["category"]): point
         for point in result["points"]
         if point["metric_type"] == "inventory"
     }
 
-    assert inventory[("乌克兰", "乌克兰球")]["value"] == 0.0
-    assert inventory[("印度", "印球")]["value"] == 0.0
+    assert inventory[("乌克兰", "乌克兰", "球团")]["value"] == 0.0
+    assert inventory[("印度", "印度", "球团")]["value"] == 0.0
+
+
+def test_integrate_mysteel_files_normalizes_inventory_country_and_generic_headers(tmp_path):
+    path = tmp_path / "inventory_headers_mysteel.xlsx"
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws = wb.create_sheet("粗粉")
+    ws.append([None, None, None, "印度", "其他澳粉", "其他巴粗", "其他"])
+    ws.append([date(2026, 6, 2), "总计", None, 1, 2, 3, 4])
+
+    ws = wb.create_sheet("块矿")
+    ws.append([None, None, None, "南非", "澳块", "巴块", "PMI块", "其他"])
+    ws.append([date(2026, 6, 2), "总计", None, 5, 6, 7, 8, 9])
+
+    ws = wb.create_sheet("精粉")
+    ws.append([None, None, None, "乌克兰", "其他巴西精粉", "其他"])
+    ws.append([date(2026, 6, 2), "总计", None, 10, 11, 12])
+    wb.save(path)
+
+    result = integrate_mysteel_files([path])
+    inventory = {
+        (point["source_country"], point["product"], point["category"]): point["value"]
+        for point in result["points"]
+        if point["metric_type"] == "inventory"
+    }
+
+    assert inventory[("印度", "印度", "粉矿")] == 1.0
+    assert inventory[("澳洲", "其他", "粉矿")] == 2.0
+    assert inventory[("巴西", "其他", "粉矿")] == 3.0
+    assert inventory[("其他", "其他", "粉矿")] == 4.0
+    assert inventory[("南非", "南非", "块矿")] == 5.0
+    assert inventory[("澳洲", "其他", "块矿")] == 6.0
+    assert inventory[("巴西", "巴西", "块矿")] == 7.0
+    assert inventory[("澳洲", "PMI块", "块矿")] == 8.0
+    assert inventory[("其他", "其他", "块矿")] == 9.0
+    assert inventory[("乌克兰", "乌克兰", "精粉")] == 10.0
+    assert inventory[("巴西", "其他", "精粉")] == 11.0
+    assert inventory[("其他", "其他", "精粉")] == 12.0
+
+
+def test_integrate_mysteel_files_calculates_demand_only_for_exact_arrival_inventory_pairs(tmp_path):
+    path = tmp_path / "demand_scope_mysteel.xlsx"
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws = wb.create_sheet("巴西发货量")
+    ws.append(["占位"])
+    for _ in range(25):
+        ws.append([None])
+    ws.append(["日期", "中国大陆", "卡粉"])
+    ws.append(["2026/5/11 - 2026/5/17", 120, 20])
+    ws.append(["2026/5/18 - 2026/5/24", 160, 30])
+
+    ws = wb.create_sheet("粗粉")
+    ws.append([None, None, None, "卡粉", "巴混"])
+    ws.append([date(2026, 6, 23), "总计", None, 100, 40])
+    ws.append([date(2026, 6, 30), "总计", None, 90, 35])
+    wb.save(path)
+
+    result = integrate_mysteel_files([path])
+    apparent = [
+        point for point in result["points"]
+        if point["metric_type"] == "apparent_demand"
+        and point["source_country"] == "巴西"
+    ]
+
+    assert [(point["product"], point["week_start"], point["value"]) for point in apparent] == [
+        ("卡粉", "2026-06-29", 160 * 0.75 + 100 - 90),
+    ]
 
 
 def test_integrate_mysteel_files_covers_current_template_sections():
