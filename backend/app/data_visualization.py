@@ -959,6 +959,26 @@ def _split_filter_values(value: str) -> List[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+AGGREGATE_PRODUCT_ORDER = ["主流矿合计", "非主流矿合计"]
+AGGREGATE_PRODUCT_STATUS = {
+    "主流矿合计": "主流",
+    "非主流矿合计": "非主流",
+}
+
+
+def _aggregate_labels_and_statuses(product_list: List[str], mainstream_list: List[str]) -> tuple:
+    labels = [
+        label for label in AGGREGATE_PRODUCT_ORDER
+        if not product_list or label in product_list
+    ]
+    if product_list and not labels:
+        return [], []
+    pairs = [(label, AGGREGATE_PRODUCT_STATUS[label]) for label in labels]
+    if mainstream_list:
+        pairs = [(label, status) for label, status in pairs if status in mainstream_list]
+    return [label for label, _status in pairs], [status for _label, status in pairs]
+
+
 def _integrated_product_labels(rows: List[Dict[str, Any]]) -> tuple:
     product_categories: Dict[str, set] = {}
     product_category_sources: Dict[tuple, set] = {}
@@ -2432,6 +2452,9 @@ async def get_table(
         if integrated_count:
             if empty_filter_requested:
                 return {"metric": metric, "products": [], "data": []}
+            aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, mainstream_list) if product_pool == "aggregate" else ([], [])
+            if product_pool == "aggregate" and not aggregate_labels:
+                return {"metric": metric, "products": [], "data": []}
             sql = """SELECT week_start, week_label, business_year, business_week,
                             display_date, source_country, product, category,
                             mainstream_status, value, is_calculable, validation_status, note
@@ -2441,7 +2464,7 @@ async def get_table(
                 placeholders = ",".join("?" for _ in year_list)
                 sql += f" AND business_year IN ({placeholders})"
                 params.extend(year_list)
-            if product_list:
+            if product_list and product_pool != "aggregate":
                 placeholders = ",".join("?" for _ in product_list)
                 sql += f" AND product IN ({placeholders})"
                 params.extend(product_list)
@@ -2453,10 +2476,11 @@ async def get_table(
                 placeholders = ",".join("?" for _ in country_list)
                 sql += f" AND source_country IN ({placeholders})"
                 params.extend(country_list)
-            if mainstream_list:
-                placeholders = ",".join("?" for _ in mainstream_list)
+            effective_mainstream_list = aggregate_statuses if product_pool == "aggregate" else mainstream_list
+            if effective_mainstream_list:
+                placeholders = ",".join("?" for _ in effective_mainstream_list)
                 sql += f" AND mainstream_status IN ({placeholders})"
-                params.extend(mainstream_list)
+                params.extend(effective_mainstream_list)
             sql += " ORDER BY week_start, product, category"
             rows = [
                 _normalize_integrated_point(_row_to_dict(row))
@@ -2464,7 +2488,7 @@ async def get_table(
             ]
 
             if product_pool == "aggregate":
-                products_ordered = ["主流矿合计", "非主流矿合计"]
+                products_ordered = aggregate_labels
                 week_map: Dict[str, Dict] = {}
                 for row in rows:
                     ws = _week_map_key(row)
@@ -2481,6 +2505,8 @@ async def get_table(
                             }
                     status = row["mainstream_status"] or "非主流"
                     label = "主流矿合计" if status == "主流" else "非主流矿合计"
+                    if label not in products_ordered:
+                        continue
                     current = week_map[ws][label]["value"] or 0
                     week_map[ws][label] = {
                         "id": None,
@@ -2648,12 +2674,15 @@ async def get_chart(
         if integrated_count:
             if empty_filter_requested:
                 return {"metric": metric, "series": {}}
+            aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, mainstream_list) if product_pool == "aggregate" else ([], [])
+            if product_pool == "aggregate" and not aggregate_labels:
+                return {"metric": metric, "series": {}}
             params_i: List[Any] = [metric]
             sql_i = """SELECT week_start, display_date, business_year, business_week,
                               source_country, product, category, mainstream_status, value,
                               is_calculable, validation_status
                        FROM dv_integrated_points WHERE metric_type = ?"""
-            if product_list:
+            if product_list and product_pool != "aggregate":
                 placeholders_p = ",".join("?" for _ in product_list)
                 sql_i += f" AND product IN ({placeholders_p})"
                 params_i.extend(product_list)
@@ -2669,10 +2698,11 @@ async def get_chart(
                 placeholders_n = ",".join("?" for _ in country_list)
                 sql_i += f" AND source_country IN ({placeholders_n})"
                 params_i.extend(country_list)
-            if mainstream_list:
-                placeholders_m = ",".join("?" for _ in mainstream_list)
+            effective_mainstream_list = aggregate_statuses if product_pool == "aggregate" else mainstream_list
+            if effective_mainstream_list:
+                placeholders_m = ",".join("?" for _ in effective_mainstream_list)
                 sql_i += f" AND mainstream_status IN ({placeholders_m})"
-                params_i.extend(mainstream_list)
+                params_i.extend(effective_mainstream_list)
             sql_i += " ORDER BY product, category, week_start"
             rows_i = [
                 _normalize_integrated_point(_row_to_dict(row))
@@ -2683,6 +2713,8 @@ async def get_chart(
                 for row in rows_i:
                     status = row["mainstream_status"] or "非主流"
                     label = "主流矿合计" if status == "主流" else "非主流矿合计"
+                    if label not in aggregate_labels:
+                        continue
                     year = str(row["business_year"]) if row["business_year"] else row["week_start"][:4]
                     key = (label, year, row["business_week"])
                     if key not in aggregate:

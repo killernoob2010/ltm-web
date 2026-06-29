@@ -460,6 +460,59 @@ def test_get_table_groups_same_business_week_with_mixed_date_formats(tmp_path, m
     assert result["data"][0]["PB粉"]["value"] == 200.0
 
 
+def test_aggregate_product_filter_applies_to_table_and_chart(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "shipment",
+        "source_country": "澳洲",
+        "product": "PB粉",
+        "category": "粉矿",
+        "mainstream_status": "主流",
+        "value": 100.0,
+        "unit": "万吨",
+        "source_file": "mysteel.xlsx",
+        "source_sheet": "澳洲发货量",
+        "source_section": "测试",
+        "is_calculable": 0,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([
+        base_point,
+        dict(base_point, source_country="南非", product="南非", category="全品种",
+             mainstream_status="非主流", value=40.0),
+    ], ["mysteel.xlsx"], "pytest")
+
+    table = asyncio.run(get_table(
+        metric="shipment",
+        years="2026",
+        product_pool="aggregate",
+        products="主流矿合计",
+        user={"role": "管理员"},
+    ))
+    chart = asyncio.run(get_chart(
+        metric="shipment",
+        years="2026",
+        product_pool="aggregate",
+        products="主流矿合计",
+        user={"role": "管理员"},
+    ))
+
+    assert table["products"] == ["主流矿合计"]
+    assert table["data"][0]["主流矿合计"]["value"] == 100.0
+    assert "非主流矿合计" not in table["data"][0]
+    assert sorted(chart["series"]) == ["主流矿合计"]
+
+
 def test_get_table_and_chart_disambiguate_same_product_category_across_sources(tmp_path, monkeypatch):
     from app import db
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")

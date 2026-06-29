@@ -823,7 +823,7 @@ dialog::backdrop {
   max-width: 160px;
   padding: 4px 8px;
   font-size: 13px;
-  text-align: right;
+  text-align: center;
 }
 
 .dv-value-cell.manual-override {

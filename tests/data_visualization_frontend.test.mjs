@@ -110,6 +110,15 @@ test("data visualization table headers support long product names", () => {
   assert.match(stylesCss, /min-width: 132px/);
   assert.match(stylesCss, /max-width: 160px/);
   assert.match(stylesCss, /white-space: normal/);
+  assert.match(stylesCss, /\.dv-value-cell \{[\s\S]*text-align: center;/);
+});
+
+test("aggregate product pool sends selected aggregate products", () => {
+  const tableAggregateBranch = /if \(productPool === "aggregate"\) \{\s+url \+= "&product_pool=aggregate";\s+url = appendMultiSelectParam\(url, "products", productsArr, dvDataProductCheckboxes\.querySelectorAll\('input\[type="checkbox"\]'\)\.length\);/;
+  const chartAggregateBranch = /if \(productPool === "aggregate"\) \{\s+url \+= "&product_pool=aggregate";\s+url = appendMultiSelectParam\(url, "products", productsArr, dvChartProductCheckboxes\.querySelectorAll\('input\[type="checkbox"\]'\)\.length\);/;
+  assert.match(appJs, tableAggregateBranch);
+  assert.match(appJs, chartAggregateBranch);
+  assert.doesNotMatch(appJs, /else if \(productsArr\.length === 0\) \{\s+\} else if \(productsArr\.length === 0\)/);
 });
 
 test("data visualization tabs are below filter controls", () => {

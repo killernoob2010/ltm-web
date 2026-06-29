@@ -2132,6 +2132,7 @@ async function loadDVTable(metric) {
     url = appendMultiSelectParam(url, "years", yearsArr, dvDataYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     if (productPool === "aggregate") {
       url += "&product_pool=aggregate";
+      url = appendMultiSelectParam(url, "products", productsArr, dvDataProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     } else {
       url += "&product_pool=" + encodeURIComponent(productPool);
       if (productPool === "custom") {
@@ -2463,6 +2464,7 @@ async function loadDVChart() {
     url = appendMultiSelectParam(url, "years", yearsArr, dvChartYearCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     if (productPool === "aggregate") {
       url += "&product_pool=aggregate";
+      url = appendMultiSelectParam(url, "products", productsArr, dvChartProductCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     } else {
       url += "&product_pool=" + encodeURIComponent(productPool);
       if (productPool === "custom") {
