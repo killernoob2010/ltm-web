@@ -407,6 +407,61 @@ def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
     return points
 
 
+def _extract_australia_shipments(path: Path) -> List[Dict[str, Any]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "澳洲发货量" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["澳洲发货量"]
+    points: List[Dict[str, Any]] = []
+    header_row = None
+    for row in range(1, ws.max_row + 1):
+        if str(ws.cell(row, 1).value or "").strip() != "日期":
+            continue
+        mapped_count = sum(
+            1
+            for col in range(2, ws.max_column + 1)
+            if str(ws.cell(row, col).value or "").strip() in AUSTRALIA_PRODUCT_MAP
+        )
+        if mapped_count >= 3:
+            header_row = row
+            break
+    if header_row is None:
+        wb.close()
+        return points
+    headers = {col: str(ws.cell(header_row, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+    for row, period_start in _iter_section_rows(ws, header_row):
+        for col, raw_product in headers.items():
+            if not raw_product or raw_product == "总计":
+                continue
+            mapping = AUSTRALIA_PRODUCT_MAP.get(raw_product)
+            if mapping is None:
+                continue
+            value = _clean_number(ws.cell(row, col).value)
+            if value is None:
+                continue
+            product, category, _inventory_key = mapping
+            points.append(_make_point(
+                week_start=period_start,
+                display_date=period_start,
+                metric_type="shipment",
+                source_country="澳洲",
+                product=product,
+                category=category,
+                value=value,
+                source_file=path.name,
+                source_sheet="澳洲发货量",
+                source_section="澳洲发货量（分品种）",
+                is_calculable=False,
+                validation_status="record_only",
+                note="澳洲发运原始值；到港和表需继续使用预计到中国锚地量",
+            ))
+    wb.close()
+    return points
+
+
 def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
     import openpyxl
 
@@ -669,11 +724,12 @@ def integrate_mysteel_files(file_paths: List[Path]) -> Dict[str, Any]:
         if not path.exists():
             warnings.append(f"文件不存在: {path.name}")
             continue
+        australia_shipments = _extract_australia_shipments(path)
         australia = _extract_australia_arrivals(path)
         brazil = _extract_brazil_estimated_arrivals(path)
         global_points = _extract_global_shipments(path)
         inventory = _extract_inventory(path)
-        if australia:
+        if australia or australia_shipments:
             used["australia"] = True
         if brazil:
             used["brazil"] = True
@@ -681,6 +737,7 @@ def integrate_mysteel_files(file_paths: List[Path]) -> Dict[str, Any]:
             used["global"] = True
         if inventory:
             used["inventory"] = True
+        points.extend(australia_shipments)
         points.extend(australia)
         points.extend(brazil)
         points.extend(_extract_brazil_card_powder_shipments(path))

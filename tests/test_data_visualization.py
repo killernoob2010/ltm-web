@@ -457,6 +457,10 @@ def test_integrate_mysteel_files_reads_brazil_card_powder_shipments(tmp_path):
 
 def test_integrate_mysteel_files_covers_current_template_sections():
     result = integrate_mysteel_files(_local_mysteel_files())
+    australia_shipments = [
+        point for point in result["points"]
+        if point["metric_type"] == "shipment" and point["source_country"] == "澳洲"
+    ]
     australia_arrivals = [
         point for point in result["points"]
         if point["metric_type"] == "arrival" and point["source_country"] == "澳洲"
@@ -470,9 +474,20 @@ def test_integrate_mysteel_files_covers_current_template_sections():
         if point["metric_type"] == "shipment" and point["source_country"] == "巴西" and point["product"] == "卡粉"
     ]
 
+    assert len(australia_shipments) == 159
     assert len(australia_arrivals) == 181
     assert len(brazil_arrivals) == 6
     assert len(brazil_shipments) == 6
+    assert sorted({point["week_start"] for point in australia_shipments}) == [
+        "2026-05-11", "2026-05-18", "2026-05-25",
+        "2026-06-01", "2026-06-08", "2026-06-15",
+    ]
+    assert any(
+        point["product"] == "PB粉"
+        and point["week_start"] == "2026-06-01"
+        and point["source_section"] == "澳洲发货量（分品种）"
+        for point in australia_shipments
+    )
     assert sorted({point["week_start"] for point in brazil_arrivals}) == [
         "2026-06-22", "2026-06-29", "2026-07-06",
         "2026-07-13", "2026-07-20", "2026-07-27",
