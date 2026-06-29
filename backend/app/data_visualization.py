@@ -206,12 +206,6 @@ def _clean_number(value: Any) -> Optional[float]:
         return None
 
 
-MAINSTREAM_PRODUCTS = {
-    "PB粉", "纽曼粉", "麦克粉", "金布巴粉",
-    "巴混", "卡粉", "超特粉", "混合粉",
-    "PB块", "纽曼块", "澳大利亚球团",
-}
-
 AUSTRALIA_ARRIVAL_HEADER_ROW = 20
 AUSTRALIA_ARRIVAL_START_ROW = 21
 AUSTRALIA_ARRIVAL_END_ROW = 27
@@ -256,6 +250,14 @@ AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
     "未知": None,
     "库宾粉": None,
 }
+
+
+BRAZIL_MAINSTREAM_PRODUCTS = {"卡粉"}
+MAINSTREAM_PRODUCTS = {
+    mapped[0]
+    for mapped in AUSTRALIA_PRODUCT_MAP.values()
+    if mapped is not None
+} | BRAZIL_MAINSTREAM_PRODUCTS
 
 
 INVENTORY_SHEETS = {"粗粉", "块矿", "球团", "精粉"}
@@ -505,6 +507,66 @@ def _migrate_legacy_integrated_product_key(cur, point: Dict[str, Any]) -> None:
            SET source_country = ?, product = ?, category = ?, mainstream_status = ?
            WHERE id = ?""",
         (point["source_country"], point["product"], point["category"], point["mainstream_status"], keep_id),
+    )
+    if delete_ids:
+        placeholders = ",".join("?" for _ in delete_ids)
+        db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(delete_ids))
+
+
+def _migrate_integrated_mainstream_status(cur, point: Dict[str, Any]) -> None:
+    key_params = (
+        point["metric_type"],
+        point["source_country"],
+        point["product"],
+        point["category"],
+        point["business_year"],
+        point["business_week"],
+    )
+    canonical = db._exec(
+        cur,
+        """SELECT id
+           FROM dv_integrated_points
+           WHERE metric_type = ?
+             AND source_country = ?
+             AND product = ?
+             AND category = ?
+             AND business_year = ?
+             AND business_week = ?
+             AND mainstream_status = ?
+           ORDER BY id DESC
+           LIMIT 1""",
+        (*key_params, point["mainstream_status"]),
+    ).fetchone()
+    old_status_rows = db._exec(
+        cur,
+        """SELECT id
+           FROM dv_integrated_points
+           WHERE metric_type = ?
+             AND source_country = ?
+             AND product = ?
+             AND category = ?
+             AND business_year = ?
+             AND business_week = ?
+             AND mainstream_status != ?
+           ORDER BY id DESC""",
+        (*key_params, point["mainstream_status"]),
+    ).fetchall()
+    if not old_status_rows:
+        return
+
+    old_status_ids = [row["id"] for row in old_status_rows]
+    if canonical:
+        placeholders = ",".join("?" for _ in old_status_ids)
+        db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(old_status_ids))
+        return
+
+    keep_id, *delete_ids = old_status_ids
+    db._exec(
+        cur,
+        """UPDATE dv_integrated_points
+           SET mainstream_status = ?
+           WHERE id = ?""",
+        (point["mainstream_status"], keep_id),
     )
     if delete_ids:
         placeholders = ",".join("?" for _ in delete_ids)
@@ -1342,6 +1404,7 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
         }
         for point in points:
             _migrate_legacy_integrated_product_key(cur, point)
+            _migrate_integrated_mainstream_status(cur, point)
             key_params = (
                 point["metric_type"],
                 point["source_country"],
