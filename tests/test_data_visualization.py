@@ -455,6 +455,50 @@ def test_integrate_mysteel_files_reads_brazil_card_powder_shipments(tmp_path):
     assert shipments[0]["source_section"] == "卡粉发运量"
 
 
+def test_integrate_mysteel_files_treats_listed_blank_values_as_zero(tmp_path):
+    path = tmp_path / "blank_mysteel.xlsx"
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws = wb.create_sheet("澳洲发货量")
+    ws.append(["日期", "PB粉", "PB块", "混合粉"])
+    ws.append(["2026/6/1 - 2026/6/7", None, 1, 2])
+
+    ws = wb.create_sheet("澳洲预计到达中国锚地量")
+    ws.append(["日期", "PB粉", "PB块", "混合粉"])
+    ws.append(["2026/6/1 - 2026/6/7", None, 1, 2])
+
+    ws = wb.create_sheet("巴西发货量")
+    ws.append(["日期", "中国大陆", "卡粉"])
+    ws.append(["2026/6/1 - 2026/6/7", None, None])
+
+    ws = wb.create_sheet("全球铁矿石发运量")
+    ws.append(["日期", "澳大利亚", "巴西", "南非"])
+    ws.append(["2026/6/1 - 2026/6/7", 1, 2, None])
+
+    ws = wb.create_sheet("粗粉")
+    ws.append([None, None, None, "PB粉"])
+    ws.append([date(2026, 6, 2), "总计", None, None])
+    wb.save(path)
+
+    result = integrate_mysteel_files([path])
+
+    def values(metric_type, source_country, product):
+        return [
+            point["value"] for point in result["points"]
+            if point["metric_type"] == metric_type
+            and point["source_country"] == source_country
+            and point["product"] == product
+        ]
+
+    assert values("shipment", "澳洲", "PB粉") == [0.0]
+    assert values("arrival", "澳洲", "PB粉") == [0.0]
+    assert values("shipment", "巴西", "卡粉") == [0.0]
+    assert values("arrival", "巴西", "卡粉") == [0.0]
+    assert values("shipment", "南非", "南非") == [0.0]
+    assert values("inventory", "澳洲", "PB粉") == [0.0]
+
+
 def test_integrate_mysteel_files_covers_current_template_sections():
     result = integrate_mysteel_files(_local_mysteel_files())
     australia_shipments = [
@@ -474,8 +518,8 @@ def test_integrate_mysteel_files_covers_current_template_sections():
         if point["metric_type"] == "shipment" and point["source_country"] == "巴西" and point["product"] == "卡粉"
     ]
 
-    assert len(australia_shipments) == 159
-    assert len(australia_arrivals) == 181
+    assert len(australia_shipments) == 174
+    assert len(australia_arrivals) == 203
     assert len(brazil_arrivals) == 6
     assert len(brazil_shipments) == 6
     assert sorted({point["week_start"] for point in australia_shipments}) == [
@@ -486,6 +530,12 @@ def test_integrate_mysteel_files_covers_current_template_sections():
         point["product"] == "PB粉"
         and point["week_start"] == "2026-06-01"
         and point["source_section"] == "澳洲发货量（分品种）"
+        for point in australia_shipments
+    )
+    assert any(
+        point["product"] == "澳大利亚球团"
+        and point["week_start"] == "2026-06-08"
+        and point["value"] == 0
         for point in australia_shipments
     )
     assert sorted({point["week_start"] for point in brazil_arrivals}) == [

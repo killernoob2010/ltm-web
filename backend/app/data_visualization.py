@@ -181,7 +181,7 @@ def _parse_period_start(value: Any) -> Optional[date]:
 
 def _clean_number(value: Any) -> Optional[float]:
     if value in (None, ""):
-        return None
+        return 0.0
     try:
         return float(value)
     except (TypeError, ValueError):
