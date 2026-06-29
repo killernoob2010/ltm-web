@@ -138,6 +138,37 @@ def _week_end(d: date) -> date:
     return _week_start(d) + timedelta(days=6)
 
 
+def _normalize_date_value(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return text
+
+
+def _normalize_integrated_point(point: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(point)
+    for field in ("week_start", "week_end", "display_date"):
+        item[field] = _normalize_date_value(item.get(field))
+    return item
+
+
+def _week_map_key(row: Dict[str, Any]) -> str:
+    business_year = row.get("business_year")
+    business_week = row.get("business_week")
+    if business_year and business_week:
+        return f"{business_year}-W{int(business_week):02d}"
+    return _normalize_date_value(row.get("week_start"))
+
+
 def _parse_period_start(value: Any) -> Optional[date]:
     if not value:
         return None
@@ -305,6 +336,19 @@ def _find_col(ws, header_row: int, header_name: str) -> Optional[int]:
     return None
 
 
+def _iter_section_rows(ws, header_row: int):
+    row = header_row + 1
+    while row <= ws.max_row:
+        first_cell = ws.cell(row, 1).value
+        if str(first_cell or "").strip() == "日期":
+            break
+        period_start = _parse_period_start(first_cell)
+        if period_start is None:
+            break
+        yield row, period_start
+        row += 1
+
+
 def _iter_total_rows(ws) -> List[int]:
     return [row for row in range(1, ws.max_row + 1) if ws.cell(row, 2).value == "总计"]
 
@@ -318,11 +362,23 @@ def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
         return []
     ws = wb["澳洲预计到达中国锚地量"]
     points: List[Dict[str, Any]] = []
-    headers = {col: str(ws.cell(AUSTRALIA_ARRIVAL_HEADER_ROW, col).value or "").strip() for col in range(2, ws.max_column + 1)}
-    for row in range(AUSTRALIA_ARRIVAL_START_ROW, AUSTRALIA_ARRIVAL_END_ROW + 1):
-        period_start = _parse_period_start(ws.cell(row, 1).value)
-        if period_start is None:
+    header_row = None
+    for row in range(1, ws.max_row + 1):
+        if str(ws.cell(row, 1).value or "").strip() != "日期":
             continue
+        mapped_count = sum(
+            1
+            for col in range(2, ws.max_column + 1)
+            if str(ws.cell(row, col).value or "").strip() in AUSTRALIA_PRODUCT_MAP
+        )
+        if mapped_count >= 3:
+            header_row = row
+            break
+    if header_row is None:
+        wb.close()
+        return points
+    headers = {col: str(ws.cell(header_row, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+    for row, period_start in _iter_section_rows(ws, header_row):
         for col, raw_product in headers.items():
             if not raw_product or raw_product == "总计":
                 continue
@@ -359,15 +415,23 @@ def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
         wb.close()
         return []
     ws = wb["巴西发货量"]
-    china_col = _find_col(ws, BRAZIL_DESTINATION_HEADER_ROW, "中国大陆")
     points: List[Dict[str, Any]] = []
-    if china_col is None:
+    destination_header_row = None
+    china_col = None
+    for row in range(1, ws.max_row + 1):
+        if str(ws.cell(row, 1).value or "").strip() != "日期":
+            continue
+        col = _find_col(ws, row, "中国大陆")
+        if col is not None:
+            destination_header_row = row
+            china_col = col
+            break
+    if destination_header_row is None or china_col is None:
         wb.close()
         return points
-    for row in range(BRAZIL_DESTINATION_START_ROW, BRAZIL_DESTINATION_END_ROW + 1):
-        period_start = _parse_period_start(ws.cell(row, 1).value)
+    for row, period_start in _iter_section_rows(ws, destination_header_row):
         value = _clean_number(ws.cell(row, china_col).value)
-        if period_start is None or value is None:
+        if value is None:
             continue
         arrival_week = period_start + timedelta(weeks=6)
         points.append(_make_point(
@@ -388,6 +452,50 @@ def _extract_brazil_estimated_arrivals(path: Path) -> List[Dict[str, Any]]:
     return points
 
 
+def _extract_brazil_card_powder_shipments(path: Path) -> List[Dict[str, Any]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if "巴西发货量" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["巴西发货量"]
+    points: List[Dict[str, Any]] = []
+    header_row = None
+    card_col = None
+    for row in range(1, ws.max_row + 1):
+        if str(ws.cell(row, 1).value or "").strip() != "日期":
+            continue
+        col = _find_col(ws, row, "卡粉")
+        if col is not None:
+            header_row = row
+            card_col = col
+            break
+    if header_row is None or card_col is None:
+        wb.close()
+        return points
+    for row, period_start in _iter_section_rows(ws, header_row):
+        value = _clean_number(ws.cell(row, card_col).value)
+        if value is None:
+            continue
+        points.append(_make_point(
+            week_start=period_start,
+            display_date=period_start,
+            metric_type="shipment",
+            source_country="巴西",
+            product="卡粉",
+            category="粉矿",
+            value=value,
+            source_file=path.name,
+            source_sheet="巴西发货量",
+            source_section="卡粉发运量",
+            is_calculable=True,
+            note="巴西卡粉采用Mysteel卡粉发运量",
+        ))
+    wb.close()
+    return points
+
+
 def _extract_global_shipments(path: Path) -> List[Dict[str, Any]]:
     import openpyxl
 
@@ -397,11 +505,19 @@ def _extract_global_shipments(path: Path) -> List[Dict[str, Any]]:
         return []
     ws = wb["全球铁矿石发运量"]
     points: List[Dict[str, Any]] = []
-    headers = {col: str(ws.cell(3, col).value or "").strip() for col in range(2, ws.max_column + 1)}
-    for row in range(4, 10):
-        period_start = _parse_period_start(ws.cell(row, 1).value)
-        if period_start is None:
+    header_row = None
+    for row in range(1, ws.max_row + 1):
+        if str(ws.cell(row, 1).value or "").strip() != "日期":
             continue
+        headers = {str(ws.cell(row, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+        if {"澳大利亚", "巴西", "南非"}.issubset(headers):
+            header_row = row
+            break
+    if header_row is None:
+        wb.close()
+        return points
+    headers = {col: str(ws.cell(header_row, col).value or "").strip() for col in range(2, ws.max_column + 1)}
+    for row, period_start in _iter_section_rows(ws, header_row):
         for col, country in headers.items():
             if not country or country in GLOBAL_SKIP_COUNTRIES:
                 continue
@@ -567,6 +683,7 @@ def integrate_mysteel_files(file_paths: List[Path]) -> Dict[str, Any]:
             used["inventory"] = True
         points.extend(australia)
         points.extend(brazil)
+        points.extend(_extract_brazil_card_powder_shipments(path))
         points.extend(global_points)
         points.extend(inventory)
     for key, label in [
@@ -660,13 +777,7 @@ def _parse_integrated_excel(file_path):
                     row_data[field] = None
                     value_parse_error = True
             elif field in ('week_start', 'week_end', 'display_date'):
-                if isinstance(raw, (__import__('datetime').date, __import__('datetime').datetime)):
-                    if hasattr(raw, 'isoformat'):
-                        row_data[field] = raw.isoformat()
-                    else:
-                        row_data[field] = raw.strftime('%Y-%m-%d')
-                else:
-                    row_data[field] = str(raw).strip() if raw else ''
+                row_data[field] = _normalize_date_value(raw)
             elif field == 'metric_type':
                 val = str(raw).strip() if raw else ''
                 row_data[field] = _METRIC_TYPE_CN.get(val, val)
@@ -784,6 +895,7 @@ def _load_integrated_preview_cache(preview_id: str):
 
 def _import_integrated_points(rows, file_name, user_name):
     """Replace integrated data with the uploaded standard Excel in one batch."""
+    rows = [_normalize_integrated_point(row) for row in rows]
     with db.connect() as conn:
         cur = conn.cursor()
         db._exec(cur, "DELETE FROM dv_integrated_points")
@@ -850,7 +962,72 @@ def _import_integrated_points(rows, file_name, user_name):
     return batch_id
 
 
+def _recalculate_integrated_apparent_demand(cur, batch_id: int) -> int:
+    db._exec(cur, "DELETE FROM dv_integrated_points WHERE metric_type = 'apparent_demand'")
+    source_rows = db._exec(
+        cur,
+        """SELECT *
+           FROM dv_integrated_points
+           WHERE metric_type IN ('inventory', 'arrival')
+             AND is_calculable = 1
+           ORDER BY source_country, product, category, business_year, business_week, id""",
+    ).fetchall()
+
+    by_series: Dict[tuple, Dict[tuple, Dict[str, Any]]] = {}
+    for row in source_rows:
+        item = _normalize_integrated_point(_row_to_dict(row))
+        series_key = (item["source_country"], item["product"], item["category"], item["mainstream_status"])
+        week_key = (item["business_year"], item["business_week"])
+        by_series.setdefault(series_key, {})[(week_key, item["metric_type"])] = item
+
+    inserted = 0
+    for values in by_series.values():
+        previous_inventory = None
+        for week_key in sorted({week_key for week_key, _metric_type in values.keys()}):
+            inventory = values.get((week_key, "inventory"))
+            arrival = values.get((week_key, "arrival"))
+            if inventory and arrival and previous_inventory:
+                value = float(arrival["value"] or 0) + float(previous_inventory["value"] or 0) - float(inventory["value"] or 0)
+                base = arrival
+                db._exec(
+                    cur,
+                    """INSERT INTO dv_integrated_points
+                       (batch_id, week_start, week_end, business_year, business_week, week_label,
+                        display_date, metric_type, source_country, product,
+                        category, mainstream_status, value, unit, source_file, source_sheet,
+                        source_section, is_calculable, validation_status, note)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        batch_id,
+                        base["week_start"],
+                        base["week_end"],
+                        base["business_year"],
+                        base["business_week"],
+                        base["week_label"],
+                        base["week_start"],
+                        "apparent_demand",
+                        base["source_country"],
+                        base["product"],
+                        base["category"],
+                        base["mainstream_status"],
+                        value,
+                        base.get("unit") or "万吨",
+                        "系统计算",
+                        "表需",
+                        "表需",
+                        1,
+                        "ok",
+                        "表需=到港+上周库存-本周库存",
+                    ),
+                )
+                inserted += 1
+            if inventory:
+                previous_inventory = inventory
+    return inserted
+
+
 def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str], user_name: str) -> int:
+    points = [_normalize_integrated_point(point) for point in points]
     with db.connect() as conn:
         cur = conn.cursor()
         batch_id = db._last_insert_id(
@@ -970,13 +1147,14 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
                 ),
             )
             merge_summary["inserted"] += 1
+        apparent_demand_count = _recalculate_integrated_apparent_demand(cur, batch_id)
         current_total = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         db._exec(
             cur,
             """UPDATE dv_integration_batches
-               SET point_count = ?, validation_summary = ?
+               SET point_count = ?, apparent_demand_count = ?, validation_summary = ?
                WHERE id = ?""",
-            (current_total, json.dumps(merge_summary, ensure_ascii=False), batch_id),
+            (current_total, apparent_demand_count, json.dumps(merge_summary, ensure_ascii=False), batch_id),
         )
         conn.commit()
     return batch_id
@@ -1033,6 +1211,7 @@ def _export_cell_value(item: Dict[str, Any], key: str) -> Any:
 
 
 def _ensure_week_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    item = _normalize_integrated_point(item)
     if item.get("business_year") and item.get("business_week") and item.get("week_label") and item.get("week_end"):
         return item
     week_start_value = item.get("week_start")
@@ -2010,16 +2189,19 @@ async def get_table(
                 sql += f" AND mainstream_status IN ({placeholders})"
                 params.extend(mainstream_list)
             sql += " ORDER BY week_start, product, category"
-            rows = db._exec(cur, sql, tuple(params)).fetchall()
+            rows = [
+                _normalize_integrated_point(_row_to_dict(row))
+                for row in db._exec(cur, sql, tuple(params)).fetchall()
+            ]
 
             if product_pool == "aggregate":
                 products_ordered = ["主流矿合计", "非主流矿合计"]
                 week_map: Dict[str, Dict] = {}
                 for row in rows:
-                    ws = row["week_start"]
+                    ws = _week_map_key(row)
                     if ws not in week_map:
                         week_map[ws] = {
-                            "date": row["display_date"],
+                            "date": row["display_date"] or row["week_start"],
                             "week": row["week_label"] or f"{row['business_year']} W{row['business_week']:02d}",
                         }
                         for p in products_ordered:
@@ -2061,10 +2243,10 @@ async def get_table(
 
             week_map: Dict[str, Dict] = {}
             for row in rows:
-                ws = row["week_start"]
+                ws = _week_map_key(row)
                 if ws not in week_map:
                     week_map[ws] = {
-                        "date": row["display_date"],
+                        "date": row["display_date"] or row["week_start"],
                         "week": row["week_label"] or f"{row['business_year']} W{row['business_week']:02d}",
                     }
                     for p in products_ordered:
@@ -2238,18 +2420,21 @@ async def get_chart(
                 sql_i += f" AND mainstream_status IN ({placeholders_m})"
                 params_i.extend(mainstream_list)
             sql_i += " ORDER BY product, category, week_start"
-            rows_i = db._exec(cur, sql_i, tuple(params_i)).fetchall()
+            rows_i = [
+                _normalize_integrated_point(_row_to_dict(row))
+                for row in db._exec(cur, sql_i, tuple(params_i)).fetchall()
+            ]
             if product_pool == "aggregate":
                 aggregate: Dict[tuple, Dict[str, Any]] = {}
                 for row in rows_i:
                     status = row["mainstream_status"] or "非主流"
                     label = "主流矿合计" if status == "主流" else "非主流矿合计"
                     year = str(row["business_year"]) if row["business_year"] else row["week_start"][:4]
-                    key = (label, year, row["business_week"], row["display_date"])
+                    key = (label, year, row["business_week"])
                     if key not in aggregate:
                         aggregate[key] = {
                             "week_no": row["business_week"] if row["business_week"] else 0,
-                            "display_date": row["display_date"],
+                            "display_date": row["display_date"] or row["week_start"],
                             "value": 0.0,
                             "is_manual_override": False,
                             "is_missing_filled": False,
@@ -2262,7 +2447,7 @@ async def get_chart(
                         aggregate[key]["value"] += float(row["value"])
                         aggregate[key]["_has_value"] = True
                 result_agg: Dict[str, Dict[str, List[Dict]]] = {}
-                for (label, year, _week_no, _display_date), item in sorted(aggregate.items()):
+                for (label, year, _week_no), item in sorted(aggregate.items()):
                     has_value = item.pop("_has_value", False)
                     if item["is_missing_filled"] or not has_value:
                         item["value"] = None
@@ -2284,7 +2469,7 @@ async def get_chart(
                     result_i[label][year] = []
                 result_i[label][year].append({
                     "week_no": row["business_week"] if row["business_week"] else 0,
-                    "display_date": row["display_date"],
+                    "display_date": row["display_date"] or row["week_start"],
                     "value": row["value"],
                     "is_manual_override": False,
                     "is_missing_filled": not bool(row["is_calculable"]) and metric == "apparent_demand",

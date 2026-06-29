@@ -13,13 +13,15 @@ from app.data_visualization import (
     _to_date,
     _to_float,
     build_integrated_workbook_bytes,
+    get_table,
     integrate_mysteel_files,
     _local_mysteel_files,
 )
 
-from datetime import date
+from datetime import date, datetime
 from openpyxl import Workbook, load_workbook
 from io import BytesIO
+import asyncio
 
 
 def test_compute_business_week_w01():
@@ -120,6 +122,33 @@ def test_parse_integrated_excel_accepts_arrival_metric(tmp_path):
     assert result["errors"] == []
     assert result["rows"][0]["metric_type"] == "arrival"
     assert result["summary"]["arrival_count"] == 1
+
+
+def test_parse_integrated_excel_normalizes_excel_datetimes(tmp_path):
+    path = tmp_path / "datetime_integrated.xlsx"
+    headers = [
+        "统计周一", "统计周日", "业务年份", "业务周次", "周次标签", "展示日期",
+        "数据类型", "来源/国家", "品种", "种类", "主流/非主流", "数值",
+        "单位", "来源文件", "来源Sheet", "来源区域", "是否参与表需", "校验状态", "备注",
+    ]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "整合明细"
+    ws.append(headers)
+    ws.append([
+        datetime(2026, 6, 1), datetime(2026, 6, 7), 2026, 23, "2026 W23", datetime(2026, 6, 2),
+        "库存", "澳洲", "PB粉", "粉矿", "主流", 100,
+        "万吨", "file.xlsx", "sheet", "区域", "是", "ok", "",
+    ])
+    wb.save(path)
+
+    result = _parse_integrated_excel(path)
+
+    assert result["errors"] == []
+    assert result["rows"][0]["week_start"] == "2026-06-01"
+    assert result["rows"][0]["week_end"] == "2026-06-07"
+    assert result["rows"][0]["display_date"] == "2026-06-02"
 
 
 def test_integrated_import_replaces_previous_batch(tmp_path, monkeypatch):
@@ -228,6 +257,103 @@ def test_save_integrated_points_merges_weekly_uploads(tmp_path, monkeypatch):
     assert summary["skipped_blank_overwrite"] == 1
 
 
+def test_save_integrated_points_recalculates_apparent_demand_from_full_history(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "澳洲",
+        "product": "PB粉",
+        "category": "粉矿",
+        "mainstream_status": "主流",
+        "value": 100.0,
+        "unit": "万吨",
+        "source_file": "history.xlsx",
+        "source_sheet": "库存",
+        "source_section": "历史",
+        "is_calculable": 1,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([
+        base_point,
+        dict(base_point, week_start="2026-06-08", week_end="2026-06-14",
+             business_week=24, week_label="2026 W24", display_date="2026-06-09", value=90.0),
+    ], ["history.xlsx"], "pytest")
+    _save_integrated_points([
+        dict(base_point, week_start="2026-06-08", week_end="2026-06-14",
+             business_week=24, week_label="2026 W24", display_date="2026-06-08",
+             metric_type="arrival", value=20.0, source_file="mysteel.xlsx",
+             source_sheet="澳洲预计到达中国锚地量", source_section="到港"),
+    ], ["mysteel.xlsx"], "pytest")
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        apparent = db._exec(
+            cur,
+            """SELECT value, source_file, source_sheet
+               FROM dv_integrated_points
+               WHERE metric_type = 'apparent_demand'
+                 AND product = 'PB粉'
+                 AND business_year = 2026
+                 AND business_week = 24""",
+        ).fetchone()
+
+    assert apparent is not None
+    assert apparent["value"] == 30.0
+    assert apparent["source_file"] == "系统计算"
+    assert apparent["source_sheet"] == "表需"
+
+
+def test_get_table_groups_same_business_week_with_mixed_date_formats(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    point = {
+        "week_start": "2026-06-01T00:00:00",
+        "week_end": "2026-06-07T00:00:00",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-01T00:00:00",
+        "metric_type": "arrival",
+        "source_country": "巴西",
+        "product": "卡粉",
+        "category": "粉矿",
+        "mainstream_status": "主流",
+        "value": 100.0,
+        "unit": "万吨",
+        "source_file": "history.xlsx",
+        "source_sheet": "整合明细",
+        "source_section": "历史",
+        "is_calculable": 1,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([point], ["history.xlsx"], "pytest")
+    _save_integrated_points([
+        dict(point, week_start="2026-06-01", week_end="2026-06-07",
+             display_date="2026-06-01", source_country="澳洲", product="PB粉",
+             value=200.0, source_file="mysteel.xlsx"),
+    ], ["mysteel.xlsx"], "pytest")
+
+    result = asyncio.run(get_table(metric="arrival", years="2026", mainstream_status="主流", user={"role": "管理员"}))
+
+    assert len(result["data"]) == 1
+    assert result["data"][0]["week"] == "2026 W23"
+    assert result["data"][0]["卡粉"]["value"] == 100.0
+    assert result["data"][0]["PB粉"]["value"] == 200.0
+
+
 def test_integrated_export_downloads_current_full_history(tmp_path, monkeypatch):
     from app import db
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
@@ -305,7 +431,31 @@ def test_integrate_mysteel_files_local_templates():
     assert not result["summary"]["warnings"]
 
 
-def test_integrate_mysteel_files_limits_fixed_mysteel_template_sections():
+def test_integrate_mysteel_files_reads_brazil_card_powder_shipments(tmp_path):
+    path = tmp_path / "brazil.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "巴西发货量"
+    ws.append(["占位"])
+    for _ in range(25):
+        ws.append([None])
+    ws.append(["日期", "卡粉"])
+    ws.append(["2026/6/1 - 2026/6/7", 307.233126])
+    ws.append(["2026/6/8 - 2026/6/14", 357.908361])
+    wb.save(path)
+
+    result = integrate_mysteel_files([path])
+    shipments = [
+        point for point in result["points"]
+        if point["metric_type"] == "shipment" and point["source_country"] == "巴西" and point["product"] == "卡粉"
+    ]
+
+    assert [point["week_start"] for point in shipments] == ["2026-06-01", "2026-06-08"]
+    assert shipments[0]["value"] == 307.233126
+    assert shipments[0]["source_section"] == "卡粉发运量"
+
+
+def test_integrate_mysteel_files_covers_current_template_sections():
     result = integrate_mysteel_files(_local_mysteel_files())
     australia_arrivals = [
         point for point in result["points"]
@@ -315,12 +465,21 @@ def test_integrate_mysteel_files_limits_fixed_mysteel_template_sections():
         point for point in result["points"]
         if point["metric_type"] == "arrival" and point["source_country"] == "巴西"
     ]
+    brazil_shipments = [
+        point for point in result["points"]
+        if point["metric_type"] == "shipment" and point["source_country"] == "巴西" and point["product"] == "卡粉"
+    ]
 
     assert len(australia_arrivals) == 181
     assert len(brazil_arrivals) == 6
+    assert len(brazil_shipments) == 6
     assert sorted({point["week_start"] for point in brazil_arrivals}) == [
         "2026-06-22", "2026-06-29", "2026-07-06",
         "2026-07-13", "2026-07-20", "2026-07-27",
+    ]
+    assert sorted({point["week_start"] for point in brazil_shipments}) == [
+        "2026-05-11", "2026-05-18", "2026-05-25",
+        "2026-06-01", "2026-06-08", "2026-06-15",
     ]
 
 print("All tests passed!")
