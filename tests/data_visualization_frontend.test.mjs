@@ -78,6 +78,12 @@ test("sidebar groups put data visualization before admin", () => {
   assert.ok(dbPy.indexOf('("数据可视化管理", "data_visualization_integration"') < dbPy.indexOf('("后台管理", "user_management"'));
 });
 
+test("shanghai junneng ledger close dialog supports partial close quantity", () => {
+  assert.match(indexHtml, /id="shJunnengCloseQuantity"/);
+  assert.match(appJs, /close_quantity: Number\(document\.querySelector\("#shJunnengCloseQuantity"\)\.value\)/);
+  assert.match(appJs, /item\?\.remaining_quantity \?\? item\?\.hold_quantity/);
+});
+
 test("sidebar groups are collapsible and visually emphasize group titles", () => {
   assert.match(appJs, /menu-group-toggle/);
   assert.match(appJs, /menu-group-items/);
@@ -100,6 +106,14 @@ test("data visualization data page uses product pools and advanced filters", () 
   assert.match(indexHtml, /dv-data-advanced-filters/);
   assert.match(appJs, /function applyDVDataProductPool/);
   assert.match(appJs, /product_pool=aggregate/);
+});
+
+test("non-mainstream product pools label country-total series clearly", () => {
+  assert.match(indexHtml, /id="dvDataProductFilterLabel"/);
+  assert.match(indexHtml, /id="dvChartProductFilterLabel"/);
+  assert.match(appJs, /non_mainstream: "品种\/国家总量"/);
+  assert.match(appJs, /updateDVProductFilterLabel\(dvDataProductFilterLabel, pool\)/);
+  assert.match(appJs, /updateDVProductFilterLabel\(dvChartProductFilterLabel, pool\)/);
 });
 
 test("data visualization table headers support long product names", () => {

@@ -12,7 +12,7 @@
 
 | 菜单组 | 模块 | 模块标识 |
 | --- | --- | --- |
-| 台账管理 | 上海均能台账 | `sh_junneng` |
+| 台账管理 | 上海钧能台账 | `sh_junneng` |
 | 台账管理 | 钢材出口套保台账 | `steel_export` |
 | 台账管理 | 子公司套保台账 | `subsidiary_hedging` |
 | 台账管理 | 期权交易台账 | `option_trading` |
@@ -32,7 +32,7 @@
 | `modules/db_manager.py` | 统一生成本地 SQLite 路径 | 需改为 Web 数据库配置层 |
 | `modules/backend_management/user_management/` | 用户、权限、操作日志、会话 | 概念保留，认证和会话机制重构 |
 | `modules/backend_management/data_management/` | 数据备份、恢复、导出、路径配置 | 保留能力，改为后台管理 API |
-| `modules/sh_junneng/` | 上海均能台账 | 业务规则需抽离，页面重写 |
+| `modules/sh_junneng/` | 上海钧能台账 | 业务规则需抽离，页面重写 |
 | `modules/steel_export/` | 钢材出口套保台账 | 业务规则需抽离，页面重写 |
 | `modules/subsidiary_hedging/` | 子公司套保台账 | 业务规则需抽离，页面重写 |
 | `modules/option_trading/` | 期权交易、Greeks、行情 | 数据层和计算逻辑可较多复用 |
@@ -44,7 +44,7 @@
 
 ## 3. 台账管理模块
 
-### 3.1 上海均能台账
+### 3.1 上海钧能台账
 
 主要文件：`modules/sh_junneng/steel_hedging_ledger_v0.5.py`
 

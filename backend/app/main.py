@@ -102,6 +102,7 @@ class ShJunnengTradeIn(BaseModel):
 
 
 class ShJunnengTradeCloseIn(BaseModel):
+    close_quantity: Optional[float] = Field(default=None, gt=0)
     close_price: float
     close_fee: float = 0
     close_date: str = Field(default_factory=lambda: date.today().isoformat())
@@ -481,6 +482,30 @@ def calculate_sh_junneng_profit(
     return round(gross_profit - open_fee - close_fee, 2)
 
 
+def sh_junneng_contract_multiplier(contract_month: str) -> float:
+    variety, _ = split_sh_junneng_contract(contract_month)
+    return VARIETY_CONFIG.get(variety, {}).get("multiplier", 10)
+
+
+def calculate_sh_junneng_realized_profit(
+    contract_month: str,
+    direction: str,
+    open_price: float,
+    close_price: float,
+    quantity: float,
+    open_fee_allocated: float,
+    close_fee: float,
+) -> float:
+    direction_factor = sh_junneng_direction_factor(direction)
+    multiplier = sh_junneng_contract_multiplier(contract_month)
+    gross_profit = (close_price - open_price) * quantity * multiplier * direction_factor
+    return round(gross_profit - open_fee_allocated - close_fee, 2)
+
+
+def sh_junneng_business_code(position_id: int) -> str:
+    return f"SHJN-{position_id:06d}"
+
+
 def sh_junneng_status(is_closed: bool) -> str:
     return "已平仓" if is_closed else "未平仓"
 
@@ -542,6 +567,84 @@ def with_sh_junneng_fund_fields(item: dict) -> dict:
         item.get("open_price") or 0,
     )
     return {**item, "interest": interest, "profit_80": profit_80, "profit_20": profit_20}
+
+
+def sh_junneng_position_snapshot(row, closed_quantity: float = 0) -> dict:
+    item = row_to_dict(row)
+    item["contract_month"] = normalize_sh_junneng_contract(item["contract_month"])
+    item["contract_code"] = sh_junneng_contract_code(item["contract_month"])
+    item["direction"] = normalize_sh_junneng_direction(item["direction"])
+    item["direction_label"] = item["direction"]
+    item["open_quantity"] = item.get("open_quantity") or 0
+    item["remaining_quantity"] = item.get("remaining_quantity") or 0
+    item["closed_quantity"] = closed_quantity
+    item["trade_quantity"] = item["open_quantity"]
+    item["hold_quantity"] = item["remaining_quantity"]
+    item["open_fee"] = item.get("open_fee") or 0
+    item["close_fee"] = 0
+    item["close_price"] = None
+    item["close_date"] = None
+    item["display_close_price"] = "未平仓"
+    item["display_close_fee"] = "未平仓"
+    item["display_close_date"] = "未平仓"
+    item["is_closed"] = 1 if item["remaining_quantity"] <= 0 else 0
+    item["status"] = "已结算" if item["is_closed"] else ("部分平仓" if closed_quantity else "持仓")
+    item["position_status"] = "已全平" if item["is_closed"] else ("部分平仓" if closed_quantity else "未平仓")
+    item["is_closed_label"] = sh_junneng_status(bool(item["is_closed"]))
+    current_price = item.get("current_price")
+    if current_price is None:
+        item["profit"] = None
+    else:
+        remaining_open_fee = item["open_fee"] * item["remaining_quantity"] / item["open_quantity"] if item["open_quantity"] else 0
+        item["profit"] = calculate_sh_junneng_profit(
+            item["direction"],
+            item["open_price"],
+            item["remaining_quantity"],
+            remaining_open_fee,
+            current_price=current_price,
+        )
+    item["capital_used"] = (item["open_price"] or 0) * item["remaining_quantity"]
+    item["profit_rate"] = (
+        item["profit"] / item["capital_used"]
+        if item["profit"] is not None and item["capital_used"]
+        else None
+    )
+    item["row_type"] = "position"
+    return item
+
+
+def sh_junneng_close_snapshot(row) -> dict:
+    item = row_to_dict(row)
+    item["close_trade_id"] = item["id"]
+    item["id"] = item["position_id"]
+    item["contract_month"] = normalize_sh_junneng_contract(item["contract_month"])
+    item["contract_code"] = sh_junneng_contract_code(item["contract_month"])
+    item["direction"] = normalize_sh_junneng_direction(item["direction"])
+    item["direction_label"] = item["direction"]
+    item["open_quantity"] = item.get("open_quantity") or 0
+    item["remaining_quantity"] = item.get("remaining_quantity") or 0
+    item["closed_quantity"] = item["open_quantity"] - item["remaining_quantity"]
+    item["trade_quantity"] = item.get("close_quantity") or 0
+    item["hold_quantity"] = 0
+    item["open_fee"] = item.get("open_fee_allocated") or 0
+    item["profit"] = item.get("realized_profit")
+    item["close_price"] = item.get("close_price")
+    item["close_fee"] = item.get("close_fee") or 0
+    item["display_close_price"] = item["close_price"]
+    item["display_close_fee"] = item["close_fee"]
+    item["display_close_date"] = item.get("close_date")
+    item["is_closed"] = 1
+    item["status"] = "已结算"
+    item["position_status"] = "已全平" if item["remaining_quantity"] <= 0 else "部分平仓"
+    item["is_closed_label"] = "已平仓"
+    item["capital_used"] = (item["open_price"] or 0) * item["trade_quantity"]
+    item["profit_rate"] = (
+        item["profit"] / item["capital_used"]
+        if item["profit"] is not None and item["capital_used"]
+        else None
+    )
+    item["row_type"] = "close"
+    return item
 
 
 def summarize_sh_junneng_table(trades: list[dict]) -> dict:
@@ -626,8 +729,8 @@ def refresh_sh_junneng_trade_prices(mock: bool = False) -> dict:
         rows = db._exec(cur, 
             """
             SELECT DISTINCT contract_month
-            FROM sh_junneng_trades
-            WHERE is_closed = 0
+            FROM sh_junneng_positions
+            WHERE remaining_quantity > 0
             """
         ).fetchall()
         for row in rows:
@@ -638,9 +741,9 @@ def refresh_sh_junneng_trade_prices(mock: bool = False) -> dict:
                 continue
             db._exec(cur, 
                 """
-                UPDATE sh_junneng_trades
+                UPDATE sh_junneng_positions
                 SET current_price = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE contract_month = ? AND is_closed = 0
+                WHERE contract_month = ? AND remaining_quantity > 0
                 """,
                 (price, contract_month),
             )
@@ -657,22 +760,23 @@ def refresh_sh_junneng_trade_prices(mock: bool = False) -> dict:
             refreshed += 1
         open_rows = db._exec(cur, 
             """
-            SELECT id, direction, open_price, trade_quantity, open_fee, current_price
-            FROM sh_junneng_trades
-            WHERE is_closed = 0
+            SELECT id, direction, open_price, remaining_quantity, open_quantity, open_fee, current_price
+            FROM sh_junneng_positions
+            WHERE remaining_quantity > 0
             """
         ).fetchall()
         for row in open_rows:
+            remaining_open_fee = (row["open_fee"] or 0) * (row["remaining_quantity"] or 0) / row["open_quantity"] if row["open_quantity"] else 0
             profit = calculate_sh_junneng_profit(
                 row["direction"],
                 row["open_price"],
-                row["trade_quantity"],
-                row["open_fee"] or 0,
+                row["remaining_quantity"],
+                remaining_open_fee,
                 current_price=row["current_price"],
             )
             db._exec(cur, 
-                "UPDATE sh_junneng_trades SET profit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (profit, row["id"]),
+                "UPDATE sh_junneng_positions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["id"],),
             )
     return {"refreshed_contracts": refreshed}
 
@@ -1632,11 +1736,6 @@ def list_sh_junneng_trades(
     params: list = []
     selected_date = selected_date or date.today().isoformat()
 
-    if status in {"未平仓", "已平仓"}:
-        if status == "未平仓":
-            clauses.append("(is_closed = 0 OR is_closed = '未平仓')")
-        else:
-            clauses.append("(is_closed = 1 OR is_closed = '已平仓' OR status = '已结算')")
     if direction in {"long", "short", "多头", "空头", "多", "空"}:
         clauses.append("direction = ?")
         params.append(normalize_sh_junneng_direction(direction))
@@ -1645,7 +1744,7 @@ def list_sh_junneng_trades(
         clauses.append("contract_month LIKE ?")
         params.append(f"%{normalized}%")
     if keyword:
-        clauses.append("(contract_month LIKE ? OR open_date LIKE ? OR IFNULL(close_date, '') LIKE ?)")
+        clauses.append("(contract_month LIKE ? OR open_date LIKE ? OR business_code LIKE ?)")
         params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
     clauses.append("open_date <= ?")
     params.append(selected_date)
@@ -1656,14 +1755,86 @@ def list_sh_junneng_trades(
         rows = db._exec(cur, 
             f"""
             SELECT *
-            FROM sh_junneng_trades
+            FROM sh_junneng_positions
             {where_clause}
             ORDER BY open_date DESC, id DESC
             """,
             params,
         ).fetchall()
-    snapshot = summarize_sh_junneng(rows)
-    return {**snapshot, **sh_junneng_sections(rows, selected_date), "selected_date": selected_date}
+        position_ids = [row["id"] for row in rows]
+        close_rows = []
+        closed_quantity_by_position = {}
+        if position_ids:
+            placeholders = ",".join(["?"] * len(position_ids))
+            quantity_rows = db._exec(cur,
+                f"""
+                SELECT position_id, SUM(close_quantity) AS closed_quantity
+                FROM sh_junneng_close_trades
+                WHERE position_id IN ({placeholders}) AND close_date <= ?
+                GROUP BY position_id
+                """,
+                [*position_ids, selected_date],
+            ).fetchall()
+            closed_quantity_by_position = {
+                row["position_id"]: row["closed_quantity"] or 0
+                for row in quantity_rows
+            }
+            close_rows = db._exec(cur,
+                f"""
+                SELECT c.*, p.contract_month, p.direction, p.open_price, p.open_quantity,
+                       p.remaining_quantity, p.open_date, p.current_price
+                FROM sh_junneng_close_trades c
+                JOIN sh_junneng_positions p ON p.id = c.position_id
+                WHERE c.position_id IN ({placeholders}) AND c.close_date <= ?
+                ORDER BY c.close_date DESC, c.id DESC
+                """,
+                [*position_ids, selected_date],
+            ).fetchall()
+
+    positions = [
+        sh_junneng_position_snapshot(row, closed_quantity_by_position.get(row["id"], 0))
+        for row in rows
+    ]
+    close_trades = [with_sh_junneng_fund_fields(sh_junneng_close_snapshot(row)) for row in close_rows]
+    selected_month = selected_date[:7]
+    today_trades = [
+        item for item in positions if item.get("open_date") == selected_date
+    ] + [
+        item for item in close_trades if item.get("close_date") == selected_date
+    ]
+    current_trades = [
+        item for item in positions
+        if item.get("remaining_quantity", 0) > 0
+    ]
+    settled_trades = [
+        item for item in close_trades
+        if item.get("close_date") and item["close_date"][:7] == selected_month
+    ]
+    if status == "未平仓":
+        filtered_positions = current_trades
+    elif status == "已平仓":
+        filtered_positions = [item for item in positions if item.get("remaining_quantity", 0) <= 0]
+    else:
+        filtered_positions = positions
+    return {
+        "trades": filtered_positions,
+        "summary": {
+            "total_count": len(filtered_positions),
+            "open_count": len(current_trades),
+            "closed_count": len([item for item in positions if item.get("remaining_quantity", 0) <= 0]),
+            "total_holding": sum(item.get("remaining_quantity") or 0 for item in current_trades),
+            "total_profit": sum(item.get("profit") or 0 for item in [*current_trades, *settled_trades]),
+        },
+        "today_trades": today_trades,
+        "current_trades": current_trades,
+        "settled_trades": settled_trades,
+        "totals": {
+            "today": summarize_sh_junneng_table(today_trades),
+            "current": summarize_sh_junneng_table(current_trades),
+            "settled": summarize_sh_junneng_table(settled_trades),
+        },
+        "selected_date": selected_date,
+    }
 
 
 @app.post("/api/ledgers/sh-junneng/trades")
@@ -1674,48 +1845,73 @@ def create_sh_junneng_trade(payload: ShJunnengTradeIn, user=Depends(current_user
     contract_month = normalize_sh_junneng_contract(payload.contract_month)
     direction = normalize_sh_junneng_direction(payload.direction)
     is_closed = payload.is_closed == "已平仓" or (payload.close_price is not None and payload.close_fee is not None and payload.close_date)
+    if is_closed and (payload.close_price is None or not payload.close_date):
+        raise HTTPException(status_code=400, detail="已平仓交易必须填写平仓价格和平仓日期")
     current_price = payload.close_price if is_closed else payload.current_price
     if not is_closed and current_price is None:
         current_price = fetch_sh_junneng_current_price(contract_month)
-    profit = calculate_sh_junneng_profit(
-        direction,
-        payload.open_price,
-        payload.trade_quantity,
-        payload.open_fee,
-        close_price=payload.close_price if is_closed else None,
-        close_fee=payload.close_fee or 0,
-        current_price=current_price,
-    )
     with db.connect() as conn:
         cur = conn.cursor()
-        cursor = db._exec(cur, 
+        db._exec(cur,
             """
-            INSERT INTO sh_junneng_trades
-                (contract_month, direction, open_price, current_price, trade_quantity, hold_quantity,
-                 open_fee, close_price, close_fee, profit, open_date, close_date, status, is_closed, created_by, updated_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sh_junneng_positions
+                (contract_month, direction, open_price, open_quantity, remaining_quantity,
+                 open_amount, open_fee, open_date, current_price, status, created_by, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 contract_month,
                 direction,
                 payload.open_price,
-                current_price,
                 payload.trade_quantity,
                 0 if is_closed else payload.trade_quantity,
+                payload.open_price * payload.trade_quantity,
                 payload.open_fee,
-                payload.close_price if is_closed else None,
-                payload.close_fee if is_closed else 0,
-                profit,
                 payload.open_date,
-                payload.close_date if is_closed else None,
-                "已结算" if is_closed else "持仓",
-                1 if is_closed else 0,
+                current_price,
+                "closed" if is_closed else "open",
                 user["name"],
                 user["name"],
             ),
         )
         trade_id = db.last_insert_id(conn)
-    db.log_operation(user["id"], "sh_junneng", "新增交易", f"新增上海均能交易 {contract_month}", "sh_junneng_trades", trade_id)
+        business_code = sh_junneng_business_code(trade_id)
+        db._exec(cur, "UPDATE sh_junneng_positions SET business_code = ? WHERE id = ?", (business_code, trade_id))
+        if is_closed:
+            close_fee = payload.close_fee or 0
+            realized_profit = calculate_sh_junneng_realized_profit(
+                contract_month,
+                direction,
+                payload.open_price,
+                payload.close_price,
+                payload.trade_quantity,
+                payload.open_fee,
+                close_fee,
+            )
+            db._exec(cur,
+                """
+                INSERT INTO sh_junneng_close_trades
+                    (position_id, close_date, close_quantity, close_price, close_amount,
+                     close_fee, open_fee_allocated, close_sequence, business_code,
+                     realized_profit, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_id,
+                    payload.close_date,
+                    payload.trade_quantity,
+                    payload.close_price,
+                    payload.close_price * payload.trade_quantity,
+                    close_fee,
+                    payload.open_fee,
+                    1,
+                    business_code,
+                    realized_profit,
+                    user["name"],
+                    user["name"],
+                ),
+            )
+    db.log_operation(user["id"], "sh_junneng", "新增交易", f"新增上海钧能交易 {contract_month}", "sh_junneng_positions", trade_id)
     return {"id": trade_id}
 
 
@@ -1728,54 +1924,44 @@ def update_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeIn, user=Depen
     direction = normalize_sh_junneng_direction(payload.direction)
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT * FROM sh_junneng_trades WHERE id = ?", (trade_id,)).fetchone()
+        existing = db._exec(cur, "SELECT * FROM sh_junneng_positions WHERE id = ?", (trade_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="交易记录不存在")
-        is_closed = payload.is_closed == "已平仓" or (payload.close_price is not None and payload.close_fee is not None and payload.close_date)
-        close_price = payload.close_price if is_closed else None
-        close_fee = payload.close_fee or 0
-        current_price = close_price if is_closed else payload.current_price
-        if not is_closed and current_price is None:
+        closed_row = db._exec(cur,
+            "SELECT SUM(close_quantity) AS closed_quantity FROM sh_junneng_close_trades WHERE position_id = ?",
+            (trade_id,),
+        ).fetchone()
+        closed_quantity = (closed_row["closed_quantity"] if closed_row else 0) or 0
+        if payload.trade_quantity < closed_quantity:
+            raise HTTPException(status_code=400, detail="开仓数量不能小于已平数量")
+        current_price = payload.current_price
+        if current_price is None:
             current_price = fetch_sh_junneng_current_price(contract_month)
-        profit = calculate_sh_junneng_profit(
-            direction,
-            payload.open_price,
-            payload.trade_quantity,
-            payload.open_fee,
-            close_price=close_price,
-            close_fee=close_fee,
-            current_price=current_price,
-        )
-        hold_quantity = 0 if is_closed else payload.trade_quantity
+        remaining_quantity = payload.trade_quantity - closed_quantity
         db._exec(cur, 
             """
-            UPDATE sh_junneng_trades
-            SET contract_month = ?, direction = ?, open_price = ?, current_price = ?,
-                trade_quantity = ?, hold_quantity = ?, open_fee = ?, close_price = ?,
-                close_fee = ?, profit = ?, open_date = ?, close_date = ?, status = ?,
-                is_closed = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+            UPDATE sh_junneng_positions
+            SET contract_month = ?, direction = ?, open_price = ?, open_quantity = ?,
+                remaining_quantity = ?, open_amount = ?, open_fee = ?, open_date = ?,
+                current_price = ?, status = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
                 contract_month,
                 direction,
                 payload.open_price,
-                current_price,
                 payload.trade_quantity,
-                hold_quantity,
+                remaining_quantity,
+                payload.open_price * payload.trade_quantity,
                 payload.open_fee,
-                close_price,
-                payload.close_fee if is_closed else 0,
-                profit,
                 payload.open_date,
-                payload.close_date if is_closed else None,
-                "已结算" if is_closed else "持仓",
-                1 if is_closed else 0,
+                current_price,
+                "closed" if remaining_quantity <= 0 else ("partial_closed" if closed_quantity else "open"),
                 user["name"],
                 trade_id,
             ),
         )
-    db.log_operation(user["id"], "sh_junneng", "编辑交易", f"编辑上海均能交易 {contract_month}", "sh_junneng_trades", trade_id)
+    db.log_operation(user["id"], "sh_junneng", "编辑交易", f"编辑上海钧能交易 {contract_month}", "sh_junneng_positions", trade_id)
     return {"ok": True}
 
 
@@ -1784,10 +1970,15 @@ def delete_sh_junneng_trade(trade_id: int, user=Depends(current_user)):
     require_edit("sh_junneng", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        cursor = db._exec(cur, "DELETE FROM sh_junneng_trades WHERE id = ?", (trade_id,))
+        existing = db._exec(cur, "SELECT id FROM sh_junneng_positions WHERE id = ?", (trade_id,)).fetchone()
+        if existing:
+            db._exec(cur, "DELETE FROM sh_junneng_close_trades WHERE position_id = ?", (trade_id,))
+            cursor = db._exec(cur, "DELETE FROM sh_junneng_positions WHERE id = ?", (trade_id,))
+        else:
+            cursor = db._exec(cur, "DELETE FROM sh_junneng_trades WHERE id = ?", (trade_id,))
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="交易记录不存在")
-    db.log_operation(user["id"], "sh_junneng", "删除交易", "删除上海均能交易", "sh_junneng_trades", trade_id)
+    db.log_operation(user["id"], "sh_junneng", "删除交易", "删除上海钧能交易", "sh_junneng_positions", trade_id)
     return {"ok": True}
 
 
@@ -1796,39 +1987,67 @@ def close_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeCloseIn, user=D
     require_edit("sh_junneng", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT * FROM sh_junneng_trades WHERE id = ?", (trade_id,)).fetchone()
+        existing = db._exec(cur, "SELECT * FROM sh_junneng_positions WHERE id = ?", (trade_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="交易记录不存在")
-        if existing["is_closed"]:
+        remaining_quantity = existing["remaining_quantity"] or 0
+        if remaining_quantity <= 0:
             raise HTTPException(status_code=400, detail="该交易已平仓")
-        profit = calculate_sh_junneng_profit(
+        close_quantity = payload.close_quantity or remaining_quantity
+        if close_quantity > remaining_quantity:
+            raise HTTPException(status_code=400, detail="平仓数量不能超过当前剩余数量")
+        open_quantity = existing["open_quantity"] or 0
+        open_fee_allocated = (existing["open_fee"] or 0) * close_quantity / open_quantity if open_quantity else 0
+        sequence_row = db._exec(cur,
+            "SELECT COALESCE(MAX(close_sequence), 0) AS max_sequence FROM sh_junneng_close_trades WHERE position_id = ?",
+            (trade_id,),
+        ).fetchone()
+        close_sequence = (sequence_row["max_sequence"] or 0) + 1
+        business_code = existing["business_code"] or sh_junneng_business_code(trade_id)
+        realized_profit = calculate_sh_junneng_realized_profit(
+            existing["contract_month"],
             existing["direction"],
             existing["open_price"],
-            existing["trade_quantity"],
-            existing["open_fee"] or 0,
-            close_price=payload.close_price,
-            close_fee=payload.close_fee,
+            payload.close_price,
+            close_quantity,
+            open_fee_allocated,
+            payload.close_fee,
         )
-        db._exec(cur, 
+        db._exec(cur,
             """
-            UPDATE sh_junneng_trades
-            SET close_price = ?, close_fee = ?, close_date = ?, current_price = ?,
-                hold_quantity = 0, profit = ?, status = ?, is_closed = 1,
+            INSERT INTO sh_junneng_close_trades
+                (position_id, close_date, close_quantity, close_price, close_amount,
+                 close_fee, open_fee_allocated, close_sequence, business_code,
+                 realized_profit, created_by, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade_id,
+                payload.close_date,
+                close_quantity,
+                payload.close_price,
+                payload.close_price * close_quantity,
+                payload.close_fee,
+                open_fee_allocated,
+                close_sequence,
+                business_code,
+                realized_profit,
+                user["name"],
+                user["name"],
+            ),
+        )
+        next_remaining = round(remaining_quantity - close_quantity, 10)
+        status_value = "closed" if next_remaining <= 0 else "partial_closed"
+        db._exec(cur,
+            """
+            UPDATE sh_junneng_positions
+            SET remaining_quantity = ?, current_price = ?, status = ?,
                 updated_by = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (
-                payload.close_price,
-                payload.close_fee,
-                payload.close_date,
-                payload.close_price,
-                profit,
-                "已结算",
-                user["name"],
-                trade_id,
-            ),
+            (next_remaining, payload.close_price, status_value, user["name"], trade_id),
         )
-    db.log_operation(user["id"], "sh_junneng", "平仓", f"上海均能交易平仓 {trade_id}", "sh_junneng_trades", trade_id)
+    db.log_operation(user["id"], "sh_junneng", "平仓", f"上海钧能交易平仓 {trade_id}", "sh_junneng_close_trades", trade_id)
     return {"ok": True}
 
 
@@ -1836,7 +2055,7 @@ def close_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeCloseIn, user=D
 def refresh_sh_junneng_prices(mock: bool = False, user=Depends(current_user)):
     require_edit("sh_junneng", user)
     result = refresh_sh_junneng_trade_prices(mock=mock)
-    db.log_operation(user["id"], "sh_junneng", "刷新价格", f"刷新 {result['refreshed_contracts']} 个上海均能合约价格")
+    db.log_operation(user["id"], "sh_junneng", "刷新价格", f"刷新 {result['refreshed_contracts']} 个上海钧能合约价格")
     return result
 
 
@@ -1850,31 +2069,23 @@ def update_sh_junneng_prices_manually(payload: ShJunnengManualPricesIn, user=Dep
             normalized = normalize_sh_junneng_contract(contract_month)
             rows = db._exec(cur, 
                 """
-                SELECT id, direction, open_price, trade_quantity, open_fee, close_fee
-                FROM sh_junneng_trades
-                WHERE contract_month = ? AND is_closed = 0
+                SELECT id
+                FROM sh_junneng_positions
+                WHERE contract_month = ? AND remaining_quantity > 0
                 """,
                 (normalized,),
             ).fetchall()
             for row in rows:
-                profit = calculate_sh_junneng_profit(
-                    row["direction"],
-                    row["open_price"],
-                    row["trade_quantity"],
-                    row["open_fee"] or 0,
-                    close_fee=row["close_fee"] or 0,
-                    current_price=price,
-                )
                 db._exec(cur, 
                     """
-                    UPDATE sh_junneng_trades
-                    SET current_price = ?, profit = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+                    UPDATE sh_junneng_positions
+                    SET current_price = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (price, profit, user["name"], row["id"]),
+                    (price, user["name"], row["id"]),
                 )
                 updated += 1
-    db.log_operation(user["id"], "sh_junneng", "手动更新价格", f"更新 {updated} 条上海均能价格")
+    db.log_operation(user["id"], "sh_junneng", "手动更新价格", f"更新 {updated} 条上海钧能价格")
     return {"updated": updated}
 
 
@@ -1887,44 +2098,46 @@ def sh_junneng_settled_overview(
     contracts: Optional[str] = None,
     user=Depends(current_user),
 ):
-    clauses = ["is_closed = 1", "close_date IS NOT NULL", "close_price > 0", "close_fee > 0"]
+    clauses = ["c.close_date IS NOT NULL", "c.close_price > 0"]
     params: list = []
     if open_date_from:
-        clauses.append("open_date >= ?")
+        clauses.append("p.open_date >= ?")
         params.append(open_date_from)
     if open_date_to:
-        clauses.append("open_date <= ?")
+        clauses.append("p.open_date <= ?")
         params.append(open_date_to)
     if close_date_from:
-        clauses.append("close_date >= ?")
+        clauses.append("c.close_date >= ?")
         params.append(close_date_from)
     if close_date_to:
-        clauses.append("close_date <= ?")
+        clauses.append("c.close_date <= ?")
         params.append(close_date_to)
     selected_contracts = [item.strip().upper() for item in (contracts or "").split(",") if item.strip()]
     if selected_contracts:
-        clauses.append(f"contract_month IN ({','.join(['?'] * len(selected_contracts))})")
+        clauses.append(f"p.contract_month IN ({','.join(['?'] * len(selected_contracts))})")
         params.extend(selected_contracts)
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(cur, 
             f"""
-            SELECT *
-            FROM sh_junneng_trades
+            SELECT c.*, p.contract_month, p.direction, p.open_price, p.open_quantity,
+                   p.remaining_quantity, p.open_date, p.current_price
+            FROM sh_junneng_close_trades c
+            JOIN sh_junneng_positions p ON p.id = c.position_id
             WHERE {' AND '.join(clauses)}
-            ORDER BY close_date DESC, id DESC
+            ORDER BY c.close_date DESC, c.id DESC
             """,
             params,
         ).fetchall()
         contract_rows = db._exec(cur, 
             """
             SELECT DISTINCT contract_month
-            FROM sh_junneng_trades
+            FROM sh_junneng_positions
             WHERE contract_month != ''
             ORDER BY contract_month
             """
         ).fetchall()
-    trades = [with_sh_junneng_fund_fields(sh_junneng_trade_snapshot(row)) for row in rows]
+    trades = [with_sh_junneng_fund_fields(sh_junneng_close_snapshot(row)) for row in rows]
     return {
         "trades": trades,
         "totals": summarize_sh_junneng_table(trades),
@@ -1935,21 +2148,10 @@ def sh_junneng_settled_overview(
 @app.get("/api/ledgers/sh-junneng/export")
 def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(current_user)):
     selected_date = selected_date or date.today().isoformat()
-    with db.connect() as conn:
-        cur = conn.cursor()
-        rows = db._exec(cur, 
-            """
-            SELECT *
-            FROM sh_junneng_trades
-            WHERE open_date <= ?
-            ORDER BY open_date DESC, id DESC
-            """,
-            (selected_date,),
-        ).fetchall()
-    sections = sh_junneng_sections(rows, selected_date)
+    sections = list_sh_junneng_trades(selected_date=selected_date, user=user)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["类别", "合约月份", "交易方向", "开仓均价", "平仓均价", "当日收盘价", "交易数量(吨)", "持仓数量(吨)", "手续费(开)", "手续费(平)", "盈亏(含手续费)", "开仓日期", "平仓日期", "是否平仓", "资金利息", "利润按比例结算金额(80%)", "利润按比例结算金额(20%)"])
+    writer.writerow(["类别", "合约月份", "交易方向", "开仓均价", "平仓均价", "当日收盘价", "原始数量", "本次平仓数量", "剩余数量", "手续费(开)", "手续费(平)", "盈亏(含手续费)", "开仓日期", "平仓日期", "持仓状态", "业务编码", "资金利息", "利润按比例结算金额(80%)", "利润按比例结算金额(20%)"])
     for title, key in [("今日交易", "today_trades"), ("即期持仓", "current_trades"), ("已平仓数据", "settled_trades")]:
         for item in sections[key]:
             writer.writerow([
@@ -1959,14 +2161,16 @@ def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(c
                 item["open_price"],
                 item["display_close_price"],
                 item["current_price"],
-                item["trade_quantity"],
-                item["hold_quantity"],
+                item.get("open_quantity", ""),
+                item.get("close_quantity", ""),
+                item.get("remaining_quantity", ""),
                 item["open_fee"],
                 item["display_close_fee"],
                 item["profit"],
                 item["open_date"],
                 item["display_close_date"],
-                item["is_closed_label"],
+                item.get("position_status") or item["is_closed_label"],
+                item.get("business_code", ""),
                 item.get("interest", ""),
                 item.get("profit_80", ""),
                 item.get("profit_20", ""),
