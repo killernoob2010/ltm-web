@@ -47,6 +47,7 @@ const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
 const orderFinanceImportDir = document.querySelector("#orderFinanceImportDir");
+const orderFinanceManualBtn = document.querySelector("#orderFinanceManualBtn");
 const orderFinanceImportBtn = document.querySelector("#orderFinanceImportBtn");
 const orderFinanceRefreshBtn = document.querySelector("#orderFinanceRefreshBtn");
 const orderFinanceStatus = document.querySelector("#orderFinanceStatus");
@@ -72,6 +73,23 @@ const ofRepaymentRequirementStatus = document.querySelector("#ofRepaymentRequire
 const ofNextAction = document.querySelector("#ofNextAction");
 const ofNextFollowUpDate = document.querySelector("#ofNextFollowUpDate");
 const ofManagerNote = document.querySelector("#ofManagerNote");
+const orderFinanceManualDialog = document.querySelector("#orderFinanceManualDialog");
+const orderFinanceManualForm = document.querySelector("#orderFinanceManualForm");
+const cancelOrderFinanceManualBtn = document.querySelector("#cancelOrderFinanceManualBtn");
+const orderFinanceManualDuplicateHint = document.querySelector("#orderFinanceManualDuplicateHint");
+const ofManualSubsidiary = document.querySelector("#ofManualSubsidiary");
+const ofManualTerminalCustomer = document.querySelector("#ofManualTerminalCustomer");
+const ofManualProductName = document.querySelector("#ofManualProductName");
+const ofManualQuantity = document.querySelector("#ofManualQuantity");
+const ofManualFinanceBank = document.querySelector("#ofManualFinanceBank");
+const ofManualPlannedFinanceAmount = document.querySelector("#ofManualPlannedFinanceAmount");
+const ofManualPlannedDrawdownDate = document.querySelector("#ofManualPlannedDrawdownDate");
+const ofManualFinanceDueDate = document.querySelector("#ofManualFinanceDueDate");
+const ofManualPurchaseContract = document.querySelector("#ofManualPurchaseContract");
+const ofManualSystemContract = document.querySelector("#ofManualSystemContract");
+const ofManualRepaymentRequirement = document.querySelector("#ofManualRepaymentRequirement");
+const ofManualNextAction = document.querySelector("#ofManualNextAction");
+const ofManualManagerNote = document.querySelector("#ofManualManagerNote");
 const dvIntegrationPage = document.querySelector("#dvIntegrationPage");
 const dvIntegrationFiles = document.querySelector("#dvIntegrationFiles");
 const dvExportBtn = document.querySelector("#dvExportBtn");
@@ -175,7 +193,11 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.detail || "请求失败");
+    const detail = payload.detail;
+    const message = typeof detail === "object" && detail !== null ? detail.message || JSON.stringify(detail) : detail;
+    const error = new Error(message || "请求失败");
+    error.detail = detail;
+    throw error;
   }
   return response.json();
 }
@@ -1821,6 +1843,14 @@ function orderFinanceDisplayAmount(row) {
   return row.planned_finance_amount ?? row.finance_amount_actual ?? row.finance_amount_expected ?? row.contract_amount;
 }
 
+function orderFinanceQuantity(row) {
+  return row.actual_shipped_quantity_mt ?? row.contract_quantity_mt;
+}
+
+function orderFinanceNumberOrNull(value) {
+  return value === "" || value === null || value === undefined ? null : Number(value);
+}
+
 function orderFinanceFilteredRecords() {
   const subsidiary = orderFinanceSubsidiaryFilter.value;
   const risk = orderFinanceRiskFilter.value;
@@ -1877,18 +1907,22 @@ function renderOrderFinanceTable() {
   const records = orderFinanceFilteredRecords();
   orderFinanceCount.textContent = `${records.length} 条`;
   if (!records.length) {
-    orderFinanceTable.innerHTML = '<tr><td colspan="10" class="empty-cell">暂无记录</td></tr>';
+    orderFinanceTable.innerHTML = '<tr><td colspan="12" class="empty-cell">暂无记录</td></tr>';
     return;
   }
   orderFinanceTable.innerHTML = records.map((row) => {
     const selected = row.id === state.selectedOrderFinanceId ? "selected-row" : "";
     const riskClass = row.risk_level === "高" ? "risk-high" : row.risk_level === "中" ? "risk-mid" : "risk-low";
+    const terminal = row.terminal_customer || "-";
+    const product = row.product_name || "-";
     return `<tr class="${selected}" data-id="${row.id}">
       <td><span class="risk-pill ${riskClass}">${escapeHtml(row.risk_level || "-")}</span></td>
       <td>${escapeHtml(row.subsidiary || "")}</td>
-      <td>${escapeHtml(row.purchase_contract_no || row.system_contract_no || "")}</td>
-      <td>${escapeHtml(row.terminal_customer || "")}</td>
+      <td class="truncate-cell customer-cell" title="${escapeHtml(terminal)}">${escapeHtml(terminal)}</td>
+      <td class="truncate-cell product-cell" title="${escapeHtml(product)}">${escapeHtml(product)}</td>
+      <td class="numeric">${money(orderFinanceQuantity(row))}</td>
       <td class="numeric">${money(orderFinanceDisplayAmount(row))}</td>
+      <td>${escapeHtml(row.finance_bank || "-")}</td>
       <td>${escapeHtml(row.planned_drawdown_date || row.finance_drawdown_date || "-")}</td>
       <td>${escapeHtml(row.finance_due_date || "-")}</td>
       <td>${escapeHtml(row.bill_of_lading_date || "-")}</td>
@@ -1981,6 +2015,55 @@ async function importOrderFinanceLocal() {
   }
 }
 
+function openOrderFinanceManualDialog() {
+  orderFinanceManualForm.reset();
+  orderFinanceManualDuplicateHint.textContent = "";
+  orderFinanceManualDuplicateHint.classList.add("hidden");
+  orderFinanceManualDialog.showModal();
+}
+
+async function saveOrderFinanceManual(event) {
+  event.preventDefault();
+  const payload = {
+    subsidiary: ofManualSubsidiary.value,
+    terminal_customer: ofManualTerminalCustomer.value,
+    product_name: ofManualProductName.value,
+    contract_quantity_mt: orderFinanceNumberOrNull(ofManualQuantity.value),
+    finance_bank: ofManualFinanceBank.value,
+    planned_finance_amount: orderFinanceNumberOrNull(ofManualPlannedFinanceAmount.value),
+    planned_drawdown_date: ofManualPlannedDrawdownDate.value || null,
+    finance_due_date: ofManualFinanceDueDate.value || null,
+    purchase_contract_no: ofManualPurchaseContract.value,
+    system_contract_no: ofManualSystemContract.value,
+    repayment_requirement: ofManualRepaymentRequirement.value,
+    next_action: ofManualNextAction.value,
+    manager_note: ofManualManagerNote.value,
+  };
+  try {
+    const result = await api("/api/order-finance/records/manual", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const created = result.record || result;
+    const duplicateCount = (result.duplicate_candidates || []).length;
+    state.selectedOrderFinanceId = created.id;
+    await loadOrderFinanceProgress();
+    openOrderFinanceDetail(created.id);
+    orderFinanceManualDialog.close();
+    orderFinanceStatus.textContent = duplicateCount ? `已新增，发现 ${duplicateCount} 条疑似重复，请核对` : "已新增";
+  } catch (error) {
+    const existing = error.detail && error.detail.existing;
+    if (existing) {
+      orderFinanceManualDuplicateHint.textContent = `已存在相同合同号记录：${existing.subsidiary || ""} ${existing.purchase_contract_no || existing.system_contract_no || ""}`;
+      orderFinanceManualDuplicateHint.classList.remove("hidden");
+      if (existing.id) openOrderFinanceDetail(existing.id);
+      return;
+    }
+    orderFinanceManualDuplicateHint.textContent = error.message;
+    orderFinanceManualDuplicateHint.classList.remove("hidden");
+  }
+}
+
 async function saveOrderFinanceManagement(event) {
   event.preventDefault();
   if (!state.selectedOrderFinanceId) return;
@@ -2032,6 +2115,9 @@ searchLogsBtn.addEventListener("click", loadLogs);
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 
+orderFinanceManualBtn.addEventListener("click", openOrderFinanceManualDialog);
+cancelOrderFinanceManualBtn.addEventListener("click", () => orderFinanceManualDialog.close());
+orderFinanceManualForm.addEventListener("submit", saveOrderFinanceManual);
 orderFinanceImportBtn.addEventListener("click", importOrderFinanceLocal);
 orderFinanceRefreshBtn.addEventListener("click", loadOrderFinanceProgress);
 orderFinanceManagementForm.addEventListener("submit", saveOrderFinanceManagement);

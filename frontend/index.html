@@ -347,6 +347,7 @@
         <section id="orderFinancePage" class="page hidden">
           <div class="toolbar">
             <input id="orderFinanceImportDir" class="wide-input" value="/Users/wangjingze/建龙/贸易处/订单融资合同汇总" />
+            <button id="orderFinanceManualBtn" type="button" class="secondary">手动新增</button>
             <button id="orderFinanceImportBtn" type="button">导入最新台账</button>
             <button id="orderFinanceRefreshBtn" type="button" class="secondary">刷新</button>
             <span id="orderFinanceStatus" class="toolbar-status">待加载</span>
@@ -399,9 +400,11 @@
                     <tr>
                       <th>风险</th>
                       <th>子公司</th>
-                      <th>主合同号</th>
                       <th>终端客户</th>
+                      <th>货物类型</th>
+                      <th>货物量</th>
                       <th>拟放款金额</th>
+                      <th>放款银行</th>
                       <th>计划放款日</th>
                       <th>到期日</th>
                       <th>提单日期</th>
@@ -483,6 +486,79 @@
             <div id="orderFinanceImportReport" class="order-finance-report empty-cell">暂无导入报告。</div>
           </section>
         </section>
+
+        <dialog id="orderFinanceManualDialog" class="wide-dialog">
+          <form id="orderFinanceManualForm" method="dialog" class="dialog-form">
+            <h2>手动新增订单融资</h2>
+            <p id="orderFinanceManualDuplicateHint" class="order-finance-duplicate-hint hidden"></p>
+            <div class="form-grid order-finance-manual-grid">
+              <label>
+                子公司
+                <select id="ofManualSubsidiary" required>
+                  <option value="">请选择</option>
+                  <option value="东钢">东钢</option>
+                  <option value="北满">北满</option>
+                  <option value="承德">承德</option>
+                  <option value="抚顺">抚顺</option>
+                  <option value="西林">西林</option>
+                  <option value="阿城">阿城</option>
+                </select>
+              </label>
+              <label>
+                终端客户
+                <input id="ofManualTerminalCustomer" placeholder="例如 MOLYCOP / SAMSUNG" />
+              </label>
+              <label>
+                货物类型
+                <input id="ofManualProductName" />
+              </label>
+              <label>
+                货物量（吨）
+                <input id="ofManualQuantity" type="number" step="0.001" />
+              </label>
+              <label>
+                放款银行
+                <input id="ofManualFinanceBank" />
+              </label>
+              <label>
+                拟放款金额
+                <input id="ofManualPlannedFinanceAmount" type="number" step="0.01" />
+              </label>
+              <label>
+                计划放款日
+                <input id="ofManualPlannedDrawdownDate" type="date" />
+              </label>
+              <label>
+                融资到期日
+                <input id="ofManualFinanceDueDate" type="date" />
+              </label>
+              <label>
+                主合同号
+                <input id="ofManualPurchaseContract" />
+              </label>
+              <label>
+                系统合同号
+                <input id="ofManualSystemContract" />
+              </label>
+              <label>
+                回款要求
+                <input id="ofManualRepaymentRequirement" placeholder="例如放款当日先回25%陈欠" />
+              </label>
+              <label>
+                下一步动作
+                <input id="ofManualNextAction" />
+              </label>
+              <label class="wide-field">
+                管理备注
+                <textarea id="ofManualManagerNote" rows="3"></textarea>
+              </label>
+            </div>
+            <div class="dialog-actions">
+              <button id="cancelOrderFinanceManualBtn" type="button" class="secondary">取消</button>
+              <button type="submit">保存</button>
+            </div>
+          </form>
+        </dialog>
 
         <!-- 数据可视化管理 - 数据整合 -->
         <section id="dvIntegrationPage" class="page hidden">

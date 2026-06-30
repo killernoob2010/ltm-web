@@ -8,6 +8,7 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import xlrd
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -63,6 +64,40 @@ class ManagementUpdateRequest(BaseModel):
     next_action: Optional[str] = None
     next_follow_up_date: Optional[str] = None
     manager_note: Optional[str] = None
+
+
+class ManualOrderFinanceRequest(BaseModel):
+    subsidiary: str
+    product_name: Optional[str] = None
+    purchase_contract_no: Optional[str] = None
+    system_contract_no: Optional[str] = None
+    terminal_customer: Optional[str] = None
+    contract_quantity_mt: Optional[float] = None
+    contract_currency: Optional[str] = "CNY"
+    contract_amount: Optional[float] = None
+    finance_bank: Optional[str] = None
+    finance_amount_expected: Optional[float] = None
+    finance_amount_actual: Optional[float] = None
+    finance_drawdown_date: Optional[str] = None
+    finance_due_date: Optional[str] = None
+    latest_shipment_date: Optional[str] = None
+    bill_of_lading_date: Optional[str] = None
+    collection_date: Optional[str] = None
+    executor: Optional[str] = None
+    planned_drawdown_date: Optional[str] = None
+    planned_finance_amount: Optional[float] = None
+    amount_adjustment_note: Optional[str] = None
+    repayment_requirement: Optional[str] = None
+    repayment_requirement_status: Optional[str] = None
+    next_action: Optional[str] = None
+    next_follow_up_date: Optional[str] = None
+    manager_note: Optional[str] = None
+
+
+class DuplicateOrderFinanceError(ValueError):
+    def __init__(self, existing: Dict[str, Any]):
+        super().__init__("已存在相同子公司和合同号的订单融资记录")
+        self.existing = existing
 
 
 async def order_finance_current_user(authorization: Optional[str] = Header(default=None)):
@@ -241,6 +276,15 @@ def _business_key(subsidiary: str, purchase_contract: Any, system_contract: Any,
     if purchase or system:
         return "|".join([subsidiary, purchase, system])
     return "|".join([subsidiary, source_file, str(row_no)])
+
+
+def _manual_business_key(record: Dict[str, Any]) -> str:
+    subsidiary = _normalize_text(record.get("subsidiary"))
+    purchase = _normalize_text(record.get("purchase_contract_no"))
+    system = _normalize_text(record.get("system_contract_no"))
+    if purchase or system:
+        return _business_key(subsidiary, purchase, system, "手动新增", 0)
+    return "|".join([subsidiary, "手动新增", uuid4().hex])
 
 
 def _build_warnings(record: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -572,6 +616,134 @@ def get_order_finance_record(record_id: int) -> Dict[str, Any]:
     return _row_to_dict(row)
 
 
+def find_order_finance_duplicates(payload: Dict[str, Any], exclude_id: Optional[int] = None) -> Dict[str, Any]:
+    candidate = dict(payload)
+    candidate["subsidiary"] = _normalize_text(candidate.get("subsidiary"))
+    candidate["purchase_contract_no"] = _normalize_text(candidate.get("purchase_contract_no"))
+    candidate["system_contract_no"] = _normalize_text(candidate.get("system_contract_no"))
+    exact = None
+    if candidate["purchase_contract_no"] or candidate["system_contract_no"]:
+        business_key = _manual_business_key(candidate)
+        with db.connect() as conn:
+            cur = conn.cursor()
+            row = db._exec(
+                cur,
+                "SELECT * FROM order_finance_progress WHERE business_key = ? AND is_archived = 0",
+                (business_key,),
+            ).fetchone()
+        exact = _row_to_dict(row)
+        if exact and exclude_id and exact.get("id") == exclude_id:
+            exact = None
+
+    target_amount = (
+        _to_float(candidate.get("planned_finance_amount"))
+        or _to_float(candidate.get("finance_amount_actual"))
+        or _to_float(candidate.get("finance_amount_expected"))
+        or _to_float(candidate.get("contract_amount"))
+    )
+    target_customer = _normalize_text(candidate.get("terminal_customer")).upper()
+    target_due = _normalize_date(candidate.get("finance_due_date"))
+    similar = []
+    if candidate["subsidiary"] and target_customer and target_due and target_amount is not None:
+        for row in list_order_finance_records():
+            if exclude_id and row.get("id") == exclude_id:
+                continue
+            if row.get("subsidiary") != candidate["subsidiary"]:
+                continue
+            row_customer = _normalize_text(row.get("terminal_customer")).upper()
+            row_due = _normalize_date(row.get("finance_due_date"))
+            row_amount = (
+                _to_float(row.get("planned_finance_amount"))
+                or _to_float(row.get("finance_amount_actual"))
+                or _to_float(row.get("finance_amount_expected"))
+                or _to_float(row.get("contract_amount"))
+            )
+            if row_customer == target_customer and row_due == target_due and row_amount == target_amount:
+                similar.append(row)
+    return {"exact": exact, "similar": similar[:5]}
+
+
+def create_manual_order_finance_record(payload: Dict[str, Any], created_by: str = "") -> Dict[str, Any]:
+    record = dict(payload)
+    record["subsidiary"] = _normalize_text(record.get("subsidiary"))
+    if not record["subsidiary"]:
+        raise ValueError("子公司不能为空")
+    duplicates = find_order_finance_duplicates(record)
+    if duplicates["exact"]:
+        raise DuplicateOrderFinanceError(duplicates["exact"])
+
+    management_values = {field: record.get(field) for field in MANAGEMENT_FIELDS if record.get(field) not in (None, "")}
+    manual_next_action = _normalize_text(record.get("next_action"))
+    record.update(
+        {
+            "business_key": _manual_business_key(record),
+            "source_file": "手动新增",
+            "source_sheet": "",
+            "source_row_start": None,
+            "source_row_end": None,
+            "source_snapshot_date": date.today().isoformat(),
+            "purchase_contract_no": _normalize_text(record.get("purchase_contract_no")),
+            "system_contract_no": _normalize_text(record.get("system_contract_no")),
+            "terminal_customer": _normalize_text(record.get("terminal_customer")),
+            "product_name": _normalize_text(record.get("product_name")),
+            "contract_currency": _normalize_text(record.get("contract_currency")) or "CNY",
+            "contract_quantity_mt": _to_float(record.get("contract_quantity_mt")),
+            "contract_amount": _to_float(record.get("contract_amount")),
+            "finance_bank": _normalize_text(record.get("finance_bank")),
+            "finance_amount_expected": _to_float(record.get("finance_amount_expected")),
+            "finance_amount_actual": _to_float(record.get("finance_amount_actual")),
+            "finance_drawdown_date": _normalize_date(record.get("finance_drawdown_date")),
+            "finance_due_date": _normalize_date(record.get("finance_due_date")),
+            "latest_shipment_date": _normalize_date(record.get("latest_shipment_date")),
+            "bill_of_lading_date": _normalize_date(record.get("bill_of_lading_date")),
+            "collection_date": _normalize_date(record.get("collection_date")),
+            "executor": _normalize_text(record.get("executor")),
+            "remark": "手动新增",
+            "sales_contracts_json": "[]",
+            "settlement_json": "{}",
+            "corrections_json": "[]",
+            "source_json": json.dumps({"created_by": created_by, "source": "manual"}, ensure_ascii=False),
+        }
+    )
+    derived = derive_business_status(record)
+    record["business_status"] = derived["business_status"]
+    record["risk_level"] = derived["risk_level"]
+    record["finance_status"] = derived["business_status"]
+    warnings = _build_warnings(record)
+    record["import_warnings_json"] = json.dumps(warnings, ensure_ascii=False)
+
+    insert_fields = FACT_FIELDS + [
+        "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
+        "repayment_requirement", "repayment_requirement_status", "next_action",
+        "next_follow_up_date", "manager_note", "manual_override_fields",
+        "management_plan_json", "manual_change_log_json",
+    ]
+    values = [record.get(field) for field in FACT_FIELDS]
+    values.extend([
+        _normalize_date(record.get("planned_drawdown_date")),
+        _to_float(record.get("planned_finance_amount")),
+        _normalize_text(record.get("amount_adjustment_note")),
+        _normalize_text(record.get("repayment_requirement")),
+        _normalize_text(record.get("repayment_requirement_status")),
+        manual_next_action or derived["next_action"],
+        _normalize_date(record.get("next_follow_up_date")),
+        _normalize_text(record.get("manager_note")),
+        json.dumps(sorted(management_values), ensure_ascii=False),
+        "{}",
+        "[]",
+    ])
+    placeholders = ", ".join("?" for _ in insert_fields)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            f"INSERT INTO order_finance_progress ({', '.join(insert_fields)}) VALUES ({placeholders})",
+            tuple(values),
+        )
+        record_id = db.last_insert_id(conn)
+    return get_order_finance_record(record_id)
+
+
 def update_management_fields(record_id: int, changes: Dict[str, Any], updated_by: str = "") -> Dict[str, Any]:
     allowed = {key: value for key, value in changes.items() if key in MANAGEMENT_FIELDS}
     if not allowed:
@@ -648,6 +820,20 @@ def order_finance_record(record_id: int, user: dict = Depends(order_finance_curr
         return get_order_finance_record(record_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="记录不存在") from exc
+
+
+@router.post("/order-finance/records/manual")
+def order_finance_create_manual(request: ManualOrderFinanceRequest, user: dict = Depends(order_finance_current_user)):
+    order_finance_require_edit(user)
+    changes = request.model_dump(exclude_unset=True) if hasattr(request, "model_dump") else request.dict(exclude_unset=True)
+    try:
+        duplicates = find_order_finance_duplicates(changes)
+        record = create_manual_order_finance_record(changes, created_by=user["name"])
+    except DuplicateOrderFinanceError as exc:
+        raise HTTPException(status_code=409, detail={"message": str(exc), "existing": exc.existing}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"record": record, "duplicate_candidates": duplicates["similar"]}
 
 
 @router.patch("/order-finance/records/{record_id}/management")
