@@ -2362,25 +2362,12 @@ dvImportFile.addEventListener("change", async function() {
   dvPreviewContent.innerHTML = '<div class="dv-chart-status">正在解析文件...</div>';
 
   try {
-    // Read file as base64 to match backend ImportRequest model
-    var base64 = await new Promise(function(resolve, reject) {
-      var reader = new FileReader();
-      reader.onload = function() {
-        var result = reader.result;
-        var comma = result.indexOf(",");
-        resolve(comma >= 0 ? result.substring(comma + 1) : result);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
     var headers = {};
     if (state.token) headers.Authorization = "Bearer " + state.token;
-    headers["Content-Type"] = "application/json";
-
-    var response = await fetch("/api/data-visualization/import/integrated/preview", {
+    var response = await fetch("/api/data-visualization/import/integrated/preview-file?file_name=" + encodeURIComponent(file.name), {
       method: "POST",
       headers: headers,
-      body: JSON.stringify({ file_data: base64, file_name: file.name }),
+      body: file,
     });
 
     if (!response.ok) {
@@ -2420,6 +2407,21 @@ dvImportFile.addEventListener("change", async function() {
   }
 });
 
+async function pollDVIntegratedImportJob(jobId) {
+  for (var attempt = 0; attempt < 240; attempt += 1) {
+    var job = await api("/api/data-visualization/import/integrated/jobs/" + encodeURIComponent(jobId));
+    dvPreviewContent.innerHTML = '<div class="dv-chart-status">导入进度: ' + (job.message || job.status || "处理中") + '</div>';
+    if (job.status === "succeeded") {
+      return job;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.message || "后台导入失败");
+    }
+    await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+  }
+  throw new Error("导入任务超时，请稍后刷新数据管理页面确认是否已写入。");
+}
+
 dvCommitImportBtn.addEventListener("click", async function() {
   if (!dvState.previewData) return;
 
@@ -2430,7 +2432,7 @@ dvCommitImportBtn.addEventListener("click", async function() {
   var timeoutId = setTimeout(function() { controller.abort(); }, 180000);
 
   try {
-    await api("/api/data-visualization/import/integrated/commit", {
+    var commitResult = await api("/api/data-visualization/import/integrated/commit", {
       method: "POST",
       signal: controller.signal,
       body: JSON.stringify({
@@ -2438,6 +2440,9 @@ dvCommitImportBtn.addEventListener("click", async function() {
         preview_id: dvState.previewData.preview_id,
       }),
     });
+    if (commitResult.job_id) {
+      await pollDVIntegratedImportJob(commitResult.job_id);
+    }
     dvState.previewData = null;
     dvState.uploadFile = null;
     dvImportFile.value = '';

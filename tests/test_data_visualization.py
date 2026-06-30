@@ -1264,9 +1264,28 @@ def test_integrated_preview_cache_roundtrip():
     cached = _load_integrated_preview_cache(preview_id)
 
     assert cached["file_name"] == "historical.xlsx"
-    assert cached["rows"] == result["rows"]
+    assert "rows" not in cached
+    assert cached["sample_rows"] == result["rows"]
     assert cached["errors"] == []
     assert cached["summary"]["total_points"] == 1
+
+
+def test_integrated_preview_cache_does_not_store_full_rows():
+    result = {
+        "rows": [
+            {"week_start": "2026-06-01", "metric_type": "inventory", "value": 1},
+            {"week_start": "2026-06-08", "metric_type": "inventory", "value": 2},
+        ],
+        "errors": [],
+        "summary": {"total_points": 2},
+    }
+
+    preview_id = _save_integrated_preview_cache(result, "large.xlsx")
+    cached = _load_integrated_preview_cache(preview_id)
+
+    assert "rows" not in cached
+    assert cached["sample_rows"] == result["rows"][:20]
+    assert cached["summary"]["total_points"] == 2
 
 
 def test_integrate_mysteel_files_local_templates():

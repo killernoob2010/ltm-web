@@ -186,6 +186,18 @@ test("integrated import commit shows progress and times out instead of hanging f
   assert.match(appJs, /导入超时/);
 });
 
+test("integrated import preview uploads raw files without base64 json payload", () => {
+  assert.match(appJs, /preview-file\?file_name=/);
+  assert.match(appJs, /body: file/);
+  assert.doesNotMatch(appJs, /import\/integrated\/preview"[\s\S]{0,800}file_data/);
+});
+
+test("integrated import commit polls background job status", () => {
+  assert.match(appJs, /job_id/);
+  assert.match(appJs, /import\/integrated\/jobs\//);
+  assert.match(appJs, /导入进度/);
+});
+
 test("data visualization chart treats missing points as gaps", () => {
   assert.match(appJs, /function isMissingChartPoint\(point\)/);
   assert.match(appJs, /function formatDVChartTooltip\(point, product\)/);

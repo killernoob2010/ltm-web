@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -58,6 +58,8 @@ _REQUIRED_INTEGRATED_FIELDS = [
     "source_country", "product", "category", "mainstream_status",
 ]
 _INTEGRATED_PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / "ltm_dv_import_previews"
+_INTEGRATED_PREVIEW_FILE_DIR = _INTEGRATED_PREVIEW_CACHE_DIR / "files"
+_INTEGRATED_IMPORT_JOBS: Dict[str, Dict[str, Any]] = {}
 
 class ImportRequest(BaseModel):
     file_data: Optional[str] = None
@@ -1406,7 +1408,17 @@ def _integrated_preview_cache_path(preview_id: str) -> Path:
     return _INTEGRATED_PREVIEW_CACHE_DIR / f"{safe_id}.json"
 
 
-def _save_integrated_preview_cache(result, file_name):
+def _integrated_preview_file_path(preview_id: str, file_name: str) -> Path:
+    safe_id = "".join(ch for ch in preview_id if ch.isalnum() or ch in ("-", "_"))
+    suffix = Path(file_name or "").suffix.lower() or ".xlsx"
+    if suffix not in {".xlsx", ".xls"}:
+        suffix = ".xlsx"
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="预检缓存编号无效")
+    return _INTEGRATED_PREVIEW_FILE_DIR / f"{safe_id}{suffix}"
+
+
+def _save_integrated_preview_cache(result, file_name, source_path: Optional[str] = None):
     _INTEGRATED_PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     preview_id = uuid.uuid4().hex
     path = _integrated_preview_cache_path(preview_id)
@@ -1414,9 +1426,10 @@ def _save_integrated_preview_cache(result, file_name):
         json.dump(
             {
                 "file_name": file_name,
-                "rows": result["rows"],
                 "errors": result["errors"],
                 "summary": result["summary"],
+                "sample_rows": result["rows"][:20],
+                "source_path": source_path,
             },
             fh,
             ensure_ascii=False,
@@ -1430,6 +1443,20 @@ def _load_integrated_preview_cache(preview_id: str):
         raise HTTPException(status_code=400, detail="预检结果已失效，请重新选择文件预检")
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+async def _save_integrated_preview_upload(request: Request, file_name: str) -> Path:
+    _INTEGRATED_PREVIEW_FILE_DIR.mkdir(parents=True, exist_ok=True)
+    preview_id = uuid.uuid4().hex
+    path = _integrated_preview_file_path(preview_id, file_name)
+    with path.open("wb") as fh:
+        async for chunk in request.stream():
+            if chunk:
+                fh.write(chunk)
+    if path.stat().st_size == 0:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="请先选择整合 Excel 文件")
+    return path
 
 
 
@@ -1500,6 +1527,65 @@ def _import_integrated_points(rows, file_name, user_name):
                 db._executemany(cur, insert_sql, values)
         conn.commit()
     return batch_id
+
+
+def _run_integrated_import_job(job_id: str, source_path: str, file_name: str, user_name: str) -> None:
+    job = _INTEGRATED_IMPORT_JOBS[job_id]
+    try:
+        job.update({"status": "running", "stage": "parsing", "message": "正在解析 Excel"})
+        result = _parse_integrated_excel(Path(source_path))
+        if result["errors"]:
+            job.update({
+                "status": "failed",
+                "stage": "validation",
+                "message": f"整合 Excel 存在 {len(result['errors'])} 条错误，无法导入",
+                "errors": result["errors"][:50],
+                "summary": result["summary"],
+                "finished_at": datetime.utcnow().isoformat(),
+            })
+            return
+
+        job.update({
+            "stage": "importing",
+            "message": f"正在写入 {len(result['rows'])} 条数据",
+            "summary": result["summary"],
+        })
+        batch_id = _import_integrated_points(result["rows"], file_name, user_name)
+        job.update({
+            "status": "succeeded",
+            "stage": "done",
+            "message": f"已导入 {len(result['rows'])} 条数据",
+            "batch_id": batch_id,
+            "summary": result["summary"],
+            "finished_at": datetime.utcnow().isoformat(),
+        })
+    except Exception as exc:
+        job.update({
+            "status": "failed",
+            "stage": "error",
+            "message": str(exc),
+            "finished_at": datetime.utcnow().isoformat(),
+        })
+
+
+def _create_integrated_import_job(
+    background_tasks: BackgroundTasks,
+    source_path: str,
+    file_name: str,
+    user_name: str,
+) -> Dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "message": "已加入后台导入队列",
+        "file_name": file_name,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _INTEGRATED_IMPORT_JOBS[job_id] = job
+    background_tasks.add_task(_run_integrated_import_job, job_id, source_path, file_name, user_name)
+    return job
 
 
 def _recalculate_integrated_apparent_demand(cur, batch_id: int) -> int:
@@ -2410,19 +2496,39 @@ async def import_integrated_preview(
 
     import base64
     file_bytes = base64.b64decode(payload.file_data)
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+    _INTEGRATED_PREVIEW_FILE_DIR.mkdir(parents=True, exist_ok=True)
+    preview_file_id = uuid.uuid4().hex
+    tmp_path = _integrated_preview_file_path(preview_file_id, payload.file_name)
+    with tmp_path.open("wb") as tmp:
         tmp.write(file_bytes)
-        tmp_path = tmp.name
 
-    try:
-        result = _parse_integrated_excel(tmp_path)
-    finally:
-        os.unlink(tmp_path)
-    preview_id = _save_integrated_preview_cache(result, payload.file_name)
+    result = _parse_integrated_excel(tmp_path)
+    preview_id = _save_integrated_preview_cache(result, payload.file_name, str(tmp_path))
 
     return {
         'preview_id': preview_id,
         'file_name': payload.file_name,
+        'summary': result['summary'],
+        'errors': result['errors'],
+        'sample_count': min(len(result['rows']), 20),
+        'sample_rows': result['rows'][:20],
+    }
+
+
+@router.post('/data-visualization/import/integrated/preview-file')
+async def import_integrated_preview_file(
+    request: Request,
+    file_name: str,
+    user=Depends(dv_current_user),
+):
+    dv_require_edit('data_visualization_data', user)
+    path = await _save_integrated_preview_upload(request, file_name)
+    result = _parse_integrated_excel(path)
+    preview_id = _save_integrated_preview_cache(result, file_name, str(path))
+
+    return {
+        'preview_id': preview_id,
+        'file_name': file_name,
         'summary': result['summary'],
         'errors': result['errors'],
         'sample_count': min(len(result['rows']), 20),
@@ -2435,18 +2541,31 @@ async def import_integrated_preview(
 @router.post('/data-visualization/import/integrated/commit')
 async def import_integrated_commit(
     payload: ImportRequest,
+    background_tasks: BackgroundTasks,
     user=Depends(dv_current_user),
 ):
     dv_require_edit('data_visualization_data', user)
 
     if payload.preview_id:
         cached = _load_integrated_preview_cache(payload.preview_id)
-        result = {
-            'rows': cached.get('rows', []),
-            'errors': cached.get('errors', []),
-            'summary': cached.get('summary', {}),
-        }
         file_name = cached.get('file_name') or payload.file_name
+        source_path = cached.get('source_path')
+        if source_path:
+            path = Path(source_path)
+            if not path.exists():
+                raise HTTPException(status_code=400, detail="预检文件已失效，请重新选择文件预检")
+            return _create_integrated_import_job(
+                background_tasks,
+                str(path),
+                file_name,
+                user['name'],
+            )
+        else:
+            result = {
+                'rows': cached.get('rows', []),
+                'errors': cached.get('errors', []),
+                'summary': cached.get('summary', {}),
+            }
     else:
         if not payload.file_data:
             raise HTTPException(status_code=400, detail="预检结果已失效，请重新选择文件预检")
@@ -2472,6 +2591,19 @@ async def import_integrated_commit(
         'summary': result['summary'],
         'message': f'已导入 {len(rows)} 条数据',
     }
+
+
+@router.get('/data-visualization/import/integrated/jobs/{job_id}')
+async def import_integrated_job_status(
+    job_id: str,
+    user=Depends(dv_current_user),
+):
+    dv_require_edit('data_visualization_data', user)
+    job = _INTEGRATED_IMPORT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="导入任务不存在或已失效")
+    return job
+
 
 # ── POST /api/data-visualization/import/preview ───────────────────────
 @router.post("/data-visualization/import/preview")
