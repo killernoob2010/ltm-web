@@ -648,6 +648,46 @@ def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_
         dict(base_point, product="南非", source_country="南非", category="全品种",
              mainstream_status="非主流", value=50.0),
     ], ["mysteel.xlsx"], "pytest")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        stale_batch_id = db._last_insert_id(
+            cur,
+            """INSERT INTO dv_integration_batches
+               (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+               VALUES (?, 'completed', 1, 0, '{}', ?)""",
+            ("old_mysteel.xlsx", "pytest"),
+        )
+        db._exec(
+            cur,
+            """INSERT INTO dv_integrated_points
+               (batch_id, week_start, week_end, business_year, business_week, week_label,
+                display_date, metric_type, source_country, product,
+                category, mainstream_status, value, unit, source_file,
+                source_sheet, source_section, is_calculable, validation_status, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                stale_batch_id,
+                base_point["week_start"],
+                base_point["week_end"],
+                base_point["business_year"],
+                base_point["business_week"],
+                base_point["week_label"],
+                base_point["display_date"],
+                base_point["metric_type"],
+                "澳洲",
+                "PB块",
+                "块矿",
+                "主流",
+                60.0,
+                base_point["unit"],
+                "old_mysteel.xlsx",
+                base_point["source_sheet"],
+                base_point["source_section"],
+                base_point["is_calculable"],
+                base_point["validation_status"],
+                base_point["note"],
+            ),
+        )
 
     filters = asyncio.run(get_filters(user={"role": "管理员"}))
     table = asyncio.run(get_table(
@@ -665,6 +705,7 @@ def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_
 
     assert filters["product_pools"]["mainstream"] == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
     assert table["products"] == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
+    assert "PB块" not in table["products"]
     assert "南非（全品种）" not in table["products"]
     assert list(chart["series"]) == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
 

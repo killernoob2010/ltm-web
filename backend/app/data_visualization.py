@@ -2605,15 +2605,16 @@ async def get_table(
                 if product_pool == "aggregate"
                 else _effective_mainstream_statuses(product_pool, mainstream_list)
             )
-            if effective_mainstream_list:
-                placeholders = ",".join("?" for _ in effective_mainstream_list)
-                sql += f" AND mainstream_status IN ({placeholders})"
-                params.extend(effective_mainstream_list)
             sql += " ORDER BY week_start, product, category"
             rows = [
                 _normalize_integrated_point(_row_to_dict(row))
                 for row in db._exec(cur, sql, tuple(params)).fetchall()
             ]
+            if effective_mainstream_list:
+                rows = [
+                    row for row in rows
+                    if (row["mainstream_status"] or "非主流") in effective_mainstream_list
+                ]
 
             if product_pool == "aggregate":
                 products_ordered = aggregate_labels
@@ -2831,15 +2832,16 @@ async def get_chart(
                 if product_pool == "aggregate"
                 else _effective_mainstream_statuses(product_pool, mainstream_list)
             )
-            if effective_mainstream_list:
-                placeholders_m = ",".join("?" for _ in effective_mainstream_list)
-                sql_i += f" AND mainstream_status IN ({placeholders_m})"
-                params_i.extend(effective_mainstream_list)
             sql_i += " ORDER BY product, category, week_start"
             rows_i = [
                 _normalize_integrated_point(_row_to_dict(row))
                 for row in db._exec(cur, sql_i, tuple(params_i)).fetchall()
             ]
+            if effective_mainstream_list:
+                rows_i = [
+                    row for row in rows_i
+                    if (row["mainstream_status"] or "非主流") in effective_mainstream_list
+                ]
             if product_pool == "aggregate":
                 aggregate: Dict[tuple, Dict[str, Any]] = {}
                 for row in rows_i:
