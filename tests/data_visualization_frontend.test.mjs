@@ -78,6 +78,14 @@ test("sidebar groups put data visualization before admin", () => {
   assert.ok(dbPy.indexOf('("数据可视化管理", "data_visualization_integration"') < dbPy.indexOf('("后台管理", "user_management"'));
 });
 
+test("shanghai junneng ledger close dialog supports partial close quantity", () => {
+  assert.match(indexHtml, /id="shJunnengCloseQuantity"/);
+  assert.match(indexHtml, /id="shJunnengTradeQuantity"[^>]+step="0\.0001"/);
+  assert.match(indexHtml, /id="shJunnengCloseQuantity"[^>]+step="0\.0001"/);
+  assert.match(appJs, /close_quantity: Number\(document\.querySelector\("#shJunnengCloseQuantity"\)\.value\)/);
+  assert.match(appJs, /item\?\.remaining_quantity \?\? item\?\.hold_quantity/);
+});
+
 test("sidebar groups are collapsible and visually emphasize group titles", () => {
   assert.match(appJs, /menu-group-toggle/);
   assert.match(appJs, /menu-group-items/);

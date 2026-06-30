@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-chart-display-consistency-20260629" />
+    <link rel="stylesheet" href="/static/styles.css?v=sh-junneng-partial-close-20260629" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -198,7 +198,9 @@
                       <th>方向</th>
                       <th>开仓均价</th>
                       <th>当日收盘价</th>
-                      <th>持仓数量</th>
+                      <th>原始数量</th>
+                      <th>已平数量</th>
+                      <th>剩余数量</th>
                       <th>手续费(开)</th>
                       <th>盈亏</th>
                       <th>开仓日期</th>
@@ -223,12 +225,13 @@
                       <th>方向</th>
                       <th>开仓均价</th>
                       <th>平仓均价</th>
-                      <th>数量</th>
+                      <th>本次平仓数量</th>
                       <th>手续费(开)</th>
                       <th>手续费(平)</th>
                       <th>盈亏</th>
                       <th>开仓日期</th>
                       <th>平仓日期</th>
+                      <th>持仓状态</th>
                       <th>资金利息</th>
                       <th>80%结算</th>
                       <th>20%结算</th>
@@ -621,7 +624,7 @@
           </label>
           <label>
             数量
-            <input id="shJunnengTradeQuantity" required type="number" value="1" />
+            <input id="shJunnengTradeQuantity" required type="number" min="0.0001" step="0.0001" value="1" />
           </label>
           <label>
             开仓手续费
@@ -660,6 +663,10 @@
         <h2>交易平仓</h2>
         <input id="shJunnengCloseTradeId" type="hidden" />
         <div class="form-grid">
+          <label>
+            本次平仓数量
+            <input id="shJunnengCloseQuantity" required type="number" min="0.0001" step="0.0001" />
+          </label>
           <label>
             平仓价
             <input id="shJunnengClosePrice" required type="number" step="0.01" />
@@ -909,6 +916,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=dv-chart-display-consistency-20260629"></script>
+    <script src="/static/app.js?v=sh-junneng-partial-close-20260629"></script>
   </body>
 </html>

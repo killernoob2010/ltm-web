@@ -14,7 +14,7 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "app.db"
 
 MODULES = [
-    ("台账管理", "sh_junneng", "上海均能台账"),
+    ("台账管理", "sh_junneng", "上海钧能台账"),
     ("台账管理", "steel_export", "钢材出口套保台账"),
     ("台账管理", "subsidiary_hedging", "子公司套保台账"),
     ("台账管理", "option_trading", "期权交易台账"),
@@ -397,17 +397,62 @@ def init_db() -> None:
                 contract_month TEXT NOT NULL,
                 direction TEXT NOT NULL,
                 open_price DOUBLE PRECISION NOT NULL,
-                open_volume DOUBLE PRECISION NOT NULL,
+                open_volume DOUBLE PRECISION,
+                current_price DOUBLE PRECISION,
+                trade_quantity DOUBLE PRECISION,
+                hold_quantity DOUBLE PRECISION,
+                open_fee DOUBLE PRECISION DEFAULT 0,
                 open_date TEXT,
                 close_price DOUBLE PRECISION,
                 close_volume DOUBLE PRECISION,
+                close_fee DOUBLE PRECISION DEFAULT 0,
                 close_date TEXT,
+                profit DOUBLE PRECISION,
                 status TEXT NOT NULL DEFAULT '未平仓',
                 is_closed INTEGER NOT NULL DEFAULT 0,
                 created_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_by TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sh_junneng_positions (
+                id SERIAL PRIMARY KEY,
+                source_trade_id INTEGER UNIQUE,
+                contract_month TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                open_price DOUBLE PRECISION NOT NULL,
+                open_quantity DOUBLE PRECISION NOT NULL,
+                remaining_quantity DOUBLE PRECISION NOT NULL,
+                open_amount DOUBLE PRECISION,
+                open_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+                open_date TEXT NOT NULL,
+                current_price DOUBLE PRECISION,
+                business_code TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sh_junneng_close_trades (
+                id SERIAL PRIMARY KEY,
+                position_id INTEGER NOT NULL,
+                close_date TEXT NOT NULL,
+                close_quantity DOUBLE PRECISION NOT NULL,
+                close_price DOUBLE PRECISION NOT NULL,
+                close_amount DOUBLE PRECISION,
+                close_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+                open_fee_allocated DOUBLE PRECISION NOT NULL DEFAULT 0,
+                close_sequence INTEGER NOT NULL DEFAULT 1,
+                business_code TEXT,
+                realized_profit DOUBLE PRECISION,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (position_id) REFERENCES sh_junneng_positions(id)
             );
             """
             )
@@ -643,17 +688,62 @@ def init_db() -> None:
                 contract_month TEXT NOT NULL,
                 direction TEXT NOT NULL,
                 open_price REAL NOT NULL,
-                open_volume REAL NOT NULL,
+                open_volume REAL,
+                current_price REAL,
+                trade_quantity REAL,
+                hold_quantity REAL,
+                open_fee REAL DEFAULT 0,
                 open_date TEXT,
                 close_price REAL,
                 close_volume REAL,
+                close_fee REAL DEFAULT 0,
                 close_date TEXT,
+                profit REAL,
                 status TEXT NOT NULL DEFAULT '未平仓',
                 is_closed INTEGER NOT NULL DEFAULT 0,
                 created_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_by TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sh_junneng_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_trade_id INTEGER UNIQUE,
+                contract_month TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                open_price REAL NOT NULL,
+                open_quantity REAL NOT NULL,
+                remaining_quantity REAL NOT NULL,
+                open_amount REAL,
+                open_fee REAL NOT NULL DEFAULT 0,
+                open_date TEXT NOT NULL,
+                current_price REAL,
+                business_code TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sh_junneng_close_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id INTEGER NOT NULL,
+                close_date TEXT NOT NULL,
+                close_quantity REAL NOT NULL,
+                close_price REAL NOT NULL,
+                close_amount REAL,
+                close_fee REAL NOT NULL DEFAULT 0,
+                open_fee_allocated REAL NOT NULL DEFAULT 0,
+                close_sequence INTEGER NOT NULL DEFAULT 1,
+                business_code TEXT,
+                realized_profit REAL,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (position_id) REFERENCES sh_junneng_positions(id)
             );
             """
             )
@@ -765,10 +855,61 @@ def migrate_alert_schema(conn) -> None:
 
 
 def migrate_sh_junneng_schema(conn) -> None:
+    legacy_columns = {
+        "open_volume": "DOUBLE PRECISION",
+        "current_price": "DOUBLE PRECISION",
+        "trade_quantity": "DOUBLE PRECISION",
+        "hold_quantity": "DOUBLE PRECISION",
+        "open_fee": "DOUBLE PRECISION DEFAULT 0",
+        "close_volume": "DOUBLE PRECISION",
+        "close_fee": "DOUBLE PRECISION DEFAULT 0",
+        "profit": "DOUBLE PRECISION",
+    }
     if _is_pg():
         cur = conn.cursor()
+        for name, col_type in legacy_columns.items():
+            cur.execute(f"ALTER TABLE sh_junneng_trades ADD COLUMN IF NOT EXISTS {name} {col_type}")
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS sh_junneng_positions (
+                id SERIAL PRIMARY KEY,
+                source_trade_id INTEGER UNIQUE,
+                contract_month TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                open_price DOUBLE PRECISION NOT NULL,
+                open_quantity DOUBLE PRECISION NOT NULL,
+                remaining_quantity DOUBLE PRECISION NOT NULL,
+                open_amount DOUBLE PRECISION,
+                open_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+                open_date TEXT NOT NULL,
+                current_price DOUBLE PRECISION,
+                business_code TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sh_junneng_close_trades (
+                id SERIAL PRIMARY KEY,
+                position_id INTEGER NOT NULL,
+                close_date TEXT NOT NULL,
+                close_quantity DOUBLE PRECISION NOT NULL,
+                close_price DOUBLE PRECISION NOT NULL,
+                close_amount DOUBLE PRECISION,
+                close_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+                open_fee_allocated DOUBLE PRECISION NOT NULL DEFAULT 0,
+                close_sequence INTEGER NOT NULL DEFAULT 1,
+                business_code TEXT,
+                realized_profit DOUBLE PRECISION,
+                created_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (position_id) REFERENCES sh_junneng_positions(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sh_junneng_contract
             ON sh_junneng_trades(contract_month);
 
@@ -780,13 +921,82 @@ def migrate_sh_junneng_schema(conn) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_sh_junneng_status
             ON sh_junneng_trades(status);
+
+            CREATE INDEX IF NOT EXISTS idx_sh_junneng_positions_contract
+            ON sh_junneng_positions(contract_month);
+
+            CREATE INDEX IF NOT EXISTS idx_sh_junneng_positions_open_date
+            ON sh_junneng_positions(open_date);
+
+            CREATE INDEX IF NOT EXISTS idx_sh_junneng_close_position
+            ON sh_junneng_close_trades(position_id);
+
+            CREATE INDEX IF NOT EXISTS idx_sh_junneng_close_date
+            ON sh_junneng_close_trades(close_date);
             """
         )
+        backfill_sh_junneng_positions(conn)
         conn.commit()
         return
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(sh_junneng_trades)").fetchall()
+    }
+    sqlite_types = {
+        "open_volume": "REAL",
+        "current_price": "REAL",
+        "trade_quantity": "REAL",
+        "hold_quantity": "REAL",
+        "open_fee": "REAL DEFAULT 0",
+        "close_volume": "REAL",
+        "close_fee": "REAL DEFAULT 0",
+        "profit": "REAL",
+    }
+    for name, col_type in sqlite_types.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE sh_junneng_trades ADD COLUMN {name} {col_type}")
     # SQLite: use executescript for multi-statement
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS sh_junneng_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_trade_id INTEGER UNIQUE,
+            contract_month TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            open_price REAL NOT NULL,
+            open_quantity REAL NOT NULL,
+            remaining_quantity REAL NOT NULL,
+            open_amount REAL,
+            open_fee REAL NOT NULL DEFAULT 0,
+            open_date TEXT NOT NULL,
+            current_price REAL,
+            business_code TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            created_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS sh_junneng_close_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            position_id INTEGER NOT NULL,
+            close_date TEXT NOT NULL,
+            close_quantity REAL NOT NULL,
+            close_price REAL NOT NULL,
+            close_amount REAL,
+            close_fee REAL NOT NULL DEFAULT 0,
+            open_fee_allocated REAL NOT NULL DEFAULT 0,
+            close_sequence INTEGER NOT NULL DEFAULT 1,
+            business_code TEXT,
+            realized_profit REAL,
+            created_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (position_id) REFERENCES sh_junneng_positions(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_sh_junneng_contract
         ON sh_junneng_trades(contract_month);
 
@@ -798,8 +1008,90 @@ def migrate_sh_junneng_schema(conn) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_sh_junneng_status
         ON sh_junneng_trades(status);
+
+        CREATE INDEX IF NOT EXISTS idx_sh_junneng_positions_contract
+        ON sh_junneng_positions(contract_month);
+
+        CREATE INDEX IF NOT EXISTS idx_sh_junneng_positions_open_date
+        ON sh_junneng_positions(open_date);
+
+        CREATE INDEX IF NOT EXISTS idx_sh_junneng_close_position
+        ON sh_junneng_close_trades(position_id);
+
+        CREATE INDEX IF NOT EXISTS idx_sh_junneng_close_date
+        ON sh_junneng_close_trades(close_date);
         """
     )
+    backfill_sh_junneng_positions(conn)
+
+
+def backfill_sh_junneng_positions(conn) -> None:
+    cur = conn.cursor()
+    existing = _exec(cur, "SELECT COUNT(*) AS count FROM sh_junneng_positions").fetchone()
+    if existing and existing["count"]:
+        return
+    rows = _exec(cur, "SELECT * FROM sh_junneng_trades ORDER BY id").fetchall()
+    for row in rows:
+        item = dict(row)
+        quantity = item.get("trade_quantity") or item.get("open_volume") or item.get("close_volume") or 0
+        if not quantity:
+            continue
+        is_closed = item.get("is_closed") in {1, "1", True, "已平仓"} or item.get("status") == "已结算"
+        close_quantity = item.get("close_volume") or quantity
+        remaining = 0 if is_closed else (item.get("hold_quantity") if item.get("hold_quantity") is not None else quantity)
+        business_code = f"SHJN-{item.get('id')}"
+        _exec(
+            cur,
+            """
+            INSERT INTO sh_junneng_positions
+                (source_trade_id, contract_month, direction, open_price, open_quantity,
+                 remaining_quantity, open_amount, open_fee, open_date, current_price,
+                 business_code, status, created_by, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.get("id"),
+                item.get("contract_month"),
+                item.get("direction"),
+                item.get("open_price"),
+                quantity,
+                remaining,
+                (item.get("open_price") or 0) * quantity,
+                item.get("open_fee") or 0,
+                item.get("open_date") or item.get("created_at", "")[:10],
+                item.get("current_price"),
+                business_code,
+                "closed" if is_closed else "open",
+                item.get("created_by"),
+                item.get("updated_by"),
+            ),
+        )
+        position_id = last_insert_id(conn)
+        if is_closed and item.get("close_date") and item.get("close_price"):
+            _exec(
+                cur,
+                """
+                INSERT INTO sh_junneng_close_trades
+                    (position_id, close_date, close_quantity, close_price, close_amount,
+                     close_fee, open_fee_allocated, close_sequence, business_code,
+                     realized_profit, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    position_id,
+                    item.get("close_date"),
+                    close_quantity,
+                    item.get("close_price"),
+                    (item.get("close_price") or 0) * close_quantity,
+                    item.get("close_fee") or 0,
+                    item.get("open_fee") or 0,
+                    1,
+                    business_code,
+                    item.get("profit"),
+                    item.get("created_by"),
+                    item.get("updated_by"),
+                ),
+            )
 
 
 def migrate_dv_integration_schema(conn) -> None:

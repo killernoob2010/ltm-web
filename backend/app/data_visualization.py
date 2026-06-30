@@ -206,12 +206,6 @@ def _clean_number(value: Any) -> Optional[float]:
         return None
 
 
-MAINSTREAM_PRODUCTS = {
-    "PB粉", "纽曼粉", "麦克粉", "金布巴粉",
-    "巴混", "卡粉", "超特粉", "混合粉",
-    "PB块", "纽曼块", "澳大利亚球团",
-}
-
 AUSTRALIA_ARRIVAL_HEADER_ROW = 20
 AUSTRALIA_ARRIVAL_START_ROW = 21
 AUSTRALIA_ARRIVAL_END_ROW = 27
@@ -256,6 +250,14 @@ AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
     "未知": None,
     "库宾粉": None,
 }
+
+
+BRAZIL_MAINSTREAM_PRODUCTS = {"卡粉"}
+MAINSTREAM_PRODUCTS = {
+    mapped[0]
+    for mapped in AUSTRALIA_PRODUCT_MAP.values()
+    if mapped is not None
+} | BRAZIL_MAINSTREAM_PRODUCTS
 
 
 INVENTORY_SHEETS = {"粗粉", "块矿", "球团", "精粉"}
@@ -505,6 +507,66 @@ def _migrate_legacy_integrated_product_key(cur, point: Dict[str, Any]) -> None:
            SET source_country = ?, product = ?, category = ?, mainstream_status = ?
            WHERE id = ?""",
         (point["source_country"], point["product"], point["category"], point["mainstream_status"], keep_id),
+    )
+    if delete_ids:
+        placeholders = ",".join("?" for _ in delete_ids)
+        db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(delete_ids))
+
+
+def _migrate_integrated_mainstream_status(cur, point: Dict[str, Any]) -> None:
+    key_params = (
+        point["metric_type"],
+        point["source_country"],
+        point["product"],
+        point["category"],
+        point["business_year"],
+        point["business_week"],
+    )
+    canonical = db._exec(
+        cur,
+        """SELECT id
+           FROM dv_integrated_points
+           WHERE metric_type = ?
+             AND source_country = ?
+             AND product = ?
+             AND category = ?
+             AND business_year = ?
+             AND business_week = ?
+             AND mainstream_status = ?
+           ORDER BY id DESC
+           LIMIT 1""",
+        (*key_params, point["mainstream_status"]),
+    ).fetchone()
+    old_status_rows = db._exec(
+        cur,
+        """SELECT id
+           FROM dv_integrated_points
+           WHERE metric_type = ?
+             AND source_country = ?
+             AND product = ?
+             AND category = ?
+             AND business_year = ?
+             AND business_week = ?
+             AND mainstream_status != ?
+           ORDER BY id DESC""",
+        (*key_params, point["mainstream_status"]),
+    ).fetchall()
+    if not old_status_rows:
+        return
+
+    old_status_ids = [row["id"] for row in old_status_rows]
+    if canonical:
+        placeholders = ",".join("?" for _ in old_status_ids)
+        db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(old_status_ids))
+        return
+
+    keep_id, *delete_ids = old_status_ids
+    db._exec(
+        cur,
+        """UPDATE dv_integrated_points
+           SET mainstream_status = ?
+           WHERE id = ?""",
+        (point["mainstream_status"], keep_id),
     )
     if delete_ids:
         placeholders = ",".join("?" for _ in delete_ids)
@@ -998,7 +1060,7 @@ def _integrated_product_labels(rows: List[Dict[str, Any]]) -> tuple:
                 label = f"其他（{category}）"
             else:
                 label = f"{source_country}（其他{category}）"
-        elif source_country == product and category in INVENTORY_CATEGORIES:
+        elif source_country == product and category in INVENTORY_CATEGORIES | {"全品种"}:
             label = f"{product}（{category}）"
         elif len(product_category_sources[(product, category)]) > 1:
             label = f"{source_country} / {product}（{category}）"
@@ -1009,6 +1071,39 @@ def _integrated_product_labels(rows: List[Dict[str, Any]]) -> tuple:
         label_map[key] = label
         products_ordered.append(label)
     return label_map, products_ordered
+
+
+def _integrated_product_pool_labels(rows: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    label_map, products_ordered = _integrated_product_labels(rows)
+    status_by_label: Dict[str, set] = {}
+    for row in rows:
+        label = label_map[(row["source_country"], row["product"], row["category"])]
+        status_by_label.setdefault(label, set()).add(row["mainstream_status"] or "非主流")
+    return {
+        "mainstream": [label for label in products_ordered if "主流" in status_by_label.get(label, set())],
+        "non_mainstream": [label for label in products_ordered if "非主流" in status_by_label.get(label, set())],
+        "custom": products_ordered,
+    }
+
+
+def _filter_rows_by_product_labels(rows: List[Dict[str, Any]], product_list: List[str]) -> tuple:
+    label_map, products_ordered = _integrated_product_labels(rows)
+    if not product_list:
+        return rows, label_map, products_ordered
+
+    selected_rows = []
+    selected_labels = set()
+    for row in rows:
+        key = (row["source_country"], row["product"], row["category"])
+        label = label_map[key]
+        if label in product_list or row["product"] in product_list:
+            selected_rows.append(row)
+            selected_labels.add(label)
+    return (
+        selected_rows,
+        label_map,
+        [label for label in products_ordered if label in selected_labels],
+    )
 
 
 def _parse_integrated_excel(file_path):
@@ -1342,6 +1437,7 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
         }
         for point in points:
             _migrate_legacy_integrated_product_key(cur, point)
+            _migrate_integrated_mainstream_status(cur, point)
             key_params = (
                 point["metric_type"],
                 point["source_country"],
@@ -2086,20 +2182,23 @@ async def get_filters(user=Depends(dv_current_user)):
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
-            products = [r["val"] for r in db._exec(cur,
-                "SELECT DISTINCT product AS val FROM dv_integrated_points ORDER BY val").fetchall()]
+            filter_rows = [
+                _normalize_integrated_point(_row_to_dict(row))
+                for row in db._exec(
+                    cur,
+                    """SELECT DISTINCT source_country, product, category, mainstream_status
+                       FROM dv_integrated_points
+                       ORDER BY product, category, source_country""",
+                ).fetchall()
+            ]
+            product_pools = _integrated_product_pool_labels(filter_rows)
+            products = product_pools["custom"]
             categories = [r["val"] for r in db._exec(cur,
                 "SELECT DISTINCT category AS val FROM dv_integrated_points ORDER BY val").fetchall()]
             countries = [r["val"] for r in db._exec(cur,
                 "SELECT DISTINCT source_country AS val FROM dv_integrated_points ORDER BY val").fetchall()]
             mainstreams = [r["val"] for r in db._exec(cur,
                 "SELECT DISTINCT mainstream_status AS val FROM dv_integrated_points ORDER BY val").fetchall()]
-            mainstream_products = [r["val"] for r in db._exec(cur,
-                """SELECT DISTINCT product AS val FROM dv_integrated_points
-                   WHERE mainstream_status = '主流' ORDER BY val""").fetchall()]
-            non_mainstream_products = [r["val"] for r in db._exec(cur,
-                """SELECT DISTINCT product AS val FROM dv_integrated_points
-                   WHERE mainstream_status = '非主流' ORDER BY val""").fetchall()]
             years = [r["year"] for r in db._exec(cur,
                 "SELECT DISTINCT business_year AS year FROM dv_integrated_points ORDER BY year").fetchall() if r["year"]]
             return {
@@ -2109,10 +2208,10 @@ async def get_filters(user=Depends(dv_current_user)):
                 "mainstream_statuses": mainstreams,
                 "years": years,
                 "product_pools": {
-                    "mainstream": mainstream_products,
-                    "non_mainstream": non_mainstream_products,
+                    "mainstream": product_pools["mainstream"],
+                    "non_mainstream": product_pools["non_mainstream"],
                     "aggregate": ["主流矿合计", "非主流矿合计"],
-                    "custom": products,
+                    "custom": product_pools["custom"],
                 },
             }
         # fallback to old dv_data_points
@@ -2464,10 +2563,6 @@ async def get_table(
                 placeholders = ",".join("?" for _ in year_list)
                 sql += f" AND business_year IN ({placeholders})"
                 params.extend(year_list)
-            if product_list and product_pool != "aggregate":
-                placeholders = ",".join("?" for _ in product_list)
-                sql += f" AND product IN ({placeholders})"
-                params.extend(product_list)
             if category_list:
                 placeholders = ",".join("?" for _ in category_list)
                 sql += f" AND category IN ({placeholders})"
@@ -2520,6 +2615,8 @@ async def get_table(
                 return {"metric": metric, "products": products_ordered, "data": list(week_map.values())}
 
             label_map, products_ordered = _integrated_product_labels(rows)
+            if product_list:
+                rows, label_map, products_ordered = _filter_rows_by_product_labels(rows, product_list)
 
             week_map: Dict[str, Dict] = {}
             for row in rows:
@@ -2682,10 +2779,6 @@ async def get_chart(
                               source_country, product, category, mainstream_status, value,
                               is_calculable, validation_status
                        FROM dv_integrated_points WHERE metric_type = ?"""
-            if product_list and product_pool != "aggregate":
-                placeholders_p = ",".join("?" for _ in product_list)
-                sql_i += f" AND product IN ({placeholders_p})"
-                params_i.extend(product_list)
             if year_list:
                 placeholders_y = ",".join("?" for _ in year_list)
                 sql_i += f" AND business_year IN ({placeholders_y})"
@@ -2741,6 +2834,8 @@ async def get_chart(
                 return {"metric": metric, "series": result_agg}
 
             label_map_i, _products_ordered_i = _integrated_product_labels(rows_i)
+            if product_list:
+                rows_i, label_map_i, _products_ordered_i = _filter_rows_by_product_labels(rows_i, product_list)
             result_i: Dict[str, Dict[str, List[Dict]]] = {}
             for row in rows_i:
                 label = label_map_i[(row["source_country"], row["product"], row["category"])]

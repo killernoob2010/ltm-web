@@ -889,10 +889,10 @@ function shJunnengTradeById(id) {
 function shJunnengSummaryRow(total, type = "today") {
   let cells = ["", "小计", "", "", money(total.trade_quantity), money(total.open_fee), money(total.close_fee), money(total.profit), "", "", ""];
   if (type === "current") {
-    cells = ["", "小计", "", "", money(total.hold_quantity), money(total.open_fee), money(total.profit), "", ""];
+    cells = ["", "小计", "", "", "", "", money(total.hold_quantity), money(total.open_fee), money(total.profit), "", ""];
   }
   if (type === "settled") {
-    cells = ["", "小计", "", "", money(total.trade_quantity), money(total.open_fee), money(total.close_fee), money(total.profit), "", "", money(total.interest), money(total.profit_80), money(total.profit_20)];
+    cells = ["", "小计", "", "", money(total.trade_quantity), money(total.open_fee), money(total.close_fee), money(total.profit), "", "", "", money(total.interest), money(total.profit_80), money(total.profit_20)];
   }
   return `<tr class="summary-row">${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`;
 }
@@ -939,11 +939,13 @@ function renderShJunneng() {
       <td>${item.direction_label}</td>
       <td>${money(item.open_price)}</td>
       <td>${money(item.current_price)}</td>
-      <td>${item.hold_quantity}</td>
+      <td>${item.open_quantity ?? item.trade_quantity}</td>
+      <td>${item.closed_quantity ?? 0}</td>
+      <td>${item.remaining_quantity ?? item.hold_quantity}</td>
       <td>${money(item.open_fee)}</td>
       <td class="${pnlClass(item.profit)}">${money(item.profit)}</td>
       <td>${item.open_date}</td>
-      <td>${item.is_closed_label}</td>
+      <td>${item.position_status || item.is_closed_label}</td>
     </tr>
   `).join("");
   if (currentRows.length) shJunnengCurrentTable.innerHTML += shJunnengSummaryRow(totals.current || {}, "current");
@@ -954,12 +956,13 @@ function renderShJunneng() {
       <td>${item.direction_label}</td>
       <td>${money(item.open_price)}</td>
       <td>${money(item.close_price)}</td>
-      <td>${item.trade_quantity}</td>
+      <td>${item.close_quantity ?? item.trade_quantity}</td>
       <td>${money(item.open_fee)}</td>
       <td>${money(item.close_fee)}</td>
       <td class="${pnlClass(item.profit)}">${money(item.profit)}</td>
       <td>${item.open_date}</td>
       <td>${item.close_date}</td>
+      <td>${item.position_status || ""}</td>
       <td>${money(item.interest)}</td>
       <td>${money(item.profit_80)}</td>
       <td>${money(item.profit_20)}</td>
@@ -997,6 +1000,7 @@ function toggleShJunnengCloseFields() {
 
 function openShJunnengCloseDialog(item) {
   document.querySelector("#shJunnengCloseTradeId").value = item.id;
+  document.querySelector("#shJunnengCloseQuantity").value = item?.remaining_quantity ?? item?.hold_quantity ?? item?.trade_quantity ?? 1;
   document.querySelector("#shJunnengClosePrice").value = item.current_price ?? item.open_price ?? "";
   document.querySelector("#shJunnengCloseFee").value = item.close_fee ?? 0;
   document.querySelector("#shJunnengCloseDate").value = today();
@@ -1487,6 +1491,7 @@ shJunnengCloseForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const id = document.querySelector("#shJunnengCloseTradeId").value;
   const payload = {
+    close_quantity: Number(document.querySelector("#shJunnengCloseQuantity").value),
     close_price: Number(document.querySelector("#shJunnengClosePrice").value),
     close_fee: Number(document.querySelector("#shJunnengCloseFee").value || 0),
     close_date: document.querySelector("#shJunnengCloseDate").value,
