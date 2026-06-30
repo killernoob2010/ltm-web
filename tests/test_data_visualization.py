@@ -768,6 +768,137 @@ def test_get_table_and_chart_disambiguate_same_product_category_across_sources(t
     assert sorted(chart["series"]) == ["其他（粉矿）", "巴西（其他粉矿）", "澳洲（其他粉矿）"]
 
 
+def test_country_level_shipments_display_as_all_products(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "shipment",
+        "source_country": "俄罗斯",
+        "product": "俄罗斯",
+        "category": "全品种",
+        "mainstream_status": "非主流",
+        "value": 88.0,
+        "unit": "万吨",
+        "source_file": "global.xlsx",
+        "source_sheet": "全球铁矿石发运量",
+        "source_section": "铁矿石全球发运量",
+        "is_calculable": 0,
+        "validation_status": "record_only",
+        "note": "",
+    }
+    _save_integrated_points([point], ["global.xlsx"], "pytest")
+
+    table = asyncio.run(get_table(metric="shipment", years="2026", user={"role": "管理员"}))
+    chart = asyncio.run(get_chart(metric="shipment", years="2026", user={"role": "管理员"}))
+
+    assert table["products"] == ["俄罗斯（全品种）"]
+    assert table["data"][0]["俄罗斯（全品种）"]["value"] == 88.0
+    assert sorted(chart["series"]) == ["俄罗斯（全品种）"]
+
+
+def test_filters_use_display_labels_for_country_level_non_mainstream_products(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "俄罗斯",
+        "product": "俄罗斯",
+        "category": "球团",
+        "mainstream_status": "非主流",
+        "value": 11.0,
+        "unit": "万吨",
+        "source_file": "inventory.xlsx",
+        "source_sheet": "球团",
+        "source_section": "总计行",
+        "is_calculable": 0,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([
+        base_point,
+        dict(base_point, category="精粉", source_sheet="精粉", value=12.0),
+        dict(base_point, metric_type="shipment", category="全品种",
+             source_file="global.xlsx", source_sheet="全球铁矿石发运量", value=13.0),
+    ], ["inventory.xlsx", "global.xlsx"], "pytest")
+
+    filters = asyncio.run(get_filters(user={"role": "管理员"}))
+
+    assert filters["source_countries"] == ["俄罗斯"]
+    assert set(filters["categories"]) == {"全品种", "球团", "精粉"}
+    assert "俄罗斯" not in filters["product_pools"]["non_mainstream"]
+    assert set(filters["product_pools"]["non_mainstream"]) == {
+        "俄罗斯（全品种）",
+        "俄罗斯（球团）",
+        "俄罗斯（精粉）",
+    }
+
+
+def test_display_label_product_filter_maps_back_to_integrated_identity(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "俄罗斯",
+        "product": "俄罗斯",
+        "category": "球团",
+        "mainstream_status": "非主流",
+        "value": 11.0,
+        "unit": "万吨",
+        "source_file": "inventory.xlsx",
+        "source_sheet": "球团",
+        "source_section": "总计行",
+        "is_calculable": 0,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([
+        base_point,
+        dict(base_point, category="精粉", source_sheet="精粉", value=12.0),
+    ], ["inventory.xlsx"], "pytest")
+
+    table = asyncio.run(get_table(
+        metric="inventory",
+        years="2026",
+        products="俄罗斯（精粉）",
+        user={"role": "管理员"},
+    ))
+    chart = asyncio.run(get_chart(
+        metric="inventory",
+        years="2026",
+        products="俄罗斯（精粉）",
+        user={"role": "管理员"},
+    ))
+
+    assert table["products"] == ["俄罗斯（精粉）"]
+    assert table["data"][0]["俄罗斯（精粉）"]["value"] == 12.0
+    assert "俄罗斯（球团）" not in table["data"][0]
+    assert sorted(chart["series"]) == ["俄罗斯（精粉）"]
+
+
 def test_integrated_export_downloads_current_full_history(tmp_path, monkeypatch):
     from app import db
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
