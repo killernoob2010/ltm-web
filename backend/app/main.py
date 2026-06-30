@@ -29,7 +29,7 @@ from .cache_service import (
 )
 from .info_summary_backfill import BackfillRequest, run_all_info_summary_backfills, get_last_backfill_status
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
-from . import data_visualization
+from . import data_visualization, order_finance
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -45,6 +45,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
+app.include_router(order_finance.router, prefix="/api")
 
 
 class LoginRequest(BaseModel):

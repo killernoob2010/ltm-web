@@ -24,6 +24,7 @@ MODULES = [
     ("数据可视化管理", "data_visualization_integration", "数据整合"),
     ("数据可视化管理", "data_visualization_data", "数据管理"),
     ("数据可视化管理", "data_visualization_chart", "数据展示"),
+    ("订单融资管理", "order_finance_progress", "进度监控"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
 ]
@@ -353,6 +354,83 @@ def init_db() -> None:
                 FOREIGN KEY (batch_id) REFERENCES dv_integration_batches(id)
             );
 
+            CREATE TABLE IF NOT EXISTS order_finance_progress (
+                id SERIAL PRIMARY KEY,
+                business_key TEXT NOT NULL UNIQUE,
+                subsidiary TEXT NOT NULL,
+                source_file TEXT,
+                source_sheet TEXT,
+                source_row_start INTEGER,
+                source_row_end INTEGER,
+                source_snapshot_date TEXT,
+                product_name TEXT,
+                purchase_contract_no TEXT,
+                system_contract_no TEXT,
+                buyer TEXT,
+                seller TEXT,
+                overseas_entity TEXT,
+                terminal_customer TEXT,
+                contract_date TEXT,
+                trade_term TEXT,
+                origin_port TEXT,
+                destination_port TEXT,
+                contract_quantity_mt DOUBLE PRECISION,
+                contract_currency TEXT,
+                contract_amount DOUBLE PRECISION,
+                finance_bank TEXT,
+                finance_amount_expected DOUBLE PRECISION,
+                finance_amount_actual DOUBLE PRECISION,
+                repaid_amount DOUBLE PRECISION,
+                remaining_credit_amount DOUBLE PRECISION,
+                finance_drawdown_date TEXT,
+                finance_due_date TEXT,
+                finance_days INTEGER,
+                finance_status TEXT,
+                latest_shipment_date TEXT,
+                lc_latest_shipment_date TEXT,
+                vessel_voyage TEXT,
+                bill_of_lading_date TEXT,
+                bill_of_lading_no TEXT,
+                document_submission_date TEXT,
+                collection_date TEXT,
+                actual_shipped_quantity_mt DOUBLE PRECISION,
+                actual_goods_amount DOUBLE PRECISION,
+                tail_amount DOUBLE PRECISION,
+                tail_payment_date TEXT,
+                executor TEXT,
+                business_status TEXT,
+                risk_level TEXT,
+                planned_drawdown_date TEXT,
+                planned_finance_amount DOUBLE PRECISION,
+                amount_adjustment_note TEXT,
+                repayment_requirement TEXT,
+                repayment_requirement_status TEXT,
+                next_action TEXT,
+                next_follow_up_date TEXT,
+                remark TEXT,
+                manager_note TEXT,
+                manual_override_fields TEXT,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                sales_contracts_json TEXT,
+                settlement_json TEXT,
+                management_plan_json TEXT,
+                manual_change_log_json TEXT,
+                corrections_json TEXT,
+                import_warnings_json TEXT,
+                source_json TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_finance_subsidiary
+            ON order_finance_progress(subsidiary);
+
+            CREATE INDEX IF NOT EXISTS idx_order_finance_due
+            ON order_finance_progress(finance_due_date);
+
+            CREATE INDEX IF NOT EXISTS idx_order_finance_status
+            ON order_finance_progress(business_status);
+
 
             CREATE TABLE IF NOT EXISTS daily_prices (
                 id SERIAL PRIMARY KEY,
@@ -643,6 +721,83 @@ def init_db() -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (batch_id) REFERENCES dv_integration_batches(id)
             );
+
+            CREATE TABLE IF NOT EXISTS order_finance_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_key TEXT NOT NULL UNIQUE,
+                subsidiary TEXT NOT NULL,
+                source_file TEXT,
+                source_sheet TEXT,
+                source_row_start INTEGER,
+                source_row_end INTEGER,
+                source_snapshot_date TEXT,
+                product_name TEXT,
+                purchase_contract_no TEXT,
+                system_contract_no TEXT,
+                buyer TEXT,
+                seller TEXT,
+                overseas_entity TEXT,
+                terminal_customer TEXT,
+                contract_date TEXT,
+                trade_term TEXT,
+                origin_port TEXT,
+                destination_port TEXT,
+                contract_quantity_mt REAL,
+                contract_currency TEXT,
+                contract_amount REAL,
+                finance_bank TEXT,
+                finance_amount_expected REAL,
+                finance_amount_actual REAL,
+                repaid_amount REAL,
+                remaining_credit_amount REAL,
+                finance_drawdown_date TEXT,
+                finance_due_date TEXT,
+                finance_days INTEGER,
+                finance_status TEXT,
+                latest_shipment_date TEXT,
+                lc_latest_shipment_date TEXT,
+                vessel_voyage TEXT,
+                bill_of_lading_date TEXT,
+                bill_of_lading_no TEXT,
+                document_submission_date TEXT,
+                collection_date TEXT,
+                actual_shipped_quantity_mt REAL,
+                actual_goods_amount REAL,
+                tail_amount REAL,
+                tail_payment_date TEXT,
+                executor TEXT,
+                business_status TEXT,
+                risk_level TEXT,
+                planned_drawdown_date TEXT,
+                planned_finance_amount REAL,
+                amount_adjustment_note TEXT,
+                repayment_requirement TEXT,
+                repayment_requirement_status TEXT,
+                next_action TEXT,
+                next_follow_up_date TEXT,
+                remark TEXT,
+                manager_note TEXT,
+                manual_override_fields TEXT,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                sales_contracts_json TEXT,
+                settlement_json TEXT,
+                management_plan_json TEXT,
+                manual_change_log_json TEXT,
+                corrections_json TEXT,
+                import_warnings_json TEXT,
+                source_json TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_finance_subsidiary
+            ON order_finance_progress(subsidiary);
+
+            CREATE INDEX IF NOT EXISTS idx_order_finance_due
+            ON order_finance_progress(finance_due_date);
+
+            CREATE INDEX IF NOT EXISTS idx_order_finance_status
+            ON order_finance_progress(business_status);
 
 
             CREATE TABLE IF NOT EXISTS daily_prices (

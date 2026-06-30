@@ -13,6 +13,7 @@
 - 风险预警规则的新增、编辑、启停、删除。
 - 风险预警历史查看。
 - 事中风险监控的策略组和持仓接口骨架。
+- 订单融资管理 / 进度监控：从本地订单融资 Excel 台账导入合同事实，提供合同进度汇总、风险状态、到期提示和可手工维护的管理计划字段。
 
 ## 本地运行
 
@@ -23,10 +24,28 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+如需只连接本地 SQLite 试用，避免读取 `.env` 中的云端 `DATABASE_URL`：
+
+```bash
+env -u DATABASE_URL .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8001 --reload
+```
+
 打开：
 
 ```text
 http://127.0.0.1:8000
+```
+
+如果使用上面的本地 SQLite 试用命令，则打开：
+
+```text
+http://127.0.0.1:8001
+```
+
+订单融资 Excel 台账读取依赖 `xlrd`，当前默认读取本机目录：
+
+```text
+/Users/wangjingze/建龙/贸易处/订单融资合同汇总
 ```
 
 ## 测试版验证

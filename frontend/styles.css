@@ -106,7 +106,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 38px;
   border: 1px solid var(--line);
@@ -114,6 +115,12 @@ select {
   padding: 0 10px;
   background: #fff;
   color: var(--text);
+}
+
+textarea {
+  min-height: 86px;
+  padding: 8px 10px;
+  resize: vertical;
 }
 
 .error-text {
@@ -339,6 +346,10 @@ select {
 .toolbar-status {
   color: var(--muted);
   font-size: 13px;
+}
+
+.wide-input {
+  width: min(560px, 100%);
 }
 
 .content-grid {
@@ -1047,6 +1058,160 @@ dialog::backdrop {
 .error-cell {
   color: var(--danger);
   text-align: center;
+}
+
+/* ── 订单融资管理 ───────────────────────────────────── */
+
+.order-finance-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.order-finance-summary-item {
+  min-height: 72px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.order-finance-summary-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-finance-summary-item strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.order-finance-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(420px, 0.7fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.order-finance-table-panel .table-wrap {
+  max-height: min(58vh, 620px);
+}
+
+.order-finance-table tbody tr[data-id] {
+  cursor: pointer;
+}
+
+.order-finance-table td.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.risk-high {
+  background: #fdecec;
+  color: #b42318;
+}
+
+.risk-mid {
+  background: #fff4dc;
+  color: #9a5b00;
+}
+
+.risk-low {
+  background: #e8f3ef;
+  color: var(--primary-strong);
+}
+
+.order-finance-detail {
+  padding: 14px;
+}
+
+.order-finance-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.order-finance-detail h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.order-finance-detail dl {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px 10px;
+  margin: 0;
+}
+
+.order-finance-detail dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-finance-detail dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.order-finance-detail label {
+  margin-bottom: 10px;
+}
+
+.order-finance-report {
+  display: grid;
+  gap: 0;
+  padding: 12px 16px;
+}
+
+.order-finance-report-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 80px 80px;
+  gap: 10px;
+  min-height: 34px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.order-finance-report-row:last-child {
+  border-bottom: 0;
+}
+
+.order-finance-report-row span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .order-finance-summary,
+  .order-finance-layout,
+  .order-finance-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .order-finance-detail-panel {
+    min-width: 0;
+  }
 }
 
 .dv-chart-hint {

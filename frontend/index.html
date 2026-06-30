@@ -344,6 +344,146 @@
           </section>
         </section>
 
+        <section id="orderFinancePage" class="page hidden">
+          <div class="toolbar">
+            <input id="orderFinanceImportDir" class="wide-input" value="/Users/wangjingze/建龙/贸易处/订单融资合同汇总" />
+            <button id="orderFinanceImportBtn" type="button">导入最新台账</button>
+            <button id="orderFinanceRefreshBtn" type="button" class="secondary">刷新</button>
+            <span id="orderFinanceStatus" class="toolbar-status">待加载</span>
+          </div>
+
+          <section class="order-finance-summary" id="orderFinanceSummary"></section>
+
+          <section class="panel filter-panel">
+            <div class="filter-grid">
+              <label>
+                子公司
+                <select id="orderFinanceSubsidiaryFilter">
+                  <option value="">全部</option>
+                </select>
+              </label>
+              <label>
+                风险等级
+                <select id="orderFinanceRiskFilter">
+                  <option value="">全部</option>
+                  <option value="高">高</option>
+                  <option value="中">中</option>
+                  <option value="低">低</option>
+                </select>
+              </label>
+              <label>
+                状态
+                <select id="orderFinanceStatusFilter">
+                  <option value="">全部</option>
+                </select>
+              </label>
+              <label>
+                关键词
+                <input id="orderFinanceKeywordFilter" placeholder="合同号、客户、货物" />
+              </label>
+              <div class="filter-actions">
+                <button id="orderFinanceResetFiltersBtn" type="button" class="secondary">重置</button>
+              </div>
+            </div>
+          </section>
+
+          <div class="order-finance-layout">
+            <section class="panel order-finance-table-panel">
+              <div class="panel-head">
+                <h2>订单融资进度</h2>
+                <span id="orderFinanceCount"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="order-finance-table">
+                  <thead>
+                    <tr>
+                      <th>风险</th>
+                      <th>子公司</th>
+                      <th>主合同号</th>
+                      <th>终端客户</th>
+                      <th>拟放款金额</th>
+                      <th>计划放款日</th>
+                      <th>到期日</th>
+                      <th>提单日期</th>
+                      <th>回款要求</th>
+                      <th>下一步</th>
+                    </tr>
+                  </thead>
+                  <tbody id="orderFinanceTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel order-finance-detail-panel">
+              <div class="panel-head">
+                <h2>合同详情</h2>
+                <span id="orderFinanceDetailTitle">未选择</span>
+              </div>
+              <div id="orderFinanceDetailEmpty" class="empty-cell">请选择一条记录查看并编辑管理计划。</div>
+              <form id="orderFinanceManagementForm" class="order-finance-detail hidden">
+                <div class="order-finance-detail-grid">
+                  <div>
+                    <h3>合同事实</h3>
+                    <dl id="orderFinanceFactList"></dl>
+                  </div>
+                  <div>
+                    <h3>管理计划</h3>
+                    <label>
+                      计划放款日
+                      <input id="ofPlannedDrawdownDate" type="date" />
+                    </label>
+                    <label>
+                      拟放款金额
+                      <input id="ofPlannedFinanceAmount" type="number" step="0.01" />
+                    </label>
+                    <label>
+                      金额调整说明
+                      <input id="ofAmountAdjustmentNote" />
+                    </label>
+                    <label>
+                      回款要求
+                      <input id="ofRepaymentRequirement" placeholder="例如放款当日先回25%陈欠" />
+                    </label>
+                    <label>
+                      回款要求状态
+                      <select id="ofRepaymentRequirementStatus">
+                        <option value="">未设置</option>
+                        <option value="未确认">未确认</option>
+                        <option value="已通知">已通知</option>
+                        <option value="已完成">已完成</option>
+                        <option value="已豁免">已豁免</option>
+                      </select>
+                    </label>
+                    <label>
+                      下一步动作
+                      <input id="ofNextAction" />
+                    </label>
+                    <label>
+                      下次跟进日
+                      <input id="ofNextFollowUpDate" type="date" />
+                    </label>
+                    <label>
+                      管理备注
+                      <textarea id="ofManagerNote" rows="3"></textarea>
+                    </label>
+                    <div class="dialog-actions">
+                      <button type="submit">保存管理计划</button>
+                    </div>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>导入报告</h2>
+              <span id="orderFinanceImportSummary"></span>
+            </div>
+            <div id="orderFinanceImportReport" class="order-finance-report empty-cell">暂无导入报告。</div>
+          </section>
+        </section>
+
         <!-- 数据可视化管理 - 数据整合 -->
         <section id="dvIntegrationPage" class="page hidden">
           <div class="toolbar">

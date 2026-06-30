@@ -22,6 +22,9 @@ const state = {
   shJunnengTrades: [],
   shJunnengSections: { today_trades: [], current_trades: [], settled_trades: [], totals: {} },
   selectedShJunnengId: null,
+  orderFinanceRecords: [],
+  orderFinanceSummary: {},
+  selectedOrderFinanceId: null,
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
 };
@@ -42,6 +45,33 @@ const riskAlertPage = document.querySelector("#riskAlertPage");
 const userManagementPage = document.querySelector("#userManagementPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
+const orderFinancePage = document.querySelector("#orderFinancePage");
+const orderFinanceImportDir = document.querySelector("#orderFinanceImportDir");
+const orderFinanceImportBtn = document.querySelector("#orderFinanceImportBtn");
+const orderFinanceRefreshBtn = document.querySelector("#orderFinanceRefreshBtn");
+const orderFinanceStatus = document.querySelector("#orderFinanceStatus");
+const orderFinanceSummary = document.querySelector("#orderFinanceSummary");
+const orderFinanceTable = document.querySelector("#orderFinanceTable");
+const orderFinanceCount = document.querySelector("#orderFinanceCount");
+const orderFinanceSubsidiaryFilter = document.querySelector("#orderFinanceSubsidiaryFilter");
+const orderFinanceRiskFilter = document.querySelector("#orderFinanceRiskFilter");
+const orderFinanceStatusFilter = document.querySelector("#orderFinanceStatusFilter");
+const orderFinanceKeywordFilter = document.querySelector("#orderFinanceKeywordFilter");
+const orderFinanceResetFiltersBtn = document.querySelector("#orderFinanceResetFiltersBtn");
+const orderFinanceDetailTitle = document.querySelector("#orderFinanceDetailTitle");
+const orderFinanceDetailEmpty = document.querySelector("#orderFinanceDetailEmpty");
+const orderFinanceManagementForm = document.querySelector("#orderFinanceManagementForm");
+const orderFinanceFactList = document.querySelector("#orderFinanceFactList");
+const orderFinanceImportSummary = document.querySelector("#orderFinanceImportSummary");
+const orderFinanceImportReport = document.querySelector("#orderFinanceImportReport");
+const ofPlannedDrawdownDate = document.querySelector("#ofPlannedDrawdownDate");
+const ofPlannedFinanceAmount = document.querySelector("#ofPlannedFinanceAmount");
+const ofAmountAdjustmentNote = document.querySelector("#ofAmountAdjustmentNote");
+const ofRepaymentRequirement = document.querySelector("#ofRepaymentRequirement");
+const ofRepaymentRequirementStatus = document.querySelector("#ofRepaymentRequirementStatus");
+const ofNextAction = document.querySelector("#ofNextAction");
+const ofNextFollowUpDate = document.querySelector("#ofNextFollowUpDate");
+const ofManagerNote = document.querySelector("#ofManagerNote");
 const dvIntegrationPage = document.querySelector("#dvIntegrationPage");
 const dvIntegrationFiles = document.querySelector("#dvIntegrationFiles");
 const dvExportBtn = document.querySelector("#dvExportBtn");
@@ -268,7 +298,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -308,6 +338,11 @@ async function activateModule(code, subName) {
   if (code === "user_management") {
     showOnly(userManagementPage);
     await loadUserManagement();
+    return;
+  }
+  if (code === "order_finance_progress") {
+    showOnly(orderFinancePage);
+    await loadOrderFinanceProgress();
     return;
   }
   if (code === "data_visualization_integration") {
@@ -1782,6 +1817,198 @@ function exportLogs() {
   URL.revokeObjectURL(url);
 }
 
+function orderFinanceDisplayAmount(row) {
+  return row.planned_finance_amount ?? row.finance_amount_actual ?? row.finance_amount_expected ?? row.contract_amount;
+}
+
+function orderFinanceFilteredRecords() {
+  const subsidiary = orderFinanceSubsidiaryFilter.value;
+  const risk = orderFinanceRiskFilter.value;
+  const status = orderFinanceStatusFilter.value;
+  const keyword = orderFinanceKeywordFilter.value.trim().toLowerCase();
+  return state.orderFinanceRecords.filter((row) => {
+    if (subsidiary && row.subsidiary !== subsidiary) return false;
+    if (risk && row.risk_level !== risk) return false;
+    if (status && row.business_status !== status) return false;
+    if (keyword) {
+      const text = [
+        row.purchase_contract_no,
+        row.system_contract_no,
+        row.terminal_customer,
+        row.product_name,
+        row.subsidiary,
+      ].join(" ").toLowerCase();
+      if (!text.includes(keyword)) return false;
+    }
+    return true;
+  });
+}
+
+function renderOrderFinanceFilters() {
+  const subsidiaries = [...new Set(state.orderFinanceRecords.map((row) => row.subsidiary).filter(Boolean))].sort();
+  const statuses = [...new Set(state.orderFinanceRecords.map((row) => row.business_status).filter(Boolean))].sort();
+  const currentSubsidiary = orderFinanceSubsidiaryFilter.value;
+  const currentStatus = orderFinanceStatusFilter.value;
+  orderFinanceSubsidiaryFilter.innerHTML = '<option value="">全部</option>' + subsidiaries.map((item) => (
+    `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`
+  )).join("");
+  orderFinanceStatusFilter.innerHTML = '<option value="">全部</option>' + statuses.map((item) => (
+    `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`
+  )).join("");
+  orderFinanceSubsidiaryFilter.value = currentSubsidiary;
+  orderFinanceStatusFilter.value = currentStatus;
+}
+
+function renderOrderFinanceSummary() {
+  const summary = state.orderFinanceSummary || {};
+  const items = [
+    ["在手合同", summary.active_count || 0],
+    ["合同总数", summary.total_count || 0],
+    ["融资余额", "CNY " + money(summary.finance_balance || 0)],
+    ["30天内到期", summary.due_30d_count || 0],
+    ["高风险", summary.high_risk_count || 0],
+  ];
+  orderFinanceSummary.innerHTML = items.map(([label, value]) => (
+    `<div class="order-finance-summary-item"><span>${label}</span><strong>${value}</strong></div>`
+  )).join("");
+}
+
+function renderOrderFinanceTable() {
+  const records = orderFinanceFilteredRecords();
+  orderFinanceCount.textContent = `${records.length} 条`;
+  if (!records.length) {
+    orderFinanceTable.innerHTML = '<tr><td colspan="10" class="empty-cell">暂无记录</td></tr>';
+    return;
+  }
+  orderFinanceTable.innerHTML = records.map((row) => {
+    const selected = row.id === state.selectedOrderFinanceId ? "selected-row" : "";
+    const riskClass = row.risk_level === "高" ? "risk-high" : row.risk_level === "中" ? "risk-mid" : "risk-low";
+    return `<tr class="${selected}" data-id="${row.id}">
+      <td><span class="risk-pill ${riskClass}">${escapeHtml(row.risk_level || "-")}</span></td>
+      <td>${escapeHtml(row.subsidiary || "")}</td>
+      <td>${escapeHtml(row.purchase_contract_no || row.system_contract_no || "")}</td>
+      <td>${escapeHtml(row.terminal_customer || "")}</td>
+      <td class="numeric">${money(orderFinanceDisplayAmount(row))}</td>
+      <td>${escapeHtml(row.planned_drawdown_date || row.finance_drawdown_date || "-")}</td>
+      <td>${escapeHtml(row.finance_due_date || "-")}</td>
+      <td>${escapeHtml(row.bill_of_lading_date || "-")}</td>
+      <td>${escapeHtml(row.repayment_requirement || "-")}</td>
+      <td>${escapeHtml(row.next_action || "-")}</td>
+    </tr>`;
+  }).join("");
+  orderFinanceTable.querySelectorAll("tr[data-id]").forEach((row) => {
+    row.addEventListener("click", () => openOrderFinanceDetail(Number(row.dataset.id)));
+  });
+}
+
+function orderFinanceFact(label, value) {
+  return `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "-")}</dd>`;
+}
+
+function openOrderFinanceDetail(recordId) {
+  const row = state.orderFinanceRecords.find((item) => item.id === recordId);
+  if (!row) return;
+  state.selectedOrderFinanceId = recordId;
+  orderFinanceDetailEmpty.classList.add("hidden");
+  orderFinanceManagementForm.classList.remove("hidden");
+  orderFinanceDetailTitle.textContent = `${row.subsidiary || ""} ${row.purchase_contract_no || row.system_contract_no || ""}`;
+  orderFinanceFactList.innerHTML = [
+    orderFinanceFact("主合同号", row.purchase_contract_no),
+    orderFinanceFact("系统合同号", row.system_contract_no),
+    orderFinanceFact("终端客户", row.terminal_customer),
+    orderFinanceFact("货物", row.product_name),
+    orderFinanceFact("合同金额", `${row.contract_currency || "CNY"} ${money(row.contract_amount)}`),
+    orderFinanceFact("应放款金额", money(row.finance_amount_expected)),
+    orderFinanceFact("实际放款金额", money(row.finance_amount_actual)),
+    orderFinanceFact("融资银行", row.finance_bank),
+    orderFinanceFact("放款日期", row.finance_drawdown_date),
+    orderFinanceFact("融资到期日", row.finance_due_date),
+    orderFinanceFact("最迟装船期", row.latest_shipment_date),
+    orderFinanceFact("提单日期", row.bill_of_lading_date),
+    orderFinanceFact("船名航次", row.vessel_voyage),
+    orderFinanceFact("回款日期", row.collection_date),
+    orderFinanceFact("执行人员", row.executor),
+    orderFinanceFact("来源", `${row.source_file || ""} / ${row.source_sheet || ""} / ${row.source_row_start || ""}`),
+  ].join("");
+  ofPlannedDrawdownDate.value = row.planned_drawdown_date || "";
+  ofPlannedFinanceAmount.value = row.planned_finance_amount ?? "";
+  ofAmountAdjustmentNote.value = row.amount_adjustment_note || "";
+  ofRepaymentRequirement.value = row.repayment_requirement || "";
+  ofRepaymentRequirementStatus.value = row.repayment_requirement_status || "";
+  ofNextAction.value = row.next_action || "";
+  ofNextFollowUpDate.value = row.next_follow_up_date || "";
+  ofManagerNote.value = row.manager_note || "";
+  renderOrderFinanceTable();
+}
+
+async function loadOrderFinanceProgress() {
+  try {
+    orderFinanceStatus.textContent = "正在加载";
+    const result = await api("/api/order-finance/records");
+    state.orderFinanceRecords = result.records || [];
+    state.orderFinanceSummary = result.summary || {};
+    renderOrderFinanceSummary();
+    renderOrderFinanceFilters();
+    renderOrderFinanceTable();
+    orderFinanceStatus.textContent = "已加载";
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+    orderFinanceTable.innerHTML = `<tr><td colspan="10" class="error-cell">${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+async function importOrderFinanceLocal() {
+  try {
+    orderFinanceStatus.textContent = "正在导入";
+    const result = await api("/api/order-finance/import-local", {
+      method: "POST",
+      body: JSON.stringify({ directory: orderFinanceImportDir.value.trim() }),
+    });
+    const summary = result.summary || {};
+    orderFinanceImportSummary.textContent = `读取 ${summary.files_read || 0} 个文件，${summary.record_count || 0} 条记录`;
+    orderFinanceImportReport.innerHTML = (result.files || []).map((item) => (
+      `<div class="order-finance-report-row">
+        <span>${escapeHtml(item.file)}</span>
+        <strong>${item.record_count || 0} 条</strong>
+        <span>异常 ${item.warning_count || 0}</span>
+      </div>`
+    )).join("") || '<div class="empty-cell">没有读取到台账文件。</div>';
+    await loadOrderFinanceProgress();
+    orderFinanceStatus.textContent = "导入完成";
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+    orderFinanceImportReport.innerHTML = `<div class="error-cell">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function saveOrderFinanceManagement(event) {
+  event.preventDefault();
+  if (!state.selectedOrderFinanceId) return;
+  const payload = {
+    planned_drawdown_date: ofPlannedDrawdownDate.value || null,
+    planned_finance_amount: ofPlannedFinanceAmount.value ? Number(ofPlannedFinanceAmount.value) : null,
+    amount_adjustment_note: ofAmountAdjustmentNote.value,
+    repayment_requirement: ofRepaymentRequirement.value,
+    repayment_requirement_status: ofRepaymentRequirementStatus.value,
+    next_action: ofNextAction.value,
+    next_follow_up_date: ofNextFollowUpDate.value || null,
+    manager_note: ofManagerNote.value,
+  };
+  try {
+    const updated = await api(`/api/order-finance/records/${state.selectedOrderFinanceId}/management`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    state.orderFinanceRecords = state.orderFinanceRecords.map((row) => row.id === updated.id ? updated : row);
+    renderOrderFinanceSummary();
+    renderOrderFinanceTable();
+    openOrderFinanceDetail(updated.id);
+    orderFinanceStatus.textContent = "管理计划已保存";
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+  }
+}
+
 // 事件绑定
 addUserBtn.addEventListener("click", () => openUserDialog(false));
 editUserBtn.addEventListener("click", openEditUserDialog);
@@ -1804,6 +2031,25 @@ cancelPermissionBtn.addEventListener("click", () => permissionDialog.close());
 searchLogsBtn.addEventListener("click", loadLogs);
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
+
+orderFinanceImportBtn.addEventListener("click", importOrderFinanceLocal);
+orderFinanceRefreshBtn.addEventListener("click", loadOrderFinanceProgress);
+orderFinanceManagementForm.addEventListener("submit", saveOrderFinanceManagement);
+[
+  orderFinanceSubsidiaryFilter,
+  orderFinanceRiskFilter,
+  orderFinanceStatusFilter,
+].forEach((control) => {
+  control.addEventListener("change", renderOrderFinanceTable);
+});
+orderFinanceKeywordFilter.addEventListener("input", renderOrderFinanceTable);
+orderFinanceResetFiltersBtn.addEventListener("click", () => {
+  orderFinanceSubsidiaryFilter.value = "";
+  orderFinanceRiskFilter.value = "";
+  orderFinanceStatusFilter.value = "";
+  orderFinanceKeywordFilter.value = "";
+  renderOrderFinanceTable();
+});
 
 // ═══════════════════════════════════════════════════════════════
 // 数据可视化管理
