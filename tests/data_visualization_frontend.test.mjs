@@ -192,6 +192,12 @@ test("integrated import preview uploads raw files without base64 json payload", 
   assert.doesNotMatch(appJs, /import\/integrated\/preview"[\s\S]{0,800}file_data/);
 });
 
+test("integrated import preview polls background job status", () => {
+  assert.match(appJs, /pollDVIntegratedPreviewJob/);
+  assert.match(appJs, /import\/integrated\/preview-jobs\//);
+  assert.match(appJs, /预检进度/);
+});
+
 test("integrated import commit polls background job status", () => {
   assert.match(appJs, /job_id/);
   assert.match(appJs, /import\/integrated\/jobs\//);

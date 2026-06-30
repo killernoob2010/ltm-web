@@ -2354,6 +2354,21 @@ dvImportDialog.addEventListener("close", function() {
   dvCommitImportBtn.disabled = true;
 });
 
+async function pollDVIntegratedPreviewJob(jobId) {
+  for (var attempt = 0; attempt < 240; attempt += 1) {
+    var job = await api("/api/data-visualization/import/integrated/preview-jobs/" + encodeURIComponent(jobId));
+    dvPreviewContent.innerHTML = '<div class="dv-chart-status">预检进度: ' + (job.message || job.status || "处理中") + '</div>';
+    if (job.status === "succeeded") {
+      return job;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.message || "后台预检失败");
+    }
+    await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+  }
+  throw new Error("预检任务超时，请重新选择文件预检。");
+}
+
 dvImportFile.addEventListener("change", async function() {
   var file = dvImportFile.files[0];
   if (!file) return;
@@ -2376,6 +2391,9 @@ dvImportFile.addEventListener("change", async function() {
     }
 
     var preview = await response.json();
+    if (preview.job_id) {
+      preview = await pollDVIntegratedPreviewJob(preview.job_id);
+    }
     dvState.previewData = preview;
     dvState.uploadFile = null;
 

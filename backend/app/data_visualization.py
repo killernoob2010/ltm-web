@@ -59,6 +59,7 @@ _REQUIRED_INTEGRATED_FIELDS = [
 ]
 _INTEGRATED_PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / "ltm_dv_import_previews"
 _INTEGRATED_PREVIEW_FILE_DIR = _INTEGRATED_PREVIEW_CACHE_DIR / "files"
+_INTEGRATED_PREVIEW_JOBS: Dict[str, Dict[str, Any]] = {}
 _INTEGRATED_IMPORT_JOBS: Dict[str, Dict[str, Any]] = {}
 
 class ImportRequest(BaseModel):
@@ -1459,6 +1460,52 @@ async def _save_integrated_preview_upload(request: Request, file_name: str) -> P
     return path
 
 
+def _run_integrated_preview_job(job_id: str, source_path: str, file_name: str) -> None:
+    job = _INTEGRATED_PREVIEW_JOBS[job_id]
+    try:
+        job.update({"status": "running", "stage": "parsing", "message": "正在解析 Excel"})
+        result = _parse_integrated_excel(Path(source_path))
+        preview_id = _save_integrated_preview_cache(result, file_name, source_path)
+        job.update({
+            "status": "succeeded",
+            "stage": "done",
+            "message": "预检完成",
+            "preview_id": preview_id,
+            "file_name": file_name,
+            "summary": result["summary"],
+            "errors": result["errors"],
+            "sample_count": min(len(result["rows"]), 20),
+            "sample_rows": result["rows"][:20],
+            "finished_at": datetime.utcnow().isoformat(),
+        })
+    except Exception as exc:
+        job.update({
+            "status": "failed",
+            "stage": "error",
+            "message": str(exc),
+            "finished_at": datetime.utcnow().isoformat(),
+        })
+
+
+def _create_integrated_preview_job(
+    background_tasks: BackgroundTasks,
+    source_path: str,
+    file_name: str,
+) -> Dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "message": "已上传，等待后台预检",
+        "file_name": file_name,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _INTEGRATED_PREVIEW_JOBS[job_id] = job
+    background_tasks.add_task(_run_integrated_preview_job, job_id, source_path, file_name)
+    return job
+
+
 
 def _import_integrated_points(rows, file_name, user_name):
     """Replace integrated data with the uploaded standard Excel in one batch."""
@@ -2518,22 +2565,25 @@ async def import_integrated_preview(
 @router.post('/data-visualization/import/integrated/preview-file')
 async def import_integrated_preview_file(
     request: Request,
+    background_tasks: BackgroundTasks,
     file_name: str,
     user=Depends(dv_current_user),
 ):
     dv_require_edit('data_visualization_data', user)
     path = await _save_integrated_preview_upload(request, file_name)
-    result = _parse_integrated_excel(path)
-    preview_id = _save_integrated_preview_cache(result, file_name, str(path))
+    return _create_integrated_preview_job(background_tasks, str(path), file_name)
 
-    return {
-        'preview_id': preview_id,
-        'file_name': file_name,
-        'summary': result['summary'],
-        'errors': result['errors'],
-        'sample_count': min(len(result['rows']), 20),
-        'sample_rows': result['rows'][:20],
-    }
+
+@router.get('/data-visualization/import/integrated/preview-jobs/{job_id}')
+async def import_integrated_preview_job_status(
+    job_id: str,
+    user=Depends(dv_current_user),
+):
+    dv_require_edit('data_visualization_data', user)
+    job = _INTEGRATED_PREVIEW_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="预检任务不存在或已失效")
+    return job
 
 
 # ── POST /api/data-visualization/import/integrated/commit ──────────────
