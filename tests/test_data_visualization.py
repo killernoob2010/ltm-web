@@ -112,8 +112,9 @@ def test_split_filter_values_supports_multi_select():
 
 EXPECTED_MAINSTREAM_PRODUCT_ORDER = [
     "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
-    "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
-    "罗伊山MB粉", "印度（粉矿）", "IOC6", "罗伊山MB块", "PMI块",
+    "巴混", "SP10粉", "几内亚（粉矿）", "杨迪粉", "罗伊山粉",
+    "罗伊山MB粉", "印度（粉矿）", "IOC6", "PB块", "纽曼块", "SP10块",
+    "南非（块矿）", "罗伊山MB块", "PMI块",
     "印度（球团）", "乌克兰（精粉）", "卡拉拉精粉",
 ]
 
@@ -122,16 +123,21 @@ def test_mainstream_products_follow_business_definition():
     assert MAINSTREAM_PRODUCT_ORDER == EXPECTED_MAINSTREAM_PRODUCT_ORDER
     assert MAINSTREAM_PRODUCTS == {
         "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
-        "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
-        "罗伊山MB粉", "印度", "IOC6", "罗伊山MB块", "PMI块", "乌克兰", "卡拉拉精粉",
+        "巴混", "SP10粉", "几内亚", "杨迪粉", "罗伊山粉",
+        "罗伊山MB粉", "印度", "IOC6", "PB块", "纽曼块", "SP10块",
+        "南非", "罗伊山MB块", "PMI块", "乌克兰", "卡拉拉精粉",
     }
-    for skipped in ["RTX", "RTX块", "高锰粉矿", "未知", "库宾粉", "PB块", "纽曼块"]:
+    for skipped in ["RTX", "RTX块", "高锰粉矿", "未知", "库宾粉", "几内亚粉", "南非粉"]:
         assert skipped not in MAINSTREAM_PRODUCTS
+    assert _mainstream_status("几内亚", "粉矿") == "主流"
+    assert _mainstream_status("几内亚", "全品种") == "非主流"
     assert _mainstream_status("印度", "粉矿") == "主流"
     assert _mainstream_status("印度", "球团") == "主流"
     assert _mainstream_status("印度", "精粉") == "非主流"
     assert _mainstream_status("乌克兰", "精粉") == "主流"
     assert _mainstream_status("乌克兰", "球团") == "非主流"
+    assert _mainstream_status("南非", "块矿") == "主流"
+    assert _mainstream_status("南非", "粉矿") == "非主流"
 
 
 def test_parse_integrated_excel_reports_invalid_rows(tmp_path):
@@ -702,9 +708,13 @@ def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_
         dict(base_point, product="PB粉", value=20.0),
         dict(base_point, product="巴混", source_country="巴西", value=30.0),
         dict(base_point, product="金布巴粉", value=40.0),
+        dict(base_point, source_country="几内亚", product="几内亚", category="粉矿", value=40.5),
         dict(base_point, product="罗伊山MB粉", value=41.0),
         dict(base_point, source_country="印度", product="印度", category="粉矿", value=42.0),
         dict(base_point, source_country="巴西", product="IOC6", category="粉矿", value=43.0),
+        dict(base_point, product="纽曼块", category="块矿", value=43.2),
+        dict(base_point, product="SP10块", category="块矿", value=43.4),
+        dict(base_point, source_country="南非", product="南非", category="块矿", value=43.6),
         dict(base_point, product="罗伊山MB块", category="块矿", value=44.0),
         dict(base_point, product="PMI块", category="块矿", value=45.0),
         dict(base_point, source_country="印度", product="印度", category="球团", value=46.0),
@@ -769,12 +779,13 @@ def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_
     ))
 
     expected_products = [
-        "PB粉", "金布巴粉", "巴混", "罗伊山粉", "罗伊山MB粉", "印度（粉矿）",
-        "IOC6", "罗伊山MB块", "PMI块", "印度（球团）", "乌克兰（精粉）", "卡拉拉精粉",
+        "PB粉", "金布巴粉", "巴混", "几内亚（粉矿）", "罗伊山粉",
+        "罗伊山MB粉", "印度（粉矿）", "IOC6", "PB块", "纽曼块",
+        "SP10块", "南非（块矿）", "罗伊山MB块", "PMI块",
+        "印度（球团）", "乌克兰（精粉）", "卡拉拉精粉",
     ]
     assert filters["product_pools"]["mainstream"] == expected_products
     assert table["products"] == expected_products
-    assert "PB块" not in table["products"]
     assert "南非（全品种）" not in table["products"]
     assert list(chart["series"]) == expected_products
 
@@ -812,11 +823,10 @@ def test_syncs_historical_mainstream_labels_for_db_aggregates_and_export(tmp_pat
         source_country="澳洲",
         product="PB块",
         category="块矿",
-        mainstream_status="主流",
+        mainstream_status="非主流",
         value=70.0,
         source_file="old_blocks.xlsx",
     ))
-
     filters = asyncio.run(get_filters(user={"role": "管理员"}))
     mainstream_table = asyncio.run(get_table(
         metric="shipment",
@@ -851,13 +861,13 @@ def test_syncs_historical_mainstream_labels_for_db_aggregates_and_export(tmp_pat
         ]
 
     assert "巴混" in filters["product_pools"]["mainstream"]
-    assert "PB块" not in filters["product_pools"]["mainstream"]
+    assert "PB块" in filters["product_pools"]["mainstream"]
     assert points == [
-        {"product": "PB块", "category": "块矿", "mainstream_status": "非主流", "value": 70.0},
+        {"product": "PB块", "category": "块矿", "mainstream_status": "主流", "value": 70.0},
         {"product": "巴混", "category": "粉矿", "mainstream_status": "主流", "value": 120.0},
     ]
-    assert mainstream_table["data"][0]["主流矿合计"]["value"] == 120.0
-    assert non_mainstream_table["data"][0]["非主流矿合计"]["value"] == 70.0
+    assert mainstream_table["data"][0]["主流矿合计"]["value"] == 190.0
+    assert non_mainstream_table["data"] == []
 
     header = rows[0]
     product_idx = header.index("品种")
@@ -867,7 +877,7 @@ def test_syncs_historical_mainstream_labels_for_db_aggregates_and_export(tmp_pat
         for row in rows[1:]
         if row[product_idx] in {"巴混", "PB块"}
     }
-    assert exported == {"巴混": "主流", "PB块": "非主流"}
+    assert exported == {"巴混": "主流", "PB块": "主流"}
 
 
 def test_mainstream_status_does_not_make_product_apparent_demand_calculable(tmp_path, monkeypatch):
