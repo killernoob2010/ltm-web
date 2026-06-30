@@ -3,7 +3,6 @@ import sys, os
 # Make backend/app a package by adding backend/ to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 from app.data_visualization import (
-    AUSTRALIA_PRODUCT_MAP,
     MAINSTREAM_PRODUCTS,
     compute_business_week,
     _parse_integrated_excel,
@@ -66,16 +65,15 @@ def test_split_filter_values_supports_multi_select():
     assert _split_filter_values("") == []
 
 
-def test_mainstream_products_follow_mapped_australia_and_brazil_card_powder():
-    mapped_australia_products = {
-        mapped[0]
-        for mapped in AUSTRALIA_PRODUCT_MAP.values()
-        if mapped is not None
-    }
+EXPECTED_MAINSTREAM_PRODUCT_ORDER = [
+    "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
+    "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
+]
 
-    assert MAINSTREAM_PRODUCTS == mapped_australia_products | {"卡粉"}
-    assert "巴混" not in MAINSTREAM_PRODUCTS
-    for skipped in ["RTX", "RTX块", "高锰粉矿", "未知", "库宾粉"]:
+
+def test_mainstream_products_follow_business_definition():
+    assert MAINSTREAM_PRODUCTS == set(EXPECTED_MAINSTREAM_PRODUCT_ORDER)
+    for skipped in ["RTX", "RTX块", "高锰粉矿", "未知", "库宾粉", "PB块", "纽曼块"]:
         assert skipped not in MAINSTREAM_PRODUCTS
 
 
@@ -612,8 +610,63 @@ def test_filters_reflect_mainstream_status_written_by_integration(tmp_path, monk
 
     assert "SP10粉" in filters["product_pools"]["mainstream"]
     assert "SP10粉" not in filters["product_pools"]["non_mainstream"]
-    assert "巴混" in filters["product_pools"]["non_mainstream"]
-    assert "巴混" not in filters["product_pools"]["mainstream"]
+    assert "巴混" in filters["product_pools"]["mainstream"]
+    assert "巴混" not in filters["product_pools"]["non_mainstream"]
+
+
+def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "shipment",
+        "source_country": "澳洲",
+        "product": "罗伊山粉",
+        "category": "粉矿",
+        "mainstream_status": "主流",
+        "value": 10.0,
+        "unit": "万吨",
+        "source_file": "mysteel.xlsx",
+        "source_sheet": "澳巴发运",
+        "source_section": "测试",
+        "is_calculable": 1,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([
+        base_point,
+        dict(base_point, product="PB粉", value=20.0),
+        dict(base_point, product="巴混", source_country="巴西", value=30.0),
+        dict(base_point, product="金布巴粉", value=40.0),
+        dict(base_point, product="南非", source_country="南非", category="全品种",
+             mainstream_status="非主流", value=50.0),
+    ], ["mysteel.xlsx"], "pytest")
+
+    filters = asyncio.run(get_filters(user={"role": "管理员"}))
+    table = asyncio.run(get_table(
+        metric="shipment",
+        years="2026",
+        product_pool="mainstream",
+        user={"role": "管理员"},
+    ))
+    chart = asyncio.run(get_chart(
+        metric="shipment",
+        years="2026",
+        product_pool="mainstream",
+        user={"role": "管理员"},
+    ))
+
+    assert filters["product_pools"]["mainstream"] == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
+    assert table["products"] == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
+    assert "南非（全品种）" not in table["products"]
+    assert list(chart["series"]) == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
 
 
 def test_aggregate_product_filter_applies_to_table_and_chart(tmp_path, monkeypatch):

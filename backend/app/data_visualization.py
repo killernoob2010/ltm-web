@@ -252,12 +252,14 @@ AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
 }
 
 
-BRAZIL_MAINSTREAM_PRODUCTS = {"卡粉"}
-MAINSTREAM_PRODUCTS = {
-    mapped[0]
-    for mapped in AUSTRALIA_PRODUCT_MAP.values()
-    if mapped is not None
-} | BRAZIL_MAINSTREAM_PRODUCTS
+MAINSTREAM_PRODUCT_ORDER = [
+    "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
+    "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
+]
+MAINSTREAM_PRODUCT_ORDER_INDEX = {
+    product: index for index, product in enumerate(MAINSTREAM_PRODUCT_ORDER)
+}
+MAINSTREAM_PRODUCTS = set(MAINSTREAM_PRODUCT_ORDER)
 
 
 INVENTORY_SHEETS = {"粗粉", "块矿", "球团", "精粉"}
@@ -1041,6 +1043,32 @@ def _aggregate_labels_and_statuses(product_list: List[str], mainstream_list: Lis
     return [label for label, _status in pairs], [status for _label, status in pairs]
 
 
+def _effective_mainstream_statuses(product_pool: str, mainstream_list: List[str]) -> List[str]:
+    if product_pool == "mainstream":
+        return ["主流"]
+    if product_pool == "non_mainstream":
+        return ["非主流"]
+    return mainstream_list
+
+
+def _ordered_mainstream_labels(labels: List[str], label_map: Dict[tuple, str]) -> List[str]:
+    original_index = {label: index for index, label in enumerate(labels)}
+    product_by_label: Dict[str, str] = {}
+    for (_source_country, product, _category), label in label_map.items():
+        product_by_label.setdefault(label, product)
+    return sorted(
+        labels,
+        key=lambda label: (
+            MAINSTREAM_PRODUCT_ORDER_INDEX.get(product_by_label.get(label, label), len(MAINSTREAM_PRODUCT_ORDER)),
+            original_index[label],
+        ),
+    )
+
+
+def _uses_mainstream_product_order(product_pool: str, mainstream_list: List[str]) -> bool:
+    return product_pool == "mainstream" or set(mainstream_list) == {"主流"}
+
+
 def _integrated_product_labels(rows: List[Dict[str, Any]]) -> tuple:
     product_categories: Dict[str, set] = {}
     product_category_sources: Dict[tuple, set] = {}
@@ -1079,8 +1107,9 @@ def _integrated_product_pool_labels(rows: List[Dict[str, Any]]) -> Dict[str, Lis
     for row in rows:
         label = label_map[(row["source_country"], row["product"], row["category"])]
         status_by_label.setdefault(label, set()).add(row["mainstream_status"] or "非主流")
+    mainstream_labels = [label for label in products_ordered if "主流" in status_by_label.get(label, set())]
     return {
-        "mainstream": [label for label in products_ordered if "主流" in status_by_label.get(label, set())],
+        "mainstream": _ordered_mainstream_labels(mainstream_labels, label_map),
         "non_mainstream": [label for label in products_ordered if "非主流" in status_by_label.get(label, set())],
         "custom": products_ordered,
     }
@@ -2571,7 +2600,11 @@ async def get_table(
                 placeholders = ",".join("?" for _ in country_list)
                 sql += f" AND source_country IN ({placeholders})"
                 params.extend(country_list)
-            effective_mainstream_list = aggregate_statuses if product_pool == "aggregate" else mainstream_list
+            effective_mainstream_list = (
+                aggregate_statuses
+                if product_pool == "aggregate"
+                else _effective_mainstream_statuses(product_pool, mainstream_list)
+            )
             if effective_mainstream_list:
                 placeholders = ",".join("?" for _ in effective_mainstream_list)
                 sql += f" AND mainstream_status IN ({placeholders})"
@@ -2617,6 +2650,8 @@ async def get_table(
             label_map, products_ordered = _integrated_product_labels(rows)
             if product_list:
                 rows, label_map, products_ordered = _filter_rows_by_product_labels(rows, product_list)
+            if _uses_mainstream_product_order(product_pool, effective_mainstream_list):
+                products_ordered = _ordered_mainstream_labels(products_ordered, label_map)
 
             week_map: Dict[str, Dict] = {}
             for row in rows:
@@ -2791,7 +2826,11 @@ async def get_chart(
                 placeholders_n = ",".join("?" for _ in country_list)
                 sql_i += f" AND source_country IN ({placeholders_n})"
                 params_i.extend(country_list)
-            effective_mainstream_list = aggregate_statuses if product_pool == "aggregate" else mainstream_list
+            effective_mainstream_list = (
+                aggregate_statuses
+                if product_pool == "aggregate"
+                else _effective_mainstream_statuses(product_pool, mainstream_list)
+            )
             if effective_mainstream_list:
                 placeholders_m = ",".join("?" for _ in effective_mainstream_list)
                 sql_i += f" AND mainstream_status IN ({placeholders_m})"
@@ -2836,6 +2875,8 @@ async def get_chart(
             label_map_i, _products_ordered_i = _integrated_product_labels(rows_i)
             if product_list:
                 rows_i, label_map_i, _products_ordered_i = _filter_rows_by_product_labels(rows_i, product_list)
+            if _uses_mainstream_product_order(product_pool, effective_mainstream_list):
+                _products_ordered_i = _ordered_mainstream_labels(_products_ordered_i, label_map_i)
             result_i: Dict[str, Dict[str, List[Dict]]] = {}
             for row in rows_i:
                 label = label_map_i[(row["source_country"], row["product"], row["category"])]
@@ -2851,7 +2892,12 @@ async def get_chart(
                     "is_manual_override": False,
                     "is_missing_filled": not bool(row["is_calculable"]) and metric == "apparent_demand",
                 })
-            return {"metric": metric, "series": result_i}
+            ordered_result_i = {
+                label: result_i[label]
+                for label in _products_ordered_i
+                if label in result_i
+            }
+            return {"metric": metric, "series": ordered_result_i}
 
         params: List[Any] = [metric]
         sql = """SELECT wk.year, wk.week_no, wk.display_date, dp.product,
