@@ -1828,7 +1828,12 @@ let dvState = {
 };
 
 const DV_PAGE_SIZE = 50;
-const DV_YEAR_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2", "#0d9488", "#d97706", "#be185d", "#475569", "#15803d", "#b45309"];
+const DV_YEAR_COLORS = [
+  "#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2",
+  "#db2777", "#65a30d", "#f97316", "#0f766e", "#9333ea", "#b91c1c",
+  "#1d4ed8", "#15803d", "#a16207", "#be123c", "#0369a1", "#4f46e5",
+  "#c2410c", "#047857", "#a21caf", "#0e7490", "#7f1d1d", "#365314"
+];
 const DV_MONTH_AXIS_TICKS = [
   { week: 3, label: "1月" },
   { week: 7, label: "2月" },
@@ -2671,6 +2676,7 @@ function renderDVChart(series, viewMode) {
 
   // Draw lines
   var highlightedLineKey = dvState.highlightedLineKey || null;
+  var hitPoints = [];
   var availableLineKeys = lines.map(function(line) {
     return useProductYearLegend ? (line.product + " " + line.year) : line.year;
   });
@@ -2700,6 +2706,7 @@ function renderDVChart(series, viewMode) {
       }
       var x = xScale(pts2[pi3].week_no);
       var y2 = yScale(getChartPointNumericValue(pts2[pi3]));
+      hitPoints.push({ x: x, y: y2, year: line.year, product: line.product, lineKey: lineKey, point: pts2[pi3] });
       if (firstPoint) { ctx.moveTo(x, y2); firstPoint = false; }
       else ctx.lineTo(x, y2);
     }
@@ -2707,7 +2714,10 @@ function renderDVChart(series, viewMode) {
     ctx.setLineDash([]);
     for (var missIndex = 0; missIndex < pts2.length; missIndex++) {
       if (isMissingChartPoint(pts2[missIndex])) {
-        drawMissingChartMarker(ctx, xScale(pts2[missIndex].week_no), dpad.top + chartH - 8, color, highlightedLineKey === lineKey ? 4 : 3);
+        var missingX = xScale(pts2[missIndex].week_no);
+        var missingY = dpad.top + chartH - 8;
+        drawMissingChartMarker(ctx, missingX, missingY, color, highlightedLineKey === lineKey ? 4 : 3);
+        hitPoints.push({ x: missingX, y: missingY, year: line.year, product: line.product, lineKey: lineKey, point: pts2[missIndex] });
       }
     }
     ctx.globalAlpha = 1;
@@ -2801,22 +2811,10 @@ function renderDVChart(series, viewMode) {
     var rect = dvChartCanvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
-    var tooltip = "";
-
-    for (var li4 = 0; li4 < lines.length; li4++) {
-      var ln2 = lines[li4];
-      for (var pi5 = 0; pi5 < ln2.points.length; pi5++) {
-        var px2 = xScale(ln2.points[pi5].week_no);
-        var py2 = isMissingChartPoint(ln2.points[pi5])
-          ? dpad.top + chartH - 8
-          : yScale(getChartPointNumericValue(ln2.points[pi5]));
-        if (Math.hypot(mx - px2, my - py2) < 15) {
-          tooltip = formatDVChartTooltip(ln2.points[pi5], ln2.product);
-          break;
-        }
-      }
-    }
-    dvChartCanvas.title = tooltip;
+    var closest = findClosestChartHitPoint(hitPoints, mx, my, 15);
+    dvChartCanvas.title = closest
+      ? formatDVChartTooltip(closest.point, closest.product, closest.year)
+      : "";
   };
 }
 
@@ -2832,13 +2830,27 @@ function getChartPointNumericValue(point) {
   return Number(point.value);
 }
 
-function formatDVChartTooltip(point, product) {
+function formatDVChartTooltip(point, product, year) {
   var parts = [];
+  if (year) parts.push(year);
   if (point.display_date) parts.push(formatDateOnly(point.display_date));
   parts.push("Week " + (point.week_no || "--"));
   parts.push(product);
   parts.push(isMissingChartPoint(point) ? "无数据" : formatChartNumber(getChartPointNumericValue(point)));
   return parts.join(" | ");
+}
+
+function findClosestChartHitPoint(hitPoints, mx, my, maxDist) {
+  var closest = null;
+  var closestDist = Infinity;
+  hitPoints.forEach(function(item) {
+    var dist = Math.hypot(mx - item.x, my - item.y);
+    if (dist < closestDist && dist < maxDist) {
+      closestDist = dist;
+      closest = item;
+    }
+  });
+  return closest;
 }
 
 function drawMissingChartMarker(ctx, x, y, color, radius) {
@@ -3050,11 +3062,9 @@ function renderDVChartAtlas(ctx, W, H, series, products) {
     var rect = dvChartCanvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
-    var closest = hitPoints.find(function(item) {
-      return Math.hypot(mx - item.x, my - item.y) < 12;
-    });
+    var closest = findClosestChartHitPoint(hitPoints, mx, my, 12);
     dvChartCanvas.title = closest
-      ? formatDVChartTooltip(closest.point, closest.product)
+      ? formatDVChartTooltip(closest.point, closest.product, closest.year)
       : "";
   };
 }

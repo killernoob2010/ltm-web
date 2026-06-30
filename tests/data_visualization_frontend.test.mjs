@@ -158,6 +158,15 @@ test("data visualization atlas shows a shared year legend beside chart tabs", ()
   assert.match(appJs, /dv-year-legend-item/);
 });
 
+test("data visualization year colors support long history without dark duplicate-looking colors", () => {
+  const colorMatch = appJs.match(/const DV_YEAR_COLORS = \[([^\]]+)\]/);
+  assert.ok(colorMatch);
+  const colors = Array.from(colorMatch[1].matchAll(/"([^"]+)"/g)).map((match) => match[1]);
+  assert.ok(colors.length >= 20);
+  assert.equal(new Set(colors).size, colors.length);
+  assert.doesNotMatch(colorMatch[1], /#475569|#111827|#000000/i);
+});
+
 test("data visualization atlas highlights all charts for the selected year", () => {
   assert.match(appJs, /highlightedYear/);
   assert.match(appJs, /closest = \{ lineKey: lineKey, year: year \}/);
@@ -206,8 +215,10 @@ test("integrated import commit polls background job status", () => {
 
 test("data visualization chart treats missing points as gaps", () => {
   assert.match(appJs, /function isMissingChartPoint\(point\)/);
-  assert.match(appJs, /function formatDVChartTooltip\(point, product\)/);
-  assert.match(appJs, /isMissingChartPoint\(point\) \? "无数据"/);
+  assert.match(appJs, /function formatDVChartTooltip\(point, product, year\)/);
+  assert.match(appJs, /if \(year\) parts\.push\(year\)/);
+  assert.match(appJs, /function findClosestChartHitPoint\(hitPoints, mx, my, maxDist\)/);
+  assert.match(appJs, /formatDVChartTooltip\(closest\.point, closest\.product, closest\.year\)/);
   assert.match(appJs, /firstPoint = true;\s+continue;/);
   assert.doesNotMatch(appJs, /ln2\.product \+ " \| " \+ ln2\.year \+ " \| " \+ formatChartNumber/);
 });
