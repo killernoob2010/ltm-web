@@ -1092,13 +1092,13 @@ dialog::backdrop {
 
 .order-finance-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(420px, 0.7fr);
+  grid-template-columns: 1fr;
   gap: 14px;
   margin-bottom: 14px;
 }
 
 .order-finance-table-panel .table-wrap {
-  max-height: min(58vh, 620px);
+  max-height: min(42vh, 460px);
 }
 
 .order-finance-table tbody tr[data-id] {
@@ -1143,7 +1143,7 @@ dialog::backdrop {
 
 .order-finance-detail-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
   gap: 16px;
 }
 
