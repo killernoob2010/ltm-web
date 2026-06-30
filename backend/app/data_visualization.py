@@ -1898,11 +1898,23 @@ def _ensure_week_fields(item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
-def _append_integrated_rows(sheet, rows: List[Any], include_metric_type: bool = True) -> None:
+def _append_integrated_rows(sheet, rows: List[Any], include_metric_type: bool = True, header_style=None) -> None:
     columns = INTEGRATED_EXPORT_COLUMNS if include_metric_type else [
         (key, label) for key, label in INTEGRATED_EXPORT_COLUMNS if key != "metric_type"
     ]
-    sheet.append([label for _key, label in columns])
+    header_labels = [label for _key, label in columns]
+    if header_style:
+        from openpyxl.cell import WriteOnlyCell
+        header_font, header_fill = header_style
+        header_cells = []
+        for label in header_labels:
+            cell = WriteOnlyCell(sheet, value=label)
+            cell.font = header_font
+            cell.fill = header_fill
+            header_cells.append(cell)
+        sheet.append(header_cells)
+    else:
+        sheet.append(header_labels)
     for row in rows:
         item = _ensure_week_fields(_row_to_dict(row))
         sheet.append([_export_cell_value(item, key) for key, _label in columns])
@@ -1937,7 +1949,6 @@ def _load_integration_batch_summary(batch_id: int) -> Dict[str, Any]:
 def build_integrated_workbook_bytes() -> bytes:
     import openpyxl
     from openpyxl.styles import Font, PatternFill
-    from openpyxl.utils import get_column_letter
 
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1965,16 +1976,19 @@ def build_integrated_workbook_bytes() -> bytes:
                GROUP BY metric_type""",
         ).fetchall()
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "整合明细"
-    _append_integrated_rows(ws, rows, include_metric_type=True)
+    wb = openpyxl.Workbook(write_only=True)
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_style = (header_font, header_fill)
+
+    ws = wb.create_sheet("整合明细")
+    _append_integrated_rows(ws, rows, include_metric_type=True, header_style=header_style)
 
     metric_sheets = []
     for metric_type, sheet_name in METRIC_SHEETS:
         sheet = wb.create_sheet(sheet_name)
-        metric_rows = [row for row in rows if row["metric_type"] == metric_type]
-        _append_integrated_rows(sheet, metric_rows, include_metric_type=False)
+        metric_rows = (row for row in rows if row["metric_type"] == metric_type)
+        _append_integrated_rows(sheet, metric_rows, include_metric_type=False, header_style=header_style)
         metric_sheets.append(sheet)
 
     info = wb.create_sheet("批次信息")
@@ -1994,16 +2008,18 @@ def build_integrated_workbook_bytes() -> bytes:
     for item in info_rows:
         info.append(item)
 
-    header_fill = PatternFill("solid", fgColor="1F4E78")
-    header_font = Font(color="FFFFFF", bold=True)
-    for sheet in [ws, *metric_sheets, info]:
-        for cell in sheet[1]:
-            cell.fill = header_fill
-            cell.font = header_font
+    width_map = {
+        "A": 14, "B": 14, "C": 10, "D": 10, "E": 12, "F": 14,
+        "G": 12, "H": 16, "I": 18, "J": 12, "K": 14, "L": 12,
+        "M": 10, "N": 24, "O": 18, "P": 18, "Q": 14, "R": 12, "S": 24,
+    }
+    for sheet in [ws, *metric_sheets]:
         sheet.freeze_panes = "A2"
-        for col_idx, column_cells in enumerate(sheet.columns, start=1):
-            max_len = max(len(str(cell.value or "")) for cell in column_cells)
-            sheet.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 10), 36)
+        for col, width in width_map.items():
+            sheet.column_dimensions[col].width = width
+    info.freeze_panes = "A2"
+    info.column_dimensions["A"].width = 18
+    info.column_dimensions["B"].width = 48
 
     output = io.BytesIO()
     wb.save(output)

@@ -27,6 +27,7 @@ from datetime import date, datetime
 from openpyxl import Workbook, load_workbook
 from io import BytesIO
 import asyncio
+import inspect
 
 
 def _insert_integrated_point_direct(db_module, point):
@@ -108,6 +109,12 @@ def test_split_filter_values_supports_multi_select():
     assert _split_filter_values("主流,非主流") == ["主流", "非主流"]
     assert _split_filter_values(" 主流 , , 非主流 ") == ["主流", "非主流"]
     assert _split_filter_values("") == []
+
+
+def test_integrated_export_uses_streaming_workbook():
+    source = inspect.getsource(build_integrated_workbook_bytes)
+    assert "Workbook(write_only=True)" in source
+    assert ".columns" not in source
 
 
 EXPECTED_MAINSTREAM_PRODUCT_ORDER = [
