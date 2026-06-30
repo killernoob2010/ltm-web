@@ -169,7 +169,7 @@ def _normalize_integrated_point(point: Dict[str, Any]) -> Dict[str, Any]:
         item["product"] = product
         item["category"] = category
     if item.get("product"):
-        item["mainstream_status"] = _mainstream_status(item["product"])
+        item["mainstream_status"] = _mainstream_status(item["product"], item.get("category", ""))
     if item.get("metric_type") in {"arrival", "inventory"}:
         item["is_calculable"] = 1 if _is_apparent_demand_candidate(
             item.get("source_country", ""),
@@ -252,14 +252,42 @@ AUSTRALIA_PRODUCT_MAP: Dict[str, Optional[tuple]] = {
 }
 
 
-MAINSTREAM_PRODUCT_ORDER = [
-    "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
-    "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
+MAINSTREAM_PRODUCT_IDENTITIES = [
+    ("PB粉", None, "PB粉"),
+    ("麦克粉", None, "麦克粉"),
+    ("纽曼粉", None, "纽曼粉"),
+    ("金布巴粉", None, "金布巴粉"),
+    ("超特粉", None, "超特粉"),
+    ("混合粉", None, "混合粉"),
+    ("卡粉", None, "卡粉"),
+    ("巴混", None, "巴混"),
+    ("SP10粉", None, "SP10粉"),
+    ("几内亚粉", None, "几内亚粉"),
+    ("杨迪粉", None, "杨迪粉"),
+    ("罗伊山粉", None, "罗伊山粉"),
+    ("罗伊山MB粉", None, "罗伊山MB粉"),
+    ("印度", "粉矿", "印度（粉矿）"),
+    ("IOC6", None, "IOC6"),
+    ("罗伊山MB块", None, "罗伊山MB块"),
+    ("PMI块", None, "PMI块"),
+    ("印度", "球团", "印度（球团）"),
+    ("乌克兰", "精粉", "乌克兰（精粉）"),
+    ("卡拉拉精粉", None, "卡拉拉精粉"),
 ]
+MAINSTREAM_PRODUCT_ORDER = [label for _product, _category, label in MAINSTREAM_PRODUCT_IDENTITIES]
 MAINSTREAM_PRODUCT_ORDER_INDEX = {
     product: index for index, product in enumerate(MAINSTREAM_PRODUCT_ORDER)
 }
-MAINSTREAM_PRODUCTS = set(MAINSTREAM_PRODUCT_ORDER)
+MAINSTREAM_PRODUCTS = {product for product, _category, _label in MAINSTREAM_PRODUCT_IDENTITIES}
+MAINSTREAM_PRODUCT_WILDCARDS = {
+    product for product, category, _label in MAINSTREAM_PRODUCT_IDENTITIES
+    if category is None
+}
+MAINSTREAM_PRODUCT_CATEGORY_LABELS = {
+    (product, category): label
+    for product, category, label in MAINSTREAM_PRODUCT_IDENTITIES
+    if category is not None
+}
 
 
 INVENTORY_SHEETS = {"粗粉", "块矿", "球团", "精粉"}
@@ -392,8 +420,10 @@ def _canonical_inventory_identity(
     return source, product, inventory_category
 
 
-def _mainstream_status(product: str) -> str:
-    return "主流" if product in MAINSTREAM_PRODUCTS else "非主流"
+def _mainstream_status(product: str, category: str = "") -> str:
+    if (product, category) in MAINSTREAM_PRODUCT_CATEGORY_LABELS:
+        return "主流"
+    return "主流" if product in MAINSTREAM_PRODUCT_WILDCARDS else "非主流"
 
 
 def _make_point(
@@ -425,7 +455,7 @@ def _make_point(
         "source_country": source_country,
         "product": product,
         "category": category,
-        "mainstream_status": _mainstream_status(product),
+        "mainstream_status": _mainstream_status(product, category),
         "value": value,
         "unit": "万吨",
         "source_file": source_file,
@@ -573,6 +603,91 @@ def _migrate_integrated_mainstream_status(cur, point: Dict[str, Any]) -> None:
     if delete_ids:
         placeholders = ",".join("?" for _ in delete_ids)
         db._exec(cur, f"DELETE FROM dv_integrated_points WHERE id IN ({placeholders})", tuple(delete_ids))
+
+
+def _refresh_latest_integration_batch_counts(cur) -> None:
+    batch = db._exec(
+        cur,
+        "SELECT id FROM dv_integration_batches ORDER BY created_at DESC, id DESC LIMIT 1",
+    ).fetchone()
+    if not batch:
+        return
+    counts = db._exec(
+        cur,
+        """SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN metric_type = 'apparent_demand' THEN 1 ELSE 0 END) AS apparent_demand_count
+           FROM dv_integrated_points""",
+    ).fetchone()
+    db._exec(
+        cur,
+        "UPDATE dv_integration_batches SET point_count = ?, apparent_demand_count = ? WHERE id = ?",
+        (counts["total"] or 0, counts["apparent_demand_count"] or 0, batch["id"]),
+    )
+
+
+def _sync_integrated_mainstream_statuses(cur) -> int:
+    rows = db._exec(
+        cur,
+        """SELECT id, metric_type, source_country, product, category,
+                  mainstream_status, business_year, business_week
+           FROM dv_integrated_points
+           ORDER BY id DESC""",
+    ).fetchall()
+    changed = 0
+    changed_metrics = set()
+    for raw_row in rows:
+        row = _row_to_dict(raw_row)
+        expected_status = _mainstream_status(row["product"], row["category"])
+        if row["mainstream_status"] == expected_status:
+            continue
+
+        key_params = (
+            row["metric_type"],
+            row["source_country"],
+            row["product"],
+            row["category"],
+            row["business_year"],
+            row["business_week"],
+            expected_status,
+            row["id"],
+        )
+        canonical = db._exec(
+            cur,
+            """SELECT id
+               FROM dv_integrated_points
+               WHERE metric_type = ?
+                 AND source_country = ?
+                 AND product = ?
+                 AND category = ?
+                 AND business_year = ?
+                 AND business_week = ?
+                 AND mainstream_status = ?
+                 AND id != ?
+               ORDER BY id DESC
+               LIMIT 1""",
+            key_params,
+        ).fetchone()
+        if canonical:
+            db._exec(cur, "DELETE FROM dv_integrated_points WHERE id = ?", (row["id"],))
+        else:
+            db._exec(
+                cur,
+                "UPDATE dv_integrated_points SET mainstream_status = ? WHERE id = ?",
+                (expected_status, row["id"]),
+            )
+        changed += 1
+        changed_metrics.add(row["metric_type"])
+
+    if changed:
+        if changed_metrics & {"inventory", "arrival", "apparent_demand"}:
+            batch = db._exec(
+                cur,
+                "SELECT id FROM dv_integration_batches ORDER BY created_at DESC, id DESC LIMIT 1",
+            ).fetchone()
+            if batch:
+                _recalculate_integrated_apparent_demand(cur, batch["id"])
+        _refresh_latest_integration_batch_counts(cur)
+    return changed
 
 
 def _find_col(ws, header_row: int, header_name: str) -> Optional[int]:
@@ -1053,13 +1168,22 @@ def _effective_mainstream_statuses(product_pool: str, mainstream_list: List[str]
 
 def _ordered_mainstream_labels(labels: List[str], label_map: Dict[tuple, str]) -> List[str]:
     original_index = {label: index for index, label in enumerate(labels)}
-    product_by_label: Dict[str, str] = {}
-    for (_source_country, product, _category), label in label_map.items():
-        product_by_label.setdefault(label, product)
+    identity_label_by_label: Dict[str, str] = {}
+    for (_source_country, product, category), label in label_map.items():
+        identity_label_by_label.setdefault(
+            label,
+            MAINSTREAM_PRODUCT_CATEGORY_LABELS.get((product, category), product),
+        )
     return sorted(
         labels,
         key=lambda label: (
-            MAINSTREAM_PRODUCT_ORDER_INDEX.get(product_by_label.get(label, label), len(MAINSTREAM_PRODUCT_ORDER)),
+            MAINSTREAM_PRODUCT_ORDER_INDEX.get(
+                label,
+                MAINSTREAM_PRODUCT_ORDER_INDEX.get(
+                    identity_label_by_label.get(label, label),
+                    len(MAINSTREAM_PRODUCT_ORDER),
+                ),
+            ),
             original_index[label],
         ),
     )
@@ -1688,6 +1812,11 @@ def build_integrated_workbook_bytes() -> bytes:
         ).fetchone()
         if not batch:
             raise HTTPException(status_code=404, detail="暂无可导出的整合结果")
+        _sync_integrated_mainstream_statuses(cur)
+        batch = db._exec(
+            cur,
+            "SELECT * FROM dv_integration_batches ORDER BY created_at DESC, id DESC LIMIT 1",
+        ).fetchone()
         rows = db._exec(
             cur,
             """SELECT *
@@ -2211,6 +2340,7 @@ async def get_filters(user=Depends(dv_current_user)):
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
+            _sync_integrated_mainstream_statuses(cur)
             filter_rows = [
                 _normalize_integrated_point(_row_to_dict(row))
                 for row in db._exec(
@@ -2578,6 +2708,7 @@ async def get_table(
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
+            _sync_integrated_mainstream_statuses(cur)
             if empty_filter_requested:
                 return {"metric": metric, "products": [], "data": []}
             aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, []) if product_pool == "aggregate" else ([], [])
@@ -2805,6 +2936,7 @@ async def get_chart(
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
         if integrated_count:
+            _sync_integrated_mainstream_statuses(cur)
             if empty_filter_requested:
                 return {"metric": metric, "series": {}}
             aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, []) if product_pool == "aggregate" else ([], [])

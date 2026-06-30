@@ -3,7 +3,9 @@ import sys, os
 # Make backend/app a package by adding backend/ to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 from app.data_visualization import (
+    MAINSTREAM_PRODUCT_ORDER,
     MAINSTREAM_PRODUCTS,
+    _mainstream_status,
     compute_business_week,
     _parse_integrated_excel,
     _import_integrated_points,
@@ -25,6 +27,49 @@ from datetime import date, datetime
 from openpyxl import Workbook, load_workbook
 from io import BytesIO
 import asyncio
+
+
+def _insert_integrated_point_direct(db_module, point):
+    with db_module.connect() as conn:
+        cur = conn.cursor()
+        batch_id = db_module._last_insert_id(
+            cur,
+            """INSERT INTO dv_integration_batches
+               (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+               VALUES (?, 'completed', 1, 0, '{}', ?)""",
+            (point.get("source_file", "old.xlsx"), "pytest"),
+        )
+        db_module._exec(
+            cur,
+            """INSERT INTO dv_integrated_points
+               (batch_id, week_start, week_end, business_year, business_week, week_label,
+                display_date, metric_type, source_country, product,
+                category, mainstream_status, value, unit, source_file,
+                source_sheet, source_section, is_calculable, validation_status, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                batch_id,
+                point["week_start"],
+                point["week_end"],
+                point["business_year"],
+                point["business_week"],
+                point["week_label"],
+                point["display_date"],
+                point["metric_type"],
+                point["source_country"],
+                point["product"],
+                point["category"],
+                point["mainstream_status"],
+                point["value"],
+                point.get("unit", "万吨"),
+                point.get("source_file", "old.xlsx"),
+                point.get("source_sheet", "历史"),
+                point.get("source_section", "历史"),
+                point.get("is_calculable", 0),
+                point.get("validation_status", "ok"),
+                point.get("note", ""),
+            ),
+        )
 
 
 def test_compute_business_week_w01():
@@ -68,13 +113,25 @@ def test_split_filter_values_supports_multi_select():
 EXPECTED_MAINSTREAM_PRODUCT_ORDER = [
     "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
     "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
+    "罗伊山MB粉", "印度（粉矿）", "IOC6", "罗伊山MB块", "PMI块",
+    "印度（球团）", "乌克兰（精粉）", "卡拉拉精粉",
 ]
 
 
 def test_mainstream_products_follow_business_definition():
-    assert MAINSTREAM_PRODUCTS == set(EXPECTED_MAINSTREAM_PRODUCT_ORDER)
+    assert MAINSTREAM_PRODUCT_ORDER == EXPECTED_MAINSTREAM_PRODUCT_ORDER
+    assert MAINSTREAM_PRODUCTS == {
+        "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
+        "巴混", "SP10粉", "几内亚粉", "杨迪粉", "罗伊山粉",
+        "罗伊山MB粉", "印度", "IOC6", "罗伊山MB块", "PMI块", "乌克兰", "卡拉拉精粉",
+    }
     for skipped in ["RTX", "RTX块", "高锰粉矿", "未知", "库宾粉", "PB块", "纽曼块"]:
         assert skipped not in MAINSTREAM_PRODUCTS
+    assert _mainstream_status("印度", "粉矿") == "主流"
+    assert _mainstream_status("印度", "球团") == "主流"
+    assert _mainstream_status("印度", "精粉") == "非主流"
+    assert _mainstream_status("乌克兰", "精粉") == "主流"
+    assert _mainstream_status("乌克兰", "球团") == "非主流"
 
 
 def test_parse_integrated_excel_reports_invalid_rows(tmp_path):
@@ -645,6 +702,14 @@ def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_
         dict(base_point, product="PB粉", value=20.0),
         dict(base_point, product="巴混", source_country="巴西", value=30.0),
         dict(base_point, product="金布巴粉", value=40.0),
+        dict(base_point, product="罗伊山MB粉", value=41.0),
+        dict(base_point, source_country="印度", product="印度", category="粉矿", value=42.0),
+        dict(base_point, source_country="巴西", product="IOC6", category="粉矿", value=43.0),
+        dict(base_point, product="罗伊山MB块", category="块矿", value=44.0),
+        dict(base_point, product="PMI块", category="块矿", value=45.0),
+        dict(base_point, source_country="印度", product="印度", category="球团", value=46.0),
+        dict(base_point, source_country="乌克兰", product="乌克兰", category="精粉", value=47.0),
+        dict(base_point, product="卡拉拉精粉", category="精粉", value=48.0),
         dict(base_point, product="南非", source_country="南非", category="全品种",
              mainstream_status="非主流", value=50.0),
     ], ["mysteel.xlsx"], "pytest")
@@ -703,11 +768,153 @@ def test_mainstream_pool_filters_and_orders_products_by_business_definition(tmp_
         user={"role": "管理员"},
     ))
 
-    assert filters["product_pools"]["mainstream"] == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
-    assert table["products"] == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
+    expected_products = [
+        "PB粉", "金布巴粉", "巴混", "罗伊山粉", "罗伊山MB粉", "印度（粉矿）",
+        "IOC6", "罗伊山MB块", "PMI块", "印度（球团）", "乌克兰（精粉）", "卡拉拉精粉",
+    ]
+    assert filters["product_pools"]["mainstream"] == expected_products
+    assert table["products"] == expected_products
     assert "PB块" not in table["products"]
     assert "南非（全品种）" not in table["products"]
-    assert list(chart["series"]) == ["PB粉", "金布巴粉", "巴混", "罗伊山粉"]
+    assert list(chart["series"]) == expected_products
+
+
+def test_syncs_historical_mainstream_labels_for_db_aggregates_and_export(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    base_point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "shipment",
+        "source_country": "巴西",
+        "product": "巴混",
+        "category": "粉矿",
+        "mainstream_status": "非主流",
+        "value": 100.0,
+        "unit": "万吨",
+        "source_file": "old.xlsx",
+        "source_sheet": "历史",
+        "source_section": "历史",
+        "is_calculable": 0,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _insert_integrated_point_direct(db, base_point)
+    _insert_integrated_point_direct(db, dict(base_point, mainstream_status="主流", value=120.0, source_file="new.xlsx"))
+    _insert_integrated_point_direct(db, dict(
+        base_point,
+        source_country="澳洲",
+        product="PB块",
+        category="块矿",
+        mainstream_status="主流",
+        value=70.0,
+        source_file="old_blocks.xlsx",
+    ))
+
+    filters = asyncio.run(get_filters(user={"role": "管理员"}))
+    mainstream_table = asyncio.run(get_table(
+        metric="shipment",
+        years="2026",
+        product_pool="aggregate",
+        products="主流矿合计",
+        user={"role": "管理员"},
+    ))
+    non_mainstream_table = asyncio.run(get_table(
+        metric="shipment",
+        years="2026",
+        product_pool="aggregate",
+        products="非主流矿合计",
+        user={"role": "管理员"},
+    ))
+    workbook_bytes = build_integrated_workbook_bytes()
+    wb = load_workbook(BytesIO(workbook_bytes), read_only=True)
+    ws = wb["整合明细"]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        points = [
+            dict(row) for row in db._exec(
+                cur,
+                """SELECT product, category, mainstream_status, value
+                   FROM dv_integrated_points
+                   WHERE metric_type = 'shipment'
+                   ORDER BY product, category, mainstream_status""",
+            ).fetchall()
+        ]
+
+    assert "巴混" in filters["product_pools"]["mainstream"]
+    assert "PB块" not in filters["product_pools"]["mainstream"]
+    assert points == [
+        {"product": "PB块", "category": "块矿", "mainstream_status": "非主流", "value": 70.0},
+        {"product": "巴混", "category": "粉矿", "mainstream_status": "主流", "value": 120.0},
+    ]
+    assert mainstream_table["data"][0]["主流矿合计"]["value"] == 120.0
+    assert non_mainstream_table["data"][0]["非主流矿合计"]["value"] == 70.0
+
+    header = rows[0]
+    product_idx = header.index("品种")
+    status_idx = header.index("主流/非主流")
+    exported = {
+        row[product_idx]: row[status_idx]
+        for row in rows[1:]
+        if row[product_idx] in {"巴混", "PB块"}
+    }
+    assert exported == {"巴混": "主流", "PB块": "非主流"}
+
+
+def test_mainstream_status_does_not_make_product_apparent_demand_calculable(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    db.init_db()
+
+    point = {
+        "week_start": "2026-06-01",
+        "week_end": "2026-06-07",
+        "business_year": 2026,
+        "business_week": 23,
+        "week_label": "2026 W23",
+        "display_date": "2026-06-02",
+        "metric_type": "inventory",
+        "source_country": "澳洲",
+        "product": "PMI块",
+        "category": "块矿",
+        "mainstream_status": "非主流",
+        "value": 12.0,
+        "unit": "万吨",
+        "source_file": "inventory.xlsx",
+        "source_sheet": "块矿",
+        "source_section": "总计行",
+        "is_calculable": 1,
+        "validation_status": "ok",
+        "note": "",
+    }
+    _save_integrated_points([point], ["inventory.xlsx"], "pytest")
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = [
+            dict(row) for row in db._exec(
+                cur,
+                """SELECT product, category, mainstream_status, is_calculable
+                   FROM dv_integrated_points
+                   ORDER BY id""",
+            ).fetchall()
+        ]
+
+    assert rows == [{
+        "product": "PMI块",
+        "category": "块矿",
+        "mainstream_status": "主流",
+        "is_calculable": 0,
+    }]
 
 
 def test_aggregate_product_filter_applies_to_table_and_chart(tmp_path, monkeypatch):
