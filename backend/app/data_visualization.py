@@ -1268,17 +1268,15 @@ def _filter_rows_by_product_labels(rows: List[Dict[str, Any]], product_list: Lis
 
 def _parse_integrated_excel(file_path):
     import openpyxl
-    wb = openpyxl.load_workbook(file_path, data_only=True)
+    wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
     sheet_name = '整合明细'
     if sheet_name not in wb.sheetnames:
         wb.close()
         return {'rows': [], 'errors': [{'row': 0, 'message': f'未找到「{sheet_name}」sheet'}], 'summary': {}}
 
     ws = wb[sheet_name]
-    headers = []
-    for col in range(1, ws.max_column + 1):
-        hval = ws.cell(row=1, column=col).value
-        headers.append(str(hval).strip() if hval is not None else '')
+    header_values = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), [])
+    headers = [str(hval).strip() if hval is not None else '' for hval in header_values]
 
     col_map = {}
     for idx, header in enumerate(headers):
@@ -1294,11 +1292,11 @@ def _parse_integrated_excel(file_path):
     errors = []
     seen_keys = set()
     duplicate_key_count = 0
-    for row_idx in range(2, ws.max_row + 1):
+    for row_idx, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         row_data = {}
         value_parse_error = False
         for col_idx, field in col_map.items():
-            raw = ws.cell(row=row_idx, column=col_idx).value
+            raw = row_values[col_idx - 1] if col_idx <= len(row_values) else None
             if field == 'business_year':
                 try:
                     row_data[field] = int(raw) if raw is not None else None
