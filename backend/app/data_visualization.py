@@ -1,6 +1,6 @@
 """
 数据可视化管理 — 卡粉 MVP。
-Excel 解析、业务周计算、表需计算、导入预检/确认、数据查询与编辑、图表数据。
+Excel 解析、业务周计算、表需计算、导入预检/确认、数据查询、图表数据。
 """
 from __future__ import annotations
 
@@ -67,11 +67,6 @@ class ImportRequest(BaseModel):
     file_name: str
     preview_id: Optional[str] = None
     overwrite_manual_ids: List[int] = []
-
-
-class ManualEditRequest(BaseModel):
-    data_point_id: int
-    new_value: float
 
 
 class IntegrationUploadFile(BaseModel):
@@ -3056,43 +3051,6 @@ async def get_table(
         "products": products,
         "data": list(week_map.values()),
     }
-
-
-@router.put("/data-visualization/value")
-async def update_value(
-    payload: ManualEditRequest,
-    user=Depends(dv_current_user),
-):
-    dv_require_edit("data_visualization_data", user)
-
-    with db.connect() as conn:
-        cur = conn.cursor()
-        existing = db._exec(
-            cur,
-            """SELECT id, display_value, metric_type
-               FROM dv_data_points WHERE id = ?""",
-            (payload.data_point_id,),
-        ).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="数据点不存在")
-
-        old_val = existing["display_value"]
-        metric_type = existing["metric_type"]
-        user_name = user["name"]
-
-        db._exec(
-            cur,
-            """UPDATE dv_data_points
-               SET manual_value = ?, display_value = ?, is_manual_override = 1,
-                   source = '手工修改', updated_by = ?
-               WHERE id = ?""",
-            (payload.new_value, payload.new_value, user_name, payload.data_point_id),
-        )
-
-        if metric_type in ("shipment", "inventory"):
-            recalc_apparent_demand(conn)
-
-    return {"ok": True, "data_point_id": payload.data_point_id, "new_value": payload.new_value}
 
 
 # ── GET /api/data-visualization/chart ─────────────────────────────────

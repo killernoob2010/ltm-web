@@ -117,6 +117,17 @@ def test_integrated_export_uses_streaming_workbook():
     assert ".columns" not in source
 
 
+def test_manual_value_edit_route_is_not_registered():
+    from app.data_visualization import router
+
+    routes = {
+        (tuple(route.methods or ()), getattr(route, "path", ""))
+        for route in router.routes
+    }
+
+    assert (("PUT",), "/data-visualization/value") not in routes
+
+
 EXPECTED_MAINSTREAM_PRODUCT_ORDER = [
     "PB粉", "麦克粉", "纽曼粉", "金布巴粉", "超特粉", "混合粉", "卡粉",
     "巴混", "SP10粉", "几内亚（粉矿）", "杨迪粉", "罗伊山粉",

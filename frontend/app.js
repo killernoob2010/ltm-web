@@ -2538,19 +2538,17 @@ function renderDVTable(result) {
         var p = products[pi];
         var pd = row[p] || {};
         var val = pd.value;
-        var id = pd.id || '';
         var cls = 'dv-value-cell';
         if (pd.is_manual_override) cls += ' manual-override';
         if (pd.is_missing_filled) cls += ' missing-filled';
         var title = tooltipText(pd);
-        cells += '<td class="' + cls + '" data-id="' + id + '" data-value="' + (val != null ? val : '') + '" title="' + title + '">' +
+        cells += '<td class="' + cls + '" title="' + title + '">' +
           (val != null ? formatNumber(val) : '-') + '</td>';
       }
       return '<tr><td>' + formatDateOnly(row.date) + '</td><td>' + row.week + '</td>' + cells + '</tr>';
     })
     .join('');
 
-  attachInlineEdit();
 }
 
 function escapeHtml(value) {
@@ -2622,53 +2620,6 @@ function drawDVMonthAxis(ctx, xScale, y) {
   ctx.textAlign = "center";
   DV_MONTH_AXIS_TICKS.forEach(function(tick) {
     ctx.fillText(tick.label, xScale(tick.week), y);
-  });
-}
-
-// ── Inline edit ────────────────────────────────────────────────────────
-function attachInlineEdit() {
-  dvDataTbody.querySelectorAll(".dv-value-cell").forEach(function(cell) {
-    if (!cell.dataset.id) return;
-    cell.addEventListener("dblclick", function() { startInlineEdit(cell); });
-  });
-}
-
-function startInlineEdit(cell) {
-  var tr = cell.closest("tr");
-  var id = parseInt(cell.dataset.id);
-  var current = cell.dataset.value;
-  var input = document.createElement("input");
-  input.type = "number";
-  input.step = "any";
-  input.value = current;
-  input.className = "dv-inline-input";
-  cell.textContent = "";
-  cell.appendChild(input);
-  input.focus();
-  input.select();
-
-  var save = async function() {
-    var val = parseFloat(input.value);
-    if (isNaN(val)) {
-      cell.textContent = current || "-";
-      return;
-    }
-    try {
-      await api("/api/data-visualization/value", {
-        method: "PUT",
-        body: JSON.stringify({ data_point_id: id, new_value: val }),
-      });
-      loadDVTable(dvState.currentMetric);
-    } catch (err) {
-      cell.textContent = current || "-";
-      alert("保存失败: " + err.message);
-    }
-  };
-
-  input.addEventListener("blur", save);
-  input.addEventListener("keydown", function(e) {
-    if (e.key === "Enter") { input.blur(); }
-    if (e.key === "Escape") { cell.textContent = current || "-"; }
   });
 }
 

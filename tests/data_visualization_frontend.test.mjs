@@ -10,6 +10,10 @@ const integrationSection = indexHtml.slice(
   indexHtml.indexOf('id="dvIntegrationPage"'),
   indexHtml.indexOf('id="dvDataPage"'),
 );
+const dataManagementScriptSection = appJs.slice(
+  appJs.indexOf("async function loadDVTable"),
+  appJs.indexOf("// ── Excel import"),
+);
 
 test("data visualization filters preserve empty selections", () => {
   assert.match(appJs, /function appendMultiSelectParam\(/);
@@ -17,8 +21,12 @@ test("data visualization filters preserve empty selections", () => {
   assert.match(appJs, /__EMPTY__/);
 });
 
-test("integrated data cells without ids are not inline editable", () => {
-  assert.match(appJs, /if \(!cell\.dataset\.id\) return;/);
+test("data management table cells are view-only", () => {
+  assert.doesNotMatch(dataManagementScriptSection, /attachInlineEdit/);
+  assert.doesNotMatch(dataManagementScriptSection, /startInlineEdit/);
+  assert.doesNotMatch(dataManagementScriptSection, /addEventListener\("dblclick"/);
+  assert.doesNotMatch(dataManagementScriptSection, /\/api\/data-visualization\/value/);
+  assert.doesNotMatch(stylesCss, /\.dv-inline-input/);
 });
 
 test("data visualization chart page exposes arrival and chart modes", () => {
