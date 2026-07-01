@@ -1,6 +1,6 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import calendar
 import csv
 import io
@@ -27,7 +27,13 @@ from .cache_service import (
     import_desktop_cache,
     save_calculated_data,
 )
-from .info_summary_backfill import BackfillRequest, run_all_info_summary_backfills, get_last_backfill_status
+from .info_summary_backfill import (
+    BackfillRequest,
+    get_last_backfill_status,
+    get_last_close_cache_update_status,
+    run_all_info_summary_backfills,
+    start_daily_close_cache_scheduler,
+)
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import data_visualization, order_finance
 
@@ -43,6 +49,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+HISTORY_CACHE_MAX_STALE_DAYS = 7
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
@@ -1066,14 +1074,22 @@ def cache_month_key(payload: InfoCalculateIn) -> Optional[str]:
         return f"{(payload.month1 or '09').zfill(2)}_{(payload.month2 or '01').zfill(2)}"
     if payload.info_type in ["内外盘差", "内外盘差2"]:
         return payload.month.zfill(2)
-    return str(payload.year)
+    return payload.month.zfill(2)
 
 
-def response_from_cache(payload: InfoCalculateIn, cached: Optional[dict], realtime: dict) -> dict:
+def response_from_cache(
+    payload: InfoCalculateIn,
+    cached: Optional[dict],
+    realtime: dict,
+    history_calc_date: Optional[str] = None,
+) -> dict:
+    history_calc_date = history_calc_date or (cached.get("calc_date") if cached else None)
     return {
         "info_type": payload.info_type,
         "calc_date": payload.calc_date,
         "cache_hit": cached is not None and cached.get("t_1_value") is not None,
+        "history_calc_date": history_calc_date,
+        "history_stale": bool(history_calc_date and history_calc_date != payload.calc_date),
         "today_value": realtime.get("today_value"),
         "contracts": realtime.get("contracts", {}),
         "t_1_value": cached.get("t_1_value") if cached else None,
@@ -1086,14 +1102,21 @@ def response_from_cache(payload: InfoCalculateIn, cached: Optional[dict], realti
 
 
 def indicator_contracts_for_cache(payload: InfoCalculateIn) -> list[str]:
+    yy = two_digit_year(payload.year)
+    month = payload.month.zfill(2)
     if payload.info_type == "卷螺差":
-        return ["HC0", "RB0"]
+        return [f"HC{yy}{month}", f"RB{yy}{month}"]
     if payload.info_type == "螺矿比":
-        return ["RB0", "I0"]
+        rb_month = "10" if month == "09" else month
+        i_month = "09" if month == "09" else month
+        return [f"RB{yy}{rb_month}", f"I{yy}{i_month}"]
     if payload.info_type == "煤矿比":
-        return ["JM0", "I0"]
+        return [f"JM{yy}{month}", f"I{yy}{month}"]
     if payload.info_type == "盘面钢厂利润":
-        return ["RB0", "I0", "J0"]
+        rb_month = "10" if month == "09" else month
+        i_month = "09" if month == "09" else month
+        j_month = "09" if month == "09" else month
+        return [f"RB{yy}{rb_month}", f"I{yy}{i_month}", f"J{yy}{j_month}"]
     if payload.info_type in MONTH_DIFF_TYPES:
         variety = "FE" if payload.info_type == "掉期月差" else "I"
         y1 = two_digit_year(payload.year1 or payload.year)
@@ -1126,11 +1149,11 @@ def calculate_missing_cache_from_prices(payload: InfoCalculateIn) -> Optional[di
         return None
 
     dates = sorted(set.intersection(*(set(price_data[code].keys()) for code in contract_codes)))
-    if payload.calc_date not in dates:
+    dates = [day for day in dates if day < payload.calc_date]
+    if not dates:
         return None
-
-    calc_index = dates.index(payload.calc_date)
-    if calc_index < 1:
+    latest_price_date = date.fromisoformat(dates[-1])
+    if latest_price_date < date.fromisoformat(payload.calc_date) - timedelta(days=HISTORY_CACHE_MAX_STALE_DAYS):
         return None
 
     def value_for_date(day: str) -> Optional[float]:
@@ -1139,9 +1162,9 @@ def calculate_missing_cache_from_prices(payload: InfoCalculateIn) -> Optional[di
             return None
         return value_from_cached_prices(payload.info_type, prices)
 
-    t_1_value = value_for_date(dates[calc_index - 1])
-    t_2_value = value_for_date(dates[calc_index - 2]) if calc_index >= 2 else None
-    window_dates = dates[max(0, calc_index - 180):calc_index]
+    t_1_value = value_for_date(dates[-1])
+    t_2_value = value_for_date(dates[-2]) if len(dates) >= 2 else None
+    window_dates = dates[-180:]
     values = [value_for_date(day) for day in window_dates]
     values = [value for value in values if value is not None]
     if not values:
@@ -1176,6 +1199,7 @@ def startup() -> None:
 
     threading.Thread(target=initialize_database, daemon=True).start()
     start_alert_monitor()
+    start_daily_close_cache_scheduler()
 
 
 def current_user(authorization: Optional[str] = Header(default=None)):
@@ -1533,11 +1557,20 @@ def calculate_info_summary_payload(
         month_results = {}
         for month in INNER_OUTER_MONTHS:
             cached = get_cached_data(payload.info_type, payload.year, month, payload.calc_date)
+            history_calc_date = cached.get("calc_date") if cached else None
             if not fill_missing_history and (not cached or cached.get("t_1_value") is None):
-                cached = get_latest_cached_data(payload.info_type, payload.year, month, payload.calc_date) or cached
+                latest_cached = get_latest_cached_data(payload.info_type, payload.year, month, payload.calc_date)
+                if latest_cached and latest_cached.get("calc_date") == payload.calc_date:
+                    cached = latest_cached
+                    history_calc_date = latest_cached.get("calc_date")
+                elif latest_cached and not cached:
+                    history_calc_date = latest_cached.get("calc_date")
+            history_stale = bool(history_calc_date and history_calc_date != payload.calc_date)
             month_results[month] = {
                 **(cached or {}),
                 "cache_hit": cached is not None and cached.get("t_1_value") is not None,
+                "history_calc_date": history_calc_date,
+                "history_stale": history_stale,
                 "today_value": realtime["month_values"].get(month),
                 "contracts": realtime["contracts"].get(month, {}),
             }
@@ -1553,16 +1586,32 @@ def calculate_info_summary_payload(
     realtime = calculate_today_indicator(payload, mock=mock, quote_provider=quote_provider)
     month_key = cache_month_key(payload)
     cached = get_cached_data(payload.info_type, payload.year, month_key, payload.calc_date)
+    history_calc_date = cached.get("calc_date") if cached else None
     if not fill_missing_history and (not cached or cached.get("t_1_value") is None or cached.get("std_value") is None):
-        cached = get_latest_cached_data(payload.info_type, payload.year, month_key, payload.calc_date) or cached
+        calculated = calculate_missing_cache_from_prices(payload)
+        if calculated:
+            cached = {**calculated, "calc_date": payload.calc_date}
+            history_calc_date = payload.calc_date
+        else:
+            latest_cached = get_latest_cached_data(payload.info_type, payload.year, month_key, payload.calc_date)
+            if latest_cached and latest_cached.get("calc_date") == payload.calc_date:
+                cached = latest_cached
+                history_calc_date = latest_cached.get("calc_date")
+            elif latest_cached and not cached:
+                history_calc_date = latest_cached.get("calc_date")
     if fill_missing_history and (not cached or cached.get("t_1_value") is None or cached.get("std_value") is None):
-        cached = calculate_missing_cache_from_prices(payload) or get_latest_cached_data(
-            payload.info_type,
-            payload.year,
-            month_key,
-            payload.calc_date,
-        ) or cached
-    return response_from_cache(payload, cached, realtime)
+        calculated = calculate_missing_cache_from_prices(payload)
+        if calculated:
+            cached = {**calculated, "calc_date": payload.calc_date}
+            history_calc_date = payload.calc_date
+        else:
+            latest_cached = get_latest_cached_data(payload.info_type, payload.year, month_key, payload.calc_date)
+            if latest_cached and latest_cached.get("calc_date") == payload.calc_date:
+                cached = latest_cached
+                history_calc_date = latest_cached.get("calc_date")
+            elif latest_cached and not cached:
+                history_calc_date = latest_cached.get("calc_date")
+    return response_from_cache(payload, cached, realtime, history_calc_date=history_calc_date)
 
 
 @app.post("/api/info-summary/calculate-all")
@@ -1637,6 +1686,7 @@ def info_summary_cache_status(user=Depends(current_user)):
         "cache_counts": cache_counts(),
         "indicators": [indicators[key] for key in indicators],
         "last_backfill": get_last_backfill_status(),
+        "last_close_cache_update": get_last_close_cache_update_status(),
     }
 
 

@@ -44,6 +44,16 @@ test("info summary batch payload uses the selected month controls", () => {
   assert.match(appJs, /month2: card\.querySelector\("\.info-month2"\)\?\.value \|\| undefined/);
 });
 
+test("info summary stale history is labelled instead of shown as current history", () => {
+  assert.match(appJs, /history_stale/);
+  assert.match(appJs, /历史缓存截至/);
+});
+
+test("info summary cache status includes daily close update state", () => {
+  assert.match(appJs, /last_close_cache_update/);
+  assert.match(appJs, /自动收盘缓存/);
+});
+
 test("risk alert notifications avoid overlapping fast polling", () => {
   assert.match(appJs, /alertNotificationInFlight:\s*false/);
   assert.match(appJs, /if \(state\.alertNotificationInFlight\) return;/);

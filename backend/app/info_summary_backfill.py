@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from datetime import datetime
+from datetime import datetime, time as datetime_time
 import json
 import re
 import statistics
+import threading
+import time
 from typing import Optional, Protocol
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -21,9 +24,14 @@ from .cache_service import (
 
 _last_backfill_result = None
 _last_backfill_time = None
+_last_close_cache_update_date = None
+_last_close_cache_update_status = None
+_close_cache_scheduler_started = False
 
 
 INFO_SUMMARY_TYPES = ["卷螺差", "螺矿比", "煤矿比", "盘面钢厂利润", "月差", "掉期月差", "内外盘差", "内外盘差2"]
+INFO_SUMMARY_CLOSE_CACHE_TIME = datetime_time(16, 30)
+INFO_SUMMARY_CLOSE_CACHE_TZ = ZoneInfo("Asia/Shanghai")
 
 def get_last_backfill_status():
     """返回最近一次回填的状态摘要，供 status API 使用。"""
@@ -44,6 +52,10 @@ def get_last_backfill_status():
             for r in _last_backfill_result
         ],
     }
+
+
+def get_last_close_cache_update_status():
+    return _last_close_cache_update_status
 
 
 @dataclass
@@ -169,6 +181,82 @@ def run_all_info_summary_backfills(
     _last_backfill_result = results
     _last_backfill_time = datetime.now().isoformat()
     return results
+
+
+def maybe_run_daily_close_cache_update(
+    now: Optional[datetime] = None,
+    provider: Optional[HistoryProvider] = None,
+    force: bool = False,
+) -> dict:
+    """Run the daily close-price cache update once after the configured close time."""
+    current = now or datetime.now(INFO_SUMMARY_CLOSE_CACHE_TZ)
+    current_date = current.date().isoformat()
+    global _last_close_cache_update_date, _last_close_cache_update_status
+
+    if current.time() < INFO_SUMMARY_CLOSE_CACHE_TIME:
+        return {
+            "status": "waiting",
+            "date": current_date,
+            "message": "未到收盘缓存更新时间",
+        }
+    if not force and _last_close_cache_update_date == current_date:
+        return {
+            "status": "skipped",
+            "date": current_date,
+            "message": "今日收盘缓存已更新",
+            "last_status": _last_close_cache_update_status,
+        }
+
+    request = BackfillRequest(calc_date=current_date, force=force)
+    results = run_all_info_summary_backfills(request, provider=provider)
+    failed = [item for item in results if item.status == "failed"]
+    status = "failed" if failed and len(failed) == len(results) else "success"
+    if failed and len(failed) < len(results):
+        status = "partial"
+    summary = {
+        "status": status,
+        "date": current_date,
+        "message": "收盘历史缓存已更新" if status == "success" else "收盘历史缓存部分指标需检查",
+        "results": [
+            {
+                "info_type": item.info_type,
+                "status": item.status,
+                "message": item.message,
+                "latest_price_date": item.latest_price_date,
+                "latest_calculated_date": item.latest_calculated_date,
+            }
+            for item in results
+        ],
+    }
+    _last_close_cache_update_date = current_date
+    _last_close_cache_update_status = summary
+    return summary
+
+
+def _daily_close_cache_loop(interval_seconds: int = 300) -> None:
+    while True:
+        try:
+            maybe_run_daily_close_cache_update()
+        except Exception as exc:
+            global _last_close_cache_update_status
+            _last_close_cache_update_status = {
+                "status": "failed",
+                "date": datetime.now(INFO_SUMMARY_CLOSE_CACHE_TZ).date().isoformat(),
+                "message": str(exc),
+                "results": [],
+            }
+        time.sleep(interval_seconds)
+
+
+def start_daily_close_cache_scheduler(interval_seconds: int = 300) -> bool:
+    """Start the background daily close cache scheduler once per process."""
+    global _close_cache_scheduler_started
+    if _close_cache_scheduler_started:
+        return False
+    _close_cache_scheduler_started = True
+    thread = threading.Thread(target=_daily_close_cache_loop, args=(interval_seconds,), daemon=True)
+    thread.start()
+    return True
 
 
 def run_info_summary_backfill(payload: object, provider: Optional[HistoryProvider] = None, force: bool = False) -> BackfillResult:

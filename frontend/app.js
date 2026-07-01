@@ -538,7 +538,11 @@ function buildInfoPayload(card) {
 function applyInfoResult(card, result) {
   const status = card.querySelector(".status-value");
   fillInfoResult(card, result);
-  status.textContent = result.cache_hit ? "已读取缓存并刷新今日值" : "缓存未命中，已刷新今日值";
+  if (result.history_stale && result.history_calc_date) {
+    status.textContent = `历史缓存截至 ${result.history_calc_date}，已刷新今日值`;
+  } else {
+    status.textContent = result.cache_hit ? "已读取缓存并刷新今日值" : "缓存未命中，已刷新今日值";
+  }
 }
 
 async function calculateInfoCard(card, mock = false) {
@@ -629,7 +633,11 @@ function updateInfoCacheStatus(message) {
   const dates = indicators.flatMap((item) => [item.latest_price_date, item.latest_calculated_date]).filter(Boolean);
   dates.sort();
   const latestDate = dates.length ? dates[dates.length - 1] : "--";
-  infoCacheStatus.textContent = `历史缓存截至：${latestDate}｜${message}`;
+  const closeUpdate = state.infoCacheStatus?.last_close_cache_update;
+  const closeUpdateText = closeUpdate
+    ? `｜自动收盘缓存：${closeUpdate.date || "--"} ${closeUpdate.status || "--"}`
+    : "";
+  infoCacheStatus.textContent = `历史缓存截至：${latestDate}｜${message}${closeUpdateText}`;
 }
 
 async function refreshInfoCache() {

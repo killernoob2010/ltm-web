@@ -1,17 +1,27 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app import db
+from backend.app import info_summary_backfill
 from backend.app.info_summary_backfill import (
     BackfillRequest,
     get_last_backfill_status,
     StaticHistoryProvider,
     build_backfill_jobs,
+    maybe_run_daily_close_cache_update,
     run_info_summary_backfill,
     run_all_info_summary_backfills,
 )
-from backend.app.main import InfoCalculateIn
+from backend.app.cache_service import save_daily_prices_batch
+from backend.app.main import (
+    InfoCalculateAllIn,
+    InfoCalculateIn,
+    calculate_info_summary_all,
+    calculate_missing_cache_from_prices,
+)
 
 
 class TempDbTestCase(unittest.TestCase):
@@ -123,6 +133,7 @@ class InfoSummaryBackfillTest(TempDbTestCase):
         self.assertIn("cache_counts", status)
         self.assertIn("indicators", status)
         self.assertIn("last_backfill", status)
+        self.assertIn("last_close_cache_update", status)
 
     def test_force_false_skips_when_recent_data_exists(self):
         provider = StaticHistoryProvider({
@@ -187,6 +198,120 @@ class InfoSummaryBackfillTest(TempDbTestCase):
         self.assertEqual(len(status["results"]), 1)
         self.assertEqual(status["results"][0]["info_type"], "月差")
         self.assertEqual(status["results"][0]["status"], "success")
+
+    def test_missing_cache_uses_previous_trading_days_for_request_date(self):
+        save_daily_prices_batch([
+            ("月差", "I2609", "2026-06-26", 748.0),
+            ("月差", "I2701", "2026-06-26", 735.5),
+            ("月差", "I2609", "2026-06-29", 746.0),
+            ("月差", "I2701", "2026-06-29", 734.5),
+            ("月差", "I2609", "2026-06-30", 747.0),
+            ("月差", "I2701", "2026-06-30", 736.5),
+        ])
+        payload = InfoCalculateIn(
+            info_type="月差",
+            year=2026,
+            calc_date="2026-07-01",
+            year1=2026,
+            month1="09",
+            year2=2027,
+            month2="01",
+        )
+
+        result = calculate_missing_cache_from_prices(payload)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["t_1_value"], 10.5)
+        self.assertEqual(result["t_2_value"], 11.5)
+        with db.connect() as conn:
+            cur = conn.cursor()
+            row = db._exec(
+                cur,
+                """
+                SELECT t_1_value, t_2_value
+                FROM calculated_data
+                WHERE info_type = ? AND year = ? AND month = ? AND calc_date = ?
+                """,
+                ("月差", 2026, "09_01", "2026-07-01"),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["t_1_value"], 10.5)
+
+    def test_missing_cache_rejects_stale_price_history(self):
+        save_daily_prices_batch([
+            ("月差", "I2609", "2026-06-08", 759.0),
+            ("月差", "I2701", "2026-06-08", 744.0),
+            ("月差", "I2609", "2026-06-09", 760.0),
+            ("月差", "I2701", "2026-06-09", 744.5),
+        ])
+        payload = InfoCalculateIn(
+            info_type="月差",
+            year=2026,
+            calc_date="2026-07-01",
+            year1=2026,
+            month1="09",
+            year2=2027,
+            month2="01",
+        )
+
+        self.assertIsNone(calculate_missing_cache_from_prices(payload))
+
+    def test_calculate_all_reads_fresh_history_from_cached_prices(self):
+        save_daily_prices_batch([
+            ("月差", "I2609", "2026-06-26", 748.0),
+            ("月差", "I2701", "2026-06-26", 735.5),
+            ("月差", "I2609", "2026-06-29", 746.0),
+            ("月差", "I2701", "2026-06-29", 734.5),
+            ("月差", "I2609", "2026-06-30", 747.0),
+            ("月差", "I2701", "2026-06-30", 736.5),
+        ])
+        payload = InfoCalculateAllIn(items=[
+            InfoCalculateIn(
+                info_type="月差",
+                year=2026,
+                calc_date="2026-07-01",
+                year1=2026,
+                month1="09",
+                year2=2027,
+                month2="01",
+            )
+        ])
+
+        from unittest.mock import patch
+        with patch("backend.app.main.fetch_sina_price", side_effect=[747.0, 737.0]), \
+             patch("backend.app.main.db.log_operation"):
+            result = calculate_info_summary_all(payload, user={"id": 1, "role": "管理员"})
+
+        card = result["cards"][0]
+        self.assertEqual(card["today_value"], 10.0)
+        self.assertEqual(card["t_1_value"], 10.5)
+        self.assertEqual(card["t_2_value"], 11.5)
+        self.assertTrue(card["cache_hit"])
+        self.assertFalse(card["history_stale"])
+        self.assertEqual(card["history_calc_date"], "2026-07-01")
+
+    def test_daily_close_cache_update_waits_until_after_close_time(self):
+        info_summary_backfill._last_close_cache_update_date = None
+
+        with patch("backend.app.info_summary_backfill.run_all_info_summary_backfills") as runner:
+            result = maybe_run_daily_close_cache_update(now=datetime(2026, 7, 1, 15, 30))
+
+        self.assertEqual(result["status"], "waiting")
+        runner.assert_not_called()
+
+    def test_daily_close_cache_update_runs_once_per_day_after_close(self):
+        info_summary_backfill._last_close_cache_update_date = None
+
+        with patch("backend.app.info_summary_backfill.run_all_info_summary_backfills", return_value=[]) as runner:
+            first = maybe_run_daily_close_cache_update(now=datetime(2026, 7, 1, 16, 30))
+            second = maybe_run_daily_close_cache_update(now=datetime(2026, 7, 1, 17, 30))
+
+        self.assertEqual(first["status"], "success")
+        self.assertEqual(second["status"], "skipped")
+        runner.assert_called_once()
+        request = runner.call_args.args[0]
+        self.assertEqual(request.calc_date, "2026-07-01")
+        self.assertFalse(request.force)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ def get_cached_data(info_type: str, year: int, month: Optional[str], calc_date: 
         cur = conn.cursor()
         row = db._exec(cur, 
             f"""
-            SELECT t_1_value, t_2_value, mean_value, min_value, max_value, std_value
+            SELECT calc_date, t_1_value, t_2_value, mean_value, min_value, max_value, std_value
             FROM calculated_data
             WHERE info_type = ? AND year = ? AND {month_matches_clause()} AND calc_date = ?
             """,
@@ -31,6 +31,7 @@ def get_cached_data(info_type: str, year: int, month: Optional[str], calc_date: 
     if not row:
         return None
     return {
+        "calc_date": row["calc_date"],
         "t_1_value": row["t_1_value"],
         "t_2_value": row["t_2_value"],
         "mean_value": row["mean_value"],
@@ -45,7 +46,7 @@ def get_latest_cached_data(info_type: str, year: int, month: Optional[str], calc
         cur = conn.cursor()
         row = db._exec(cur, 
             f"""
-            SELECT t_1_value, t_2_value, mean_value, min_value, max_value, std_value
+            SELECT calc_date, t_1_value, t_2_value, mean_value, min_value, max_value, std_value
             FROM calculated_data
             WHERE info_type = ? AND year = ? AND {month_matches_clause()} AND calc_date <= ?
             ORDER BY calc_date DESC
@@ -56,6 +57,7 @@ def get_latest_cached_data(info_type: str, year: int, month: Optional[str], calc
     if not row:
         return None
     return {
+        "calc_date": row["calc_date"],
         "t_1_value": row["t_1_value"],
         "t_2_value": row["t_2_value"],
         "mean_value": row["mean_value"],

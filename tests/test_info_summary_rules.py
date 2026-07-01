@@ -6,6 +6,7 @@ from backend.app.main import (
     InfoCalculateIn,
     InfoCalculateAllIn,
     cache_month_key,
+    calculate_info_summary_payload,
     calculate_info_summary_all,
     calculate_today_indicator,
     default_info_contracts,
@@ -55,6 +56,30 @@ class InfoSummaryRulesTest(unittest.TestCase):
         self.assertEqual(indicator_contracts_for_cache(payload), ["FE2609", "FE2701"])
         self.assertEqual(value_from_cached_prices("掉期月差", [103.5, 99.0]), 4.5)
 
+    def test_regular_history_cache_uses_selected_contract_month(self):
+        self.assertEqual(
+            cache_month_key(InfoCalculateIn(info_type="螺矿比", year=2026, month="09", calc_date="2026-07-01")),
+            "09",
+        )
+        self.assertEqual(
+            indicator_contracts_for_cache(
+                InfoCalculateIn(info_type="卷螺差", year=2026, month="09", calc_date="2026-07-01")
+            ),
+            ["HC2609", "RB2609"],
+        )
+        self.assertEqual(
+            indicator_contracts_for_cache(
+                InfoCalculateIn(info_type="螺矿比", year=2026, month="09", calc_date="2026-07-01")
+            ),
+            ["RB2610", "I2609"],
+        )
+        self.assertEqual(
+            indicator_contracts_for_cache(
+                InfoCalculateIn(info_type="盘面钢厂利润", year=2026, month="09", calc_date="2026-07-01")
+            ),
+            ["RB2610", "I2609", "J2609"],
+        )
+
     def test_calculate_all_reuses_shared_realtime_quotes(self):
         calls = []
         fx_calls = []
@@ -83,7 +108,7 @@ class InfoSummaryRulesTest(unittest.TestCase):
 
         with patch("backend.app.main.fetch_sina_price", side_effect=fake_fetch_sina_price), \
              patch("backend.app.main.fetch_sgx_usdcnh_rate", side_effect=fake_fetch_sgx_rate), \
-             patch("backend.app.main.calculate_missing_cache_from_prices") as missing_cache:
+             patch("backend.app.main.calculate_missing_cache_from_prices", return_value=None) as missing_cache:
             result = calculate_info_summary_all(payload, user={"id": 1, "role": "管理员"})
 
         self.assertEqual(len(result["cards"]), 3)
@@ -93,34 +118,72 @@ class InfoSummaryRulesTest(unittest.TestCase):
         self.assertEqual(calls.count(("J", "2609")), 1)
         self.assertEqual(calls.count(("FE", "2609")), 1)
         self.assertIn(("2609", True), fx_calls)
-        missing_cache.assert_not_called()
+        self.assertEqual(missing_cache.call_count, 2)
 
-    def test_calculate_all_reads_latest_history_without_recalculating(self):
+    def test_calculate_all_does_not_show_stale_history_as_yesterday(self):
         payload = InfoCalculateAllIn(items=[
-            InfoCalculateIn(info_type="煤矿比", year=2026, month="09", calc_date="2026-06-24"),
+            InfoCalculateIn(
+                info_type="月差",
+                year=2026,
+                calc_date="2026-07-01",
+                year1=2026,
+                month1="09",
+                year2=2027,
+                month2="01",
+            ),
         ])
         latest = {
-            "t_1_value": 3.24,
-            "t_2_value": 3.18,
-            "mean_value": 2.85,
-            "min_value": 2.41,
-            "max_value": 3.24,
-            "std_value": 0.21,
+            "calc_date": "2026-06-10",
+            "t_1_value": 15.0,
+            "t_2_value": 16.0,
+            "mean_value": 16.71,
+            "min_value": 10.5,
+            "max_value": 24.0,
+            "std_value": 3.08,
         }
 
-        with patch("backend.app.main.fetch_sina_price", side_effect=[1230.0, 805.0]), \
+        with patch("backend.app.main.fetch_sina_price", side_effect=[744.5, 734.5]), \
              patch("backend.app.main.get_cached_data", return_value=None), \
              patch("backend.app.main.get_latest_cached_data", return_value=latest), \
-             patch("backend.app.main.calculate_missing_cache_from_prices") as missing_cache, \
+             patch("backend.app.main.calculate_missing_cache_from_prices", return_value=None) as missing_cache, \
              patch("backend.app.main.db.log_operation"):
             result = calculate_info_summary_all(payload, user={"id": 1, "role": "管理员"})
 
         card = result["cards"][0]
-        self.assertEqual(card["today_value"], 1.88 * 1230.0 / 805.0)
-        self.assertEqual(card["t_1_value"], 3.24)
-        self.assertEqual(card["std_value"], 0.21)
-        self.assertTrue(card["cache_hit"])
-        missing_cache.assert_not_called()
+        self.assertEqual(card["today_value"], 10.0)
+        self.assertIsNone(card["t_1_value"])
+        self.assertIsNone(card["t_2_value"])
+        self.assertIsNone(card["std_value"])
+        self.assertFalse(card["cache_hit"])
+        self.assertTrue(card["history_stale"])
+        self.assertEqual(card["history_calc_date"], "2026-06-10")
+        missing_cache.assert_called_once()
+
+    def test_inner_outer_does_not_mark_stale_cache_as_hit(self):
+        payload = InfoCalculateIn(info_type="内外盘差", year=2026, month="09", calc_date="2026-07-01")
+        latest = {
+            "calc_date": "2026-06-11",
+            "t_1_value": 81.41,
+            "t_2_value": 80.0,
+            "mean_value": 75.0,
+            "min_value": 70.0,
+            "max_value": 82.0,
+            "std_value": 3.0,
+        }
+        realtime = {
+            "month_values": {"05": None, "06": None, "07": None, "08": None, "09": 82.0},
+            "contracts": {"05": {}, "06": {}, "07": {}, "08": {}, "09": {"I": "I2609"}},
+        }
+
+        with patch("backend.app.main.calculate_inner_outer_months", return_value=realtime), \
+             patch("backend.app.main.get_cached_data", return_value=None), \
+             patch("backend.app.main.get_latest_cached_data", return_value=latest):
+            result = calculate_info_summary_payload(payload, fill_missing_history=False)
+
+        self.assertFalse(result["cache_hit"])
+        self.assertFalse(result["month_results"]["09"]["cache_hit"])
+        self.assertTrue(result["month_results"]["09"]["history_stale"])
+        self.assertEqual(result["month_results"]["09"]["history_calc_date"], "2026-06-11")
 
 
 if __name__ == "__main__":
