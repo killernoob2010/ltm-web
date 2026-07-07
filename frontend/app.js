@@ -456,7 +456,7 @@ async function bootstrap() {
     showLogin();
     return;
   }
-  currentUser.textContent = `${state.user.name}｜${state.user.role}`;
+  currentUser.textContent = isGuest() ? "访客" : `${state.user.name}｜${state.user.role}`;
   showApp();
   renderMenu();
   applyUiPermissions();
@@ -471,10 +471,6 @@ async function loadInfoSummary() {
   renderInfoCards();
   updateInfoCacheStatus("读取中");
   loadInfoCacheStatus().catch((error) => updateInfoCacheStatus(error.message));
-  if (isGuest()) {
-    updateInfoStatus("访客只读模式");
-    return;
-  }
   updateInfoStatus("展示已加载，正在自动计算");
   calculateAllInfo(false).catch((error) => updateInfoStatus(error.message));
 }
@@ -665,7 +661,7 @@ async function calculateAllInfo(mock = false) {
     return;
   }
   const cards = [...infoCards.querySelectorAll(".info-section")];
-  if (!cards.length || isGuest()) {
+  if (!cards.length) {
     await loadInfoCacheStatus();
     updateInfoStatus("只读刷新已完成");
     return;
@@ -811,10 +807,6 @@ function stopInfoSummaryAutoRefresh() {
 
 function startInfoSummaryAutoRefresh() {
   stopInfoSummaryAutoRefresh();
-  if (isGuest()) {
-    updateInfoStatus("访客只读模式");
-    return;
-  }
   updateInfoStatus("自动刷新：开启");
 }
 

@@ -35,6 +35,18 @@ test("info summary auto calculates on page load with in-flight guard", () => {
   assert.doesNotMatch(body, /setInterval/);
 });
 
+test("guest info summary refresh still calculates display data", () => {
+  const loadStart = appJs.indexOf("async function loadInfoSummary()");
+  const loadEnd = appJs.indexOf("async function loadInfoCacheStatus()", loadStart);
+  const loadBody = appJs.slice(loadStart, loadEnd);
+  assert.doesNotMatch(loadBody, /if \(isGuest\(\)\)/);
+
+  const calcStart = appJs.indexOf("async function calculateAllInfo");
+  const calcEnd = appJs.indexOf("function updateInfoStatus", calcStart);
+  const calcBody = appJs.slice(calcStart, calcEnd);
+  assert.doesNotMatch(calcBody, /isGuest\(\)/);
+});
+
 test("info summary visibility refresh triggers guarded calculation", () => {
   const start = appJs.indexOf('document.addEventListener("visibilitychange"');
   const end = appJs.indexOf("async function loadRiskAlert", start);

@@ -6,6 +6,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db
 from app.permissions import can, get_user_permissions
+from app.main import (
+    get_user_permissions as get_managed_user_permissions,
+    list_users,
+    me,
+    set_user_permissions,
+    update_user,
+    UserIn,
+    PermissionsBatchIn,
+)
+from fastapi import HTTPException
 
 
 def use_temp_db(tmp_path, monkeypatch):
@@ -57,3 +67,46 @@ def test_guest_user_has_only_allowed_view_permissions(tmp_path, monkeypatch):
     permissions = get_user_permissions(guest)
     assert "alert.realtime_summary:view" in permissions
     assert "data_visualization.display:view" in permissions
+
+
+def test_guest_is_system_identity_hidden_from_user_management(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    guest = db.ensure_guest_user()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        admin = db._exec(cur, "SELECT * FROM users WHERE name = ?", ("admin",)).fetchone()
+
+    assert me(user=guest)["name"] == "访客"
+    assert me(user=guest)["role"] == "访客"
+
+    users = list_users(user=dict(admin))["users"]
+    assert all(row["name"] != "guest" for row in users)
+
+    try:
+        update_user(
+            guest["id"],
+            UserIn(name="访客", department="访客", password="", role="guest"),
+            user=dict(admin),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("guest user should not be editable")
+
+    try:
+        get_managed_user_permissions(guest["id"], user=dict(admin))
+    except HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("guest permissions should not be managed through user management")
+
+    try:
+        set_user_permissions(
+            guest["id"],
+            PermissionsBatchIn(permissions=[]),
+            user=dict(admin),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("guest permissions should be fixed by backend")

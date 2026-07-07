@@ -1401,11 +1401,13 @@ def logout(user=Depends(current_user), authorization: Optional[str] = Header(def
 
 @app.get("/api/auth/me")
 def me(user=Depends(current_user)):
+    display_name = "访客" if user.get("is_guest") or user.get("role") == "guest" else user["name"]
+    display_role = "访客" if user.get("is_guest") or user.get("role") == "guest" else user["role"]
     return {
         "id": user["id"],
-        "name": user["name"],
+        "name": display_name,
         "department": user["department"],
-        "role": user["role"],
+        "role": display_role,
         "is_guest": bool(user.get("is_guest")),
         "permissions": list_user_permissions(user),
     }
@@ -1779,7 +1781,7 @@ def calculate_info_summary_payload(
 
 @app.post("/api/info-summary/calculate-all")
 def calculate_info_summary_all(payload: InfoCalculateAllIn, mock: bool = False, user=Depends(current_user)):
-    require_edit("info_summary", user)
+    require_view("info_summary", user)
     provider = RealtimeQuoteProvider(mock=mock)
     dependencies = []
     for item in payload.items:
@@ -1807,7 +1809,7 @@ def calculate_info_summary_all(payload: InfoCalculateAllIn, mock: bool = False, 
 
 @app.post("/api/info-summary/calculate")
 def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=Depends(current_user)):
-    require_edit("info_summary", user)
+    require_view("info_summary", user)
     result = calculate_info_summary_payload(payload, mock=mock)
     db.log_operation(user["id"], "info_summary", "计算指标", payload.info_type, "calculated_data", None)
     return result
@@ -2680,9 +2682,15 @@ def list_users(
     offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
-        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM users").fetchone()
+        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM users WHERE COALESCE(is_guest, 0) = 0").fetchone()
         rows = db._exec(cur, 
-            "SELECT id, name, department, role, status, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
+            """
+            SELECT id, name, department, role, status, created_at
+            FROM users
+            WHERE COALESCE(is_guest, 0) = 0
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
             (limit, offset),
         ).fetchall()
     total = int(total_row["c"] or 0)
@@ -2727,9 +2735,11 @@ def update_user(user_id: int, payload: UserIn, user=Depends(current_user)):
     require_edit("user_management", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT id, name FROM users WHERE id = ?", (user_id,)).fetchone()
+        existing = db._exec(cur, "SELECT id, name, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="用户不存在")
+        if existing["is_guest"]:
+            raise HTTPException(status_code=400, detail="系统访客不允许在用户管理中编辑")
         if payload.name != existing["name"]:
             dup = db._exec(cur, "SELECT id FROM users WHERE name = ? AND id != ?", (payload.name, user_id)).fetchone()
             if dup:
@@ -2773,9 +2783,11 @@ def delete_user(user_id: int, user=Depends(current_user)):
         raise HTTPException(status_code=400, detail="不能删除自己")
     with db.connect() as conn:
         cur = conn.cursor()
-        target = db._exec(cur, "SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()
+        target = db._exec(cur, "SELECT name, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
         if not target:
             raise HTTPException(status_code=404, detail="用户不存在")
+        if target["is_guest"]:
+            raise HTTPException(status_code=400, detail="系统访客不允许在用户管理中删除")
         db._exec(cur, "DELETE FROM module_permissions WHERE user_id = ?", (user_id,))
         db._exec(cur, "DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
         db._exec(cur, "DELETE FROM users WHERE id = ?", (user_id,))
@@ -2788,9 +2800,11 @@ def get_user_permissions(user_id: int, user=Depends(current_user)):
     require_permission(user, "permissions", "manage")
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        existing = db._exec(cur, "SELECT id, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="用户不存在")
+        if existing["is_guest"]:
+            raise HTTPException(status_code=400, detail="系统访客权限由后端固定控制")
         for _, module_code, _ in db.MODULES:
             db._exec(cur, 
                 "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, 1, 0)",
@@ -2809,9 +2823,11 @@ def set_user_permissions(user_id: int, payload: PermissionsBatchIn, user=Depends
     target_name = ""
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT id, name FROM users WHERE id = ?", (user_id,)).fetchone()
+        existing = db._exec(cur, "SELECT id, name, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="用户不存在")
+        if existing["is_guest"]:
+            raise HTTPException(status_code=400, detail="系统访客权限由后端固定控制")
         target_name = existing["name"]
         for perm in payload.permissions:
             db._exec(cur, 
