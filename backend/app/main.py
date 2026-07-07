@@ -1581,8 +1581,8 @@ def list_alert_history(
         total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM alert_history").fetchone()
         rows = db._exec(cur, 
             """
-            SELECT h.id, h.alert_id, h.trigger_value, h.message, h.status,
-                   h.alert_time, h.read_at, s.info_type, s.contract_year, s.contract_month
+            SELECT h.id, h.alert_id, h.alert_time, h.current_value, h.alert_value,
+                   h.direction, h.status, s.info_type, s.contract_year, s.contract_month
             FROM alert_history h
             LEFT JOIN alert_settings s ON s.id = h.alert_id
             ORDER BY h.alert_time DESC, h.id DESC
