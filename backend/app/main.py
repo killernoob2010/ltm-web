@@ -1448,12 +1448,12 @@ def modules(user=Depends(current_user)):
 
 @app.get("/api/risk-alert/settings")
 def list_alert_settings(
-    limit: int = 50,
+    limit: int = 200,
     offset: int = 0,
     user=Depends(current_user),
 ):
     require_view("risk_alert", user)
-    limit = max(1, min(limit or 50, 200))
+    limit = max(1, min(limit or 200, 200))
     offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1569,12 +1569,12 @@ def delete_alert_setting(alert_id: int, user=Depends(current_user)):
 
 @app.get("/api/risk-alert/history")
 def list_alert_history(
-    limit: int = 50,
+    limit: int = 200,
     offset: int = 0,
     user=Depends(current_user),
 ):
     require_view("risk_alert", user)
-    limit = max(1, min(limit or 50, 200))
+    limit = max(1, min(limit or 200, 200))
     offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1951,12 +1951,12 @@ def list_sh_junneng_trades(
     contract_month: Optional[str] = None,
     keyword: Optional[str] = None,
     selected_date: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 5000,
     offset: int = 0,
     user=Depends(current_user),
 ):
     require_view("sh_junneng", user)
-    limit = max(1, min(limit or 50, 200))
+    limit = max(1, min(limit or 5000, 5000))
     offset = max(0, offset or 0)
     clauses = []
     params: list = []
@@ -2391,7 +2391,7 @@ def sh_junneng_settled_overview(
 def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(current_user)):
     require_permission(user, "sh_junneng.trades", "export")
     selected_date = selected_date or date.today().isoformat()
-    sections = list_sh_junneng_trades(selected_date=selected_date, limit=200, offset=0, user=user)
+    sections = list_sh_junneng_trades(selected_date=selected_date, limit=5000, offset=0, user=user)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["类别", "合约月份", "交易方向", "开仓均价", "平仓均价", "当日收盘价", "原始数量", "本次平仓数量", "剩余数量", "手续费(开)", "手续费(平)", "盈亏(含手续费)", "开仓日期", "平仓日期", "持仓状态", "业务编码", "资金利息", "利润按比例结算金额(80%)", "利润按比例结算金额(20%)"])
@@ -2671,12 +2671,12 @@ class PermissionsBatchIn(BaseModel):
 
 @app.get("/api/users")
 def list_users(
-    limit: int = 50,
+    limit: int = 5000,
     offset: int = 0,
     user=Depends(current_user),
 ):
     require_permission(user, "users", "manage")
-    limit = max(1, min(limit or 50, 200))
+    limit = max(1, min(limit or 5000, 5000))
     offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
@@ -2826,12 +2826,12 @@ def set_user_permissions(user_id: int, payload: PermissionsBatchIn, user=Depends
 def list_operation_logs(
     operation_type: Optional[str] = None,
     user_name: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 200,
     offset: int = 0,
     user=Depends(current_user),
 ):
     require_permission(user, "operation_logs", "view")
-    limit = max(1, min(limit or 50, 200))
+    limit = max(1, min(limit or 200, 200))
     offset = max(0, offset or 0)
     clauses = ["1=1"]
     params: list = []

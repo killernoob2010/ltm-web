@@ -23,21 +23,23 @@ test("info summary exposes historical cache refresh entry", () => {
   assert.match(appJs, /\/api\/info-summary\/cache\/status/);
 });
 
-test("info summary does not auto calculate on page load", () => {
-  assert.match(appJs, /展示已加载，点击“计算全部”刷新指标/);
-  assert.match(appJs, /自动计算已关闭/);
+test("info summary auto calculates on page load with in-flight guard", () => {
+  assert.match(appJs, /展示已加载，正在自动计算/);
+  assert.match(appJs, /calculateAllInfo\(false\)\.catch/);
+  assert.match(appJs, /if \(state\.infoSummaryRefreshInFlight\)/);
+  assert.match(appJs, /state\.infoSummaryRefreshInFlight = true;/);
+  assert.match(appJs, /state\.infoSummaryRefreshInFlight = false;/);
   const start = appJs.indexOf("function startInfoSummaryAutoRefresh()");
   const end = appJs.indexOf("function startMidEventAutoRefresh()", start);
   const body = appJs.slice(start, end);
   assert.doesNotMatch(body, /setInterval/);
 });
 
-test("info summary visibility refresh does not trigger full calculation", () => {
+test("info summary visibility refresh triggers guarded calculation", () => {
   const start = appJs.indexOf('document.addEventListener("visibilitychange"');
   const end = appJs.indexOf("async function loadRiskAlert", start);
   const body = appJs.slice(start, end);
-  assert.match(body, /loadInfoCacheStatus\(\)/);
-  assert.doesNotMatch(body, /calculateAllInfo\(false\)/);
+  assert.match(body, /calculateAllInfo\(false\)/);
 });
 
 test("info summary manual refresh uses one batched request", () => {

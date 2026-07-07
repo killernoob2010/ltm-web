@@ -598,10 +598,10 @@ ORDER_FINANCE_LIST_FIELDS = [
 
 
 def _clamp_limit(limit: int) -> int:
-    return max(1, min(limit or 50, 200))
+    return max(1, min(limit or 5000, 5000))
 
 
-def list_order_finance_records_page(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+def list_order_finance_records_page(limit: int = 5000, offset: int = 0) -> Dict[str, Any]:
     limit = _clamp_limit(limit)
     offset = max(0, offset or 0)
     field_sql = ", ".join(ORDER_FINANCE_LIST_FIELDS)
@@ -639,7 +639,7 @@ def list_order_finance_records_page(limit: int = 50, offset: int = 0) -> Dict[st
 
 
 def list_order_finance_records() -> List[Dict[str, Any]]:
-    return list_order_finance_records_page(limit=200, offset=0)["records"]
+    return list_order_finance_records_page(limit=5000, offset=0)["records"]
 
 
 def get_order_finance_record(record_id: int) -> Dict[str, Any]:
@@ -845,7 +845,7 @@ def import_order_finance_local(request: ImportLocalRequest, user: dict = Depends
 
 @router.get("/order-finance/records")
 def order_finance_records(
-    limit: int = 50,
+    limit: int = 5000,
     offset: int = 0,
     user: dict = Depends(order_finance_current_user),
 ):

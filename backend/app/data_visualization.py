@@ -2961,9 +2961,6 @@ async def get_table(
                     year_list.append(int(part))
                 except ValueError:
                     pass
-    if not years and not year_list and not years_empty_requested:
-        year_list = [date.today().year]
-
     product_list = _split_filter_values(products) if products else []
     category_list = _split_filter_values(categories) if categories else []
     country_list = _split_filter_values(source_countries) if source_countries else []
@@ -3187,9 +3184,6 @@ async def get_chart(
                     year_list.append(int(part))
                 except ValueError:
                     pass
-    if not years and not year_list and not years_empty_requested:
-        year_list = [date.today().year]
-
     product_list = _split_filter_values(products) if products else []
     category_list = _split_filter_values(categories) if categories else []
     country_list = _split_filter_values(source_countries) if source_countries else []

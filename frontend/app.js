@@ -475,7 +475,8 @@ async function loadInfoSummary() {
     updateInfoStatus("访客只读模式");
     return;
   }
-  updateInfoStatus("展示已加载，点击“计算全部”刷新指标");
+  updateInfoStatus("展示已加载，正在自动计算");
+  calculateAllInfo(false).catch((error) => updateInfoStatus(error.message));
 }
 
 async function loadInfoCacheStatus() {
@@ -659,24 +660,44 @@ async function loadInfoHistory() {
 }
 
 async function calculateAllInfo(mock = false) {
+  if (state.infoSummaryRefreshInFlight) {
+    updateInfoStatus("计算进行中，请稍候");
+    return;
+  }
   const cards = [...infoCards.querySelectorAll(".info-section")];
+  if (!cards.length || isGuest()) {
+    await loadInfoCacheStatus();
+    updateInfoStatus("只读刷新已完成");
+    return;
+  }
+  state.infoSummaryRefreshInFlight = true;
   cards.forEach((card) => {
     card.querySelector(".status-value").textContent = "计算中";
   });
-  const result = await api(`/api/info-summary/calculate-all${mock ? "?mock=true" : ""}`, {
-    method: "POST",
-    body: JSON.stringify({ items: cards.map(buildInfoPayload) }),
-  });
-  const resultsByType = new Map((result.cards || []).map((item) => [item.info_type, item]));
-  for (const card of cards) {
-    const item = resultsByType.get(card.dataset.infoType);
-    if (item) {
-      applyInfoResult(card, item);
-    } else {
-      card.querySelector(".status-value").textContent = "未返回结果";
+  try {
+    const result = await api(`/api/info-summary/calculate-all${mock ? "?mock=true" : ""}`, {
+      method: "POST",
+      body: JSON.stringify({ items: cards.map(buildInfoPayload) }),
+    });
+    const resultsByType = new Map((result.cards || []).map((item) => [item.info_type, item]));
+    for (const card of cards) {
+      const item = resultsByType.get(card.dataset.infoType);
+      if (item) {
+        applyInfoResult(card, item);
+      } else {
+        card.querySelector(".status-value").textContent = "未返回结果";
+      }
     }
+    updateInfoStatus("全部指标已计算");
+  } catch (error) {
+    cards.forEach((card) => {
+      card.querySelector(".status-value").textContent = error.message;
+    });
+    updateInfoStatus(error.message);
+    throw error;
+  } finally {
+    state.infoSummaryRefreshInFlight = false;
   }
-  updateInfoStatus("全部指标已计算");
 }
 
 function updateInfoStatus(message) {
@@ -790,8 +811,11 @@ function stopInfoSummaryAutoRefresh() {
 
 function startInfoSummaryAutoRefresh() {
   stopInfoSummaryAutoRefresh();
-  if (isGuest()) return;
-  updateInfoStatus("自动计算已关闭，点击“计算全部”手动刷新");
+  if (isGuest()) {
+    updateInfoStatus("访客只读模式");
+    return;
+  }
+  updateInfoStatus("自动刷新：开启");
 }
 
 function startMidEventAutoRefresh() {
@@ -1303,7 +1327,7 @@ function stopAlertNotifications() {
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.token) {
-    if (state.activeModule === "info_summary") loadInfoCacheStatus().catch(() => {});
+    if (state.activeModule === "info_summary") calculateAllInfo(false).catch(() => {});
     if (!isGuest()) loadNotifications(false).catch(() => {});
   }
 });
@@ -1478,7 +1502,7 @@ document.querySelector("#logoutBtn").addEventListener("click", async () => {
 });
 
 document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false));
-document.querySelector("#refreshIndicatorsBtn").addEventListener("click", loadInfoSummary);
+document.querySelector("#refreshIndicatorsBtn").addEventListener("click", () => calculateAllInfo(false));
 refreshInfoCacheBtn.addEventListener("click", refreshInfoCache);
 importCacheBtn.addEventListener("click", async () => {
   importCacheBtn.disabled = true;

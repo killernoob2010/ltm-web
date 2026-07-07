@@ -167,6 +167,48 @@ def test_data_visualization_table_is_paginated(tmp_path, monkeypatch):
     assert len(result["data"]) == 1
     assert result["pagination"] == {"total": 2, "limit": 1, "offset": 1, "has_more": False}
 
+
+def test_data_visualization_empty_year_filter_means_all_years(tmp_path, monkeypatch):
+    from app import db as db_module
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "dv_years.db")
+    db_module.init_db()
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+    for year in (2025, 2026):
+        _insert_integrated_point_direct(db_module, {
+            "week_start": f"{year}-01-06",
+            "week_end": f"{year}-01-12",
+            "business_year": year,
+            "business_week": 2,
+            "week_label": f"{year}-W02",
+            "display_date": f"{year}-01-06",
+            "metric_type": "shipment",
+            "source_country": "澳大利亚",
+            "product": "PB粉",
+            "category": "主流矿",
+            "mainstream_status": "主流",
+            "value": year,
+        })
+
+    table = asyncio.run(get_table(
+        metric="shipment",
+        years="",
+        product_pool="mainstream",
+        user=user,
+    ))
+    chart = asyncio.run(get_chart(
+        metric="shipment",
+        years="",
+        product_pool="mainstream",
+        user=user,
+    ))
+
+    assert [row["week"] for row in table["data"]] == ["2025-W02", "2026-W02"]
+    assert sorted(chart["series"]["PB粉"]) == ["2025", "2026"]
+
+
 def test_to_float():
     assert _to_float(3.14) == 3.14
     assert _to_float(None) is None
