@@ -20,6 +20,7 @@ from app.data_visualization import (
     get_chart,
     get_table,
     integrate_mysteel_files,
+    integration_latest,
     _local_mysteel_files,
 )
 
@@ -98,6 +99,36 @@ def test_to_date():
     assert _to_date(dtmod.datetime(2025, 6, 15)) == date(2025, 6, 15)
     assert _to_date(date(2025, 6, 15)) == date(2025, 6, 15)
     assert _to_date("2025-06-15") is None
+
+
+def test_integration_latest_returns_aggregate_summary_without_full_point_rows(tmp_path, monkeypatch):
+    from app import db as db_module
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "dv.db")
+    db_module.init_db()
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+    _insert_integrated_point_direct(db_module, {
+        "week_start": "2026-01-05",
+        "week_end": "2026-01-11",
+        "business_year": 2026,
+        "business_week": 2,
+        "week_label": "2026-W02",
+        "display_date": "2026-01-05",
+        "metric_type": "发运",
+        "source_country": "澳大利亚",
+        "product": "PB粉",
+        "category": "主流矿",
+        "mainstream_status": "主流",
+        "value": 10,
+    })
+
+    result = asyncio.run(integration_latest(user=user))
+
+    assert result["summary"]["total_points"] == 1
+    assert result["summary"]["business_year_min"] == 2026
+    assert result["summary"]["business_week_max"] == 2
 
 def test_to_float():
     assert _to_float(3.14) == 3.14

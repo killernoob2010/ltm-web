@@ -1,8 +1,10 @@
 import hashlib
+import hmac
 import os
 import re
 import secrets
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
@@ -65,8 +67,50 @@ def _pg_rewrite(sql: str) -> str:
         return re.sub(r"INSERT OR IGNORE", "INSERT", sql, flags=re.IGNORECASE) + " ON CONFLICT DO NOTHING"
     return sql
 
-def password_hash(password: str) -> str:
+PBKDF2_ITERATIONS = 260_000
+
+
+def legacy_password_hash(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def password_hash(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PBKDF2_ITERATIONS,
+    ).hex()
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    if not stored_hash:
+        return False
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, iterations, salt, expected = stored_hash.split("$", 3)
+            digest = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                int(iterations),
+            ).hex()
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(digest, expected)
+    return hmac.compare_digest(legacy_password_hash(password), stored_hash)
+
+
+def needs_password_upgrade(stored_hash: str) -> bool:
+    return not (stored_hash or "").startswith("pbkdf2_sha256$")
+
+
+def upgrade_user_password(user_id: int, password: str) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        _exec(cur, "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (password_hash(password), user_id))
 
 
 def _q() -> str:
@@ -903,34 +947,40 @@ def init_db() -> None:
             """
             )
         migrate_cache_schema(conn)
+        migrate_auth_schema(conn)
         migrate_alert_schema(conn)
         migrate_sh_junneng_schema(conn)
         migrate_dv_integration_schema(conn)
 
-        _exec(cur, "SELECT id FROM users WHERE name = ?", ("管理员",))
-        admin = cur.fetchone()
-        if not admin:
-            if _is_pg():
-                cur.execute(
-                    "INSERT INTO users (name, department, password_hash, role) "
-                    "VALUES (%s, %s, %s, %s) RETURNING id",
-                    ("管理员", "管理部门", password_hash("admin"), "管理员"),
-                )
-                admin_id = cur.fetchone()["id"]
-            else:
-                cur.execute(
-                    "INSERT INTO users (name, department, password_hash, role) "
-                    "VALUES (?, ?, ?, ?)",
-                    ("管理员", "管理部门", password_hash("admin"), "管理员"),
-                )
-                admin_id = cur.lastrowid
-            for _, module_code, _ in MODULES:
-                _exec(cur,
-                    "INSERT INTO module_permissions (user_id, module_code, can_view, can_edit) "
-                    "VALUES (?, ?, 1, 1)",
-                    (admin_id, module_code),
-                )
-            conn.commit()
+        ensure_admin_user(cur, "管理员")
+        ensure_admin_user(cur, "admin")
+        conn.commit()
+
+
+def ensure_admin_user(cur, name: str) -> int:
+    _exec(cur, "SELECT id FROM users WHERE name = ?", (name,))
+    admin = cur.fetchone()
+    if admin:
+        admin_id = admin["id"]
+    elif _is_pg():
+        cur.execute(
+            "INSERT INTO users (name, department, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING id",
+            (name, "管理部门", password_hash("admin"), "管理员"),
+        )
+        admin_id = cur.fetchone()["id"]
+    else:
+        cur.execute(
+            "INSERT INTO users (name, department, password_hash, role) VALUES (?, ?, ?, ?)",
+            (name, "管理部门", password_hash("admin"), "管理员"),
+        )
+        admin_id = cur.lastrowid
+    for _, module_code, _ in MODULES:
+        _exec(
+            cur,
+            "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, 1, 1)",
+            (admin_id, module_code),
+        )
+    return admin_id
 
 
 def migrate_cache_schema(conn) -> None:
@@ -1007,6 +1057,30 @@ def migrate_alert_schema(conn) -> None:
     }
     if "reminder_users" not in columns:
         conn.execute("ALTER TABLE alert_settings ADD COLUMN reminder_users TEXT DEFAULT ''")
+
+
+def migrate_auth_schema(conn) -> None:
+    if _is_pg():
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest INTEGER NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS cannot_change_password INTEGER NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+        conn.commit()
+        return
+    user_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if "is_guest" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0")
+    if "cannot_change_password" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN cannot_change_password INTEGER NOT NULL DEFAULT 0")
+    session_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(user_sessions)").fetchall()
+    }
+    if "expires_at" not in session_columns:
+        conn.execute("ALTER TABLE user_sessions ADD COLUMN expires_at TEXT")
 
 
 def migrate_sh_junneng_schema(conn) -> None:
@@ -1271,13 +1345,34 @@ def migrate_dv_integration_schema(conn) -> None:
             conn.execute(f"ALTER TABLE dv_integrated_points ADD COLUMN {name} {col_type}")
 
 
-def create_session(user_id: int) -> str:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_dt(value) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def create_session(user_id: int, ttl_hours: int = 24 * 7) -> str:
     token = secrets.token_urlsafe(32)
+    expires_at = (_utc_now() + timedelta(hours=ttl_hours)).isoformat()
     with connect() as conn:
         cur = conn.cursor()
         _exec(cur,
-            "INSERT INTO user_sessions (user_id, token) VALUES (?, ?)",
-            (user_id, token),
+            "INSERT INTO user_sessions (user_id, token, expires_at) VALUES (?, ?, ?)",
+            (user_id, token, expires_at),
         )
         conn.commit()
     return token
@@ -1290,14 +1385,71 @@ def get_user_by_token(token: Optional[str]) -> Optional[dict]:
         cur = conn.cursor()
         _exec(cur,
             """
-            SELECT u.*
+            SELECT u.*, s.expires_at
             FROM user_sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.token = ? AND s.status = '活跃' AND u.status = '启用'
             """,
             (token,),
         )
-        return cur.fetchone()
+        row = cur.fetchone()
+        if not row:
+            return None
+        expires_at = _parse_dt(row["expires_at"])
+        if expires_at and expires_at <= _utc_now():
+            _exec(cur, "UPDATE user_sessions SET status = '已过期' WHERE token = ?", (token,))
+            return None
+        _exec(cur, "UPDATE user_sessions SET last_activity = CURRENT_TIMESTAMP WHERE token = ?", (token,))
+        return dict(row)
+
+
+def ensure_guest_user() -> dict:
+    with connect() as conn:
+        cur = conn.cursor()
+        row = _exec(cur, "SELECT * FROM users WHERE name = ?", ("guest",)).fetchone()
+        if row:
+            guest_id = row["id"]
+            _exec(
+                cur,
+                """
+                UPDATE users
+                SET role = 'guest', status = '启用', is_guest = 1, cannot_change_password = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (guest_id,),
+            )
+        elif _is_pg():
+            cur.execute(
+                """
+                INSERT INTO users (name, department, password_hash, role, status, is_guest, cannot_change_password)
+                VALUES (%s, %s, %s, %s, %s, 1, 1)
+                RETURNING id
+                """,
+                ("guest", "访客", password_hash(secrets.token_urlsafe(16)), "guest", "启用"),
+            )
+            guest_id = cur.fetchone()["id"]
+        else:
+            cur.execute(
+                """
+                INSERT INTO users (name, department, password_hash, role, status, is_guest, cannot_change_password)
+                VALUES (?, ?, ?, ?, ?, 1, 1)
+                """,
+                ("guest", "访客", password_hash(secrets.token_urlsafe(16)), "guest", "启用"),
+            )
+            guest_id = cur.lastrowid
+        _exec(cur, "DELETE FROM module_permissions WHERE user_id = ?", (guest_id,))
+        for module_code, can_view in {
+            "info_summary": 1,
+            "data_visualization_chart": 1,
+        }.items():
+            _exec(
+                cur,
+                "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, ?, 0)",
+                (guest_id, module_code, can_view),
+            )
+        _exec(cur, "SELECT * FROM users WHERE id = ?", (guest_id,))
+        guest = cur.fetchone()
+    return dict(guest)
 
 
 def log_operation(

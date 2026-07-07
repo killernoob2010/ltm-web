@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from . import db
+from .permissions import require_permission
 
 
 router = APIRouter()
@@ -111,17 +112,11 @@ async def order_finance_current_user(authorization: Optional[str] = Header(defau
 
 
 def order_finance_require_edit(user: dict):
-    if user["role"] == "管理员":
-        return
-    with db.connect() as conn:
-        cur = conn.cursor()
-        row = db._exec(
-            cur,
-            "SELECT can_edit FROM module_permissions WHERE user_id = ? AND module_code = ?",
-            (user["id"], ORDER_FINANCE_MODULE),
-        ).fetchone()
-    if not row or not row["can_edit"]:
-        raise HTTPException(status_code=403, detail="没有编辑权限")
+    require_permission(user, "order_finance.records", "edit")
+
+
+def order_finance_require_view(user: dict):
+    require_permission(user, "order_finance.records", "view")
 
 
 def _cell_value(book, cell) -> Any:
@@ -589,22 +584,62 @@ def import_order_finance_directory(directory: Path | str, imported_by: str = "")
     return parsed
 
 
-def list_order_finance_records() -> List[Dict[str, Any]]:
+ORDER_FINANCE_LIST_FIELDS = [
+    "id", "business_key", "subsidiary", "source_file", "source_sheet", "source_row_start",
+    "source_snapshot_date", "product_name", "purchase_contract_no", "system_contract_no",
+    "terminal_customer", "contract_quantity_mt", "contract_currency", "contract_amount",
+    "finance_bank", "finance_amount_expected", "finance_amount_actual", "finance_drawdown_date",
+    "finance_due_date", "latest_shipment_date", "vessel_voyage", "bill_of_lading_date",
+    "collection_date", "actual_shipped_quantity_mt", "executor", "business_status",
+    "risk_level", "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
+    "repayment_requirement", "repayment_requirement_status", "next_action",
+    "next_follow_up_date", "manager_note", "created_at", "updated_at",
+]
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(limit or 50, 200))
+
+
+def list_order_finance_records_page(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+    limit = _clamp_limit(limit)
+    offset = max(0, offset or 0)
+    field_sql = ", ".join(ORDER_FINANCE_LIST_FIELDS)
     with db.connect() as conn:
         cur = conn.cursor()
+        total_row = db._exec(
+            cur,
+            "SELECT COUNT(*) AS c FROM order_finance_progress WHERE is_archived = 0",
+        ).fetchone()
         rows = db._exec(
             cur,
-            """
-            SELECT *
+            f"""
+            SELECT {field_sql}
             FROM order_finance_progress
             WHERE is_archived = 0
             ORDER BY
                 CASE risk_level WHEN '高' THEN 1 WHEN '中' THEN 2 ELSE 3 END,
                 COALESCE(finance_due_date, '9999-12-31'),
                 id
+            LIMIT ? OFFSET ?
             """,
+            (limit, offset),
         ).fetchall()
-    return [_row_to_dict(row) for row in rows]
+    records = [_row_to_dict(row) for row in rows]
+    total = int(total_row["c"] or 0)
+    return {
+        "records": records,
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(records) < total,
+        },
+    }
+
+
+def list_order_finance_records() -> List[Dict[str, Any]]:
+    return list_order_finance_records_page(limit=200, offset=0)["records"]
 
 
 def get_order_finance_record(record_id: int) -> Dict[str, Any]:
@@ -809,13 +844,19 @@ def import_order_finance_local(request: ImportLocalRequest, user: dict = Depends
 
 
 @router.get("/order-finance/records")
-def order_finance_records(user: dict = Depends(order_finance_current_user)):
-    records = list_order_finance_records()
-    return {"summary": summarize_order_finance(records), "records": records}
+def order_finance_records(
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(order_finance_current_user),
+):
+    order_finance_require_view(user)
+    result = list_order_finance_records_page(limit=limit, offset=offset)
+    return {"summary": summarize_order_finance(result["records"]), **result}
 
 
 @router.get("/order-finance/records/{record_id}")
 def order_finance_record(record_id: int, user: dict = Depends(order_finance_current_user)):
+    order_finance_require_view(user)
     try:
         return get_order_finance_record(record_id)
     except KeyError as exc:

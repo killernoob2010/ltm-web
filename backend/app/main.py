@@ -4,21 +4,26 @@ from datetime import date, datetime, timedelta
 import calendar
 import csv
 import io
+import json
+import os
 from typing import List, Optional
 import re
 import statistics
 import threading
 import time
+import uuid
 
 import requests
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db
+from .permissions import get_user_permissions as list_user_permissions, require_permission
 from .cache_service import (
     cache_counts,
     get_cached_data,
@@ -27,6 +32,7 @@ from .cache_service import (
     import_desktop_cache,
     save_calculated_data,
 )
+from .cache_ttl import ttl_cached
 from .info_summary_backfill import (
     BackfillRequest,
     get_last_backfill_status,
@@ -34,6 +40,7 @@ from .info_summary_backfill import (
     run_all_info_summary_backfills,
     start_daily_close_cache_scheduler,
 )
+from .monitoring import get_monitoring_status, start_monitoring_loop
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import data_visualization, order_finance
 
@@ -42,15 +49,57 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = ROOT_DIR / "frontend"
 
 app = FastAPI(title="轻量化交易管理系统 Web", version="0.1.0")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+def configured_allowed_origins() -> list[str]:
+    raw = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return [
+        "https://ltm-web-gt13.onrender.com",
+        "https://ltm-web-staging.onrender.com",
+        "http://localhost:8000",
+        "http://localhost:8001",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8001",
+    ]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=configured_allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def api_performance_log(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    if request.url.path.startswith("/api"):
+        log = {
+            "event": "api_request",
+            "request_id": request_id,
+            "endpoint": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+            "response_size_approx": response.headers.get("content-length"),
+        }
+        print(json.dumps(log, ensure_ascii=False))
+    response.headers["x-request-id"] = request_id
+    return response
+
 HISTORY_CACHE_MAX_STALE_DAYS = 7
+LOGIN_FAILURES: dict[str, list[float]] = {}
+LOGIN_FAILURE_LIMIT = int(os.getenv("LOGIN_FAILURE_LIMIT", "5"))
+LOGIN_FAILURE_WINDOW_SECONDS = int(os.getenv("LOGIN_FAILURE_WINDOW_SECONDS", "300"))
+USER_SESSION_TTL_HOURS = int(os.getenv("USER_SESSION_TTL_HOURS", str(24 * 7)))
+GUEST_SESSION_TTL_HOURS = int(os.getenv("GUEST_SESSION_TTL_HOURS", "8"))
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
@@ -1200,6 +1249,7 @@ def startup() -> None:
     threading.Thread(target=initialize_database, daemon=True).start()
     start_alert_monitor()
     start_daily_close_cache_scheduler()
+    start_monitoring_loop()
 
 
 def current_user(authorization: Optional[str] = Header(default=None)):
@@ -1213,7 +1263,7 @@ def current_user(authorization: Optional[str] = Header(default=None)):
 
 
 def require_edit(module_code: str, user):
-    if user["role"] == "管理员":
+    if user.get("role") == "管理员":
         return
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1226,6 +1276,32 @@ def require_edit(module_code: str, user):
         ).fetchone()
     if not row or not row["can_edit"]:
         raise HTTPException(status_code=403, detail="没有编辑权限")
+
+
+def require_view(module_code: str, user):
+    if user.get("role") == "管理员":
+        return
+    if "role" not in user and user.get("id"):
+        with db.connect() as conn:
+            cur = conn.cursor()
+            full_user = db._exec(cur, "SELECT role FROM users WHERE id = ?", (user["id"],)).fetchone()
+        if full_user and full_user["role"] == "管理员":
+            return
+        user = {**user, "role": full_user["role"] if full_user else ""}
+    if user.get("role") == "管理员":
+        return
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(
+            cur,
+            """
+            SELECT can_view FROM module_permissions
+            WHERE user_id = ? AND module_code = ?
+            """,
+            (user["id"], module_code),
+        ).fetchone()
+    if not row or not row["can_view"]:
+        raise HTTPException(status_code=403, detail="没有访问权限")
 
 
 def row_to_dict(row):
@@ -1247,21 +1323,41 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/monitoring/status")
+def monitoring_status(user=Depends(current_user)):
+    require_permission(user, "monitoring.status", "view")
+    return get_monitoring_status()
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest):
+    key = payload.username.strip().lower()
+    now = time.time()
+    recent_failures = [
+        ts for ts in LOGIN_FAILURES.get(key, [])
+        if now - ts < LOGIN_FAILURE_WINDOW_SECONDS
+    ]
+    if len(recent_failures) >= LOGIN_FAILURE_LIMIT:
+        raise HTTPException(status_code=429, detail="登录失败次数过多，请稍后再试")
     with db.connect() as conn:
         cur = conn.cursor()
-        user = db._exec(cur, 
+        user = db._exec(cur,
             """
             SELECT * FROM users
-            WHERE name = ? AND password_hash = ? AND status = '启用'
+            WHERE name = ? AND status = '启用'
             """,
-            (payload.username, db.password_hash(payload.password)),
+            (payload.username,),
         ).fetchone()
-    if not user:
+    if not user or not db.verify_password(payload.password, user["password_hash"]):
+        recent_failures.append(now)
+        LOGIN_FAILURES[key] = recent_failures[-LOGIN_FAILURE_LIMIT:]
+        db.log_operation(None, "auth", "登录失败", f"{payload.username} 登录失败")
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-    token = db.create_session(user["id"])
+    LOGIN_FAILURES.pop(key, None)
+    if db.needs_password_upgrade(user["password_hash"]):
+        db.upgrade_user_password(user["id"], payload.password)
+    token = db.create_session(user["id"], ttl_hours=USER_SESSION_TTL_HOURS)
     db.log_operation(user["id"], "auth", "登录", f"{payload.username} 登录系统")
     return {
         "token": token,
@@ -1271,6 +1367,25 @@ def login(payload: LoginRequest):
             "department": user["department"],
             "role": user["role"],
         },
+    }
+
+
+@app.post("/api/auth/guest-login")
+def guest_login():
+    user = db.ensure_guest_user()
+    token = db.create_session(user["id"], ttl_hours=GUEST_SESSION_TTL_HOURS)
+    db.log_operation(user["id"], "auth", "访客登录", "guest 以访客身份访问")
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "name": "访客",
+            "department": user["department"],
+            "role": "guest",
+            "is_guest": True,
+        },
+        "permissions": list_user_permissions(user),
+        "modules": modules(user),
     }
 
 
@@ -1291,6 +1406,8 @@ def me(user=Depends(current_user)):
         "name": user["name"],
         "department": user["department"],
         "role": user["role"],
+        "is_guest": bool(user.get("is_guest")),
+        "permissions": list_user_permissions(user),
     }
 
 
@@ -1331,10 +1448,17 @@ def modules(user=Depends(current_user)):
 
 @app.get("/api/risk-alert/settings")
 def list_alert_settings(user=Depends(current_user)):
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        rows = db._exec(cur, 
-            "SELECT * FROM alert_settings ORDER BY created_at DESC, id DESC"
+        rows = db._exec(cur,
+            """
+            SELECT id, info_type, contract_year, contract_month, alert_value,
+                   direction, status, creator, reminder_users, created_at, updated_at
+            FROM alert_settings
+            ORDER BY created_at DESC, id DESC
+            LIMIT 200
+            """
         ).fetchall()
     return [row_to_dict(row) for row in rows]
 
@@ -1428,6 +1552,7 @@ def delete_alert_setting(alert_id: int, user=Depends(current_user)):
 
 @app.get("/api/risk-alert/history")
 def list_alert_history(user=Depends(current_user)):
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(cur, 
@@ -1444,6 +1569,7 @@ def list_alert_history(user=Depends(current_user)):
 
 @app.get("/api/risk-alert/notifications")
 def list_alert_notifications(user=Depends(current_user)):
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(cur, 
@@ -1516,6 +1642,7 @@ def simulate_alert_trigger(alert_id: int, current_value: float, user=Depends(cur
 
 @app.get("/api/info-summary/indicators")
 def list_indicators(user=Depends(current_user)):
+    require_view("info_summary", user)
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(cur, 
@@ -1532,6 +1659,7 @@ def list_indicators(user=Depends(current_user)):
 
 @app.get("/api/info-summary/config")
 def info_summary_config(user=Depends(current_user)):
+    require_view("info_summary", user)
     defaults = default_info_contracts()
     return {
         "info_types": INFO_TYPES,
@@ -1652,11 +1780,17 @@ def calculate_info_summary(payload: InfoCalculateIn, mock: bool = False, user=De
 
 @app.get("/api/info-summary/cache/counts")
 def info_summary_cache_counts(user=Depends(current_user)):
+    require_view("info_summary", user)
     return cache_counts()
 
 
 @app.get("/api/info-summary/cache/status")
 def info_summary_cache_status(user=Depends(current_user)):
+    require_view("info_summary", user)
+    return ttl_cached("info_summary:cache_status", 30, _info_summary_cache_status_payload)
+
+
+def _info_summary_cache_status_payload():
     with db.connect() as conn:
         cur = conn.cursor()
         price_rows = db._exec(cur,
@@ -1767,6 +1901,7 @@ def delete_indicator(indicator_id: int, user=Depends(current_user)):
 
 @app.get("/api/ledgers/sh-junneng/config")
 def sh_junneng_config(user=Depends(current_user)):
+    require_view("sh_junneng", user)
     return {
         "contracts": contract_options(),
         "default_contract": contract_options()[0] if contract_options() else "",
@@ -1781,8 +1916,13 @@ def list_sh_junneng_trades(
     contract_month: Optional[str] = None,
     keyword: Optional[str] = None,
     selected_date: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
     user=Depends(current_user),
 ):
+    require_view("sh_junneng", user)
+    limit = max(1, min(limit or 50, 200))
+    offset = max(0, offset or 0)
     clauses = []
     params: list = []
     selected_date = selected_date or date.today().isoformat()
@@ -1803,14 +1943,23 @@ def list_sh_junneng_trades(
     where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with db.connect() as conn:
         cur = conn.cursor()
+        total_row = db._exec(
+            cur,
+            f"SELECT COUNT(*) AS c FROM sh_junneng_positions {where_clause}",
+            params,
+        ).fetchone()
         rows = db._exec(cur, 
             f"""
-            SELECT *
+            SELECT id, source_trade_id, contract_month, direction, open_price,
+                   open_quantity, remaining_quantity, open_amount, open_fee,
+                   open_date, current_price, business_code, status,
+                   created_by, created_at, updated_by, updated_at
             FROM sh_junneng_positions
             {where_clause}
             ORDER BY open_date DESC, id DESC
+            LIMIT ? OFFSET ?
             """,
-            params,
+            [*params, limit, offset],
         ).fetchall()
         position_ids = [row["id"] for row in rows]
         close_rows = []
@@ -1885,6 +2034,12 @@ def list_sh_junneng_trades(
             "settled": summarize_sh_junneng_table(settled_trades),
         },
         "selected_date": selected_date,
+        "pagination": {
+            "total": int(total_row["c"] or 0),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < int(total_row["c"] or 0),
+        },
     }
 
 
@@ -2149,6 +2304,7 @@ def sh_junneng_settled_overview(
     contracts: Optional[str] = None,
     user=Depends(current_user),
 ):
+    require_view("sh_junneng", user)
     clauses = ["c.close_date IS NOT NULL", "c.close_price > 0"]
     params: list = []
     if open_date_from:
@@ -2198,8 +2354,9 @@ def sh_junneng_settled_overview(
 
 @app.get("/api/ledgers/sh-junneng/export")
 def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(current_user)):
+    require_permission(user, "sh_junneng.trades", "export")
     selected_date = selected_date or date.today().isoformat()
-    sections = list_sh_junneng_trades(selected_date=selected_date, user=user)
+    sections = list_sh_junneng_trades(selected_date=selected_date, limit=200, offset=0, user=user)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["类别", "合约月份", "交易方向", "开仓均价", "平仓均价", "当日收盘价", "原始数量", "本次平仓数量", "剩余数量", "手续费(开)", "手续费(平)", "盈亏(含手续费)", "开仓日期", "平仓日期", "持仓状态", "业务编码", "资金利息", "利润按比例结算金额(80%)", "利润按比例结算金额(20%)"])
@@ -2235,9 +2392,18 @@ def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(c
 
 @app.get("/api/mid-event/groups")
 def list_strategy_groups(user=Depends(current_user)):
+    require_view("mid_event_monitor", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        rows = db._exec(cur, "SELECT * FROM strategy_groups ORDER BY updated_at DESC, id DESC").fetchall()
+        rows = db._exec(
+            cur,
+            """
+            SELECT id, group_name, created_by, created_at, updated_by, updated_at
+            FROM strategy_groups
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 200
+            """,
+        ).fetchall()
     groups = []
     for row in rows:
         item = row_to_dict(row)
@@ -2248,6 +2414,7 @@ def list_strategy_groups(user=Depends(current_user)):
 
 @app.get("/api/mid-event/config")
 def mid_event_config(user=Depends(current_user)):
+    require_view("mid_event_monitor", user)
     return {
         "varieties": [
             {"code": code, **config}
@@ -2302,6 +2469,7 @@ def delete_strategy_group(group_id: int, user=Depends(current_user)):
 
 @app.get("/api/mid-event/groups/{group_id}/positions")
 def list_strategy_positions(group_id: int, user=Depends(current_user)):
+    require_view("mid_event_monitor", user)
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(cur, 
@@ -2467,7 +2635,7 @@ class PermissionsBatchIn(BaseModel):
 
 @app.get("/api/users")
 def list_users(user=Depends(current_user)):
-    require_edit("user_management", user)
+    require_permission(user, "users", "manage")
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(cur, 
@@ -2564,7 +2732,7 @@ def delete_user(user_id: int, user=Depends(current_user)):
 
 @app.get("/api/users/{user_id}/permissions")
 def get_user_permissions(user_id: int, user=Depends(current_user)):
-    require_edit("user_management", user)
+    require_permission(user, "permissions", "manage")
     with db.connect() as conn:
         cur = conn.cursor()
         existing = db._exec(cur, "SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -2608,7 +2776,8 @@ def list_operation_logs(
     limit: int = 200,
     user=Depends(current_user),
 ):
-    require_edit("user_management", user)
+    require_permission(user, "operation_logs", "view")
+    limit = max(1, min(limit or 200, 200))
     clauses = ["1=1"]
     params: list = []
     if operation_type:

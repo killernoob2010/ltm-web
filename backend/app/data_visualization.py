@@ -19,6 +19,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from . import db
+from .cache_ttl import clear_cache, ttl_cached
+from .permissions import require_permission
 
 router = APIRouter()
 
@@ -102,6 +104,10 @@ def dv_require_edit(module_code: str, user: dict):
         ).fetchone()
     if not row or not row["can_edit"]:
         raise HTTPException(status_code=403, detail="没有编辑权限")
+
+
+def dv_require_view(resource: str, user: dict):
+    require_permission(user, resource, "view")
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────
@@ -1566,6 +1572,7 @@ def _import_integrated_points(rows, file_name, user_name):
             else:
                 db._executemany(cur, insert_sql, values)
         conn.commit()
+    clear_cache("dv:")
     return batch_id
 
 
@@ -1825,6 +1832,7 @@ def _save_integrated_points(points: List[Dict[str, Any]], file_names: List[str],
             (current_total, apparent_demand_count, json.dumps(merge_summary, ensure_ascii=False), batch_id),
         )
         conn.commit()
+    clear_cache("dv:")
     return batch_id
 
 
@@ -2420,20 +2428,55 @@ async def integration_upload_commit(payload: IntegrationFilesRequest, user=Depen
 
 @router.get("/data-visualization/integration/latest")
 async def integration_latest(user=Depends(dv_current_user)):
+    dv_require_view("data_visualization.display", user)
+    return ttl_cached("dv:integration_latest", 60, _integration_latest_payload)
+
+
+def _integration_latest_payload():
     with db.connect() as conn:
         cur = conn.cursor()
         batch = db._exec(
             cur,
-            "SELECT * FROM dv_integration_batches ORDER BY created_at DESC, id DESC LIMIT 1",
+            """
+            SELECT id, file_names, status, point_count, apparent_demand_count,
+                   validation_summary, created_by, created_at
+            FROM dv_integration_batches
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
         ).fetchone()
         rows = db._exec(
             cur,
             """SELECT metric_type, COUNT(*) AS c
                FROM dv_integrated_points GROUP BY metric_type ORDER BY metric_type""",
         ).fetchall()
-        point_rows = db._exec(
+        summary_row = db._exec(
             cur,
-            "SELECT * FROM dv_integrated_points ORDER BY week_start, metric_type, source_country, category, product, id",
+            """
+            SELECT
+                COUNT(*) AS total_points,
+                SUM(CASE WHEN metric_type = 'inventory' THEN 1 ELSE 0 END) AS inventory_count,
+                SUM(CASE WHEN metric_type = 'shipment' THEN 1 ELSE 0 END) AS shipment_count,
+                SUM(CASE WHEN metric_type = 'arrival' THEN 1 ELSE 0 END) AS arrival_count,
+                SUM(CASE WHEN metric_type = 'apparent_demand' THEN 1 ELSE 0 END) AS apparent_demand_count,
+                COUNT(DISTINCT product) AS product_count,
+                COUNT(DISTINCT category) AS category_count,
+                COUNT(DISTINCT source_country) AS country_count,
+                COUNT(DISTINCT week_start) AS week_count,
+                SUM(CASE WHEN value IS NULL THEN 1 ELSE 0 END) AS null_count,
+                MIN(display_date) AS date_min,
+                MAX(display_date) AS date_max,
+                MIN(business_year) AS business_year_min,
+                MAX(business_year) AS business_year_max,
+                MIN(business_week) AS business_week_min,
+                MAX(business_week) AS business_week_max,
+                MAX(created_at) AS updated_at
+            FROM dv_integrated_points
+            """,
+        ).fetchall()
+        year_rows = db._exec(
+            cur,
+            "SELECT DISTINCT business_year AS year FROM dv_integrated_points WHERE business_year IS NOT NULL ORDER BY business_year",
         ).fetchall()
     merge_summary = {}
     if batch and batch["validation_summary"]:
@@ -2441,16 +2484,38 @@ async def integration_latest(user=Depends(dv_current_user)):
             merge_summary = json.loads(batch["validation_summary"])
         except json.JSONDecodeError:
             merge_summary = {}
+    summary_source = _row_to_dict(summary_row[0]) if summary_row else {}
+    summary = {
+        "total_points": int(summary_source.get("total_points") or 0),
+        "inventory_count": int(summary_source.get("inventory_count") or 0),
+        "shipment_count": int(summary_source.get("shipment_count") or 0),
+        "arrival_count": int(summary_source.get("arrival_count") or 0),
+        "apparent_demand_count": int(summary_source.get("apparent_demand_count") or 0),
+        "product_count": int(summary_source.get("product_count") or 0),
+        "category_count": int(summary_source.get("category_count") or 0),
+        "country_count": int(summary_source.get("country_count") or 0),
+        "week_count": int(summary_source.get("week_count") or 0),
+        "null_count": int(summary_source.get("null_count") or 0),
+        "date_min": summary_source.get("date_min") or "",
+        "date_max": summary_source.get("date_max") or "",
+        "years": [str(row["year"]) for row in year_rows if row["year"]],
+        "business_year_min": summary_source.get("business_year_min"),
+        "business_year_max": summary_source.get("business_year_max"),
+        "business_week_min": summary_source.get("business_week_min"),
+        "business_week_max": summary_source.get("business_week_max"),
+        "updated_at": summary_source.get("updated_at"),
+    }
     return {
         "batch": _row_to_dict(batch),
         "metrics": [_row_to_dict(row) for row in rows],
-        "summary": _summarize_integrated_rows([_row_to_dict(row) for row in point_rows]),
+        "summary": summary,
         "merge_summary": merge_summary,
     }
 
 
 @router.get("/data-visualization/integration/export")
 async def integration_export(user=Depends(dv_current_user)):
+    require_permission(user, "data_visualization.integration", "export")
     content = build_integrated_workbook_bytes()
     filename = f"iron_ore_integrated_{date.today().isoformat()}.xlsx"
     return Response(
@@ -2462,6 +2527,7 @@ async def integration_export(user=Depends(dv_current_user)):
 
 @router.get("/data-visualization/years")
 async def get_years(user=Depends(dv_current_user)):
+    dv_require_view("data_visualization.display", user)
     with db.connect() as conn:
         cur = conn.cursor()
         integrated_rows = db._exec(
@@ -2482,6 +2548,7 @@ async def get_years(user=Depends(dv_current_user)):
 @router.get("/data-visualization/filters")
 async def get_filters(user=Depends(dv_current_user)):
     """返回整合结果中可用的筛选选项。"""
+    dv_require_view("data_visualization.display", user)
     with db.connect() as conn:
         cur = conn.cursor()
         integrated_count = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
@@ -2875,6 +2942,7 @@ async def get_table(
     product_pool: str = "",
     user=Depends(dv_current_user),
 ):
+    dv_require_view("data_visualization.data", user)
     year_list: List[int] = []
     years_empty_requested = False
     if years:
@@ -2888,6 +2956,8 @@ async def get_table(
                     year_list.append(int(part))
                 except ValueError:
                     pass
+    if not years and not year_list and not years_empty_requested:
+        year_list = [date.today().year]
 
     product_list = _split_filter_values(products) if products else []
     category_list = _split_filter_values(categories) if categories else []
@@ -3066,6 +3136,7 @@ async def get_chart(
     product_pool: str = "",
     user=Depends(dv_current_user),
 ):
+    dv_require_view("data_visualization.display", user)
     year_list: List[int] = []
     years_empty_requested = False
     if years:
@@ -3079,6 +3150,8 @@ async def get_chart(
                     year_list.append(int(part))
                 except ValueError:
                     pass
+    if not years and not year_list and not years_empty_requested:
+        year_list = [date.today().year]
 
     product_list = _split_filter_values(products) if products else []
     category_list = _split_filter_values(categories) if categories else []

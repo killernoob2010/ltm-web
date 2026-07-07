@@ -9,6 +9,7 @@ const state = {
   positions: [],
   allGroupsPnl: null,
   midEventTimer: null,
+  midEventRefreshInFlight: false,
   infoSummaryRefreshInFlight: false,
   alertSettings: [],
   alertHistory: [],
@@ -32,11 +33,46 @@ const state = {
 const loginView = document.querySelector("#loginView");
 const appView = document.querySelector("#appView");
 const loginForm = document.querySelector("#loginForm");
+const guestLoginBtn = document.querySelector("#guestLoginBtn");
 const loginError = document.querySelector("#loginError");
 const currentUser = document.querySelector("#currentUser");
 const menu = document.querySelector("#menu");
 const pageTitle = document.querySelector("#pageTitle");
 const pageSubtitle = document.querySelector("#pageSubtitle");
+
+function isGuest() {
+  return state.user?.role === "guest" || state.user?.is_guest;
+}
+
+function modulePermission(code) {
+  for (const group of state.modules) {
+    const found = group.items.find((item) => item.code === code);
+    if (found) return found;
+  }
+  return null;
+}
+
+function canModuleEdit(code) {
+  return Boolean(modulePermission(code)?.can_edit);
+}
+
+function setHidden(selector, hidden) {
+  const el = document.querySelector(selector);
+  if (el) el.classList.toggle("hidden", hidden);
+}
+
+function applyUiPermissions() {
+  const guest = isGuest();
+  setHidden("#notificationBtn", guest);
+  ["#calculateAllInfoBtn", "#refreshInfoCacheBtn", "#importCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
+  [
+    "#addGroupBtn", "#addPositionBtn",
+    "#addShJunnengBtn", "#editShJunnengBtn", "#deleteShJunnengBtn", "#closeShJunnengBtn",
+    "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn", "#exportShJunnengBtn",
+    "#orderFinanceManualBtn", "#orderFinanceImportBtn",
+    "#dvUploadBtn", "#dvCommitImportBtn", "#dvPreviewImportBtn", "#dvIntegrationExportBtn",
+  ].forEach((selector) => setHidden(selector, guest));
+}
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
 const midEventPage = document.querySelector("#midEventPage");
@@ -408,8 +444,10 @@ async function bootstrap() {
   currentUser.textContent = `${state.user.name}｜${state.user.role}`;
   showApp();
   renderMenu();
+  applyUiPermissions();
   startAlertNotifications();
-  activateModule("info_summary").catch(() => {});
+  const firstModule = state.modules[0]?.items?.[0]?.code || "info_summary";
+  activateModule(firstModule).catch(() => {});
 
 }
 
@@ -417,6 +455,10 @@ async function loadInfoSummary() {
   state.infoConfig = await api("/api/info-summary/config");
   await loadInfoCacheStatus();
   renderInfoCards();
+  if (isGuest()) {
+    updateInfoStatus("访客只读模式");
+    return;
+  }
   updateInfoStatus("正在计算全部指标");
   await calculateAllInfo(false);
   updateInfoStatus("页面已加载并完成计算");
@@ -518,6 +560,9 @@ function renderInfoCards() {
     if (month1) month1.value = state.infoConfig.yuecha_defaults?.month1 || "09";
     if (month2) month2.value = state.infoConfig.yuecha_defaults?.month2 || "01";
     card.querySelector(".calculate-info-btn").addEventListener("click", () => calculateInfoCard(card));
+    if (isGuest()) {
+      card.querySelector(".calculate-info-btn").classList.add("hidden");
+    }
   });
 }
 
@@ -731,8 +776,10 @@ function stopInfoSummaryAutoRefresh() {
 
 function startInfoSummaryAutoRefresh() {
   stopInfoSummaryAutoRefresh();
+  if (isGuest()) return;
   state.infoSummaryTimer = window.setInterval(async () => {
     if (state.infoSummaryRefreshInFlight) return;
+    if (document.hidden || state.activeModule !== "info_summary") return;
     if (state.activeModule === "info_summary") {
       state.infoSummaryRefreshInFlight = true;
       try {
@@ -749,9 +796,15 @@ function startInfoSummaryAutoRefresh() {
 
 function startMidEventAutoRefresh() {
   stopMidEventAutoRefresh();
-  state.midEventTimer = window.setInterval(() => {
-    if (state.activeModule === "mid_event_monitor") {
-      refreshPrices(false).catch((error) => updateMidEventStatus(error.message));
+  state.midEventTimer = window.setInterval(async () => {
+    if (document.hidden || state.activeModule !== "mid_event_monitor" || state.midEventRefreshInFlight) return;
+    state.midEventRefreshInFlight = true;
+    try {
+      await refreshPrices(false);
+    } catch (error) {
+      updateMidEventStatus(error.message);
+    } finally {
+      state.midEventRefreshInFlight = false;
     }
   }, 5000);
 }
@@ -1232,8 +1285,10 @@ async function loadNotifications(showNewToast = true) {
 
 function startAlertNotifications() {
   stopAlertNotifications();
+  if (isGuest()) return;
   loadNotifications(false).catch(() => {});
   state.alertNotificationTimer = window.setInterval(() => {
+    if (document.hidden) return;
     loadNotifications(true).catch(() => {});
   }, 30000);
 }
@@ -1245,6 +1300,13 @@ function stopAlertNotifications() {
   }
   state.alertNotificationInFlight = false;
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.token) {
+    if (state.activeModule === "info_summary" && !isGuest()) calculateAllInfo(false).catch(() => {});
+    if (!isGuest()) loadNotifications(false).catch(() => {});
+  }
+});
 
 async function loadRiskAlert() {
   const [settings, history] = await Promise.all([
@@ -1379,6 +1441,18 @@ loginForm.addEventListener("submit", async (event) => {
         password: document.querySelector("#password").value,
       }),
     });
+    state.token = payload.token;
+    localStorage.setItem("token", state.token);
+    await bootstrap();
+  } catch (error) {
+    loginError.textContent = error.message;
+  }
+});
+
+guestLoginBtn.addEventListener("click", async () => {
+  loginError.textContent = "";
+  try {
+    const payload = await api("/api/auth/guest-login", { method: "POST" });
     state.token = payload.token;
     localStorage.setItem("token", state.token);
     await bootstrap();
