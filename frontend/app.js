@@ -33,7 +33,9 @@ const state = {
 const loginView = document.querySelector("#loginView");
 const appView = document.querySelector("#appView");
 const loginForm = document.querySelector("#loginForm");
+const loginSubmitBtn = document.querySelector("#loginSubmitBtn");
 const guestLoginBtn = document.querySelector("#guestLoginBtn");
+const loginStatus = document.querySelector("#loginStatus");
 const loginError = document.querySelector("#loginError");
 const currentUser = document.querySelector("#currentUser");
 const menu = document.querySelector("#menu");
@@ -250,6 +252,16 @@ function showApp() {
   appView.classList.remove("hidden");
 }
 
+function setLoginLoading(loading, message = "正在登录，请稍候...") {
+  if (loginSubmitBtn) loginSubmitBtn.disabled = loading;
+  if (guestLoginBtn) guestLoginBtn.disabled = loading;
+  if (loginStatus) {
+    loginStatus.classList.toggle("hidden", !loading);
+    const text = loginStatus.querySelector("span:last-child");
+    if (text) text.textContent = message;
+  }
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -456,8 +468,9 @@ async function bootstrap() {
 
 async function loadInfoSummary() {
   state.infoConfig = await api("/api/info-summary/config");
-  await loadInfoCacheStatus();
   renderInfoCards();
+  updateInfoCacheStatus("读取中");
+  loadInfoCacheStatus().catch((error) => updateInfoCacheStatus(error.message));
   if (isGuest()) {
     updateInfoStatus("访客只读模式");
     return;
@@ -1290,7 +1303,7 @@ function stopAlertNotifications() {
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.token) {
-    if (state.activeModule === "info_summary" && !isGuest()) calculateAllInfo(false).catch(() => {});
+    if (state.activeModule === "info_summary") loadInfoCacheStatus().catch(() => {});
     if (!isGuest()) loadNotifications(false).catch(() => {});
   }
 });
@@ -1424,6 +1437,7 @@ async function deleteSelectedAlerts() {
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginError.textContent = "";
+  setLoginLoading(true, "正在登录，请稍候...");
   try {
     const payload = await api("/api/auth/login", {
       method: "POST",
@@ -1436,17 +1450,22 @@ loginForm.addEventListener("submit", async (event) => {
     await bootstrap();
   } catch (error) {
     loginError.textContent = error.message;
+  } finally {
+    setLoginLoading(false);
   }
 });
 
 guestLoginBtn.addEventListener("click", async () => {
   loginError.textContent = "";
+  setLoginLoading(true, "正在以访客身份进入...");
   try {
     const payload = await api("/api/auth/guest-login", { method: "POST" });
     state.token = payload.token;
     await bootstrap();
   } catch (error) {
     loginError.textContent = error.message;
+  } finally {
+    setLoginLoading(false);
   }
 });
 

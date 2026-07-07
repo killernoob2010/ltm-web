@@ -32,6 +32,14 @@ test("info summary does not auto calculate on page load", () => {
   assert.doesNotMatch(body, /setInterval/);
 });
 
+test("info summary visibility refresh does not trigger full calculation", () => {
+  const start = appJs.indexOf('document.addEventListener("visibilitychange"');
+  const end = appJs.indexOf("async function loadRiskAlert", start);
+  const body = appJs.slice(start, end);
+  assert.match(body, /loadInfoCacheStatus\(\)/);
+  assert.doesNotMatch(body, /calculateAllInfo\(false\)/);
+});
+
 test("info summary manual refresh uses one batched request", () => {
   assert.match(appJs, /\/api\/info-summary\/calculate-all/);
   assert.match(appJs, /function buildInfoPayload\(card\)/);

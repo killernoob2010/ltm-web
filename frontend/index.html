@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=dv-readonly-order-finance-20260701" />
+    <link rel="stylesheet" href="/static/styles.css?v=login-loading-info-summary-20260707" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -19,8 +19,9 @@
             密码
             <input id="password" type="password" autocomplete="current-password" />
           </label>
-          <button type="submit">登录</button>
+          <button id="loginSubmitBtn" type="submit">登录</button>
           <button id="guestLoginBtn" type="button" class="secondary">以访客身份访问</button>
+          <p id="loginStatus" class="login-status hidden"><span class="spinner"></span><span>正在登录，请稍候...</span></p>
           <p id="loginError" class="error-text"></p>
         </form>
       </section>
@@ -1137,6 +1138,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=info-summary-stale-history-20260701"></script>
+    <script src="/static/app.js?v=login-loading-info-summary-20260707"></script>
   </body>
 </html>

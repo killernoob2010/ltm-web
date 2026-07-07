@@ -10,6 +10,9 @@ test("login page exposes real guest login without prefilled admin credentials", 
   assert.doesNotMatch(html, /id="username"[^>]*value=/);
   assert.doesNotMatch(html, /id="password"[^>]*value=/);
   assert.match(appJs, /\/api\/auth\/guest-login/);
+  assert.match(html, /id="loginStatus"/);
+  assert.match(appJs, /setLoginLoading\(true, "正在登录，请稍候\.\.\."\)/);
+  assert.match(appJs, /setLoginLoading\(true, "正在以访客身份进入\.\.\."\)/);
   assert.doesNotMatch(appJs, /localStorage\.getItem\("token"\)/);
   assert.doesNotMatch(appJs, /localStorage\.setItem\("token"/);
 });
