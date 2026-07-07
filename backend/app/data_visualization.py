@@ -2518,6 +2518,7 @@ async def integration_export(user=Depends(dv_current_user)):
     require_permission(user, "data_visualization.integration", "export")
     content = build_integrated_workbook_bytes()
     filename = f"iron_ore_integrated_{date.today().isoformat()}.xlsx"
+    db.log_operation(user["id"], "data_visualization", "导出整合数据", filename, "dv_integrated_points", None)
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

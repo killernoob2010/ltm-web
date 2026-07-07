@@ -1296,14 +1296,18 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function loadRiskAlert() {
-  const [settings, history] = await Promise.all([
+  const [settingsPayload, historyPayload] = await Promise.all([
     api("/api/risk-alert/settings"),
     api("/api/risk-alert/history"),
   ]);
+  const settings = Array.isArray(settingsPayload) ? settingsPayload : settingsPayload.items || [];
+  const history = Array.isArray(historyPayload) ? historyPayload : historyPayload.items || [];
+  const settingsTotal = settingsPayload?.pagination?.total ?? settings.length;
+  const historyTotal = historyPayload?.pagination?.total ?? history.length;
   state.alertSettings = settings;
   state.alertHistory = history;
-  alertCount.textContent = `${settings.length} 条`;
-  historyCount.textContent = `${history.length} 条`;
+  alertCount.textContent = `${settings.length}/${settingsTotal} 条`;
+  historyCount.textContent = `${history.length}/${historyTotal} 条`;
   alertsTable.innerHTML = settings.map((item) => `
     <tr>
       <td><input class="alert-select" type="checkbox" value="${item.id}" /></td>
@@ -1702,7 +1706,8 @@ async function loadUserManagement() {
   try {
     const data = await api("/api/users");
     renderUsersTable(data.users);
-    userMgmtStatus.textContent = `已加载 ${data.users.length} 个用户`;
+    const total = data.pagination?.total ?? data.users.length;
+    userMgmtStatus.textContent = `已加载 ${data.users.length}/${total} 个用户`;
   } catch (error) {
     userMgmtStatus.textContent = `加载失败: ${error.message}`;
   }

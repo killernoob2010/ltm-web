@@ -1447,20 +1447,37 @@ def modules(user=Depends(current_user)):
 
 
 @app.get("/api/risk-alert/settings")
-def list_alert_settings(user=Depends(current_user)):
+def list_alert_settings(
+    limit: int = 50,
+    offset: int = 0,
+    user=Depends(current_user),
+):
     require_view("risk_alert", user)
+    limit = max(1, min(limit or 50, 200))
+    offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
+        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM alert_settings").fetchone()
         rows = db._exec(cur,
             """
             SELECT id, info_type, contract_year, contract_month, alert_value,
                    direction, status, creator, reminder_users, created_at, updated_at
             FROM alert_settings
             ORDER BY created_at DESC, id DESC
-            LIMIT 200
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
         ).fetchall()
-    return [row_to_dict(row) for row in rows]
+    total = int(total_row["c"] or 0)
+    return {
+        "items": [row_to_dict(row) for row in rows],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        },
+    }
 
 
 @app.post("/api/risk-alert/settings")
@@ -1551,20 +1568,38 @@ def delete_alert_setting(alert_id: int, user=Depends(current_user)):
 
 
 @app.get("/api/risk-alert/history")
-def list_alert_history(user=Depends(current_user)):
+def list_alert_history(
+    limit: int = 50,
+    offset: int = 0,
+    user=Depends(current_user),
+):
     require_view("risk_alert", user)
+    limit = max(1, min(limit or 50, 200))
+    offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
+        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM alert_history").fetchone()
         rows = db._exec(cur, 
             """
-            SELECT h.*, s.info_type, s.contract_year, s.contract_month
+            SELECT h.id, h.alert_id, h.trigger_value, h.message, h.status,
+                   h.alert_time, h.read_at, s.info_type, s.contract_year, s.contract_month
             FROM alert_history h
             LEFT JOIN alert_settings s ON s.id = h.alert_id
             ORDER BY h.alert_time DESC, h.id DESC
-            LIMIT 200
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
         ).fetchall()
-    return [row_to_dict(row) for row in rows]
+    total = int(total_row["c"] or 0)
+    return {
+        "items": [row_to_dict(row) for row in rows],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        },
+    }
 
 
 @app.get("/api/risk-alert/notifications")
@@ -2383,6 +2418,7 @@ def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(c
                 item.get("profit_80", ""),
                 item.get("profit_20", ""),
             ])
+    db.log_operation(user["id"], "sh_junneng", "导出台账", f"导出上海钧能台账 {selected_date}", "sh_junneng_positions", None)
     return Response(
         content="\ufeff" + output.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -2634,14 +2670,31 @@ class PermissionsBatchIn(BaseModel):
 
 
 @app.get("/api/users")
-def list_users(user=Depends(current_user)):
+def list_users(
+    limit: int = 50,
+    offset: int = 0,
+    user=Depends(current_user),
+):
     require_permission(user, "users", "manage")
+    limit = max(1, min(limit or 50, 200))
+    offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
+        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM users").fetchone()
         rows = db._exec(cur, 
-            "SELECT id, name, department, role, status, created_at FROM users ORDER BY id"
+            "SELECT id, name, department, role, status, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset),
         ).fetchall()
-    return {"users": [row_to_dict(row) for row in rows]}
+    total = int(total_row["c"] or 0)
+    return {
+        "users": [row_to_dict(row) for row in rows],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        },
+    }
 
 
 @app.post("/api/users")
@@ -2773,11 +2826,13 @@ def set_user_permissions(user_id: int, payload: PermissionsBatchIn, user=Depends
 def list_operation_logs(
     operation_type: Optional[str] = None,
     user_name: Optional[str] = None,
-    limit: int = 200,
+    limit: int = 50,
+    offset: int = 0,
     user=Depends(current_user),
 ):
     require_permission(user, "operation_logs", "view")
-    limit = max(1, min(limit or 200, 200))
+    limit = max(1, min(limit or 50, 200))
+    offset = max(0, offset or 0)
     clauses = ["1=1"]
     params: list = []
     if operation_type:
@@ -2788,6 +2843,11 @@ def list_operation_logs(
         params.append(user_name)
     with db.connect() as conn:
         cur = conn.cursor()
+        total_row = db._exec(
+            cur,
+            f"SELECT COUNT(*) AS c FROM operation_logs ol LEFT JOIN users u ON u.id = ol.user_id WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchone()
         rows = db._exec(cur, 
             f"""
             SELECT ol.id, u.name AS user_name, ol.operation_type, ol.description,
@@ -2796,8 +2856,17 @@ def list_operation_logs(
             LEFT JOIN users u ON u.id = ol.user_id
             WHERE {' AND '.join(clauses)}
             ORDER BY ol.created_at DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            params + [limit],
+            params + [limit, offset],
         ).fetchall()
-    return {"logs": [row_to_dict(row) for row in rows]}
+    total = int(total_row["c"] or 0)
+    return {
+        "logs": [row_to_dict(row) for row in rows],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        },
+    }
