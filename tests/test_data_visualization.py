@@ -130,6 +130,43 @@ def test_integration_latest_returns_aggregate_summary_without_full_point_rows(tm
     assert result["summary"]["business_year_min"] == 2026
     assert result["summary"]["business_week_max"] == 2
 
+
+def test_data_visualization_table_is_paginated(tmp_path, monkeypatch):
+    from app import db as db_module
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "dv_page.db")
+    db_module.init_db()
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+    for week_no in (1, 2):
+        _insert_integrated_point_direct(db_module, {
+            "week_start": f"2026-01-{week_no:02d}",
+            "week_end": f"2026-01-{week_no + 1:02d}",
+            "business_year": 2026,
+            "business_week": week_no,
+            "week_label": f"2026-W{week_no:02d}",
+            "display_date": f"2026-01-{week_no:02d}",
+            "metric_type": "shipment",
+            "source_country": "澳大利亚",
+            "product": "PB粉",
+            "category": "主流矿",
+            "mainstream_status": "主流",
+            "value": week_no,
+        })
+
+    result = asyncio.run(get_table(
+        metric="shipment",
+        years="2026",
+        product_pool="mainstream",
+        limit=1,
+        offset=1,
+        user=user,
+    ))
+
+    assert len(result["data"]) == 1
+    assert result["pagination"] == {"total": 2, "limit": 1, "offset": 1, "has_more": False}
+
 def test_to_float():
     assert _to_float(3.14) == 3.14
     assert _to_float(None) is None

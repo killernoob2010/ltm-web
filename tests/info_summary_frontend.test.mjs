@@ -23,19 +23,21 @@ test("info summary exposes historical cache refresh entry", () => {
   assert.match(appJs, /\/api\/info-summary\/cache\/status/);
 });
 
-test("info summary auto refresh skips overlapping runs", () => {
-  assert.match(appJs, /infoSummaryRefreshInFlight:\s*false/);
-  assert.match(appJs, /if \(state\.infoSummaryRefreshInFlight\) return;/);
-  assert.match(appJs, /state\.infoSummaryRefreshInFlight = true;/);
-  assert.match(appJs, /finally\s*\{\s*state\.infoSummaryRefreshInFlight = false;/);
+test("info summary does not auto calculate on page load", () => {
+  assert.match(appJs, /展示已加载，点击“计算全部”刷新指标/);
+  assert.match(appJs, /自动计算已关闭/);
+  const start = appJs.indexOf("function startInfoSummaryAutoRefresh()");
+  const end = appJs.indexOf("function startMidEventAutoRefresh()", start);
+  const body = appJs.slice(start, end);
+  assert.doesNotMatch(body, /setInterval/);
 });
 
-test("info summary refresh uses one batched request every minute", () => {
+test("info summary manual refresh uses one batched request", () => {
   assert.match(appJs, /\/api\/info-summary\/calculate-all/);
   assert.match(appJs, /function buildInfoPayload\(card\)/);
   assert.match(appJs, /const resultsByType = new Map\(\(result\.cards \|\| \[\]\)\.map\(\(item\) => \[item\.info_type, item\]\)\);/);
   assert.match(appJs, /applyInfoResult\(card, item\);/);
-  assert.match(appJs, /}, 60000\);/);
+  assert.match(appJs, /calculateAllInfoBtn/);
 });
 
 test("info summary batch payload uses the selected month controls", () => {

@@ -2940,9 +2940,13 @@ async def get_table(
     source_countries: str = "",
     mainstream_status: str = "",
     product_pool: str = "",
+    limit: int = 50,
+    offset: int = 0,
     user=Depends(dv_current_user),
 ):
     dv_require_view("data_visualization.data", user)
+    limit = max(1, min(limit or 50, 200))
+    offset = max(0, offset or 0)
     year_list: List[int] = []
     years_empty_requested = False
     if years:
@@ -2975,10 +2979,10 @@ async def get_table(
         if integrated_count:
             _sync_integrated_mainstream_statuses(cur)
             if empty_filter_requested:
-                return {"metric": metric, "products": [], "data": []}
+                return {"metric": metric, "products": [], "data": [], "pagination": {"total": 0, "limit": limit, "offset": offset, "has_more": False}}
             aggregate_labels, aggregate_statuses = _aggregate_labels_and_statuses(product_list, []) if product_pool == "aggregate" else ([], [])
             if product_pool == "aggregate" and not aggregate_labels:
-                return {"metric": metric, "products": [], "data": []}
+                return {"metric": metric, "products": [], "data": [], "pagination": {"total": 0, "limit": limit, "offset": offset, "has_more": False}}
             sql = """SELECT week_start, week_label, business_year, business_week,
                             display_date, source_country, product, category,
                             mainstream_status, value, is_calculable, validation_status, note
@@ -3042,7 +3046,19 @@ async def get_table(
                         "updated_by": row["validation_status"],
                         "updated_at": None,
                     }
-                return {"metric": metric, "products": products_ordered, "data": list(week_map.values())}
+                all_rows = list(week_map.values())
+                page_rows = all_rows[offset:offset + limit]
+                return {
+                    "metric": metric,
+                    "products": products_ordered,
+                    "data": page_rows,
+                    "pagination": {
+                        "total": len(all_rows),
+                        "limit": limit,
+                        "offset": offset,
+                        "has_more": offset + len(page_rows) < len(all_rows),
+                    },
+                }
 
             label_map, products_ordered = _integrated_product_labels(rows)
             if product_list:
@@ -3074,7 +3090,19 @@ async def get_table(
                     "updated_by": row["validation_status"],
                     "updated_at": row["note"],
                 }
-            return {"metric": metric, "products": products_ordered, "data": list(week_map.values())}
+            all_rows = list(week_map.values())
+            page_rows = all_rows[offset:offset + limit]
+            return {
+                "metric": metric,
+                "products": products_ordered,
+                "data": page_rows,
+                "pagination": {
+                    "total": len(all_rows),
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": offset + len(page_rows) < len(all_rows),
+                },
+            }
 
         # fallback: old dv_data_points path
         base_sql = """SELECT wk.display_date, wk.year, wk.week_no, dp.id, dp.product,
@@ -3116,10 +3144,18 @@ async def get_table(
             "updated_at": r["updated_at"],
         }
 
+    all_rows = list(week_map.values())
+    page_rows = all_rows[offset:offset + limit]
     return {
         "metric": metric,
         "products": products,
-        "data": list(week_map.values()),
+        "data": page_rows,
+        "pagination": {
+            "total": len(all_rows),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(page_rows) < len(all_rows),
+        },
     }
 
 

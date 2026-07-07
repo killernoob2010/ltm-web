@@ -64,6 +64,13 @@ test("data visualization data page waits for filters before loading table", () =
   assert.match(appJs, /await loadDVTable\(dvState\.currentMetric\);/);
 });
 
+test("data management table requests one page at a time", () => {
+  assert.match(appJs, /DV_PAGE_SIZE\s*=\s*50/);
+  assert.match(appJs, /limit=.*DV_PAGE_SIZE/);
+  assert.match(appJs, /offset=.*dvState\.dataOffset/);
+  assert.match(indexHtml, /id="dvDataLoadMoreBtn"/);
+});
+
 test("data integration page keeps only upload and download actions", () => {
   assert.match(integrationSection, /导入 Excel/);
   assert.match(integrationSection, /下载整合 Excel/);
