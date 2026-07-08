@@ -131,8 +131,9 @@ CREATE TABLE trading_days (
 CREATE TABLE strategy_groups (
     id SERIAL PRIMARY KEY,
     group_name TEXT NOT NULL UNIQUE,
-    creator TEXT,
+    created_by TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_by TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 

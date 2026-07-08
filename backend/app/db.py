@@ -503,10 +503,14 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS strategy_positions (
                 id SERIAL PRIMARY KEY,
                 group_id INTEGER NOT NULL,
-                info_type TEXT NOT NULL,
-                contract_code TEXT NOT NULL,
+                variety TEXT NOT NULL,
+                variety_name TEXT,
                 direction TEXT NOT NULL,
-                volume DOUBLE PRECISION NOT NULL,
+                open_price DOUBLE PRECISION NOT NULL,
+                quantity INTEGER NOT NULL,
+                multiplier INTEGER DEFAULT 100,
+                contract TEXT DEFAULT '',
+                current_price DOUBLE PRECISION,
                 created_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_by TEXT,
@@ -871,10 +875,14 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS strategy_positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_id INTEGER NOT NULL,
-                info_type TEXT NOT NULL,
-                contract_code TEXT NOT NULL,
+                variety TEXT NOT NULL,
+                variety_name TEXT,
                 direction TEXT NOT NULL,
-                volume REAL NOT NULL,
+                open_price REAL NOT NULL,
+                quantity INTEGER NOT NULL,
+                multiplier INTEGER DEFAULT 100,
+                contract TEXT DEFAULT '',
+                current_price REAL,
                 created_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_by TEXT,
@@ -949,6 +957,7 @@ def init_db() -> None:
         migrate_cache_schema(conn)
         migrate_auth_schema(conn)
         migrate_alert_schema(conn)
+        migrate_mid_event_schema(conn)
         migrate_sh_junneng_schema(conn)
         migrate_dv_integration_schema(conn)
 
@@ -1057,6 +1066,51 @@ def migrate_alert_schema(conn) -> None:
     }
     if "reminder_users" not in columns:
         conn.execute("ALTER TABLE alert_settings ADD COLUMN reminder_users TEXT DEFAULT ''")
+
+
+def migrate_mid_event_schema(conn) -> None:
+    """Keep old production mid-event tables compatible with current code."""
+    if _is_pg():
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'strategy_groups'
+            """
+        )
+        columns = {row["column_name"] for row in cur.fetchall()}
+        if "created_by" not in columns:
+            cur.execute("ALTER TABLE strategy_groups ADD COLUMN created_by TEXT")
+        if "updated_by" not in columns:
+            cur.execute("ALTER TABLE strategy_groups ADD COLUMN updated_by TEXT")
+        if "creator" in columns:
+            cur.execute(
+                """
+                UPDATE strategy_groups
+                SET created_by = creator
+                WHERE created_by IS NULL AND creator IS NOT NULL
+                """
+            )
+        conn.commit()
+        return
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(strategy_groups)").fetchall()
+    }
+    if "created_by" not in columns:
+        conn.execute("ALTER TABLE strategy_groups ADD COLUMN created_by TEXT")
+    if "updated_by" not in columns:
+        conn.execute("ALTER TABLE strategy_groups ADD COLUMN updated_by TEXT")
+    if "creator" in columns:
+        conn.execute(
+            """
+            UPDATE strategy_groups
+            SET created_by = creator
+            WHERE created_by IS NULL AND creator IS NOT NULL
+            """
+        )
 
 
 def migrate_auth_schema(conn) -> None:

@@ -2468,7 +2468,7 @@ def create_strategy_group(payload: StrategyGroupIn, user=Depends(current_user)):
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, 
-            "INSERT INTO strategy_groups (group_name, creator) VALUES (?, ?)",
+            "INSERT INTO strategy_groups (group_name, created_by) VALUES (?, ?)",
             (payload.group_name, user["name"]),
         )
         group_id = db.last_insert_id(conn)
