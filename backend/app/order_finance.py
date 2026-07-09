@@ -5,6 +5,7 @@ Excel 台账解析、导入、查询和管理端计划字段维护。
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,7 +14,7 @@ from uuid import uuid4
 from openpyxl import load_workbook
 from openpyxl.utils.datetime import from_excel
 import xlrd
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from . import db
@@ -845,6 +846,37 @@ def import_order_finance_directory(directory: Path | str, imported_by: str = "")
     return parsed
 
 
+async def import_order_finance_upload(request: Request, file_name: str, imported_by: str = "") -> Dict[str, Any]:
+    suffix = Path(file_name or "").suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        raise ValueError("请选择 .xlsx 或 .xls 格式的订单融资台账")
+    file_bytes = await request.body()
+    if not file_bytes:
+        raise ValueError("上传文件为空")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = Path(tmp.name)
+        parsed = parse_order_finance_directory(tmp_path)
+        for record in parsed["records"]:
+            record["source_file"] = file_name
+            source = _json_loads(record.get("source_json"), {})
+            if isinstance(source, dict):
+                source["uploaded_file_name"] = file_name
+                record["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
+        for item in parsed.get("files", []):
+            item["file"] = file_name
+        archived = archive_existing_excel_order_finance_records()
+        changes = upsert_order_finance_records(parsed["records"], imported_by=imported_by)
+        parsed["summary"].update(changes)
+        parsed["summary"]["archived"] = archived
+        return parsed
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink()
+
+
 ORDER_FINANCE_LIST_FIELDS = [
     "id", "business_key", "subsidiary", "source_file", "source_sheet", "source_row_start",
     "source_snapshot_date", "product_name", "purchase_contract_no", "system_contract_no",
@@ -1387,6 +1419,19 @@ def import_order_finance_local(request: ImportLocalRequest, user: dict = Depends
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result
+
+
+@router.post("/order-finance/import-file")
+async def import_order_finance_file(
+    request: Request,
+    file_name: str,
+    user: dict = Depends(order_finance_current_user),
+):
+    order_finance_require_edit(user)
+    try:
+        return await import_order_finance_upload(request, file_name=file_name, imported_by=user["name"])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/order-finance/records")

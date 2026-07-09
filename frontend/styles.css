@@ -1173,12 +1173,34 @@ dialog::backdrop {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  align-items: center;
+  min-height: 58px;
+  margin: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+}
+
+.order-finance-stage-filters .filter-button {
+  border: 1px solid var(--line);
+  background: #f3f6f8;
+  color: #405061;
+}
+
+.order-finance-stage-filters .filter-button:hover {
+  background: #e9eef3;
+}
+
+.order-finance-stage-filters .filter-button.active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
 }
 
 .order-finance-contract-list {
   display: grid;
   gap: 12px;
+  padding: 14px 16px 16px;
 }
 
 .order-finance-card {

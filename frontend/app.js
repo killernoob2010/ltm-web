@@ -75,7 +75,7 @@ function applyUiPermissions() {
     "#addGroupBtn", "#addPositionBtn",
     "#addShJunnengBtn", "#editShJunnengBtn", "#deleteShJunnengBtn", "#closeShJunnengBtn",
     "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn", "#exportShJunnengBtn",
-    "#orderFinanceManualBtn", "#orderFinanceImportBtn",
+    "#orderFinanceImportBtn",
     "#dvUploadBtn", "#dvCommitImportBtn", "#dvPreviewImportBtn", "#dvIntegrationExportBtn",
   ].forEach((selector) => setHidden(selector, guest));
 }
@@ -88,10 +88,8 @@ const userManagementPage = document.querySelector("#userManagementPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
-const orderFinanceImportDir = document.querySelector("#orderFinanceImportDir");
-const orderFinanceManualBtn = document.querySelector("#orderFinanceManualBtn");
 const orderFinanceImportBtn = document.querySelector("#orderFinanceImportBtn");
-const orderFinanceRefreshBtn = document.querySelector("#orderFinanceRefreshBtn");
+const orderFinanceImportFile = document.querySelector("#orderFinanceImportFile");
 const orderFinanceStatus = document.querySelector("#orderFinanceStatus");
 const orderFinanceSummary = document.querySelector("#orderFinanceSummary");
 const orderFinanceContractList = document.querySelector("#orderFinanceContractList");
@@ -2145,13 +2143,23 @@ async function loadOrderFinanceProgress() {
   }
 }
 
-async function importOrderFinanceLocal() {
+async function importOrderFinanceFile(file) {
+  if (!file) return;
   try {
     orderFinanceStatus.textContent = "正在导入";
-    const result = await api("/api/order-finance/import-local", {
+    orderFinanceImportBtn.disabled = true;
+    const headers = {};
+    if (state.token) headers.Authorization = `Bearer ${state.token}`;
+    const response = await fetch(`/api/order-finance/import-file?file_name=${encodeURIComponent(file.name)}`, {
       method: "POST",
-      body: JSON.stringify({ directory: orderFinanceImportDir.value.trim() }),
+      headers,
+      body: file,
     });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "导入失败");
+    }
+    const result = await response.json();
     const summary = result.summary || {};
     orderFinanceImportSummary.textContent = `读取 ${summary.files_read || 0} 个文件，${summary.record_count || 0} 条记录`;
     orderFinanceImportReport.innerHTML = (result.files || []).map((item) => (
@@ -2167,6 +2175,9 @@ async function importOrderFinanceLocal() {
   } catch (error) {
     orderFinanceStatus.textContent = error.message;
     orderFinanceImportReport.innerHTML = `<div class="error-cell">${escapeHtml(error.message)}</div>`;
+  } finally {
+    orderFinanceImportBtn.disabled = false;
+    orderFinanceImportFile.value = "";
   }
 }
 
@@ -2340,11 +2351,10 @@ searchLogsBtn.addEventListener("click", loadLogs);
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 
-orderFinanceManualBtn.addEventListener("click", openOrderFinanceManualDialog);
 cancelOrderFinanceManualBtn.addEventListener("click", () => orderFinanceManualDialog.close());
 orderFinanceManualForm.addEventListener("submit", saveOrderFinanceManual);
-orderFinanceImportBtn.addEventListener("click", importOrderFinanceLocal);
-orderFinanceRefreshBtn.addEventListener("click", loadOrderFinanceProgress);
+orderFinanceImportBtn.addEventListener("click", () => orderFinanceImportFile.click());
+orderFinanceImportFile.addEventListener("change", () => importOrderFinanceFile(orderFinanceImportFile.files[0]));
 orderFinanceCapitalRefreshBtn.addEventListener("click", loadOrderFinanceCapital);
 orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((button) => {
   button.addEventListener("click", () => {

@@ -1,5 +1,6 @@
 """订单融资进度监控 — Excel parser and import tests."""
 from pathlib import Path
+import asyncio
 import os
 import sys
 
@@ -13,6 +14,7 @@ from app.order_finance import (
     derive_business_status,
     find_order_finance_duplicates,
     import_order_finance_directory,
+    import_order_finance_upload,
     list_order_finance_records,
     parse_order_finance_directory,
     update_management_fields,
@@ -109,6 +111,22 @@ def test_import_new_workbook_archives_previous_excel_source_records(tmp_path, mo
     assert new_import["summary"]["record_count"] == 70
     assert len(records) == 70
     assert {record["source_file"] for record in records} == {NEW_LEDGER_WORKBOOK.name}
+
+
+def test_upload_import_preserves_original_file_name(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    class DummyRequest:
+        async def body(self):
+            return NEW_LEDGER_WORKBOOK.read_bytes()
+
+    uploaded_name = "业务手动导入台账.xlsx"
+    result = asyncio.run(import_order_finance_upload(DummyRequest(), uploaded_name, imported_by="pytest"))
+    records = list_order_finance_records()
+
+    assert result["summary"]["record_count"] == 70
+    assert result["files"][0]["file"] == uploaded_name
+    assert {record["source_file"] for record in records} == {uploaded_name}
 
 
 def test_parse_order_finance_default_path_falls_back_to_seed_when_file_is_missing(tmp_path, monkeypatch):
