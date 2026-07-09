@@ -27,6 +27,55 @@ LOCAL_DEFAULT_LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资
 LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账(副本).xlsx")
 ORDER_FINANCE_SEED_PATH = Path(__file__).with_name("order_finance_seed.json")
 ORDER_FINANCE_MODULE = "order_finance_progress"
+ORDER_FINANCE_CAPITAL_MODULE = "order_finance_capital"
+
+DEFAULT_BANK_LIMITS = [
+    {
+        "bank": "中信唐山",
+        "limit": 200000000,
+        "note": "流贷-限非中信银行融资主体",
+        "lc_requirement": "可接受FCR",
+        "bill_requirement": "无限制",
+        "finance_ratio": "",
+        "term": "",
+    },
+    {
+        "bank": "OCBC",
+        "limit": 6000 * 7.2 * 10000,
+        "note": "订单融资-东钢 / 打包贷款-集团内",
+        "lc_requirement": "可接受FCR",
+        "bill_requirement": "to order或客户的银行",
+        "finance_ratio": "",
+        "term": "",
+    },
+    {
+        "bank": "UOB",
+        "limit": 2000 * 7.2 * 10000,
+        "note": "订单融资-集团内钢厂",
+        "lc_requirement": "不能接受FCR",
+        "bill_requirement": "to order或客户的银行",
+        "finance_ratio": "",
+        "term": "",
+    },
+    {
+        "bank": "918ING银行（新加坡）",
+        "limit": 1000 * 7.2 * 10000,
+        "note": "订单融资-天津、集团内钢厂",
+        "lc_requirement": "可接受FCR",
+        "bill_requirement": "to order、客户银行、客户均可",
+        "finance_ratio": "",
+        "term": "",
+    },
+    {
+        "bank": "918ING银行（香港）",
+        "limit": 3000 * 7.2 * 10000,
+        "note": "订单融资-天津、集团内钢厂",
+        "lc_requirement": "可接受FCR",
+        "bill_requirement": "to order、客户银行、客户均可",
+        "finance_ratio": "",
+        "term": "",
+    },
+]
 
 FACT_FIELDS = [
     "business_key", "subsidiary", "source_file", "source_sheet", "source_row_start",
@@ -802,10 +851,11 @@ ORDER_FINANCE_LIST_FIELDS = [
     "terminal_customer", "contract_quantity_mt", "contract_currency", "contract_amount",
     "finance_bank", "finance_amount_expected", "finance_amount_actual", "finance_drawdown_date",
     "finance_due_date", "latest_shipment_date", "vessel_voyage", "bill_of_lading_date",
-    "collection_date", "actual_shipped_quantity_mt", "executor", "business_status",
+    "document_submission_date", "collection_date", "actual_shipped_quantity_mt", "executor", "business_status",
     "risk_level", "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
     "repayment_requirement", "repayment_requirement_status", "next_action",
-    "next_follow_up_date", "manager_note", "created_at", "updated_at",
+    "next_follow_up_date", "manager_note", "tail_payment_date", "sales_contracts_json",
+    "import_warnings_json", "source_json", "created_at", "updated_at",
 ]
 
 
@@ -1045,6 +1095,290 @@ def summarize_order_finance(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _money_value(*values: Any) -> float:
+    for value in values:
+        parsed = _to_float(value)
+        if parsed is not None:
+            return parsed
+    return 0.0
+
+
+def _json_loads(value: Any, fallback: Any) -> Any:
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def _group_key(row: Dict[str, Any]) -> str:
+    parts = str(row.get("business_key") or "").split("|")
+    if len(parts) >= 3:
+        return "|".join(parts[:3])
+    return "|".join([
+        _normalize_text(row.get("subsidiary")),
+        _normalize_text(row.get("purchase_contract_no")),
+        _normalize_text(row.get("system_contract_no")),
+    ])
+
+
+def _item_no(row: Dict[str, Any]) -> str:
+    source = _json_loads(row.get("source_json"), {})
+    return _normalize_text(source.get("item_no")) or _normalize_text(row.get("purchase_contract_no")) or str(row.get("id"))
+
+
+def _lc_info(row: Dict[str, Any]) -> Dict[str, Any]:
+    items = _json_loads(row.get("sales_contracts_json"), [])
+    if isinstance(items, list) and items:
+        return items[0] or {}
+    return {}
+
+
+def _is_completed_group(rows: List[Dict[str, Any]]) -> bool:
+    statuses = [_normalize_text(row.get("finance_status")) for row in rows]
+    business_statuses = [_normalize_text(row.get("business_status")) for row in rows]
+    if any(status in {"结案", "已结算"} for status in business_statuses):
+        return True
+    return bool(statuses) and all(status == "已还款" or row.get("repaid_amount") for status, row in zip(statuses, rows))
+
+
+def _group_has_value(rows: List[Dict[str, Any]], field: str) -> bool:
+    return any(bool(_normalize_text(row.get(field))) for row in rows)
+
+
+def _group_stage(rows: List[Dict[str, Any]]) -> str:
+    if _is_completed_group(rows):
+        return "已完成"
+    has_loan = any(row.get("finance_drawdown_date") or _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected")) for row in rows)
+    has_ship_or_doc = _group_has_value(rows, "vessel_voyage") or _group_has_value(rows, "document_submission_date")
+    has_collection = _group_has_value(rows, "collection_date")
+    has_repay = _group_has_value(rows, "tail_payment_date") or any(_normalize_text(row.get("finance_status")) == "已还款" for row in rows)
+    if not has_loan:
+        return "待放款"
+    if not has_ship_or_doc:
+        return "已放款待装船"
+    if not has_collection:
+        return "已装船待回款"
+    if has_collection and not has_repay:
+        return "已收汇待还款"
+    return "已回款待结算"
+
+
+def _days_to(value: Any) -> Optional[int]:
+    parsed = _parse_date(value)
+    if not parsed:
+        return None
+    return (parsed - date.today()).days
+
+
+def _group_risk(rows: List[Dict[str, Any]], stage: str) -> str:
+    if stage == "已完成":
+        return "已完成"
+    due_days = [_days_to(row.get("finance_due_date")) for row in rows if row.get("finance_due_date")]
+    ship_days = [_days_to(row.get("latest_shipment_date")) for row in rows if row.get("latest_shipment_date")]
+    warnings = sum(len(_json_loads(row.get("import_warnings_json"), [])) for row in rows)
+    min_due = min([item for item in due_days if item is not None], default=None)
+    min_ship = min([item for item in ship_days if item is not None], default=None)
+    missing_collection_or_repay = not _group_has_value(rows, "collection_date") or not any(_normalize_text(row.get("finance_status")) == "已还款" for row in rows)
+    missing_ship_or_doc = not _group_has_value(rows, "vessel_voyage") or not _group_has_value(rows, "document_submission_date")
+    if warnings or (min_due is not None and min_due < 0) or (min_due is not None and min_due <= 7 and missing_collection_or_repay) or (min_ship is not None and min_ship <= 7 and missing_ship_or_doc):
+        return "高"
+    if (min_due is not None and min_due <= 30 and missing_collection_or_repay) or (min_ship is not None and min_ship <= 30 and missing_ship_or_doc) or len(rows) > 1:
+        return "中"
+    return "低"
+
+
+def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str:
+    manual = next((_normalize_text(row.get("next_action")) for row in rows if _normalize_text(row.get("next_action"))), "")
+    if manual and manual != "无":
+        return manual
+    if stage == "已完成":
+        return "已闭环，保留历史查询"
+    if len(rows) > 1:
+        return "多笔融资，分别跟进到期、收汇和还款"
+    if stage == "待放款":
+        return "确认贷款行、金额和借款日期"
+    if stage == "已放款待装船":
+        return "优先确认船期、船名和交单计划" if risk == "高" else "跟进船期与交单资料"
+    if stage == "已装船待回款":
+        return "跟进交单、贴现和收汇节点"
+    if stage == "已收汇待还款":
+        return "确认还款日和银行结清状态"
+    return "确认结算完成状态"
+
+
+def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = sorted(group_rows, key=lambda row: (row.get("finance_due_date") or "9999-12-31", row.get("id") or 0))
+    first = rows[0]
+    lc = _lc_info(first)
+    stage = _group_stage(rows)
+    risk = _group_risk(rows, stage)
+    finance_total = sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows)
+    due_dates = sorted([row.get("finance_due_date") for row in rows if row.get("finance_due_date")])
+    document_dates = sorted([row.get("document_submission_date") for row in rows if row.get("document_submission_date")])
+    collection_dates = sorted([row.get("collection_date") for row in rows if row.get("collection_date")])
+    repay_dates = sorted([row.get("tail_payment_date") for row in rows if row.get("tail_payment_date")])
+    warnings = []
+    for row in rows:
+        warnings.extend(_json_loads(row.get("import_warnings_json"), []))
+    return {
+        "id": _group_key(first),
+        "item_no": _item_no(first),
+        "entity": first.get("overseas_entity") or "",
+        "subsidiary": first.get("subsidiary") or "",
+        "contract_no": first.get("purchase_contract_no") or "",
+        "system_contract_no": first.get("system_contract_no") or "",
+        "product": first.get("product_name") or "",
+        "quantity": first.get("contract_quantity_mt"),
+        "terminal_customer": first.get("terminal_customer") or "",
+        "issuing_bank": lc.get("lc_bank") or "",
+        "lc_no": lc.get("lc_no") or "",
+        "lc_amount": lc.get("lc_amount"),
+        "lc_expiry_date": lc.get("lc_expiry_date") or first.get("lc_latest_shipment_date") or "",
+        "lc_type": lc.get("lc_type") or "",
+        "transferable": lc.get("transferable") or "",
+        "receiving_bank": lc.get("receiving_bank") or "",
+        "latest_shipment_date": first.get("latest_shipment_date") or "",
+        "vessel": next((row.get("vessel_voyage") for row in rows if row.get("vessel_voyage")), ""),
+        "latest_due_date": due_dates[0] if due_dates else "",
+        "document_date": document_dates[-1] if document_dates else "",
+        "collection_date": collection_dates[-1] if collection_dates else "",
+        "repay_date": repay_dates[-1] if repay_dates else "",
+        "stage": stage,
+        "risk": risk,
+        "next_action": _group_next_action(rows, stage, risk),
+        "total_finance": finance_total,
+        "financing_count": len(rows),
+        "data_issue_count": len(warnings),
+        "source_file": first.get("source_file") or "",
+        "source_sheet": first.get("source_sheet") or "",
+        "source_row_start": min((row.get("source_row_start") or 0 for row in rows), default=0),
+        "source_row_end": max((row.get("source_row_end") or row.get("source_row_start") or 0 for row in rows), default=0),
+        "financings": [
+            {
+                "id": row.get("id"),
+                "bank": row.get("finance_bank") or "",
+                "amount": _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")),
+                "rate": None,
+                "borrow_date": row.get("finance_drawdown_date") or "",
+                "due_date": row.get("finance_due_date") or "",
+                "document_date": row.get("document_submission_date") or "",
+                "collection_date": row.get("collection_date") or "",
+                "repay_date": row.get("tail_payment_date") or "",
+                "status": row.get("finance_status") or row.get("business_status") or "",
+                "next_action": row.get("next_action") or "",
+            }
+            for row in rows
+        ],
+    }
+
+
+def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    records = records if records is not None else list_order_finance_records()
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in records:
+        groups.setdefault(_group_key(row), []).append(row)
+    contracts = [_build_progress_group(rows) for rows in groups.values()]
+    contracts.sort(key=lambda item: (
+        0 if item["risk"] == "高" else 1 if item["risk"] == "中" else 2 if item["risk"] == "低" else 3,
+        item.get("latest_due_date") or "9999-12-31",
+        item.get("item_no") or "",
+    ))
+    open_contracts = [item for item in contracts if item["stage"] != "已完成"]
+    summary = {
+        "open_contracts": len(open_contracts),
+        "active_finance": sum(item["total_finance"] for item in open_contracts),
+        "due_7d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 7]),
+        "due_30d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 30]),
+        "focus_risk": len([item for item in open_contracts if item["risk"] == "高"]),
+        "financed_unshipped": len([item for item in open_contracts if item["stage"] == "已放款待装船"]),
+        "documented_uncollected": len([item for item in open_contracts if item["stage"] == "已装船待回款"]),
+        "collected_unrepaid": len([item for item in open_contracts if item["stage"] == "已收汇待还款"]),
+        "completed": len([item for item in contracts if item["stage"] == "已完成"]),
+        "missing_milestones": len([item for item in open_contracts if not item.get("document_date") or not item.get("collection_date") or not item.get("repay_date")]),
+        "data_issues": sum(item["data_issue_count"] for item in contracts),
+        "total_contracts": len(contracts),
+    }
+    return {"summary": summary, "contracts": contracts}
+
+
+def _sum_by(records: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:
+    totals: Dict[str, float] = {}
+    for row in records:
+        key = _normalize_text(row.get(field)) or "未填"
+        totals[key] = totals.get(key, 0.0) + _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount"))
+    return [{"name": key, "amount": value} for key, value in sorted(totals.items(), key=lambda item: item[1], reverse=True)]
+
+
+def build_order_finance_capital_view(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    records = records if records is not None else list_order_finance_records()
+    open_rows = [row for row in records if _group_stage([row]) != "已完成"]
+    bank_used: Dict[str, float] = {}
+    for row in open_rows:
+        bank = _normalize_text(row.get("finance_bank")) or "未填贷款行"
+        bank_used[bank] = bank_used.get(bank, 0.0) + _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount"))
+    bank_limit_map = {row["bank"]: row for row in DEFAULT_BANK_LIMITS}
+    all_banks = sorted(set(bank_limit_map) | set(bank_used))
+    bank_usage = []
+    for bank in all_banks:
+        limit_row = bank_limit_map.get(bank, {"bank": bank, "limit": 0, "note": "", "lc_requirement": "", "bill_requirement": "", "finance_ratio": "", "term": ""})
+        used = bank_used.get(bank, 0.0)
+        limit = float(limit_row.get("limit") or 0)
+        bank_usage.append({**limit_row, "used": used, "available": limit - used if limit else None, "usage_rate": used / limit if limit else None})
+    bank_usage.sort(key=lambda item: item["used"], reverse=True)
+    total_credit = sum(float(row.get("limit") or 0) for row in DEFAULT_BANK_LIMITS)
+    used_credit = sum(bank_used.values())
+    buckets = [
+        {"label": "7天内", "min": 0, "max": 7},
+        {"label": "8-30天", "min": 8, "max": 30},
+        {"label": "31-60天", "min": 31, "max": 60},
+        {"label": "60天以上", "min": 61, "max": 99999},
+        {"label": "已逾期", "min": -99999, "max": -1},
+    ]
+    due_buckets = []
+    for bucket in buckets:
+        rows = [row for row in open_rows if (days := _days_to(row.get("finance_due_date"))) is not None and bucket["min"] <= days <= bucket["max"]]
+        due_buckets.append({
+            "label": bucket["label"],
+            "count": len(rows),
+            "amount": sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows),
+        })
+    supplier_usage = _sum_by(open_rows, "subsidiary")
+    entity_usage = _sum_by(open_rows, "overseas_entity")
+    due_30_amount = sum(bucket["amount"] for bucket in due_buckets if bucket["label"] in {"7天内", "8-30天"})
+    largest_bank = max((row["used"] for row in bank_usage), default=0)
+    largest_supplier = max((row["amount"] for row in supplier_usage), default=0)
+    return {
+        "summary": {
+            "total_credit": total_credit,
+            "used_credit": used_credit,
+            "available_credit": total_credit - used_credit,
+            "utilization_rate": used_credit / total_credit if total_credit else 0,
+            "near_limit_banks": len([row for row in bank_usage if row.get("usage_rate") is not None and row["usage_rate"] >= 0.9]),
+            "due_30_amount": due_30_amount,
+            "largest_bank_share": largest_bank / used_credit if used_credit else 0,
+            "largest_supplier_share": largest_supplier / used_credit if used_credit else 0,
+        },
+        "bank_usage": bank_usage,
+        "entity_usage": entity_usage,
+        "supplier_usage": supplier_usage,
+        "due_buckets": due_buckets,
+        "bank_details": [
+            {
+                "bank": row.get("finance_bank") or "未填贷款行",
+                "item_no": _item_no(row),
+                "contract_no": row.get("purchase_contract_no") or "",
+                "subsidiary": row.get("subsidiary") or "",
+                "amount": _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")),
+                "due_date": row.get("finance_due_date") or "",
+                "status": row.get("finance_status") or row.get("business_status") or "",
+            }
+            for row in open_rows
+        ],
+    }
+
+
 @router.post("/order-finance/import-local")
 def import_order_finance_local(request: ImportLocalRequest, user: dict = Depends(order_finance_current_user)):
     order_finance_require_edit(user)
@@ -1064,6 +1398,18 @@ def order_finance_records(
     order_finance_require_view(user)
     result = list_order_finance_records_page(limit=limit, offset=offset)
     return {"summary": summarize_order_finance(result["records"]), **result}
+
+
+@router.get("/order-finance/progress")
+def order_finance_progress(user: dict = Depends(order_finance_current_user)):
+    order_finance_require_view(user)
+    return build_order_finance_progress_view()
+
+
+@router.get("/order-finance/capital")
+def order_finance_capital(user: dict = Depends(order_finance_current_user)):
+    require_permission(user, "order_finance.capital", "view")
+    return build_order_finance_capital_view()
 
 
 @router.get("/order-finance/records/{record_id}")

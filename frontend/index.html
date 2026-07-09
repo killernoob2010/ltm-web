@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=order-finance-xlsx-all-years-20260709" />
+    <link rel="stylesheet" href="/static/styles.css?v=order-finance-rebuild-20260709" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -357,128 +357,29 @@
 
           <section class="order-finance-summary" id="orderFinanceSummary"></section>
 
-          <section class="panel filter-panel">
-            <div class="filter-grid">
-              <label>
-                子公司
-                <select id="orderFinanceSubsidiaryFilter">
-                  <option value="">全部</option>
-                </select>
-              </label>
-              <label>
-                风险等级
-                <select id="orderFinanceRiskFilter">
-                  <option value="">全部</option>
-                  <option value="高">高</option>
-                  <option value="中">中</option>
-                  <option value="低">低</option>
-                </select>
-              </label>
-              <label>
-                状态
-                <select id="orderFinanceStatusFilter">
-                  <option value="">全部</option>
-                </select>
-              </label>
-              <label>
-                关键词
-                <input id="orderFinanceKeywordFilter" placeholder="合同号、客户、货物" />
-              </label>
-              <div class="filter-actions">
-                <button id="orderFinanceResetFiltersBtn" type="button" class="secondary">重置</button>
-              </div>
-            </div>
-          </section>
-
-          <div class="order-finance-layout">
-            <section class="panel order-finance-table-panel">
-              <div class="panel-head">
-                <h2>订单融资进度</h2>
+          <section class="panel order-finance-workbench">
+            <div class="panel-head">
+              <div>
+                <h2>按合同/项次聚合</h2>
                 <span id="orderFinanceCount"></span>
               </div>
-              <div class="table-wrap">
-                <table class="order-finance-table">
-                  <thead>
-                    <tr>
-                      <th>风险</th>
-                      <th>子公司</th>
-                      <th>终端客户</th>
-                      <th>货物类型</th>
-                      <th>货物量</th>
-                      <th>拟放款金额</th>
-                      <th>放款银行</th>
-                      <th>计划放款日</th>
-                      <th>到期日</th>
-                      <th>提单日期</th>
-                      <th>回款要求</th>
-                      <th>下一步</th>
-                    </tr>
-                  </thead>
-                  <tbody id="orderFinanceTable"></tbody>
-                </table>
-              </div>
-            </section>
-
-            <section class="panel order-finance-detail-panel">
-              <div class="panel-head">
-                <h2>合同详情</h2>
-                <span id="orderFinanceDetailTitle">未选择</span>
-              </div>
-              <div id="orderFinanceDetailEmpty" class="empty-cell">请选择一条记录查看并编辑管理计划。</div>
-              <form id="orderFinanceManagementForm" class="order-finance-detail hidden">
-                <div class="order-finance-detail-grid">
-                  <div>
-                    <h3>合同事实</h3>
-                    <dl id="orderFinanceFactList"></dl>
-                  </div>
-                  <div>
-                    <h3>管理计划</h3>
-                    <label>
-                      计划放款日
-                      <input id="ofPlannedDrawdownDate" type="date" />
-                    </label>
-                    <label>
-                      拟放款金额
-                      <input id="ofPlannedFinanceAmount" type="number" step="0.01" />
-                    </label>
-                    <label>
-                      金额调整说明
-                      <input id="ofAmountAdjustmentNote" />
-                    </label>
-                    <label>
-                      回款要求
-                      <input id="ofRepaymentRequirement" placeholder="例如放款当日先回25%陈欠" />
-                    </label>
-                    <label>
-                      回款要求状态
-                      <select id="ofRepaymentRequirementStatus">
-                        <option value="">未设置</option>
-                        <option value="未确认">未确认</option>
-                        <option value="已通知">已通知</option>
-                        <option value="已完成">已完成</option>
-                        <option value="已豁免">已豁免</option>
-                      </select>
-                    </label>
-                    <label>
-                      下一步动作
-                      <input id="ofNextAction" />
-                    </label>
-                    <label>
-                      下次跟进日
-                      <input id="ofNextFollowUpDate" type="date" />
-                    </label>
-                    <label>
-                      管理备注
-                      <textarea id="ofManagerNote" rows="3"></textarea>
-                    </label>
-                    <div class="dialog-actions">
-                      <button type="submit">保存管理计划</button>
-                    </div>
-                  </div>
-                </div>
-              </form>
-            </section>
-          </div>
+              <label class="order-finance-search">
+                <input id="orderFinanceKeywordFilter" type="search" placeholder="搜索项次、合同号、供应商、银行" />
+                <button id="orderFinanceResetFiltersBtn" type="button" class="secondary">重置</button>
+              </label>
+            </div>
+            <div class="order-finance-stage-filters" id="orderFinanceStageFilters">
+              <button class="filter-button active" data-filter="all" type="button">全部</button>
+              <button class="filter-button" data-filter="focusRisk" type="button">本周重点/高风险</button>
+              <button class="filter-button" data-filter="financedUnshipped" type="button">已放款待装船</button>
+              <button class="filter-button" data-filter="shippedUnpaid" type="button">已装船待回款</button>
+              <button class="filter-button" data-filter="collectedUnrepaid" type="button">已收汇待还款</button>
+              <button class="filter-button" data-filter="repaidUnsettled" type="button">已回款待结算</button>
+              <button class="filter-button" data-filter="closed" type="button">已完成</button>
+              <button class="filter-button" data-filter="multi" type="button">多笔融资</button>
+            </div>
+            <div class="order-finance-contract-list" id="orderFinanceContractList"></div>
+          </section>
 
           <section class="panel">
             <div class="panel-head">
@@ -486,6 +387,50 @@
               <span id="orderFinanceImportSummary"></span>
             </div>
             <div id="orderFinanceImportReport" class="order-finance-report empty-cell">暂无导入报告。</div>
+          </section>
+        </section>
+
+        <section id="orderFinanceCapitalPage" class="page hidden">
+          <div class="toolbar">
+            <button id="orderFinanceCapitalRefreshBtn" type="button" class="secondary">刷新</button>
+            <span id="orderFinanceCapitalStatus" class="toolbar-status">待加载</span>
+          </div>
+          <section class="order-finance-summary capital-summary" id="orderFinanceCapitalSummary"></section>
+          <section class="order-finance-capital-grid">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>各银行占用情况</h2>
+                <span>单位：万元</span>
+              </div>
+              <div id="orderFinanceBankList" class="order-finance-bank-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>主体与供应商拆分</h2>
+              </div>
+              <div class="order-finance-split-grid">
+                <div>
+                  <h3>按主体</h3>
+                  <div id="orderFinanceEntityList"></div>
+                </div>
+                <div>
+                  <h3>按供应商/工厂</h3>
+                  <div id="orderFinanceSupplierList"></div>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>到期区间</h2>
+              </div>
+              <div id="orderFinanceDueBuckets" class="order-finance-bucket-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2 id="orderFinanceSelectedBankTitle">银行明细</h2>
+              </div>
+              <div id="orderFinanceSelectedBankTable" class="mini-table"></div>
+            </div>
           </section>
         </section>
 
@@ -1138,6 +1083,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=order-finance-xlsx-all-years-20260709"></script>
+    <script src="/static/app.js?v=order-finance-rebuild-20260709"></script>
   </body>
 </html>

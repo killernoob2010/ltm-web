@@ -16,6 +16,8 @@ from app.order_finance import (
     list_order_finance_records,
     parse_order_finance_directory,
     update_management_fields,
+    build_order_finance_capital_view,
+    build_order_finance_progress_view,
 )
 
 
@@ -117,6 +119,32 @@ def test_parse_order_finance_default_path_falls_back_to_seed_when_file_is_missin
 
     assert result["summary"]["files_read"] == 1
     assert result["summary"]["record_count"] == 70
+
+
+def test_progress_view_groups_contract_items_and_multi_financing():
+    records = parse_order_finance_directory(NEW_LEDGER_WORKBOOK)["records"]
+
+    view = build_order_finance_progress_view(records)
+
+    assert view["summary"]["total_contracts"] < len(records)
+    assert view["summary"]["completed"] > 0
+    assert view["summary"]["open_contracts"] > 0
+    multi = [item for item in view["contracts"] if item["financing_count"] > 1]
+    assert multi
+    sample = multi[0]
+    assert sample["stage"] in {"已放款待装船", "已装船待回款", "已收汇待还款", "已回款待结算", "已完成"}
+    assert len(sample["financings"]) == sample["financing_count"]
+
+
+def test_capital_view_contains_bank_limits_and_due_buckets():
+    records = parse_order_finance_directory(NEW_LEDGER_WORKBOOK)["records"]
+
+    view = build_order_finance_capital_view(records)
+
+    assert view["summary"]["total_credit"] > 0
+    assert view["summary"]["used_credit"] > 0
+    assert any(row["bank"] == "UOB" and row["limit"] > 0 for row in view["bank_usage"])
+    assert {bucket["label"] for bucket in view["due_buckets"]} == {"7天内", "8-30天", "31-60天", "60天以上", "已逾期"}
 
 
 def test_manual_create_blocks_exact_contract_duplicate(tmp_path, monkeypatch):

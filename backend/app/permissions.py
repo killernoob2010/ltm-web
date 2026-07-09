@@ -13,6 +13,7 @@ RESOURCE_MODULES = {
     "data_visualization.integration": "data_visualization_integration",
     "data_visualization.integrated_points": "data_visualization_integration",
     "order_finance.records": "order_finance_progress",
+    "order_finance.capital": "order_finance_capital",
     "sh_junneng.trades": "sh_junneng",
     "mid_event.monitor": "mid_event_monitor",
     "users": "user_management",

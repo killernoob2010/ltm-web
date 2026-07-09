@@ -26,7 +26,8 @@ MODULES = [
     ("数据可视化管理", "data_visualization_integration", "数据整合"),
     ("数据可视化管理", "data_visualization_data", "数据管理"),
     ("数据可视化管理", "data_visualization_chart", "数据展示"),
-    ("订单融资管理", "order_finance_progress", "进度监控"),
+    ("订单融资管理", "order_finance_progress", "订单融资进度"),
+    ("订单融资管理", "order_finance_capital", "融资资金监控"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
 ]
