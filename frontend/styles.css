@@ -1123,7 +1123,7 @@ dialog::backdrop {
 
 .order-finance-table {
   table-layout: fixed;
-  min-width: 1240px;
+  min-width: 1480px;
 }
 
 .order-finance-table tbody tr[data-id] {
@@ -1168,7 +1168,26 @@ dialog::backdrop {
 
 .order-finance-table th:nth-child(7),
 .order-finance-table td:nth-child(7) {
-  width: 82px;
+  width: 138px;
+}
+
+.order-finance-table th:nth-child(8),
+.order-finance-table td:nth-child(8),
+.order-finance-table th:nth-child(9),
+.order-finance-table td:nth-child(9),
+.order-finance-table th:nth-child(10),
+.order-finance-table td:nth-child(10) {
+  width: 112px;
+}
+
+.order-finance-table th:nth-child(11),
+.order-finance-table td:nth-child(11) {
+  width: 138px;
+}
+
+.order-finance-table th:nth-child(12),
+.order-finance-table td:nth-child(12) {
+  width: 160px;
 }
 
 .order-finance-table td.numeric {

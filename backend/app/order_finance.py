@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from openpyxl import load_workbook
+from openpyxl.utils.datetime import from_excel
 import xlrd
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -22,6 +24,8 @@ router = APIRouter()
 
 SUBSIDIARIES = ["东钢", "北满", "承德", "抚顺", "西林", "阿城"]
 LOCAL_DEFAULT_LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
+LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账(副本).xlsx")
+ORDER_FINANCE_SEED_PATH = Path(__file__).with_name("order_finance_seed.json")
 ORDER_FINANCE_MODULE = "order_finance_progress"
 
 FACT_FIELDS = [
@@ -53,7 +57,7 @@ MANAGEMENT_FIELDS = {
 
 
 class ImportLocalRequest(BaseModel):
-    directory: str = str(LOCAL_DEFAULT_LEDGER_DIR)
+    directory: str = str(LOCAL_DEFAULT_LEDGER_WORKBOOK)
 
 
 class ManagementUpdateRequest(BaseModel):
@@ -181,6 +185,21 @@ def _normalize_date(value: Any) -> str:
         return date.fromisoformat(text[:10]).isoformat()
     except ValueError:
         return text
+
+
+def _normalize_xlsx_date(value: Any) -> str:
+    if value in (None, "", "-", 0, "0"):
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (int, float)):
+        try:
+            return from_excel(value).date().isoformat()
+        except Exception:
+            return ""
+    return _normalize_date(value)
 
 
 def _parse_date(value: Any) -> Optional[date]:
@@ -484,15 +503,192 @@ def parse_order_finance_workbook(path: Path) -> Dict[str, Any]:
     }
 
 
+def _clean_xlsx_value(value: Any) -> Any:
+    if value in (None, "", 0, "0"):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text if text and text not in {"0", "-", "—"} else None
+    return value
+
+
+def _xlsx_text(value: Any) -> str:
+    value = _clean_xlsx_value(value)
+    return "" if value is None else str(value).strip()
+
+
+def _xlsx_float(value: Any, scale: float = 1.0) -> Optional[float]:
+    value = _clean_xlsx_value(value)
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return round(float(value) / scale, 6)
+    text = str(value).replace(",", "").strip()
+    try:
+        return round(float(text) / scale, 6)
+    except ValueError:
+        return None
+
+
+def _xlsx_entity(item_no: str) -> str:
+    return "香港建龙" if item_no.startswith("H-") else "YOLANDA"
+
+
+def _xlsx_business_key_base(record: Dict[str, Any], source_file: str, source_row: int) -> str:
+    parts = [
+        _normalize_text(record.get("subsidiary")),
+        _normalize_text(record.get("purchase_contract_no")),
+        _normalize_text(record.get("system_contract_no")),
+    ]
+    if any(parts[1:]):
+        return "|".join(parts)
+    return "|".join([parts[0], source_file, str(source_row)])
+
+
+def _xlsx_business_key_suffix(record: Dict[str, Any], source_row: int) -> str:
+    return "|".join([
+        _normalize_text(record.get("finance_bank")),
+        _normalize_text(record.get("finance_drawdown_date")),
+        str(record.get("finance_amount_actual") or ""),
+        str(source_row),
+    ])
+
+
+def _xlsx_row_record(path: Path, sheet_name: str, headers: List[str], values: tuple[Any, ...], row_idx: int) -> Optional[Dict[str, Any]]:
+    row = dict(zip(headers, values))
+    item_no = _xlsx_text(row.get("项次"))
+    if not item_no:
+        return None
+    subsidiary = _xlsx_text(row.get("供应商简称")) or _subsidiary_from_filename(_xlsx_text(row.get("供应商")))
+    finance_due = _normalize_xlsx_date(row.get("新到期日")) or _normalize_xlsx_date(row.get("原到期日"))
+    repay_date = _normalize_xlsx_date(row.get("还款日"))
+    loan_status = _xlsx_text(row.get("贷款状态"))
+    lc_contract = _xlsx_text(row.get("双方合同号"))
+    source_date = ""
+    if "-2025-" in item_no:
+        source_date = "2025-01-01"
+    elif "-2026-" in item_no:
+        source_date = "2026-01-01"
+    else:
+        source_date = date.today().isoformat()
+    record = {
+        "subsidiary": subsidiary,
+        "source_file": path.name,
+        "source_sheet": sheet_name,
+        "source_row_start": row_idx,
+        "source_row_end": row_idx,
+        "source_snapshot_date": source_date,
+        "product_name": _xlsx_text(row.get("品名")),
+        "purchase_contract_no": _xlsx_text(row.get("合同编号")),
+        "system_contract_no": _xlsx_text(row.get("系统合同号")),
+        "buyer": _xlsx_text(row.get("合同买方")),
+        "seller": _xlsx_text(row.get("供应商")),
+        "overseas_entity": _xlsx_entity(item_no),
+        "terminal_customer": _xlsx_text(row.get("合同买方")),
+        "contract_date": _normalize_xlsx_date(row.get("付款日期")),
+        "trade_term": _xlsx_text(row.get("LC类型")),
+        "origin_port": _xlsx_text(row.get("起运港")),
+        "destination_port": _xlsx_text(row.get("目的港")),
+        "contract_quantity_mt": _xlsx_float(row.get("合同数量(吨)")),
+        "contract_currency": _xlsx_text(row.get("合同币别")) or "CNY",
+        "contract_amount": _xlsx_float(row.get("付款金额")),
+        "finance_bank": _xlsx_text(row.get("贷款行")),
+        "finance_amount_expected": _xlsx_float(row.get("贷款人民币金额")),
+        "finance_amount_actual": _xlsx_float(row.get("贷款人民币金额")),
+        "repaid_amount": _xlsx_float(row.get("贷款人民币金额")) if repay_date or loan_status == "已还款" else None,
+        "remaining_credit_amount": None,
+        "finance_drawdown_date": _normalize_xlsx_date(row.get("借款日期")),
+        "finance_due_date": finance_due,
+        "finance_days": None,
+        "finance_status": loan_status,
+        "latest_shipment_date": _normalize_xlsx_date(row.get("最迟装船日")),
+        "lc_latest_shipment_date": _normalize_xlsx_date(row.get("LC有效期")),
+        "vessel_voyage": _xlsx_text(row.get("船名")),
+        "bill_of_lading_date": "",
+        "bill_of_lading_no": "",
+        "document_submission_date": _normalize_xlsx_date(row.get("交单日期")),
+        "collection_date": _normalize_xlsx_date(row.get("收汇日期")),
+        "actual_shipped_quantity_mt": None,
+        "actual_goods_amount": _xlsx_float(row.get("交单金额")),
+        "tail_amount": None,
+        "tail_payment_date": "",
+        "executor": "",
+        "remark": _xlsx_text(row.get("情况说明")) or loan_status,
+        "sales_contracts_json": json.dumps([{
+            "item_no": item_no,
+            "contract": lc_contract,
+            "lc_no": _xlsx_text(row.get("信用证编号")),
+            "lc_bank": _xlsx_text(row.get("开证银行")),
+            "lc_amount": _xlsx_float(row.get("信用证金额")),
+            "lc_issue_date": _normalize_xlsx_date(row.get("开证日期")),
+            "lc_expiry_date": _normalize_xlsx_date(row.get("LC有效期")),
+            "lc_type": _xlsx_text(row.get("LC类型")),
+            "transferable": _xlsx_text(row.get("是否可转让")),
+            "receiving_bank": _xlsx_text(row.get("收证行")),
+            "discount_date": _normalize_xlsx_date(row.get("贴现日期")),
+        }], ensure_ascii=False),
+        "settlement_json": "{}",
+        "corrections_json": "[]",
+        "source_json": json.dumps({"headers": headers, "row": list(values), "item_no": item_no}, ensure_ascii=False, default=str),
+    }
+    record["business_key"] = _xlsx_business_key_base(record, path.name, row_idx)
+    derived = derive_business_status(record)
+    if loan_status == "已还款" or repay_date:
+        derived = {"business_status": "已结算", "risk_level": "低", "next_action": "无"}
+    record.update(derived)
+    record["finance_status"] = loan_status or record["business_status"]
+    warnings = _build_warnings(record)
+    record["import_warnings_json"] = json.dumps(warnings, ensure_ascii=False)
+    return record
+
+
+def parse_order_finance_xlsx_workbook(path: Path) -> Dict[str, Any]:
+    book = load_workbook(path, data_only=True, read_only=False)
+    sheet = book["数据合并"]
+    headers = [cell.value or f"col_{index + 1}" for index, cell in enumerate(sheet[1])]
+    records = []
+    seen_keys: Dict[str, int] = {}
+    for row_idx, values in enumerate(sheet.iter_rows(min_row=2, max_row=sheet.max_row, values_only=True), start=2):
+        record = _xlsx_row_record(path, sheet.title, headers, values, row_idx)
+        if record:
+            base_key = record["business_key"]
+            seen_keys[base_key] = seen_keys.get(base_key, 0) + 1
+            if seen_keys[base_key] > 1:
+                record["business_key"] = f"{base_key}|{_xlsx_business_key_suffix(record, row_idx)}"
+            records.append(record)
+    return {
+        "file": path.name,
+        "sheet": sheet.title,
+        "records": records,
+        "summary": {"record_count": len(records), "warning_count": sum(len(json.loads(r["import_warnings_json"])) for r in records)},
+    }
+
+
+def parse_order_finance_seed() -> Dict[str, Any]:
+    with ORDER_FINANCE_SEED_PATH.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def parse_order_finance_directory(directory: Path | str) -> Dict[str, Any]:
     base = Path(directory)
-    if not base.exists() or not base.is_dir():
+    if not base.exists():
+        if base == LOCAL_DEFAULT_LEDGER_WORKBOOK and ORDER_FINANCE_SEED_PATH.exists():
+            return parse_order_finance_seed()
         raise ValueError(f"目录不存在：{base}")
-    files = sorted(path for path in base.iterdir() if path.suffix.lower() == ".xls" and not path.name.startswith("~$"))
+    if base.is_file():
+        files = [base]
+    else:
+        files = sorted(
+            path for path in base.iterdir()
+            if path.suffix.lower() in {".xls", ".xlsx"} and not path.name.startswith("~$")
+        )
     records: List[Dict[str, Any]] = []
     file_results = []
     for path in files:
-        result = parse_order_finance_workbook(path)
+        if path.suffix.lower() == ".xlsx":
+            result = parse_order_finance_xlsx_workbook(path)
+        else:
+            result = parse_order_finance_workbook(path)
         records.extend(result["records"])
         file_results.append({"file": result["file"], "sheet": result["sheet"], **result["summary"]})
     return {
@@ -551,7 +747,7 @@ def upsert_order_finance_records(records: List[Dict[str, Any]], imported_by: str
                 params.append(existing["id"])
                 db._exec(
                     cur,
-                    f"UPDATE order_finance_progress SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    f"UPDATE order_finance_progress SET {assignments}, is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     tuple(params),
                 )
                 updated += 1
@@ -577,10 +773,26 @@ def upsert_order_finance_records(records: List[Dict[str, Any]], imported_by: str
     return {"inserted": inserted, "updated": updated}
 
 
+def archive_existing_excel_order_finance_records() -> int:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        result = db._exec(
+            cur,
+            """
+            UPDATE order_finance_progress
+            SET is_archived = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE is_archived = 0 AND source_file != '手动新增'
+            """,
+        )
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 def import_order_finance_directory(directory: Path | str, imported_by: str = "") -> Dict[str, Any]:
     parsed = parse_order_finance_directory(directory)
+    archived = archive_existing_excel_order_finance_records()
     changes = upsert_order_finance_records(parsed["records"], imported_by=imported_by)
     parsed["summary"].update(changes)
+    parsed["summary"]["archived"] = archived
     return parsed
 
 
