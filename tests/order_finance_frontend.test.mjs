@@ -25,19 +25,40 @@ test("order finance hides empty intermediate stage filters after data load", () 
   assert.match(appJs, /state\.orderFinanceFilter = "all"/);
 });
 
-test("order finance capital monitor puts bank exposure and selected detail before breakdowns", () => {
+test("order finance capital monitor follows the approved prototype structure", () => {
   const capitalStart = indexHtml.indexOf('id="orderFinanceCapitalPage"');
   assert.notEqual(capitalStart, -1);
   const capitalEnd = indexHtml.indexOf('id="orderFinanceManualDialog"', capitalStart);
   assert.notEqual(capitalEnd, -1);
   const capitalHtml = indexHtml.slice(capitalStart, capitalEnd);
 
-  assert.match(capitalHtml, /order-finance-capital-layout/);
-  assert.match(capitalHtml, /order-finance-capital-primary/);
-  assert.match(capitalHtml, /order-finance-capital-breakdowns/);
-  assert.ok(capitalHtml.indexOf("orderFinanceBankList") < capitalHtml.indexOf("orderFinanceSelectedBankTable"));
-  assert.ok(capitalHtml.indexOf("orderFinanceSelectedBankTable") < capitalHtml.indexOf("orderFinanceEntityList"));
-  assert.match(stylesCss, /\.order-finance-capital-primary/);
-  assert.match(stylesCss, /\.order-finance-capital-breakdowns/);
-  assert.match(stylesCss, /\.capital-summary\s*\{[\s\S]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(capitalHtml, /class="capital-summary"/);
+  assert.match(capitalHtml, /class="capital-grid"/);
+  assert.match(capitalHtml, /monitor-panel bank-panel/);
+  assert.match(capitalHtml, /section-label">银行额度/);
+  assert.match(capitalHtml, /section-label">主体与工厂/);
+  assert.match(capitalHtml, /section-label">资金日历/);
+  assert.match(capitalHtml, /monitor-panel selected-bank/);
+  assert.ok(capitalHtml.indexOf("orderFinanceBankList") < capitalHtml.indexOf("orderFinanceEntityList"));
+  assert.ok(capitalHtml.indexOf("orderFinanceEntityList") < capitalHtml.indexOf("orderFinanceDueBuckets"));
+  assert.ok(capitalHtml.indexOf("orderFinanceDueBuckets") < capitalHtml.indexOf("orderFinanceSelectedBankTable"));
+  assert.match(capitalHtml, /class="split-stack"/);
+  assert.match(appJs, /class="metric-card \${tone}"/);
+  assert.match(appJs, /class="bank-row \${state\.selectedOrderFinanceBank === bank\.bank \? "selected" : ""}"/);
+  assert.match(stylesCss, /\.capital-grid\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1\.25fr\) minmax\(0, 0\.9fr\)/);
+  assert.match(stylesCss, /\.bank-panel\s*\{[\s\S]*grid-row:\s*span 2/);
+  assert.match(stylesCss, /\.bank-row:hover,\s*\.bank-row\.selected/);
+});
+
+test("order finance progress keeps shipment date and vessel in separate fields", () => {
+  const contractStart = appJs.indexOf("function renderOrderFinanceContract");
+  assert.notEqual(contractStart, -1);
+  const contractEnd = appJs.indexOf("function renderOrderFinanceContracts", contractStart);
+  assert.notEqual(contractEnd, -1);
+  const contractRenderer = appJs.slice(contractStart, contractEnd);
+
+  assert.doesNotMatch(contractRenderer, /orderFinanceField\("装运节点"/);
+  assert.match(contractRenderer, /orderFinanceField\("最迟装船日"/);
+  assert.match(contractRenderer, /orderFinanceField\("船名\/航次"/);
+  assert.doesNotMatch(contractRenderer, /item\.vessel \|\| \(item\.latest_shipment_date/);
 });

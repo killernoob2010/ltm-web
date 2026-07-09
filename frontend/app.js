@@ -2122,11 +2122,11 @@ function renderOrderFinanceContract(item) {
         ${orderFinanceField("数量", item.quantity ? `${money(item.quantity)}吨` : "-")}
         ${orderFinanceField("融资金额", item.financing_count > 1 ? `${item.financing_count}笔 / ${orderFinanceWan(item.total_finance, 1)}` : orderFinanceWan(item.total_finance, 1))}
         ${orderFinanceField("放款情况", (item.financings || []).some((row) => row.borrow_date) ? `已放款 ${(item.financings || []).find((row) => row.borrow_date)?.borrow_date || ""}` : "待放款")}
-        ${orderFinanceField("装运节点", item.vessel || (item.latest_shipment_date ? `最迟装船 ${item.latest_shipment_date}` : "待确认装运"), item.vessel ? "" : "warning")}
+        ${orderFinanceField("最迟装船日", item.latest_shipment_date || "待确认", item.latest_shipment_date ? "" : "warning")}
+        ${orderFinanceField("船名/航次", item.vessel || "待确认", item.vessel ? "" : "warning")}
         ${orderFinanceField("融资到期", `${item.latest_due_date || "-"} / ${orderFinanceDueText(item.latest_due_date)}`, item.risk === "高" ? "warning" : "")}
         ${orderFinanceField("回款情况", item.collection_date || "未收汇", item.collection_date ? "success" : "warning")}
         ${orderFinanceField("确认状态", orderFinanceConfirmation(item), orderFinanceConfirmation(item).includes("待") ? "warning" : "success")}
-        ${orderFinanceField("展期状态", "暂不需要")}
       </div>
       <div class="order-finance-next-action ${item.risk === "高" ? "danger" : ""}">
         <span>下一步</span>
@@ -2258,24 +2258,24 @@ async function saveOrderFinanceManual(event) {
 function renderOrderFinanceCapitalSummary() {
   const summary = state.orderFinanceCapital.summary || {};
   const items = [
-    ["总授信额度", orderFinanceWan(summary.total_credit || 0, 0)],
-    ["当前占用", orderFinanceWan(summary.used_credit || 0, 1)],
-    ["剩余额度", orderFinanceWan(summary.available_credit || 0, 1)],
-    ["整体使用率", `${((summary.utilization_rate || 0) * 100).toFixed(1)}%`],
-    ["接近上限银行", summary.near_limit_banks || 0],
-    ["30天到期金额", orderFinanceWan(summary.due_30_amount || 0, 1)],
-    ["最大单一银行占比", `${((summary.largest_bank_share || 0) * 100).toFixed(1)}%`],
-    ["最大供应商/工厂占比", `${((summary.largest_supplier_share || 0) * 100).toFixed(1)}%`],
+    ["总授信额度", orderFinanceWan(summary.total_credit || 0, 0), ""],
+    ["当前占用", orderFinanceWan(summary.used_credit || 0, 1), ""],
+    ["剩余额度", orderFinanceWan(summary.available_credit || 0, 1), ""],
+    ["整体使用率", `${((summary.utilization_rate || 0) * 100).toFixed(1)}%`, "emphasis"],
+    ["接近上限银行", summary.near_limit_banks || 0, "warning"],
+    ["30天到期金额", orderFinanceWan(summary.due_30_amount || 0, 1), ""],
+    ["最大单一银行占比", `${((summary.largest_bank_share || 0) * 100).toFixed(1)}%`, ""],
+    ["最大供应商/工厂占比", `${((summary.largest_supplier_share || 0) * 100).toFixed(1)}%`, ""],
   ];
-  orderFinanceCapitalSummary.innerHTML = items.map(([label, value]) => (
-    `<div class="order-finance-summary-item"><span>${label}</span><strong>${value}</strong></div>`
+  orderFinanceCapitalSummary.innerHTML = items.map(([label, value, tone]) => (
+    `<div class="metric-card ${tone}"><span>${label}</span><strong>${value}</strong></div>`
   )).join("");
 }
 
 function renderOrderFinanceSplitRows(rows) {
   const max = Math.max(...(rows || []).map((row) => row.amount || 0), 1);
   return (rows || []).map((row) => `
-    <div class="order-finance-split-row">
+    <div class="split-row">
       <div><span>${escapeHtml(row.name || "-")}</span><strong>${escapeHtml(orderFinanceWan(row.amount || 0, 1))}</strong></div>
       <div class="mini-bar"><span style="width: ${Math.max(2, ((row.amount || 0) / max) * 100).toFixed(1)}%"></span></div>
     </div>
@@ -2288,13 +2288,12 @@ function renderOrderFinanceSelectedBank() {
   const rows = (state.orderFinanceCapital.bank_details || []).filter((row) => row.bank === bank);
   orderFinanceSelectedBankTable.innerHTML = rows.length ? `
     <table>
-      <thead><tr><th>项次</th><th>合同</th><th>供应商</th><th>金额</th><th>到期日</th><th>状态</th></tr></thead>
+      <thead><tr><th>项次</th><th>合同</th><th>金额</th><th>到期日</th><th>状态</th></tr></thead>
       <tbody>
         ${rows.map((row) => `
           <tr>
             <td>${escapeHtml(row.item_no || "-")}</td>
             <td>${escapeHtml(row.contract_no || "-")}</td>
-            <td>${escapeHtml(row.subsidiary || "-")}</td>
             <td class="numeric">${escapeHtml(orderFinanceWan(row.amount || 0, 1))}</td>
             <td>${escapeHtml(row.due_date || "-")}</td>
             <td>${escapeHtml(row.status || "-")}</td>
@@ -2314,7 +2313,7 @@ function renderOrderFinanceCapital() {
     const rate = bank.usage_rate == null ? 0 : bank.usage_rate * 100;
     const tone = rate >= 90 ? "danger" : rate >= 70 ? "warning" : "";
     return `
-      <button class="order-finance-bank-row ${state.selectedOrderFinanceBank === bank.bank ? "selected" : ""}" type="button" data-bank="${escapeHtml(bank.bank)}">
+      <button class="bank-row ${state.selectedOrderFinanceBank === bank.bank ? "selected" : ""}" type="button" data-bank="${escapeHtml(bank.bank)}">
         <div class="bank-row-head"><strong>${escapeHtml(bank.bank)}</strong><span>${bank.usage_rate == null ? "-" : `${rate.toFixed(1)}%`}</span></div>
         <div class="progress-bar ${tone}"><span style="width: ${Math.min(rate, 100).toFixed(1)}%"></span></div>
         <div class="bank-row-foot">
@@ -2329,13 +2328,13 @@ function renderOrderFinanceCapital() {
   orderFinanceEntityList.innerHTML = renderOrderFinanceSplitRows(capital.entity_usage || []);
   orderFinanceSupplierList.innerHTML = renderOrderFinanceSplitRows(capital.supplier_usage || []);
   orderFinanceDueBuckets.innerHTML = (capital.due_buckets || []).map((bucket) => `
-    <div class="order-finance-bucket-row">
+    <div class="bucket-row">
       <span>${escapeHtml(bucket.label)}</span>
       <strong>${escapeHtml(orderFinanceWan(bucket.amount || 0, 1))}</strong>
       <em>${escapeHtml(bucket.count || 0)}笔</em>
     </div>
   `).join("");
-  orderFinanceBankList.querySelectorAll(".order-finance-bank-row").forEach((button) => {
+  orderFinanceBankList.querySelectorAll(".bank-row").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedOrderFinanceBank = button.dataset.bank;
       renderOrderFinanceCapital();
