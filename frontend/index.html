@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=order-finance-upload-filter-20260709" />
+    <link rel="stylesheet" href="/static/styles.css?v=order-finance-capital-filter-20260709" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -394,40 +394,41 @@
             <span id="orderFinanceCapitalStatus" class="toolbar-status">待加载</span>
           </div>
           <section class="order-finance-summary capital-summary" id="orderFinanceCapitalSummary"></section>
-          <section class="order-finance-capital-grid">
-            <div class="panel">
-              <div class="panel-head">
-                <h2>各银行占用情况</h2>
-                <span>单位：万元</span>
-              </div>
-              <div id="orderFinanceBankList" class="order-finance-bank-list"></div>
-            </div>
-            <div class="panel">
-              <div class="panel-head">
-                <h2>主体与供应商拆分</h2>
-              </div>
-              <div class="order-finance-split-grid">
-                <div>
-                  <h3>按主体</h3>
-                  <div id="orderFinanceEntityList"></div>
+          <section class="order-finance-capital-layout">
+            <div class="order-finance-capital-primary">
+              <div class="panel order-finance-bank-panel">
+                <div class="panel-head">
+                  <h2>各银行占用情况</h2>
+                  <span>单位：万元</span>
                 </div>
-                <div>
-                  <h3>按供应商/工厂</h3>
-                  <div id="orderFinanceSupplierList"></div>
+                <div id="orderFinanceBankList" class="order-finance-bank-list"></div>
+              </div>
+              <div class="panel order-finance-bank-detail-panel">
+                <div class="panel-head">
+                  <h2 id="orderFinanceSelectedBankTitle">银行明细</h2>
                 </div>
+                <div id="orderFinanceSelectedBankTable" class="mini-table"></div>
               </div>
             </div>
-            <div class="panel">
-              <div class="panel-head">
-                <h2>到期区间</h2>
+            <div class="order-finance-capital-breakdowns">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>按主体拆分</h2>
+                </div>
+                <div id="orderFinanceEntityList"></div>
               </div>
-              <div id="orderFinanceDueBuckets" class="order-finance-bucket-list"></div>
-            </div>
-            <div class="panel">
-              <div class="panel-head">
-                <h2 id="orderFinanceSelectedBankTitle">银行明细</h2>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>按供应商/工厂拆分</h2>
+                </div>
+                <div id="orderFinanceSupplierList"></div>
               </div>
-              <div id="orderFinanceSelectedBankTable" class="mini-table"></div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>到期区间</h2>
+                </div>
+                <div id="orderFinanceDueBuckets" class="order-finance-bucket-list"></div>
+              </div>
             </div>
           </section>
         </section>
@@ -1081,6 +1082,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=order-finance-upload-filter-20260709"></script>
+    <script src="/static/app.js?v=order-finance-capital-filter-20260709"></script>
   </body>
 </html>

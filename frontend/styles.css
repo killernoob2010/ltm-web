@@ -1110,6 +1110,10 @@ dialog::backdrop {
   font-size: 20px;
 }
 
+.capital-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -1291,10 +1295,31 @@ dialog::backdrop {
   min-width: 860px;
 }
 
-.order-finance-capital-grid {
+.order-finance-capital-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   gap: 14px;
+}
+
+.order-finance-capital-primary {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.88fr) minmax(0, 1.12fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.order-finance-capital-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.order-finance-bank-detail-panel,
+.order-finance-capital-breakdowns .panel {
+  min-width: 0;
+}
+
+.order-finance-bank-detail-panel .mini-table {
+  overflow-x: auto;
 }
 
 .order-finance-bank-list,
@@ -1427,7 +1452,8 @@ dialog::backdrop {
 @media (max-width: 1100px) {
   .order-finance-summary,
   .order-finance-field-strip,
-  .order-finance-capital-grid,
+  .order-finance-capital-primary,
+  .order-finance-capital-breakdowns,
   .order-finance-split-grid,
   .order-finance-manual-grid {
     grid-template-columns: 1fr;

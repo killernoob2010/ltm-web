@@ -368,7 +368,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -2008,6 +2008,33 @@ function orderFinanceFilteredContracts() {
   });
 }
 
+const ORDER_FINANCE_STAGE_FILTERS = [
+  { filter: "shippedUnpaid", stage: "已装船待回款", hideWhenEmpty: true },
+  { filter: "collectedUnrepaid", stage: "已收汇待还款", hideWhenEmpty: true },
+  { filter: "repaidUnsettled", stage: "已回款待结算", hideWhenEmpty: true },
+];
+
+function syncOrderFinanceStageFilters() {
+  const counts = new Map();
+  state.orderFinanceContracts.forEach((item) => {
+    counts.set(item.stage, (counts.get(item.stage) || 0) + 1);
+  });
+  const stageByFilter = new Map(ORDER_FINANCE_STAGE_FILTERS.map((item) => [item.filter, item]));
+  let activeHidden = false;
+  orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((button) => {
+    const meta = stageByFilter.get(button.dataset.filter);
+    const shouldHide = Boolean(meta?.hideWhenEmpty && !counts.get(meta.stage));
+    button.classList.toggle("hidden", shouldHide);
+    if (shouldHide && button.dataset.filter === state.orderFinanceFilter) activeHidden = true;
+  });
+  if (activeHidden) {
+    state.orderFinanceFilter = "all";
+    orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((button) => {
+      button.classList.toggle("active", button.dataset.filter === "all");
+    });
+  }
+}
+
 function renderOrderFinanceSummary() {
   const summary = state.orderFinanceSummary || {};
   const items = [
@@ -2135,6 +2162,7 @@ async function loadOrderFinanceProgress() {
     state.orderFinanceContracts = result.contracts || [];
     state.orderFinanceSummary = result.summary || {};
     renderOrderFinanceSummary();
+    syncOrderFinanceStageFilters();
     renderOrderFinanceContracts();
     orderFinanceStatus.textContent = "已加载";
   } catch (error) {
