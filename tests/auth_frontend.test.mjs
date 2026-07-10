@@ -27,7 +27,7 @@ test("user management exposes account lifecycle permission levels and password s
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  for (const department of ["贸易处", "期货组", "财企处", "资金处", "管理部门"]) {
+  for (const department of ["贸易处", "期货组", "财企处", "资金处", "管理部门", "公司领导"]) {
     assert.match(html, new RegExp(`<option value="${department}">${department}</option>`));
   }
   assert.match(html, /<option value="领导">领导<\/option>/);
