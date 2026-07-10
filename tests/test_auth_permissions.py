@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db, main, permissions
 from app.permissions import can, get_user_permissions
+from app.user_policy import temporary_password_policy
 from app.order_finance import ContractReminderRequest, order_finance_contract_reminder
 from app.main import (
     delete_strategy_position,
@@ -244,6 +245,27 @@ def test_department_and_leader_default_permission_levels():
     assert all(leader[code] == "view" for code in permissions.ACTIVE_BUSINESS_MODULES)
     assert leader["user_management"] == "none"
     assert leader["steel_export"] == "none"
+
+
+def test_company_leader_is_allowed_and_keeps_leader_view_defaults():
+    assert "公司领导" in permissions.DEPARTMENTS
+    levels = permissions.default_permission_levels("公司领导", "领导")
+    assert {code for code, level in levels.items() if level == "view"} == permissions.ACTIVE_BUSINESS_MODULES
+    assert all(level in {"none", "view"} for level in levels.values())
+
+
+def test_temporary_password_policy_covers_roster_rules_and_cao_xiang_exception():
+    cases = [
+        (("曹骧", "caoxiang", "期货组", "领导"), "caoxiang", "cao_xiang_exception"),
+        (("张胜根", "zhangshenggen", "公司领导", "领导"), "zhangshenggen12345", "leader_12345"),
+        (("龙云飞", "longyunfei", "贸易处", "用户"), "longyunfei", "trade_or_futures_plain"),
+        (("鲍歆禹", "baoxinyu", "期货组", "用户"), "baoxinyu", "trade_or_futures_plain"),
+        (("张立", "zhangli", "财企处", "用户"), "zhangli123", "finance_or_treasury_123"),
+        (("刘楠", "liunan", "资金处", "用户"), "liunan123", "finance_or_treasury_123"),
+    ]
+    for args, password, rule in cases:
+        result = temporary_password_policy(*args)
+        assert result == {"temporary_password": password, "password_rule": rule}
 
 
 def test_sensitive_actions_are_separate_and_backend_is_admin_only(tmp_path, monkeypatch):
