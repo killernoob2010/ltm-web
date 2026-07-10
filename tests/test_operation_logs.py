@@ -240,6 +240,12 @@ def test_archive_selection_uses_time_and_soft_row_cap_without_current_month(tmp_
     assert all(item.period_start.month != 7 or item.period_start.year != 2026 for item in periods)
 
 
+def test_archive_run_is_guarded_against_concurrent_postgres_workers():
+    source = inspect.getsource(archive.archive_due_logs)
+
+    assert "with archive_run_lock():" in source
+
+
 def test_build_archive_payload_is_deterministic_gzip_ndjson(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     admin = admin_user()
@@ -264,6 +270,10 @@ class FakeArchiveStorage:
     def __init__(self, *, verify_ok=True):
         self.objects = {}
         self.verify_ok = verify_ok
+        self.validations = 0
+
+    def validate_private_bucket(self):
+        self.validations += 1
 
     def upload_immutable(self, path, content):
         if path in self.objects:
@@ -318,6 +328,7 @@ def test_archive_and_restore_round_trip_preserves_original_ids(tmp_path, monkeyp
 
     archived = archive.archive_due_logs(storage, apply=True, today=date(2026, 7, 10))
     archive_id = archived["archives"][0]["id"]
+    assert storage.validations == 1
     with db.connect() as conn:
         assert conn.execute("SELECT id FROM operation_logs WHERE id = ?", (old_id,)).fetchone() is None
         assert conn.execute(

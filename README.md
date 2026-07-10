@@ -43,6 +43,28 @@ http://127.0.0.1:8000
 http://127.0.0.1:8001
 ```
 
+## 操作日志保留与归档
+
+- 在线日志默认每次加载 100 条，使用游标分页；页面只在管理员打开操作日志时请求数据。
+- 在线保留规则为最近 12 个月，并以 20 万条作为软上限；只归档已经结束的完整自然月。
+- 归档文件为 gzip NDJSON，存放在 Supabase 私有 bucket `operation-log-archives`。只有管理员主动下载历史归档时才读取文件。
+- 正式归档需要在服务端配置 `SUPABASE_URL` 和 `SUPABASE_SERVICE_ROLE_KEY`；service-role 不得进入前端、仓库、日志或接口响应。
+
+归档命令默认只预览，不写数据库或 Storage：
+
+```bash
+.venv/bin/python scripts/archive_operation_logs.py --environment staging
+```
+
+确认 dry-run 后才使用 `--apply`。恢复命令同样默认只预览，必须显式传入归档 ID 和 `--apply`：
+
+```bash
+.venv/bin/python scripts/restore_operation_logs.py 1
+.venv/bin/python scripts/restore_operation_logs.py 1 --apply
+```
+
+归档过程先上传并校验文件，再在数据库事务中写入元数据和删除对应在线日志；校验失败、删除行数不一致或恢复 ID 冲突都会停止并回滚数据库写入。当前没有自动创建 Render Cron，是否增加付费定时服务需单独确认。
+
 订单融资 Excel 台账当前默认读取本机新模板文件，包含 2025 和 2026 全部项次：
 
 ```text

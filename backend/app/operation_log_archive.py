@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 import gzip
@@ -170,6 +171,21 @@ class SupabaseArchiveStorage:
             return f"{self.project_url}/storage/v1/object/authenticated/{self.bucket}/{escaped}"
         return f"{self.project_url}/storage/v1/object/{mode}/{escaped}"
 
+    def validate_private_bucket(self) -> None:
+        response = self.session.get(
+            f"{self.project_url}/storage/v1/bucket/{quote(self.bucket, safe='')}",
+            headers=self._headers(),
+            timeout=30,
+        )
+        if response.status_code != 200:
+            raise ArchiveStorageError(f"私有归档 bucket 不存在或不可访问（HTTP {response.status_code}）")
+        try:
+            is_public = bool(response.json().get("public"))
+        except (ValueError, AttributeError) as exc:
+            raise ArchiveStorageError("归档 bucket 配置响应无效") from exc
+        if is_public:
+            raise ArchiveStorageError("归档 bucket 必须设为私有")
+
     def upload_immutable(self, path: str, content: bytes) -> None:
         if len(content) <= STANDARD_UPLOAD_LIMIT:
             response = self.session.post(
@@ -261,6 +277,24 @@ def _object_path(environment: str, period: ArchivePeriod) -> str:
     )
 
 
+@contextmanager
+def archive_run_lock():
+    if not db._is_pg():
+        yield
+        return
+    with db.connect() as conn:
+        acquired = db._exec(
+            conn.cursor(),
+            "SELECT pg_try_advisory_lock(784512903) AS acquired",
+        ).fetchone()["acquired"]
+        if not acquired:
+            raise ArchiveError("已有另一个操作日志归档任务正在执行")
+        try:
+            yield
+        finally:
+            db._exec(conn.cursor(), "SELECT pg_advisory_unlock(784512903)")
+
+
 def archive_due_logs(
     storage,
     *,
@@ -269,6 +303,26 @@ def archive_due_logs(
     environment: str = "staging",
     retention_months: int = 12,
     max_online_rows: int = 200_000,
+) -> dict:
+    with archive_run_lock():
+        return _archive_due_logs_unlocked(
+            storage,
+            apply=apply,
+            today=today,
+            environment=environment,
+            retention_months=retention_months,
+            max_online_rows=max_online_rows,
+        )
+
+
+def _archive_due_logs_unlocked(
+    storage,
+    *,
+    apply: bool,
+    today: Optional[date],
+    environment: str,
+    retention_months: int,
+    max_online_rows: int,
 ) -> dict:
     today = today or date.today()
     with db.connect() as conn:
@@ -287,6 +341,9 @@ def archive_due_logs(
     }
     if not apply:
         return result
+
+    if periods:
+        storage.validate_private_bucket()
 
     for period in periods:
         with db.connect() as conn:
