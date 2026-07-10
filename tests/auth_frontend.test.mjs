@@ -17,3 +17,29 @@ test("login page exposes real guest login without prefilled admin credentials", 
   assert.doesNotMatch(appJs, /localStorage\.getItem\("token"\)/);
   assert.doesNotMatch(appJs, /localStorage\.setItem\("token"/);
 });
+
+test("user management exposes account lifecycle permission levels and password self-service", () => {
+  for (const id of [
+    "resetUserPasswordBtn", "toggleUserStatusBtn", "changePasswordBtn",
+    "passwordChangeNotice", "changePasswordDialog", "currentPassword",
+    "newPassword", "confirmNewPassword", "userUsername", "permissionSummary",
+    "previewUserBtn", "userPermissionEditor",
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  for (const department of ["贸易处", "期货组", "财企处", "资金处", "管理部门"]) {
+    assert.match(html, new RegExp(`<option value="${department}">${department}</option>`));
+  }
+  assert.match(html, /<option value="领导">领导<\/option>/);
+  assert.doesNotMatch(html, /id="userPassword"/);
+  assert.match(appJs, /\/api\/users\/preview/);
+  assert.match(appJs, /\/api\/auth\/change-password/);
+  assert.match(appJs, /\/reset-password/);
+  assert.match(appJs, /\/status/);
+  assert.match(appJs, /password_change_recommended/);
+  assert.match(appJs, /temporary_password/);
+  assert.match(appJs, /permission-level/);
+  assert.match(appJs, /renderUserPermissionEditor/);
+  assert.match(appJs, /setHidden\("#importCacheBtn", guest \|\| !canModuleSensitive\("info_summary"\)\)/);
+  assert.match(appJs, /setHidden\("#batchDeleteAlertsBtn", guest \|\| !canModuleSensitive\("risk_alert"\)\)/);
+});

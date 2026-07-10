@@ -62,6 +62,10 @@ function canModuleEdit(code) {
   return Boolean(modulePermission(code)?.can_edit);
 }
 
+function canModuleSensitive(code) {
+  return Boolean(modulePermission(code)?.can_sensitive || state.user?.role === "管理员");
+}
+
 function setHidden(selector, hidden) {
   const el = document.querySelector(selector);
   if (el) el.classList.toggle("hidden", hidden);
@@ -70,14 +74,21 @@ function setHidden(selector, hidden) {
 function applyUiPermissions() {
   const guest = isGuest();
   setHidden("#notificationBtn", guest);
-  ["#calculateAllInfoBtn", "#refreshInfoCacheBtn", "#importCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
+  setHidden("#changePasswordBtn", guest);
+  ["#calculateAllInfoBtn", "#refreshInfoCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
+  setHidden("#importCacheBtn", guest || !canModuleSensitive("info_summary"));
+  setHidden("#batchDeleteAlertsBtn", guest || !canModuleSensitive("risk_alert"));
   [
     "#addGroupBtn", "#addPositionBtn",
-    "#addShJunnengBtn", "#editShJunnengBtn", "#deleteShJunnengBtn", "#closeShJunnengBtn",
-    "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn", "#exportShJunnengBtn",
-    "#orderFinanceImportBtn",
-    "#dvUploadBtn", "#dvCommitImportBtn", "#dvPreviewImportBtn", "#dvIntegrationExportBtn",
+    "#addShJunnengBtn", "#editShJunnengBtn", "#closeShJunnengBtn",
+    "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn",
   ].forEach((selector) => setHidden(selector, guest));
+  setHidden("#deleteShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
+  setHidden("#exportShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
+  setHidden("#orderFinanceImportBtn", guest || !canModuleSensitive("order_finance_progress"));
+  ["#dvUploadBtn", "#dvCommitImportBtn", "#dvPreviewImportBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
+  setHidden("#dvIntegrationExportBtn", guest || !canModuleSensitive("data_visualization_integration"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -472,6 +483,7 @@ async function bootstrap() {
     return;
   }
   currentUser.textContent = isGuest() ? "访客" : `${state.user.name}｜${state.user.role}`;
+  passwordChangeNotice.classList.toggle("hidden", isGuest() || !state.user.password_change_recommended);
   showApp();
   renderMenu();
   applyUiPermissions();
@@ -1751,10 +1763,12 @@ bootstrap();
 // ── 用户管理 ────────────────────────────────────────────
 
 let selectedUserId = null;
+let managedUsers = [];
 
 async function loadUserManagement() {
   try {
     const data = await api("/api/users");
+    managedUsers = data.users;
     renderUsersTable(data.users);
     const total = data.pagination?.total ?? data.users.length;
     userMgmtStatus.textContent = `已加载 ${data.users.length}/${total} 个用户`;
@@ -1768,9 +1782,12 @@ function renderUsersTable(users) {
   usersTable.innerHTML = users.map((u) => `<tr data-user-id="${u.id}">
     <td>${u.id}</td>
     <td>${u.name}</td>
+    <td>${u.username || ""}</td>
     <td>${u.department}</td>
     <td>${u.role}</td>
     <td>${u.status || "启用"}</td>
+    <td>${u.password_change_recommended ? "建议改密" : "已设定"}</td>
+    <td>${u.permission_summary?.enabled || 0} 个模块｜敏感 ${u.permission_summary?.sensitive || 0}</td>
     <td>${u.created_at || ""}</td>
   </tr>`).join("");
 
@@ -1787,18 +1804,54 @@ function renderUsersTable(users) {
 function openUserDialog(editMode = false) {
   userId.value = "";
   userName.value = "";
-  userDepartment.value = "";
-  userPassword.value = "";
+  userUsername.value = "";
+  userDepartment.value = "贸易处";
   userRole.value = "用户";
   userDialogTitle.textContent = editMode ? "编辑用户" : "添加用户";
-  if (!editMode) {
-    userPassword.required = true;
-    userPassword.placeholder = "请输入密码（至少6位）";
-  } else {
-    userPassword.required = false;
-    userPassword.placeholder = "留空则不修改密码";
-  }
+  userPreview.textContent = "保存前将预览账号、临时密码和最终权限。";
+  userPermissionEditor.innerHTML = "";
   userDialog.showModal();
+}
+
+function renderUserPermissionEditor(levels) {
+  const entries = Array.isArray(levels)
+    ? levels.map((item) => [item.module_code, item.level])
+    : Object.entries(levels).filter(([code]) => moduleLabel(code));
+  userPermissionEditor.innerHTML = `<table><thead><tr><th>模块</th><th>创建后权限</th></tr></thead><tbody>${entries.map(([code, level]) => {
+    const label = moduleLabel(code);
+    return `<tr data-module="${code}"><td>${label ? `${label.group} / ${label.name}` : code}</td><td>
+      <select class="user-permission-level">
+        <option value="none" ${level === "none" ? "selected" : ""}>无权限</option>
+        <option value="view" ${level === "view" ? "selected" : ""}>查看</option>
+        <option value="operate" ${level === "operate" ? "selected" : ""}>日常操作</option>
+        <option value="sensitive" ${level === "sensitive" ? "selected" : ""}>敏感操作</option>
+      </select>
+    </td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+function collectUserPermissionLevels() {
+  return Array.from(userPermissionEditor.querySelectorAll("tr[data-module]")).map((row) => ({
+    module_code: row.dataset.module,
+    level: row.querySelector(".user-permission-level").value,
+  }));
+}
+
+async function previewUserDraft() {
+  const payload = {
+    user_id: userId.value ? Number(userId.value) : null,
+    name: userName.value.trim(),
+    username: userUsername.value.trim(),
+    department: userDepartment.value,
+    role: userRole.value,
+    permissions: [],
+  };
+  const preview = await api("/api/users/preview", { method: "POST", body: JSON.stringify(payload) });
+  if (!preview.username_available) throw new Error("登录账号已存在，请修改后重试");
+  userUsername.value = preview.username;
+  renderUserPermissionEditor(preview.final_permissions);
+  userPreview.textContent = `账号 ${preview.username}｜临时密码 ${preview.temporary_password}｜请在下方确认或调整权限`;
+  return preview;
 }
 
 async function openEditUserDialog() {
@@ -1807,19 +1860,18 @@ async function openEditUserDialog() {
     return;
   }
   try {
-    const data = await api("/api/users");
-    const target = data.users.find((u) => u.id === selectedUserId);
+    const target = managedUsers.find((u) => u.id === selectedUserId);
     if (!target) {
       alert("用户不存在");
       return;
     }
     userId.value = target.id;
     userName.value = target.name;
+    userUsername.value = target.username || "";
     userDepartment.value = target.department;
-    userPassword.value = "";
-    userPassword.required = false;
-    userPassword.placeholder = "留空则不修改密码";
     userRole.value = target.role;
+    const currentPermissions = await api(`/api/users/${selectedUserId}/permissions`);
+    renderUserPermissionEditor(currentPermissions.permissions);
     userDialogTitle.textContent = "编辑用户";
     userDialog.showModal();
   } catch (error) {
@@ -1829,25 +1881,51 @@ async function openEditUserDialog() {
 
 async function saveUser() {
   const id = userId.value;
+  const original = id ? managedUsers.find((item) => item.id === Number(id)) : null;
+  let permissions = collectUserPermissionLevels();
+  if (!permissions.length && original && original.department === userDepartment.value && original.role === userRole.value) {
+    const current = await api(`/api/users/${id}/permissions`);
+    permissions = current.permissions;
+  }
   const payload = {
     name: userName.value.trim(),
-    department: userDepartment.value.trim(),
-    password: userPassword.value,
+    username: userUsername.value.trim(),
+    department: userDepartment.value,
     role: userRole.value,
+    permissions,
   };
-  if (!payload.name || !payload.department) {
+  if (!payload.name) {
     alert("请填写所有必填字段");
     return;
   }
-  if (!id && payload.password.length < 6) {
-    alert("密码长度至少为6位");
-    return;
-  }
   try {
+    if (!permissions.length) {
+      await previewUserDraft();
+      alert("已生成默认权限，请在弹窗中确认或调整后再保存。");
+      return;
+    }
+    const preview = await api("/api/users/preview", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, user_id: id ? Number(id) : null }),
+    });
+    if (!preview.username_available) {
+      throw new Error("登录账号已存在，请修改后重试");
+    }
+    userUsername.value = preview.username;
+    const enabled = Object.entries(preview.final_permissions)
+      .filter(([, level]) => level !== "none").length;
+    userPreview.textContent = `账号 ${preview.username}｜临时密码 ${preview.temporary_password}｜已授权 ${enabled} 个模块`;
+    const confirmed = await confirmAction(
+      id ? "确认修改用户" : "确认创建用户",
+      `${userPreview.textContent}\n权限变更 ${preview.changes.length} 项，确认后立即生效。`,
+    );
+    if (!confirmed) return;
+    payload.username = preview.username;
     if (id) {
       await api(`/api/users/${id}`, { method: "PUT", body: JSON.stringify(payload) });
     } else {
-      await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      const created = await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      alert(`用户已创建\n登录账号：${created.username}\n临时密码：${created.temporary_password}`);
     }
     userDialog.close();
     await loadUserManagement();
@@ -1880,15 +1958,21 @@ async function openPermissionDialog() {
   try {
     const data = await api(`/api/users/${selectedUserId}/permissions`);
     const perms = data.permissions;
-    permissionTable.innerHTML = Object.entries(perms).map(([code, p]) => {
-      const label = moduleLabel(code);
-      return `<tr data-module="${code}">
-        <td>${label ? label.name : code}</td>
-        <td><input type="checkbox" class="perm-view" ${p.can_view ? "checked" : ""} /></td>
-        <td><input type="checkbox" class="perm-edit" ${p.can_edit ? "checked" : ""} /></td>
+    const target = managedUsers.find((item) => item.id === selectedUserId);
+    permissionTable.innerHTML = perms.map((permission) => {
+      const label = moduleLabel(permission.module_code);
+      return `<tr data-module="${permission.module_code}">
+        <td>${label ? `${label.group} / ${label.name}` : permission.module_code}</td>
+        <td><select class="permission-level">
+          <option value="none" ${permission.level === "none" ? "selected" : ""}>无权限</option>
+          <option value="view" ${permission.level === "view" ? "selected" : ""}>查看</option>
+          <option value="operate" ${permission.level === "operate" ? "selected" : ""}>日常操作</option>
+          <option value="sensitive" ${permission.level === "sensitive" ? "selected" : ""}>敏感操作</option>
+        </select></td>
       </tr>`;
     }).join("");
-    permissionDialogTitle.textContent = "权限设置";
+    permissionDialogTitle.textContent = `权限设置｜${target?.name || ""}`;
+    permissionSummary.textContent = `部门默认：${target?.department || "--"}｜用户类型：${target?.role || "--"}｜保存前将显示变更摘要`;
     permissionDialog.showModal();
   } catch (error) {
     alert(`获取权限失败: ${error.message}`);
@@ -1900,11 +1984,25 @@ async function savePermissions() {
   const permissions = [];
   rows.forEach((row) => {
     const code = row.dataset.module;
-    const view = row.querySelector(".perm-view").checked ? 1 : 0;
-    const edit = row.querySelector(".perm-edit").checked ? 1 : 0;
-    permissions.push({ module_code: code, can_view: view, can_edit: edit });
+    const level = row.querySelector(".permission-level").value;
+    permissions.push({ module_code: code, level });
   });
   try {
+    const target = managedUsers.find((item) => item.id === selectedUserId);
+    const preview = await api("/api/users/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: selectedUserId,
+        name: target.name,
+        username: target.username,
+        department: target.department,
+        role: target.role,
+        permissions,
+      }),
+    });
+    permissionSummary.textContent = `将变更 ${preview.changes.length} 项权限`;
+    const confirmed = await confirmAction("确认权限变更", `${target.name} 将变更 ${preview.changes.length} 项权限，确认后立即生效。`);
+    if (!confirmed) return;
     await api(`/api/users/${selectedUserId}/permissions`, {
       method: "PUT",
       body: JSON.stringify({ permissions }),
@@ -1913,6 +2011,63 @@ async function savePermissions() {
     alert("权限保存成功");
   } catch (error) {
     alert(`保存失败: ${error.message}`);
+  }
+}
+
+async function resetSelectedUserPassword() {
+  const target = managedUsers.find((item) => item.id === selectedUserId);
+  if (!target) return alert("请先选择用户");
+  const confirmed = await confirmAction("重置密码", `确认重置 ${target.name} 的密码并注销其已有会话？`);
+  if (!confirmed) return;
+  try {
+    const result = await api(`/api/users/${selectedUserId}/reset-password`, { method: "POST" });
+    alert(`密码已重置\n登录账号：${result.username}\n临时密码：${result.temporary_password}`);
+    await loadUserManagement();
+  } catch (error) {
+    alert(`重置失败: ${error.message}`);
+  }
+}
+
+async function toggleSelectedUserStatus() {
+  const target = managedUsers.find((item) => item.id === selectedUserId);
+  if (!target) return alert("请先选择用户");
+  const status = target.status === "停用" ? "启用" : "停用";
+  const confirmed = await confirmAction(`${status}用户`, `确认${status} ${target.name}？${status === "停用" ? "已有会话将立即注销。" : ""}`);
+  if (!confirmed) return;
+  try {
+    await api(`/api/users/${selectedUserId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+    await loadUserManagement();
+  } catch (error) {
+    alert(`${status}失败: ${error.message}`);
+  }
+}
+
+function openChangePasswordDialog() {
+  currentPassword.value = "";
+  newPassword.value = "";
+  confirmNewPassword.value = "";
+  changePasswordError.textContent = "";
+  changePasswordDialog.showModal();
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  changePasswordError.textContent = "";
+  if (newPassword.value !== confirmNewPassword.value) {
+    changePasswordError.textContent = "两次输入的新密码不一致";
+    return;
+  }
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword.value, new_password: newPassword.value }),
+    });
+    state.user.password_change_recommended = false;
+    passwordChangeNotice.classList.add("hidden");
+    changePasswordDialog.close();
+    alert("密码已修改");
+  } catch (error) {
+    changePasswordError.textContent = error.message;
   }
 }
 
@@ -2505,7 +2660,24 @@ addUserBtn.addEventListener("click", () => openUserDialog(false));
 editUserBtn.addEventListener("click", openEditUserDialog);
 deleteUserBtn.addEventListener("click", deleteSelectedUser);
 setPermissionBtn.addEventListener("click", openPermissionDialog);
+resetUserPasswordBtn.addEventListener("click", resetSelectedUserPassword);
+toggleUserStatusBtn.addEventListener("click", toggleSelectedUserStatus);
 viewLogsBtn.addEventListener("click", openLogsDialog);
+previewUserBtn.addEventListener("click", () => previewUserDraft().catch((error) => {
+  userPreview.textContent = `预览失败: ${error.message}`;
+}));
+userDepartment.addEventListener("change", () => {
+  userPermissionEditor.innerHTML = "";
+  userPreview.textContent = "部门已变更，请重新生成并确认权限。";
+});
+userRole.addEventListener("change", () => {
+  userPermissionEditor.innerHTML = "";
+  userPreview.textContent = "用户类型已变更，请重新生成并确认权限。";
+});
+changePasswordBtn.addEventListener("click", openChangePasswordDialog);
+passwordNoticeAction.addEventListener("click", openChangePasswordDialog);
+changePasswordForm.addEventListener("submit", submitPasswordChange);
+cancelChangePasswordBtn.addEventListener("click", () => changePasswordDialog.close());
 
 userForm.addEventListener("submit", (e) => {
   e.preventDefault();

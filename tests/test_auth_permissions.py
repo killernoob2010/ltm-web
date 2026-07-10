@@ -1,13 +1,15 @@
 import os
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from app import db
+from app import db, main, permissions
 from app.permissions import can, get_user_permissions
 from app.order_finance import ContractReminderRequest, order_finance_contract_reminder
 from app.main import (
+    delete_strategy_position,
     get_user_permissions as get_managed_user_permissions,
     list_users,
     me,
@@ -127,3 +129,248 @@ def test_guest_is_system_identity_hidden_from_user_management(tmp_path, monkeypa
         assert exc.status_code == 400
     else:
         raise AssertionError("guest permissions should be fixed by backend")
+
+
+def test_auth_migration_adds_identity_password_and_sensitive_columns(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        permission_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(module_permissions)").fetchall()
+        }
+        admin = conn.execute(
+            "SELECT name, username, password_change_recommended FROM users WHERE name = ?",
+            ("admin",),
+        ).fetchone()
+        sensitive_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM module_permissions WHERE user_id = (SELECT id FROM users WHERE name = ?) AND can_sensitive = 1",
+            ("admin",),
+        ).fetchone()["c"]
+
+    assert {"username", "password_change_recommended"} <= user_columns
+    assert "can_sensitive" in permission_columns
+    assert admin["username"] == "admin"
+    assert admin["password_change_recommended"] == 0
+    assert sensitive_count == len(db.MODULES)
+
+
+def test_legacy_sqlite_auth_migration_is_idempotent_and_allows_duplicate_display_names(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "legacy.db")
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            department TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '启用',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE module_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            module_code TEXT NOT NULL,
+            can_view INTEGER NOT NULL DEFAULT 1,
+            can_edit INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(user_id, module_code)
+        );
+        CREATE TABLE user_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT '活跃'
+        );
+        INSERT INTO users (name, department, password_hash, role) VALUES ('张三', '贸易处', 'hash', '用户');
+        INSERT INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (1, 'info_summary', 1, 1);
+        """
+    )
+
+    db.migrate_auth_schema(conn)
+    db.migrate_auth_schema(conn)
+    conn.execute(
+        "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+        ("张三", "zhangsan2", "贸易处", "hash", "用户"),
+    )
+    migrated = conn.execute("SELECT * FROM users WHERE id = 1").fetchone()
+    permission = conn.execute("SELECT * FROM module_permissions WHERE user_id = 1").fetchone()
+
+    assert migrated["username"] == "张三"
+    assert permission["can_sensitive"] == 1
+    assert conn.execute("SELECT COUNT(*) AS c FROM users WHERE name = '张三'").fetchone()["c"] == 2
+    conn.close()
+
+
+def test_department_and_leader_default_permission_levels():
+    trade = permissions.default_permission_levels("\u8d38\u6613\u5904", "\u7528\u6237")
+    futures = permissions.default_permission_levels("\u671f\u8d27\u7ec4", "\u7528\u6237")
+    finance = permissions.default_permission_levels("\u8d22\u4f01\u5904", "\u7528\u6237")
+    treasury = permissions.default_permission_levels("\u8d44\u91d1\u5904", "\u7528\u6237")
+    management = permissions.default_permission_levels("\u7ba1\u7406\u90e8\u95e8", "\u7528\u6237")
+    leader = permissions.default_permission_levels("\u8d38\u6613\u5904", "\u9886\u5bfc")
+
+    assert trade["info_summary"] == "operate"
+    assert trade["data_visualization_chart"] == "operate"
+    assert trade["order_finance_progress"] == "none"
+    assert futures["sh_junneng"] == "operate"
+    assert finance["order_finance_progress"] == "operate"
+    assert treasury["order_finance_capital"] == "operate"
+    assert management["sh_junneng"] == "operate"
+    assert management["user_management"] == "none"
+    assert all(leader[code] == "view" for code in permissions.ACTIVE_BUSINESS_MODULES)
+    assert leader["user_management"] == "none"
+    assert leader["steel_export"] == "none"
+
+
+def test_sensitive_actions_are_separate_and_backend_is_admin_only(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            ("\u6d4b\u8bd5\u7528\u6237", "testuser", "\u8d38\u6613\u5904", db.password_hash("test1234"), "\u7528\u6237"),
+        )
+        user_id = cur.lastrowid
+        cur.execute(
+            "INSERT INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, 1, 1, 0)",
+            (user_id, "info_summary"),
+        )
+        cur.execute(
+            "INSERT INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, 1, 1, 1)",
+            (user_id, "user_management"),
+        )
+        cur.execute(
+            "INSERT INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, 1, 1, 0)",
+            (user_id, "mid_event_monitor"),
+        )
+        user = dict(cur.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    assert permissions.can(user, "alert.realtime_summary", "edit")
+    assert not permissions.can(user, "alert.realtime_summary", "delete")
+    assert not permissions.can(user, "alert.realtime_summary", "export")
+    assert not permissions.can(user, "users", "manage")
+
+    try:
+        delete_strategy_position(999, user=user)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("operate permission must not authorize a real delete endpoint")
+
+
+def admin_user():
+    with db.connect() as conn:
+        return dict(conn.execute("SELECT * FROM users WHERE name = ?", ("admin",)).fetchone())
+
+
+def test_user_preview_generates_pinyin_and_department_defaults(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "lazy_pinyin", lambda name: ["zhang", "san"])
+
+    result = main.preview_user(
+        main.UserPreviewIn(name="张三", username="", department="贸易处", role="用户", permissions=[]),
+        user=admin_user(),
+    )
+
+    assert result["username"] == "zhangsan"
+    assert result["temporary_password"] == "zhangsan123"
+    assert result["username_available"] is True
+    assert result["default_permissions"]["info_summary"] == "operate"
+    assert result["default_permissions"]["order_finance_progress"] == "none"
+    assert result["final_permissions"] == result["default_permissions"]
+
+
+def test_create_user_uses_username_temporary_password_and_permission_snapshot(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    payload = main.UserIn(
+        name="张三",
+        username="zhangsan",
+        department="贸易处",
+        role="用户",
+        permissions=[{"module_code": "order_finance_progress", "level": "view"}],
+    )
+
+    result = main.create_user(payload, user=admin_user())
+
+    with db.connect() as conn:
+        created = conn.execute("SELECT * FROM users WHERE id = ?", (result["id"],)).fetchone()
+        order_permission = conn.execute(
+            "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code = ?",
+            (result["id"], "order_finance_progress"),
+        ).fetchone()
+    assert created["username"] == "zhangsan"
+    assert created["password_change_recommended"] == 1
+    assert db.verify_password("zhangsan123", created["password_hash"])
+    assert dict(order_permission) == {"can_view": 1, "can_edit": 0, "can_sensitive": 0}
+    assert main.login(main.LoginRequest(username="zhangsan", password="zhangsan123"))["user"]["name"] == "张三"
+    listed = next(item for item in main.list_users(user=admin_user())["users"] if item["id"] == result["id"])
+    assert listed["permission_summary"]["enabled"] > 0
+    assert listed["permission_summary"]["sensitive"] == 0
+    configurable = main.get_user_permissions(result["id"], user=admin_user())["permissions"]
+    assert {item["module_code"] for item in configurable} == permissions.ACTIVE_BUSINESS_MODULES
+
+
+def test_change_password_keeps_current_session_and_revokes_other_sessions(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    created = main.create_user(
+        main.UserIn(name="李雷", username="lilei", department="期货组", role="用户", permissions=[]),
+        user=admin_user(),
+    )
+    current_token = db.create_session(created["id"])
+    other_token = db.create_session(created["id"])
+    current = db.get_user_by_token(current_token)
+
+    main.change_password(
+        main.ChangePasswordIn(current_password="lilei123", new_password="Secure8899"),
+        user=current,
+        authorization=f"Bearer {current_token}",
+    )
+
+    with db.connect() as conn:
+        updated = conn.execute("SELECT * FROM users WHERE id = ?", (created["id"],)).fetchone()
+    assert updated["password_change_recommended"] == 0
+    assert db.verify_password("Secure8899", updated["password_hash"])
+    assert db.get_user_by_token(current_token) is not None
+    assert db.get_user_by_token(other_token) is None
+
+
+def test_reset_and_disable_user_revoke_sessions_and_protect_last_admin(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    created = main.create_user(
+        main.UserIn(name="王芳", username="wangfang", department="财企处", role="用户", permissions=[]),
+        user=admin,
+    )
+    token = db.create_session(created["id"])
+
+    reset = main.reset_user_password(created["id"], user=admin)
+    assert reset["temporary_password"] == "wangfang123"
+    assert db.get_user_by_token(token) is None
+
+    token = db.create_session(created["id"])
+    main.set_user_status(created["id"], main.UserStatusIn(status="停用"), user=admin)
+    assert db.get_user_by_token(token) is None
+
+    try:
+        main.delete_user(created["id"], user=admin)
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "历史" in exc.detail
+    else:
+        raise AssertionError("account with session history must not be physically deleted")
+
+    with db.connect() as conn:
+        conn.execute("UPDATE users SET status = '停用' WHERE role = '管理员' AND id != ?", (admin["id"],))
+    try:
+        main.set_user_status(admin["id"], main.UserStatusIn(status="停用"), user=admin)
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "最后一名管理员" in exc.detail
+    else:
+        raise AssertionError("last enabled administrator must be protected")
