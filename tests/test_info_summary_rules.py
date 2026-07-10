@@ -108,6 +108,8 @@ class InfoSummaryRulesTest(unittest.TestCase):
 
         with patch("backend.app.main.fetch_sina_price", side_effect=fake_fetch_sina_price), \
              patch("backend.app.main.fetch_sgx_usdcnh_rate", side_effect=fake_fetch_sgx_rate), \
+             patch("backend.app.main.get_cached_data", return_value=None), \
+             patch("backend.app.main.get_latest_cached_data", return_value=None), \
              patch("backend.app.main.calculate_missing_cache_from_prices", return_value=None) as missing_cache:
             result = calculate_info_summary_all(payload, user={"id": 1, "role": "管理员"})
 

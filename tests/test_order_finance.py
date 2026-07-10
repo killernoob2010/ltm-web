@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import date, timedelta
 
+import pytest
 from openpyxl import Workbook
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -509,14 +510,12 @@ def test_upload_import_preserves_original_file_name(tmp_path, monkeypatch):
     assert {record["source_file"] for record in records} == {uploaded_name}
 
 
-def test_parse_order_finance_default_path_falls_back_to_seed_when_file_is_missing(tmp_path, monkeypatch):
+def test_parse_order_finance_default_path_requires_real_workbook_when_file_is_missing(tmp_path, monkeypatch):
     missing_workbook = tmp_path / "YOLANDA和香港建龙出口钢材信用证台账.xlsx"
     monkeypatch.setattr(order_finance, "LOCAL_DEFAULT_LEDGER_WORKBOOK", missing_workbook)
 
-    result = parse_order_finance_directory(missing_workbook)
-
-    assert result["summary"]["files_read"] == 1
-    assert result["summary"]["record_count"] == 70
+    with pytest.raises(ValueError, match="目录不存在"):
+        parse_order_finance_directory(missing_workbook)
 
 
 def test_progress_view_groups_contract_items_and_multi_financing():

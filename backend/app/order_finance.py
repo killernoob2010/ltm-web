@@ -26,7 +26,6 @@ router = APIRouter()
 SUBSIDIARIES = ["东钢", "北满", "承德", "抚顺", "西林", "阿城"]
 LOCAL_DEFAULT_LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
 LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
-ORDER_FINANCE_SEED_PATH = Path(__file__).with_name("order_finance_seed.json")
 ORDER_FINANCE_MODULE = "order_finance_progress"
 ORDER_FINANCE_CAPITAL_MODULE = "order_finance_capital"
 TARGET_XLSX_SHEETS = ("订单", "额度", "预警")
@@ -1007,16 +1006,9 @@ def parse_order_finance_xlsx_workbook(path: Path) -> Dict[str, Any]:
     }
 
 
-def parse_order_finance_seed() -> Dict[str, Any]:
-    with ORDER_FINANCE_SEED_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 def parse_order_finance_directory(directory: Path | str) -> Dict[str, Any]:
     base = Path(directory)
     if not base.exists():
-        if base == LOCAL_DEFAULT_LEDGER_WORKBOOK and ORDER_FINANCE_SEED_PATH.exists():
-            return parse_order_finance_seed()
         raise ValueError(f"目录不存在：{base}")
     if base.is_file():
         files = [base]
