@@ -1,13 +1,17 @@
 import os
 import inspect
 import sys
+import gzip
+import hashlib
+import json
+from datetime import date
 
 import pytest
 from fastapi import HTTPException
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from app import db, main
+from app import db, main, operation_log_archive as archive
 
 
 def use_temp_db(tmp_path, monkeypatch):
@@ -211,3 +215,147 @@ def test_automatic_batch_calculation_is_not_logged_but_manual_is(tmp_path, monke
     assert after_automatic == before
     assert len(rows) == before + 1
     assert rows[-1]["operation_type"] == "批量计算指标"
+
+
+def test_archive_selection_uses_time_and_soft_row_cap_without_current_month(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    insert_log(admin["id"], "登录", "2025-06-30 12:00:00")
+    insert_log(admin["id"], "登录", "2026-05-01 12:00:00")
+    insert_log(admin["id"], "登录", "2026-06-01 12:00:00")
+    insert_log(admin["id"], "登录", "2026-07-01 12:00:00")
+    with db.connect() as conn:
+        periods = archive.select_archive_periods(
+            conn,
+            today=date(2026, 7, 10),
+            retention_months=12,
+            max_online_rows=2,
+        )
+
+    assert [(item.period_start.isoformat(), item.period_end.isoformat()) for item in periods] == [
+        ("2025-06-01", "2025-07-01"),
+        ("2026-05-01", "2026-06-01"),
+    ]
+    assert all(item.period_start.month != 7 or item.period_start.year != 2026 for item in periods)
+
+
+def test_build_archive_payload_is_deterministic_gzip_ndjson(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    first_id = insert_log(admin["id"], "登录", "2025-06-01 09:00:00", "第一条")
+    second_id = insert_log(admin["id"], "退出", "2025-06-30 18:00:00", "第二条")
+    period = archive.ArchivePeriod(date(2025, 6, 1), date(2025, 7, 1), 2)
+
+    with db.connect() as conn:
+        payload = archive.build_archive_payload(conn, period)
+        repeated = archive.build_archive_payload(conn, period)
+
+    rows = [json.loads(line) for line in gzip.decompress(payload.content).decode("utf-8").splitlines()]
+    assert [row["id"] for row in rows] == [first_id, second_id]
+    assert rows[0]["user_name"] == "admin"
+    assert payload.row_count == 2
+    assert payload.user_ids == (admin["id"],)
+    assert payload.sha256 == hashlib.sha256(payload.content).hexdigest()
+    assert payload.content == repeated.content
+
+
+class FakeArchiveStorage:
+    def __init__(self, *, verify_ok=True):
+        self.objects = {}
+        self.verify_ok = verify_ok
+
+    def upload_immutable(self, path, content):
+        if path in self.objects:
+            raise archive.ArchiveStorageError("对象已存在")
+        self.objects[path] = content
+
+    def verify(self, path, expected_sha256, expected_bytes):
+        if not self.verify_ok:
+            return False
+        content = self.objects[path]
+        return len(content) == expected_bytes and hashlib.sha256(content).hexdigest() == expected_sha256
+
+    def download(self, path):
+        return self.objects[path]
+
+
+def test_archive_dry_run_has_zero_writes(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    old_id = insert_log(admin["id"], "登录", "2025-06-01 09:00:00")
+    storage = FakeArchiveStorage()
+
+    result = archive.archive_due_logs(storage, apply=False, today=date(2026, 7, 10))
+
+    assert result["candidate_rows"] == 1
+    assert result["archived_rows"] == 0
+    assert storage.objects == {}
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM operation_log_archives").fetchone()["c"] == 0
+        assert conn.execute("SELECT id FROM operation_logs WHERE id = ?", (old_id,)).fetchone()
+
+
+def test_archive_verification_failure_keeps_online_logs(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    old_id = insert_log(admin["id"], "登录", "2025-06-01 09:00:00")
+    storage = FakeArchiveStorage(verify_ok=False)
+
+    with pytest.raises(archive.ArchiveStorageError):
+        archive.archive_due_logs(storage, apply=True, today=date(2026, 7, 10))
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT id FROM operation_logs WHERE id = ?", (old_id,)).fetchone()
+        assert conn.execute("SELECT COUNT(*) AS c FROM operation_log_archives").fetchone()["c"] == 0
+
+
+def test_archive_and_restore_round_trip_preserves_original_ids(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    old_id = insert_log(admin["id"], "登录", "2025-06-01 09:00:00", "待归档")
+    storage = FakeArchiveStorage()
+
+    archived = archive.archive_due_logs(storage, apply=True, today=date(2026, 7, 10))
+    archive_id = archived["archives"][0]["id"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT id FROM operation_logs WHERE id = ?", (old_id,)).fetchone() is None
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM operation_log_archive_users WHERE archive_id = ? AND user_id = ?",
+            (archive_id, admin["id"]),
+        ).fetchone()["c"] == 1
+
+    restored = archive.restore_archive(archive_id, storage, apply=True)
+
+    assert restored["restored_rows"] == 1
+    with db.connect() as conn:
+        row = conn.execute("SELECT id, description FROM operation_logs WHERE id = ?", (old_id,)).fetchone()
+        metadata = conn.execute(
+            "SELECT restored_at FROM operation_log_archives WHERE id = ?", (archive_id,)
+        ).fetchone()
+    assert dict(row) == {"id": old_id, "description": "待归档"}
+    assert metadata["restored_at"]
+
+
+def test_restore_id_conflict_rolls_back_all_rows(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    old_id = insert_log(admin["id"], "登录", "2025-06-01 09:00:00", "待归档")
+    storage = FakeArchiveStorage()
+    archived = archive.archive_due_logs(storage, apply=True, today=date(2026, 7, 10))
+    archive_id = archived["archives"][0]["id"]
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO operation_logs (id, operation_type, description, created_at) VALUES (?, ?, ?, ?)",
+            (old_id, "冲突", "冲突行", "2026-07-10 10:00:00"),
+        )
+
+    with pytest.raises(archive.ArchiveError):
+        archive.restore_archive(archive_id, storage, apply=True)
+
+    with db.connect() as conn:
+        rows = conn.execute("SELECT description FROM operation_logs WHERE id = ?", (old_id,)).fetchall()
+        restored_at = conn.execute(
+            "SELECT restored_at FROM operation_log_archives WHERE id = ?", (archive_id,)
+        ).fetchone()["restored_at"]
+    assert [row["description"] for row in rows] == ["冲突行"]
+    assert restored_at is None
