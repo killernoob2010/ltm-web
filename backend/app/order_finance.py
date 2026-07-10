@@ -104,6 +104,9 @@ MANAGEMENT_FIELDS = {
     "next_action",
     "next_follow_up_date",
     "manager_note",
+    "shipment_confirmed_date",
+    "shipment_confirmed_by",
+    "shipment_confirmed_at",
 }
 
 
@@ -120,6 +123,11 @@ class ManagementUpdateRequest(BaseModel):
     next_action: Optional[str] = None
     next_follow_up_date: Optional[str] = None
     manager_note: Optional[str] = None
+
+
+class ShipmentConfirmationRequest(BaseModel):
+    confirmed: bool = True
+    shipment_confirmed_date: Optional[str] = None
 
 
 class ManualOrderFinanceRequest(BaseModel):
@@ -1087,12 +1095,13 @@ def upsert_order_finance_records(records: List[Dict[str, Any]], imported_by: str
                     "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
                     "repayment_requirement", "repayment_requirement_status", "next_action",
                     "next_follow_up_date", "manager_note", "manual_override_fields",
+                    "shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at",
                     "management_plan_json", "manual_change_log_json",
                 ]
                 values = [record.get(field) for field in FACT_FIELDS]
                 values.extend([
                     None, None, "", "", "", record.get("next_action", ""), "", "",
-                    "[]", "{}", "[]",
+                    "[]", None, None, None, "{}", "[]",
                 ])
                 placeholders = ", ".join("?" for _ in insert_fields)
                 db._exec(
@@ -1163,7 +1172,8 @@ ORDER_FINANCE_LIST_FIELDS = [
     "source_snapshot_date", "product_name", "purchase_contract_no", "system_contract_no",
     "overseas_entity", "terminal_customer", "contract_quantity_mt", "contract_currency", "contract_amount",
     "finance_bank", "finance_amount_expected", "finance_amount_actual", "finance_drawdown_date",
-    "finance_due_date", "latest_shipment_date", "vessel_voyage", "bill_of_lading_date",
+    "finance_due_date", "latest_shipment_date", "shipment_confirmed_date", "shipment_confirmed_by",
+    "shipment_confirmed_at", "vessel_voyage", "bill_of_lading_date",
     "document_submission_date", "collection_date", "actual_shipped_quantity_mt", "executor", "business_status",
     "risk_level", "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
     "repayment_requirement", "repayment_requirement_status", "next_action",
@@ -1326,6 +1336,7 @@ def create_manual_order_finance_record(payload: Dict[str, Any], created_by: str 
         "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
         "repayment_requirement", "repayment_requirement_status", "next_action",
         "next_follow_up_date", "manager_note", "manual_override_fields",
+        "shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at",
         "management_plan_json", "manual_change_log_json",
     ]
     values = [record.get(field) for field in FACT_FIELDS]
@@ -1339,6 +1350,9 @@ def create_manual_order_finance_record(payload: Dict[str, Any], created_by: str 
         _normalize_date(record.get("next_follow_up_date")),
         _normalize_text(record.get("manager_note")),
         json.dumps(sorted(management_values), ensure_ascii=False),
+        _normalize_date(record.get("shipment_confirmed_date")),
+        _normalize_text(record.get("shipment_confirmed_by")),
+        _normalize_text(record.get("shipment_confirmed_at")),
         "{}",
         "[]",
     ])
@@ -1385,6 +1399,36 @@ def update_management_fields(record_id: int, changes: Dict[str, Any], updated_by
             tuple(params),
         )
     return get_order_finance_record(record_id)
+
+
+def set_shipment_confirmation(
+    item_no: str,
+    confirmed: bool,
+    shipment_confirmed_date: Optional[str] = None,
+    updated_by: str = "",
+) -> Dict[str, Any]:
+    normalized_item = _normalize_text(item_no)
+    matching = [row for row in list_order_finance_records() if _item_no(row) == normalized_item]
+    if not matching:
+        raise KeyError(normalized_item)
+    if confirmed:
+        normalized_date = _normalize_date(shipment_confirmed_date or date.today().isoformat())
+        if not _parse_date(normalized_date):
+            raise ValueError("实际装船日格式不正确")
+        changes = {
+            "shipment_confirmed_date": normalized_date,
+            "shipment_confirmed_by": updated_by,
+            "shipment_confirmed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    else:
+        changes = {
+            "shipment_confirmed_date": None,
+            "shipment_confirmed_by": None,
+            "shipment_confirmed_at": None,
+        }
+    for row in matching:
+        update_management_fields(row["id"], changes, updated_by=updated_by)
+    return {"item_no": normalized_item, "confirmed": confirmed, "updated": len(matching)}
 
 
 def summarize_order_finance(records: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1466,11 +1510,18 @@ def _group_has_value(rows: List[Dict[str, Any]], field: str) -> bool:
     return any(bool(_normalize_text(row.get(field))) for row in rows)
 
 
+def _group_shipment_completed(rows: List[Dict[str, Any]]) -> bool:
+    return any(
+        _group_has_value(rows, field)
+        for field in ("shipment_confirmed_date", "bill_of_lading_date", "document_submission_date", "tail_payment_date")
+    )
+
+
 def _group_stage(rows: List[Dict[str, Any]]) -> str:
     if _is_completed_group(rows):
         return "已完成"
     has_loan = any(row.get("finance_drawdown_date") or _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected")) for row in rows)
-    has_bill = _group_has_value(rows, "bill_of_lading_date")
+    has_shipment = _group_shipment_completed(rows)
     has_document = _group_has_value(rows, "document_submission_date")
     has_repay = _group_has_value(rows, "tail_payment_date")
     if not has_loan:
@@ -1479,7 +1530,7 @@ def _group_stage(rows: List[Dict[str, Any]]) -> str:
         return "已还款待结案"
     if has_document:
         return "已交单待回款"
-    if has_bill:
+    if has_shipment:
         return "已装船待回款"
     return "已放款待装船"
 
@@ -1491,16 +1542,55 @@ def _days_to(value: Any) -> Optional[int]:
     return (parsed - date.today()).days
 
 
-def _group_risk(rows: List[Dict[str, Any]], stage: str) -> str:
+def _warning_indicator(warning: Dict[str, Any]) -> str:
+    field = _normalize_text(warning.get("field"))
+    message = _normalize_text(warning.get("message"))
+    if field == "latest_shipment_date" or "最迟装船" in message:
+        return "shipment"
+    if field == "finance_due_date" or any(text in message for text in ("融资到期", "贷款到期", "还款到期")):
+        return "finance_due"
+    return "confirmation"
+
+
+def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, str]:
+    risks = {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低"}
     if stage == "已完成":
-        return "已完成"
+        return risks
+    warnings = [
+        warning
+        for row in rows
+        for warning in _json_loads(row.get("import_warnings_json"), [])
+    ]
+    for warning in warnings:
+        risks[_warning_indicator(warning)] = "高"
+
+    if not _group_shipment_completed(rows):
+        shipment_days = [_days_to(row.get("latest_shipment_date")) for row in rows if row.get("latest_shipment_date")]
+        min_shipment = min([item for item in shipment_days if item is not None], default=None)
+        if min_shipment is None or min_shipment < 0:
+            risks["shipment"] = "高"
+        elif min_shipment <= 7 and risks["shipment"] != "高":
+            risks["shipment"] = "中"
+
     due_days = [_days_to(row.get("finance_due_date")) for row in rows if row.get("finance_due_date")]
-    warnings = sum(len(_json_loads(row.get("import_warnings_json"), [])) for row in rows)
     min_due = min([item for item in due_days if item is not None], default=None)
     missing_repay = not _group_has_value(rows, "tail_payment_date")
-    if warnings or (min_due is None and missing_repay) or (min_due is not None and min_due <= 7 and missing_repay):
+    if missing_repay:
+        if min_due is None or min_due <= 7:
+            risks["finance_due"] = "高"
+        elif min_due <= 30 and risks["finance_due"] != "高":
+            risks["finance_due"] = "中"
+    else:
+        risks["repayment"] = "中"
+    return risks
+
+
+def _group_risk(indicator_risks: Dict[str, str], stage: str) -> str:
+    if stage == "已完成":
+        return "已完成"
+    if "高" in indicator_risks.values():
         return "高"
-    if (min_due is not None and min_due <= 30 and missing_repay) or not missing_repay:
+    if "中" in indicator_risks.values():
         return "中"
     return "低"
 
@@ -1548,13 +1638,16 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     first = rows[0]
     lc = _lc_info(first)
     stage = _group_stage(rows)
-    risk = _group_risk(rows, stage)
+    indicator_risks = _group_indicator_risks(rows, stage)
+    risk = _group_risk(indicator_risks, stage)
     finance_total = sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows)
     due_dates = sorted([row.get("finance_due_date") for row in rows if row.get("finance_due_date")])
     latest_shipment_dates = sorted([row.get("latest_shipment_date") for row in rows if row.get("latest_shipment_date")])
     document_dates = sorted([row.get("document_submission_date") for row in rows if row.get("document_submission_date")])
     bill_dates = sorted([row.get("bill_of_lading_date") for row in rows if row.get("bill_of_lading_date")])
     repay_dates = sorted([row.get("tail_payment_date") for row in rows if row.get("tail_payment_date")])
+    shipment_confirmed_dates = sorted([row.get("shipment_confirmed_date") for row in rows if row.get("shipment_confirmed_date")])
+    shipment_confirmed_at = sorted([row.get("shipment_confirmed_at") for row in rows if row.get("shipment_confirmed_at")])
     warnings = []
     for row in rows:
         warnings.extend(_json_loads(row.get("import_warnings_json"), []))
@@ -1576,6 +1669,10 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "transferable": lc.get("transferable") or "",
         "receiving_bank": lc.get("receiving_bank") or "",
         "latest_shipment_date": latest_shipment_dates[0] if latest_shipment_dates else "",
+        "shipment_completed": _group_shipment_completed(rows),
+        "shipment_confirmed_date": shipment_confirmed_dates[-1] if shipment_confirmed_dates else "",
+        "shipment_confirmed_by": next((row.get("shipment_confirmed_by") for row in rows if row.get("shipment_confirmed_by")), ""),
+        "shipment_confirmed_at": shipment_confirmed_at[-1] if shipment_confirmed_at else "",
         "vessel": next((row.get("vessel_voyage") for row in rows if row.get("vessel_voyage")), ""),
         "latest_due_date": due_dates[0] if due_dates else "",
         "bill_date": bill_dates[-1] if bill_dates else "",
@@ -1584,6 +1681,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "repayment_timing": _group_repayment_timing(rows),
         "stage": stage,
         "risk": risk,
+        "indicator_risks": indicator_risks,
         "next_action": _group_next_action(rows, stage, risk),
         "total_finance": finance_total,
         "financing_count": len(rows),
@@ -1825,3 +1923,23 @@ def order_finance_update_management(
         return update_management_fields(record_id, changes, updated_by=user["name"])
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="记录不存在") from exc
+
+
+@router.patch("/order-finance/contracts/{item_no}/shipment-confirmation")
+def order_finance_shipment_confirmation(
+    item_no: str,
+    request: ShipmentConfirmationRequest,
+    user: dict = Depends(order_finance_current_user),
+):
+    order_finance_require_edit(user)
+    try:
+        return set_shipment_confirmation(
+            item_no,
+            confirmed=request.confirmed,
+            shipment_confirmed_date=request.shipment_confirmed_date,
+            updated_by=user["name"],
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项次不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

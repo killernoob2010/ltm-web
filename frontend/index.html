@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=order-finance-shipment-risk-20260710-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=order-finance-indicator-risk-20260710" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -379,13 +379,6 @@
             <div class="order-finance-contract-list" id="orderFinanceContractList"></div>
           </section>
 
-          <section class="panel">
-            <div class="panel-head">
-              <h2>导入报告</h2>
-              <span id="orderFinanceImportSummary"></span>
-            </div>
-            <div id="orderFinanceImportReport" class="order-finance-report empty-cell">暂无导入报告。</div>
-          </section>
         </section>
 
         <section id="orderFinanceCapitalPage" class="page hidden">
@@ -513,6 +506,21 @@
             <div class="dialog-actions">
               <button id="cancelOrderFinanceManualBtn" type="button" class="secondary">取消</button>
               <button type="submit">保存</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="orderFinanceShipmentDialog">
+          <form id="orderFinanceShipmentForm" method="dialog" class="dialog-form">
+            <h2>确认已装船</h2>
+            <p id="orderFinanceShipmentItem" class="toolbar-status"></p>
+            <label>
+              实际装船日
+              <input id="orderFinanceShipmentDate" type="date" required />
+            </label>
+            <div class="dialog-actions">
+              <button id="cancelOrderFinanceShipmentBtn" type="button" class="secondary">取消</button>
+              <button type="submit">确认已装船</button>
             </div>
           </form>
         </dialog>
@@ -1093,6 +1101,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=order-finance-shipment-risk-20260710-2"></script>
+    <script src="/static/app.js?v=order-finance-indicator-risk-20260710"></script>
   </body>
 </html>

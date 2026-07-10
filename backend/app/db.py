@@ -432,6 +432,9 @@ def init_db() -> None:
                 finance_days INTEGER,
                 finance_status TEXT,
                 latest_shipment_date TEXT,
+                shipment_confirmed_date TEXT,
+                shipment_confirmed_by TEXT,
+                shipment_confirmed_at TEXT,
                 lc_latest_shipment_date TEXT,
                 vessel_voyage TEXT,
                 bill_of_lading_date TEXT,
@@ -804,6 +807,9 @@ def init_db() -> None:
                 finance_days INTEGER,
                 finance_status TEXT,
                 latest_shipment_date TEXT,
+                shipment_confirmed_date TEXT,
+                shipment_confirmed_by TEXT,
+                shipment_confirmed_at TEXT,
                 lc_latest_shipment_date TEXT,
                 vessel_voyage TEXT,
                 bill_of_lading_date TEXT,
@@ -960,6 +966,7 @@ def init_db() -> None:
         migrate_alert_schema(conn)
         migrate_mid_event_schema(conn)
         migrate_sh_junneng_schema(conn)
+        migrate_order_finance_schema(conn)
         migrate_dv_integration_schema(conn)
 
         ensure_admin_user(cur, "管理员")
@@ -1136,6 +1143,27 @@ def migrate_auth_schema(conn) -> None:
     }
     if "expires_at" not in session_columns:
         conn.execute("ALTER TABLE user_sessions ADD COLUMN expires_at TEXT")
+
+
+def migrate_order_finance_schema(conn) -> None:
+    columns = {
+        "shipment_confirmed_date": "TEXT",
+        "shipment_confirmed_by": "TEXT",
+        "shipment_confirmed_at": "TEXT",
+    }
+    if _is_pg():
+        cur = conn.cursor()
+        for name, col_type in columns.items():
+            cur.execute(f"ALTER TABLE order_finance_progress ADD COLUMN IF NOT EXISTS {name} {col_type}")
+        conn.commit()
+        return
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(order_finance_progress)").fetchall()
+    }
+    for name, col_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE order_finance_progress ADD COLUMN {name} {col_type}")
 
 
 def migrate_sh_junneng_schema(conn) -> None:

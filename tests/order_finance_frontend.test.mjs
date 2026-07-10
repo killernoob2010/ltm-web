@@ -89,3 +89,27 @@ test("order finance shipment deadline has warning and overdue visual tones", () 
   assert.match(appJs, /需联系工厂/);
   assert.match(appJs, /已超过/);
 });
+
+test("order finance colors only the indicator fields that cause risk", () => {
+  assert.match(appJs, /function indicatorRiskTone\(item, key\)/);
+  assert.match(appJs, /item\.indicator_risks\?\.\[key\]/);
+  assert.match(appJs, /level === "高" \? "danger" : level === "中" \? "warning" : ""/);
+  assert.match(appJs, /indicatorRiskTone\(item, "shipment"\)/);
+  assert.match(appJs, /indicatorRiskTone\(item, "finance_due"\)/);
+  assert.match(appJs, /indicatorRiskTone\(item, "repayment"\)/);
+  assert.match(appJs, /indicatorRiskTone\(item, "confirmation"\)/);
+  assert.match(appJs, /const riskClass = item\.risk === "高"/);
+});
+
+test("order finance supports shipment confirmation and removes import report", () => {
+  assert.match(indexHtml, /id="orderFinanceShipmentDialog"/);
+  assert.match(indexHtml, /id="orderFinanceShipmentDate"[^>]*type="date"/);
+  assert.match(appJs, /order-finance-shipment-confirm-btn/);
+  assert.match(appJs, /order-finance-shipment-undo-btn/);
+  assert.match(appJs, /\/shipment-confirmation/);
+  assert.match(appJs, /shipment_confirmed_date/);
+  assert.doesNotMatch(indexHtml, /id="orderFinanceImportReport"/);
+  assert.doesNotMatch(indexHtml, />导入报告</);
+  assert.doesNotMatch(appJs, /orderFinanceImportReport/);
+  assert.match(appJs, /导入完成：\$\{summary\.record_count \|\| 0\} 条，异常 \$\{summary\.warning_count \|\| 0\} 条/);
+});

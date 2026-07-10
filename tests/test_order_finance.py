@@ -211,14 +211,76 @@ def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_pa
 
 def test_multiple_financing_and_active_stage_do_not_raise_risk():
     due = (date.today() + timedelta(days=45)).isoformat()
-    first = progress_record("MULTI", "存续", finance_due_date=due)
-    second = progress_record("MULTI", "存续", id=2, business_key="ITEM|MULTI|2", finance_due_date=due)
+    shipment = (date.today() + timedelta(days=40)).isoformat()
+    first = progress_record("MULTI", "存续", finance_due_date=due, latest_shipment_date=shipment)
+    second = progress_record("MULTI", "存续", id=2, business_key="ITEM|MULTI|2", finance_due_date=due, latest_shipment_date=shipment)
 
     view = build_order_finance_progress_view([first, second])
     item = view["contracts"][0]
 
     assert item["financing_count"] == 2
     assert item["risk"] == "低"
+
+
+def test_order_finance_schema_adds_manual_shipment_confirmation_columns(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_finance_progress)").fetchall()}
+
+    assert {"shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at"}.issubset(columns)
+
+
+def test_manual_shipment_confirmation_updates_group_and_survives_reimport(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
+
+    result = order_finance.set_shipment_confirmation(
+        "H-2026-3",
+        confirmed=True,
+        shipment_confirmed_date="2026-07-10",
+        updated_by="pytest",
+    )
+    confirmed = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
+
+    assert result["updated"] == 2
+    assert {row["shipment_confirmed_date"] for row in confirmed} == {"2026-07-10"}
+    assert {row["shipment_confirmed_by"] for row in confirmed} == {"pytest"}
+
+    import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
+    reimported = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
+    assert {row["shipment_confirmed_date"] for row in reimported} == {"2026-07-10"}
+
+    order_finance.set_shipment_confirmation("H-2026-3", confirmed=False, updated_by="pytest")
+    undone = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
+    assert {row["shipment_confirmed_date"] for row in undone} == {None}
+
+
+def test_indicator_risks_color_only_the_fields_that_cause_risk():
+    today = date.today()
+    records = [
+        progress_record("MISSING-SHIP", "存续", id=1, finance_due_date=(today + timedelta(days=45)).isoformat()),
+        progress_record("SHIP-SOON", "存续", id=2, finance_due_date=(today + timedelta(days=45)).isoformat(), latest_shipment_date=(today + timedelta(days=5)).isoformat()),
+        progress_record("DUE-SOON", "存续", id=3, finance_due_date=(today + timedelta(days=14)).isoformat(), latest_shipment_date=(today + timedelta(days=45)).isoformat()),
+        progress_record("REPAID-ACTIVE", "存续", id=4, finance_due_date=(today + timedelta(days=45)).isoformat(), latest_shipment_date=(today + timedelta(days=45)).isoformat(), tail_payment_date=today.isoformat()),
+        progress_record("MANUAL-SHIP", "存续", id=5, finance_due_date=(today + timedelta(days=45)).isoformat(), shipment_confirmed_date=today.isoformat()),
+        progress_record("DOCUMENTED", "存续", id=6, finance_due_date=(today + timedelta(days=45)).isoformat(), document_submission_date=today.isoformat()),
+        progress_record("DONE", "结案", id=7, finance_due_date=(today - timedelta(days=45)).isoformat(), import_warnings_json=json.dumps([{"field": "excel_alert", "level": "高", "message": "最迟装船预警"}], ensure_ascii=False)),
+    ]
+
+    view = build_order_finance_progress_view(records)
+    items = {item["item_no"]: item for item in view["contracts"]}
+
+    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "finance_due": "低", "repayment": "低", "confirmation": "低"}
+    assert items["MISSING-SHIP"]["risk"] == "高"
+    assert items["SHIP-SOON"]["indicator_risks"]["shipment"] == "中"
+    assert items["DUE-SOON"]["indicator_risks"]["finance_due"] == "中"
+    assert items["REPAID-ACTIVE"]["indicator_risks"]["repayment"] == "中"
+    assert items["MANUAL-SHIP"]["indicator_risks"]["shipment"] == "低"
+    assert items["MANUAL-SHIP"]["stage"] == "已装船待回款"
+    assert items["DOCUMENTED"]["indicator_risks"]["shipment"] == "低"
+    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低"}
+    assert items["DONE"]["risk"] == "已完成"
 
 
 def test_explicit_status_and_finance_milestones_drive_lifecycle():

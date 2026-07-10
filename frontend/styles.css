@@ -1217,6 +1217,14 @@ dialog::backdrop {
   align-items: start;
 }
 
+.order-finance-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .order-finance-card h3 {
   margin: 0;
   font-size: 16px;
