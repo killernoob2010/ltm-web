@@ -3,6 +3,8 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db, main, permissions
@@ -319,7 +321,8 @@ def test_user_preview_generates_pinyin_and_department_defaults(tmp_path, monkeyp
     )
 
     assert result["username"] == "zhangsan"
-    assert result["temporary_password"] == "zhangsan123"
+    assert result["temporary_password"] == "zhangsan"
+    assert result["password_rule"] == "trade_or_futures_plain"
     assert result["username_available"] is True
     assert result["default_permissions"]["info_summary"] == "operate"
     assert result["default_permissions"]["order_finance_progress"] == "none"
@@ -346,9 +349,9 @@ def test_create_user_uses_username_temporary_password_and_permission_snapshot(tm
         ).fetchone()
     assert created["username"] == "zhangsan"
     assert created["password_change_recommended"] == 1
-    assert db.verify_password("zhangsan123", created["password_hash"])
+    assert db.verify_password("zhangsan", created["password_hash"])
     assert dict(order_permission) == {"can_view": 1, "can_edit": 0, "can_sensitive": 0}
-    assert main.login(main.LoginRequest(username="zhangsan", password="zhangsan123"))["user"]["name"] == "张三"
+    assert main.login(main.LoginRequest(username="zhangsan", password="zhangsan"))["user"]["name"] == "张三"
     listed = next(item for item in main.list_users(user=admin_user())["users"] if item["id"] == result["id"])
     assert listed["permission_summary"]["enabled"] > 0
     assert listed["permission_summary"]["sensitive"] == 0
@@ -367,7 +370,7 @@ def test_change_password_keeps_current_session_and_revokes_other_sessions(tmp_pa
     current = db.get_user_by_token(current_token)
 
     main.change_password(
-        main.ChangePasswordIn(current_password="lilei123", new_password="Secure8899"),
+        main.ChangePasswordIn(current_password="lilei", new_password="Secure8899"),
         user=current,
         authorization=f"Bearer {current_token}",
     )
@@ -414,3 +417,72 @@ def test_reset_and_disable_user_revoke_sessions_and_protect_last_admin(tmp_path,
         assert "最后一名管理员" in exc.detail
     else:
         raise AssertionError("last enabled administrator must be protected")
+
+
+def test_preview_create_and_reset_share_roster_password_policy(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        admin = dict(db._exec(conn.cursor(), "SELECT * FROM users WHERE name = ?", ("admin",)).fetchone())
+    preview = main.preview_user(
+        main.UserPreviewIn(name="张胜根", username="zhangshenggen", department="公司领导", role="领导"),
+        user=admin,
+    )
+    assert preview["temporary_password"] == "zhangshenggen12345"
+    assert preview["password_rule"] == "leader_12345"
+    created = main.create_user(
+        main.UserIn(name="张胜根", username="zhangshenggen", department="公司领导", role="领导"),
+        user=admin,
+    )
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), "SELECT * FROM users WHERE id = ?", (created["id"],)).fetchone()
+    assert db.verify_password("zhangshenggen12345", row["password_hash"])
+    reset = main.reset_user_password(created["id"], user=admin)
+    assert reset["temporary_password"] == preview["temporary_password"]
+
+
+def test_self_change_rejects_the_actual_generated_default_password(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            ("策略测试", "policyuser", "贸易处", db.password_hash("OldSecure8899"), "用户"),
+        )
+        user_id = db.last_insert_id(conn)
+    token = db.create_session(user_id)
+    user = db.get_user_by_token(token)
+    with pytest.raises(HTTPException) as exc:
+        main.change_password(
+            main.ChangePasswordIn(current_password="OldSecure8899", new_password="policyuser"),
+            user=user,
+            authorization=f"Bearer {token}",
+        )
+    assert exc.value.status_code == 400
+    assert "默认密码" in exc.value.detail
+
+
+def test_admin_can_set_password_without_recommendation_or_plaintext_log(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        admin_user = dict(db._exec(cur, "SELECT * FROM users WHERE name = ?", ("admin",)).fetchone())
+        db._exec(
+            cur,
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            ("王景泽", "王景泽", "管理部门", db.password_hash("old-password"), "管理员"),
+        )
+        target_id = db.last_insert_id(conn)
+    result = main.set_user_password(
+        target_id,
+        main.AdminSetPasswordIn(new_password="FixturePass5", password_change_recommended=False),
+        user=admin_user,
+    )
+    assert result == {"ok": True}
+    with db.connect() as conn:
+        cur = conn.cursor()
+        target = db._exec(cur, "SELECT password_hash, password_change_recommended FROM users WHERE id = ?", (target_id,)).fetchone()
+        log = db._exec(cur, "SELECT description FROM operation_logs ORDER BY id DESC LIMIT 1").fetchone()
+    assert db.verify_password("FixturePass5", target["password_hash"])
+    assert target["password_change_recommended"] == 0
+    assert "FixturePass5" not in log["description"]

@@ -36,6 +36,7 @@ from .permissions import (
     get_user_permissions as list_user_permissions,
     require_permission,
 )
+from .user_policy import temporary_password_policy
 from .cache_service import (
     cache_counts,
     get_cached_data,
@@ -2694,6 +2695,11 @@ class ChangePasswordIn(BaseModel):
     new_password: str
 
 
+class AdminSetPasswordIn(BaseModel):
+    new_password: str = Field(min_length=1)
+    password_change_recommended: bool = True
+
+
 class UserStatusIn(BaseModel):
     status: str
 
@@ -2791,6 +2797,7 @@ def _permission_level(row: dict) -> str:
 def preview_user(payload: UserPreviewIn, user=Depends(current_user)):
     _require_admin(user)
     name, username = _validate_user_identity(payload.name, payload.username, payload.department, payload.role)
+    password_policy = temporary_password_policy(name, username, payload.department, payload.role)
     default_levels = default_permission_levels(payload.department, payload.role)
     final_levels = _final_permission_levels(payload.department, payload.role, payload.permissions)
     with db.connect() as conn:
@@ -2816,7 +2823,8 @@ def preview_user(payload: UserPreviewIn, user=Depends(current_user)):
     return {
         "name": name,
         "username": username,
-        "temporary_password": f"{username}123",
+        "temporary_password": password_policy["temporary_password"],
+        "password_rule": password_policy["password_rule"],
         "username_available": duplicate is None,
         "default_permissions": {code: level for code, level in default_levels.items() if code in ACTIVE_BUSINESS_MODULES},
         "final_permissions": {code: level for code, level in final_levels.items() if code in ACTIVE_BUSINESS_MODULES},
@@ -2888,7 +2896,8 @@ def create_user(payload: UserIn, user=Depends(current_user)):
     _require_admin(user)
     name, username = _validate_user_identity(payload.name, payload.username, payload.department, payload.role)
     levels = _final_permission_levels(payload.department, payload.role, payload.permissions)
-    temporary_password = f"{username}123"
+    password_policy = temporary_password_policy(name, username, payload.department, payload.role)
+    temporary_password = password_policy["temporary_password"]
     with db.connect() as conn:
         cur = conn.cursor()
         existing = db._exec(cur, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
@@ -2948,7 +2957,10 @@ def change_password(
         raise HTTPException(status_code=400, detail="当前密码不正确")
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="新密码至少8位")
-    if payload.new_password in {payload.current_password, f"{user['username']}123"}:
+    default_password = temporary_password_policy(
+        user["name"], user["username"], user["department"], user["role"]
+    )["temporary_password"]
+    if payload.new_password in {payload.current_password, default_password}:
         raise HTTPException(status_code=400, detail="新密码不能与当前密码或默认密码相同")
     token = authorization.removeprefix("Bearer ").strip() if authorization else ""
     with db.connect() as conn:
@@ -2969,11 +2981,45 @@ def reset_user_password(user_id: int, user=Depends(current_user)):
             raise HTTPException(status_code=404, detail="用户不存在")
         if target["is_guest"] or target["cannot_change_password"]:
             raise HTTPException(status_code=400, detail="系统访客不允许重置密码")
-        temporary_password = f"{target['username']}123"
+        password_policy = temporary_password_policy(
+            target["name"], target["username"], target["department"], target["role"]
+        )
+        temporary_password = password_policy["temporary_password"]
         db._exec(cur, "UPDATE users SET password_hash = ?, password_change_recommended = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (db.password_hash(temporary_password), user_id))
         db._exec(cur, "UPDATE user_sessions SET status = '已注销' WHERE user_id = ?", (user_id,))
     db.log_operation(user["id"], "user_management", "重置密码", f"重置用户密码: {target['name']}", "users", user_id)
     return {"ok": True, "username": target["username"], "temporary_password": temporary_password}
+
+
+@app.post("/api/users/{user_id}/set-password")
+def set_user_password(user_id: int, payload: AdminSetPasswordIn, user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        target = db._exec(
+            cur,
+            "SELECT id, name, is_guest, cannot_change_password FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if target["is_guest"] or target["cannot_change_password"]:
+            raise HTTPException(status_code=400, detail="系统访客不允许设置密码")
+        db._exec(
+            cur,
+            "UPDATE users SET password_hash = ?, password_change_recommended = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (db.password_hash(payload.new_password), int(payload.password_change_recommended), user_id),
+        )
+        db._exec(cur, "UPDATE user_sessions SET status = '已注销' WHERE user_id = ?", (user_id,))
+    db.log_operation(
+        user["id"],
+        "user_management",
+        "管理员设置密码",
+        f"管理员设置用户密码: {target['name']}",
+        "users",
+        user_id,
+    )
+    return {"ok": True}
 
 
 @app.patch("/api/users/{user_id}/status")
