@@ -1105,9 +1105,17 @@
             用户名
             <input id="logsUserName" placeholder="用户名搜索" />
           </label>
+          <label>
+            开始日期
+            <input id="logsStartDate" type="date" />
+          </label>
+          <label>
+            结束日期
+            <input id="logsEndDate" type="date" />
+          </label>
           <div class="filter-actions">
             <button type="button" id="searchLogsBtn" class="secondary">搜索</button>
-            <button type="button" id="exportLogsBtn" class="secondary">导出</button>
+            <button type="button" id="exportLogsBtn" class="secondary">导出当前已加载记录</button>
           </div>
         </div>
         <div class="table-wrap logs-table-wrap">
@@ -1124,6 +1132,10 @@
             </thead>
             <tbody id="logsTable"></tbody>
           </table>
+        </div>
+        <div class="logs-pagination">
+          <span id="logsPageInfo">当前已加载 0 条</span>
+          <button type="button" id="logsLoadMoreBtn" class="secondary hidden">加载更多</button>
         </div>
         <div class="dialog-actions">
           <button type="button" id="closeLogsBtn" class="secondary">关闭</button>

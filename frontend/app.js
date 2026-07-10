@@ -32,6 +32,9 @@ const state = {
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
+  operationLogs: [],
+  operationLogCursor: null,
+  operationLogsHasMore: false,
 };
 
 const loginView = document.querySelector("#loginView");
@@ -2094,38 +2097,61 @@ async function submitPasswordChange(event) {
 // 操作日志
 async function openLogsDialog() {
   operationLogsDialog.showModal();
-  await loadLogs();
+  await loadLogs({ append: false });
 }
 
-async function loadLogs() {
+function renderOperationLogs() {
+  logsTable.innerHTML = state.operationLogs.map((l) => `<tr>
+    <td>${escapeHtml(l.id)}</td>
+    <td>${escapeHtml(l.user_name || "")}</td>
+    <td>${escapeHtml(l.operation_type || "")}</td>
+    <td>${escapeHtml(l.description || "")}</td>
+    <td>${escapeHtml(l.module_code || "")}</td>
+    <td>${escapeHtml(l.created_at || "")}</td>
+  </tr>`).join("");
+  logsPageInfo.textContent = `当前已加载 ${state.operationLogs.length} 条`;
+  logsLoadMoreBtn.classList.toggle("hidden", !state.operationLogsHasMore);
+  logsLoadMoreBtn.disabled = false;
+}
+
+async function loadLogs({ append = false } = {}) {
   try {
+    if (!append) {
+      state.operationLogs = [];
+      state.operationLogCursor = null;
+      state.operationLogsHasMore = false;
+    }
     const params = new URLSearchParams();
+    params.set("limit", "100");
     const opType = logsOpType.value;
     const userName = logsUserName.value.trim();
-    if (opType) params.append("operation_type", opType);
-    if (userName) params.append("user_name", userName);
+    const startDate = logsStartDate.value;
+    const endDate = logsEndDate.value;
+    if (opType) params.set("operation_type", opType);
+    if (userName) params.set("user_name", userName);
+    if (startDate) params.set("start_date", startDate);
+    if (endDate) params.set("end_date", endDate);
+    if (append && state.operationLogCursor) params.set("cursor", state.operationLogCursor);
+    logsLoadMoreBtn.disabled = true;
     const data = await api(`/api/operation-logs?${params.toString()}`);
-    logsTable.innerHTML = data.logs.map((l) => `<tr>
-      <td>${l.id}</td>
-      <td>${l.user_name || ""}</td>
-      <td>${l.operation_type || ""}</td>
-      <td>${l.description || ""}</td>
-      <td>${l.module_code || ""}</td>
-      <td>${l.created_at || ""}</td>
-    </tr>`).join("");
+    state.operationLogs = append ? state.operationLogs.concat(data.logs || []) : (data.logs || []);
+    state.operationLogCursor = data.next_cursor || null;
+    state.operationLogsHasMore = Boolean(data.has_more && data.next_cursor);
+    renderOperationLogs();
   } catch (error) {
-    logsTable.innerHTML = `<tr><td colspan="6" style="color:red">加载失败: ${error.message}</td></tr>`;
+    logsLoadMoreBtn.disabled = false;
+    if (!append) {
+      logsTable.innerHTML = `<tr><td colspan="6" style="color:red">加载失败: ${escapeHtml(error.message)}</td></tr>`;
+      logsPageInfo.textContent = "加载失败";
+    }
   }
 }
 
 function exportLogs() {
-  const rows = logsTable.querySelectorAll("tr");
   let csv = "\uFEFFID,用户,操作类型,描述,模块,时间\n";
-  rows.forEach((row) => {
-    const cells = row.querySelectorAll("td");
-    if (cells.length >= 6) {
-      csv += Array.from(cells).map((c) => `"${c.textContent.replace(/"/g, '""')}"`).join(",") + "\n";
-    }
+  state.operationLogs.forEach((row) => {
+    const cells = [row.id, row.user_name, row.operation_type, row.description, row.module_code, row.created_at];
+    csv += cells.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",") + "\n";
   });
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -2711,7 +2737,8 @@ permissionForm.addEventListener("submit", (e) => {
 });
 cancelPermissionBtn.addEventListener("click", () => permissionDialog.close());
 
-searchLogsBtn.addEventListener("click", loadLogs);
+searchLogsBtn.addEventListener("click", () => loadLogs({ append: false }));
+logsLoadMoreBtn.addEventListener("click", () => loadLogs({ append: true }));
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 
