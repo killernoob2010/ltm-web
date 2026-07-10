@@ -4,6 +4,7 @@ import sys
 import gzip
 import hashlib
 import json
+import asyncio
 from datetime import date
 
 import pytest
@@ -359,3 +360,72 @@ def test_restore_id_conflict_rolls_back_all_rows(tmp_path, monkeypatch):
         ).fetchone()["restored_at"]
     assert [row["description"] for row in rows] == ["冲突行"]
     assert restored_at is None
+
+
+def test_archive_metadata_list_is_admin_only_and_excludes_object_path(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """
+            INSERT INTO operation_log_archives
+                (period_start, period_end, object_path, row_count, first_created_at,
+                 last_created_at, sha256, compressed_bytes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2025-06-01", "2025-07-01", "private/path.gz", 2, "a", "b", "c" * 64, 99),
+        )
+
+    result = main.list_operation_log_archives(user=admin)
+
+    assert len(result["archives"]) == 1
+    assert result["archives"][0]["period_start"] == "2025-06-01"
+    assert "object_path" not in result["archives"][0]
+    with pytest.raises(HTTPException) as exc:
+        main.list_operation_log_archives(user={"id": 999, "role": "用户"})
+    assert exc.value.status_code == 403
+
+
+def test_archive_download_is_admin_only_and_streamed_on_demand(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """
+            INSERT INTO operation_log_archives
+                (period_start, period_end, object_path, row_count, first_created_at,
+                 last_created_at, sha256, compressed_bytes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2025-06-01", "2025-07-01", "private/path.gz", 2, "a", "b", "c" * 64, 99),
+        )
+        archive_id = db.last_insert_id(conn)
+
+    calls = []
+
+    class FakeStreamingStorage:
+        def iter_download(self, path):
+            calls.append(path)
+            yield b"one"
+            yield b"two"
+
+    monkeypatch.setattr(main, "get_operation_log_archive_storage", lambda: FakeStreamingStorage())
+    response = main.download_operation_log_archive(archive_id, user=admin)
+
+    async def collect_body():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    assert calls == []
+    assert asyncio.run(collect_body()) == b"onetwo"
+    assert calls == ["private/path.gz"]
+    assert response.media_type == "application/gzip"
+    with pytest.raises(HTTPException) as exc:
+        main.download_operation_log_archive(archive_id, user={"id": 999, "role": "用户"})
+    assert exc.value.status_code == 403

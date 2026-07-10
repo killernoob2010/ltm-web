@@ -611,6 +611,29 @@ textarea {
   font-size: 13px;
 }
 
+.operation-log-archive-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.operation-log-archive-section h3,
+.operation-log-archive-section p {
+  margin: 0 0 8px;
+}
+
+.operation-log-archives {
+  display: grid;
+  gap: 8px;
+}
+
+.operation-log-archive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .summary-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

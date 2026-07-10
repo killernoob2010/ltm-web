@@ -19,7 +19,7 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,7 +56,7 @@ from .info_summary_backfill import (
 )
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
-from . import data_visualization, order_finance
+from . import data_visualization, operation_log_archive, order_finance
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -3215,3 +3215,46 @@ def list_operation_logs(
         "has_more": has_more,
         "next_cursor": next_cursor,
     }
+
+
+def get_operation_log_archive_storage():
+    try:
+        return operation_log_archive.SupabaseArchiveStorage.from_env()
+    except operation_log_archive.ArchiveConfigError as exc:
+        raise HTTPException(status_code=503, detail="归档存储未配置") from exc
+
+
+@app.get("/api/operation-log-archives")
+def list_operation_log_archives(user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            """
+            SELECT id, period_start, period_end, row_count, first_created_at,
+                   last_created_at, compressed_bytes, created_at, restored_at
+            FROM operation_log_archives
+            ORDER BY period_start DESC, id DESC
+            """,
+        ).fetchall()
+    return {"archives": [row_to_dict(row) for row in rows]}
+
+
+@app.get("/api/operation-log-archives/{archive_id}/download")
+def download_operation_log_archive(archive_id: int, user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            "SELECT id, period_start, object_path FROM operation_log_archives WHERE id = ?",
+            (archive_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="归档记录不存在")
+    storage = get_operation_log_archive_storage()
+    filename = f"operation-logs-{row['period_start'][:7]}.ndjson.gz"
+    return StreamingResponse(
+        storage.iter_download(row["object_path"]),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

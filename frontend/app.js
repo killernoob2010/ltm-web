@@ -2097,7 +2097,10 @@ async function submitPasswordChange(event) {
 // 操作日志
 async function openLogsDialog() {
   operationLogsDialog.showModal();
-  await loadLogs({ append: false });
+  await Promise.all([
+    loadLogs({ append: false }),
+    loadOperationLogArchives(),
+  ]);
 }
 
 function renderOperationLogs() {
@@ -2159,6 +2162,52 @@ function exportLogs() {
   a.href = url;
   a.download = `operation_logs_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadOperationLogArchives() {
+  try {
+    const data = await api("/api/operation-log-archives");
+    const archives = data.archives || [];
+    operationLogArchiveStatus.textContent = archives.length
+      ? `共 ${archives.length} 个月份归档，仅点击下载时读取文件`
+      : "暂无历史归档";
+    operationLogArchives.innerHTML = archives.map((item) => `
+      <div class="operation-log-archive-row">
+        <span>${escapeHtml(item.period_start.slice(0, 7))} · ${escapeHtml(item.row_count)} 条 · ${escapeHtml(item.compressed_bytes)} 字节</span>
+        <button type="button" class="secondary" data-archive-id="${escapeHtml(item.id)}" data-period="${escapeHtml(item.period_start.slice(0, 7))}">下载</button>
+      </div>
+    `).join("");
+    operationLogArchives.querySelectorAll("button[data-archive-id]").forEach((button) => {
+      button.addEventListener("click", () => downloadOperationLogArchive(button.dataset.archiveId, button.dataset.period));
+    });
+  } catch (error) {
+    operationLogArchiveStatus.textContent = `归档目录读取失败：${error.message}`;
+    operationLogArchives.innerHTML = "";
+  }
+}
+
+async function downloadOperationLogArchive(archiveId, period) {
+  const response = await fetch(`/api/operation-log-archives/${archiveId}/download`, {
+    headers: { Authorization: `Bearer ${state.token}` },
+  });
+  if (!response.ok) {
+    let message = "归档下载失败";
+    try {
+      const payload = await response.json();
+      message = payload.detail || message;
+    } catch {
+      // Keep the generic message when the response is not JSON.
+    }
+    window.alert(message);
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `operation-logs-${period}.ndjson.gz`;
+  link.click();
   URL.revokeObjectURL(url);
 }
 

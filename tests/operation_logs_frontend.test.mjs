@@ -32,3 +32,11 @@ test("operation log export is limited to loaded state rows", () => {
   assert.match(operationLogBlock, /当前已加载/);
 });
 
+test("archive metadata is listed without prefetching private objects", () => {
+  assert.match(indexHtml, /id="operationLogArchives"/);
+  assert.match(indexHtml, /id="operationLogArchiveStatus"/);
+  assert.match(operationLogBlock, /api\/operation-log-archives/);
+  assert.match(operationLogBlock, /暂无历史归档/);
+  assert.match(operationLogBlock, /downloadOperationLogArchive/);
+  assert.doesNotMatch(operationLogBlock, /createSignedUrl/);
+});
