@@ -48,10 +48,11 @@ def _pg_rewrite(sql: str) -> str:
     """Convert SQLite-specific syntax to PostgreSQL on the fly."""
     if not _is_pg():
         return sql
+    normalized = sql.strip()
     # INSERT OR REPLACE -> INSERT ... ON CONFLICT DO UPDATE
     m = re.match(
-        r"INSERT OR REPLACE INTO (\w+) \((.+?)\) VALUES \((.+?)\)$",
-        sql, re.DOTALL | re.IGNORECASE,
+        r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\((.+?)\)\s*VALUES\s*\((.+?)\)$",
+        normalized, re.DOTALL | re.IGNORECASE,
     )
     if m:
         table = m.group(1)
@@ -62,10 +63,10 @@ def _pg_rewrite(sql: str) -> str:
         return "INSERT INTO " + table + " (" + cols_str + ") VALUES (" + vals + ") ON CONFLICT (" + cols_str + ") DO UPDATE SET " + set_str
     # INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
     m2 = re.match(
-        r"INSERT OR IGNORE INTO (\w+) .*", sql, re.DOTALL | re.IGNORECASE,
+        r"INSERT\s+OR\s+IGNORE\s+INTO\s+(\w+)\b.*", normalized, re.DOTALL | re.IGNORECASE,
     )
     if m2:
-        return re.sub(r"INSERT OR IGNORE", "INSERT", sql, flags=re.IGNORECASE) + " ON CONFLICT DO NOTHING"
+        return re.sub(r"INSERT\s+OR\s+IGNORE", "INSERT", normalized, count=1, flags=re.IGNORECASE) + " ON CONFLICT DO NOTHING"
     return sql
 
 PBKDF2_ITERATIONS = 260_000

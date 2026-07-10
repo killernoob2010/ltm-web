@@ -40,6 +40,22 @@ def test_pbkdf2_hash_verifies_and_legacy_sha256_is_detected():
     assert db.needs_password_upgrade(legacy)
 
 
+def test_postgres_rewrite_handles_indented_insert_or_ignore(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/test")
+
+    rewritten = db._pg_rewrite(
+        """
+        INSERT OR IGNORE INTO module_permissions
+            (user_id, module_code, can_view)
+        VALUES (?, ?, ?)
+        """
+    )
+
+    assert "INSERT OR IGNORE" not in rewritten
+    assert rewritten.startswith("INSERT INTO module_permissions")
+    assert rewritten.endswith("ON CONFLICT DO NOTHING")
+
+
 def test_session_expires_at_blocks_old_token(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:
