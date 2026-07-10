@@ -263,7 +263,17 @@ def test_indicator_risks_color_only_the_fields_that_cause_risk():
         progress_record("SHIP-SOON", "存续", id=2, finance_due_date=(today + timedelta(days=45)).isoformat(), latest_shipment_date=(today + timedelta(days=5)).isoformat()),
         progress_record("DUE-SOON", "存续", id=3, finance_due_date=(today + timedelta(days=14)).isoformat(), latest_shipment_date=(today + timedelta(days=45)).isoformat()),
         progress_record("REPAID-ACTIVE", "存续", id=4, finance_due_date=(today + timedelta(days=45)).isoformat(), latest_shipment_date=(today + timedelta(days=45)).isoformat(), tail_payment_date=today.isoformat()),
-        progress_record("MANUAL-SHIP", "存续", id=5, finance_due_date=(today + timedelta(days=45)).isoformat(), shipment_confirmed_date=today.isoformat()),
+        progress_record(
+            "MANUAL-SHIP",
+            "存续",
+            id=5,
+            finance_due_date=(today + timedelta(days=45)).isoformat(),
+            shipment_confirmed_date=today.isoformat(),
+            import_warnings_json=json.dumps(
+                [{"field": "latest_shipment_date", "level": "高", "message": "缺少最迟装船日"}],
+                ensure_ascii=False,
+            ),
+        ),
         progress_record("DOCUMENTED", "存续", id=6, finance_due_date=(today + timedelta(days=45)).isoformat(), document_submission_date=today.isoformat()),
         progress_record("DONE", "结案", id=7, finance_due_date=(today - timedelta(days=45)).isoformat(), import_warnings_json=json.dumps([{"field": "excel_alert", "level": "高", "message": "最迟装船预警"}], ensure_ascii=False)),
     ]

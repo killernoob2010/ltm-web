@@ -108,6 +108,8 @@ test("order finance supports shipment confirmation and removes import report", (
   assert.match(appJs, /order-finance-shipment-undo-btn/);
   assert.match(appJs, /\/shipment-confirmation/);
   assert.match(appJs, /shipment_confirmed_date/);
+  assert.match(appJs, /if \(item\.shipment_confirmed_date\) return "待确认交单"/);
+  assert.match(appJs, /\/api\/order-finance\/progress\?ts=\$\{Date\.now\(\)\}/);
   assert.doesNotMatch(indexHtml, /id="orderFinanceImportReport"/);
   assert.doesNotMatch(indexHtml, />导入报告</);
   assert.doesNotMatch(appJs, /orderFinanceImportReport/);

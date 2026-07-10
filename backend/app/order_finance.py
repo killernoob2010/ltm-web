@@ -1556,15 +1556,19 @@ def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, 
     risks = {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低"}
     if stage == "已完成":
         return risks
+    shipment_completed = _group_shipment_completed(rows)
     warnings = [
         warning
         for row in rows
         for warning in _json_loads(row.get("import_warnings_json"), [])
     ]
     for warning in warnings:
-        risks[_warning_indicator(warning)] = "高"
+        indicator = _warning_indicator(warning)
+        if indicator == "shipment" and shipment_completed:
+            continue
+        risks[indicator] = "高"
 
-    if not _group_shipment_completed(rows):
+    if not shipment_completed:
         shipment_days = [_days_to(row.get("latest_shipment_date")) for row in rows if row.get("latest_shipment_date")]
         min_shipment = min([item for item in shipment_days if item is not None], default=None)
         if min_shipment is None or min_shipment < 0:

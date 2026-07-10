@@ -2088,6 +2088,7 @@ function orderFinanceField(label, value, tone = "") {
 
 function orderFinanceConfirmation(item) {
   if (item.stage === "已完成") return "已结案";
+  if (item.shipment_confirmed_date) return "待确认交单";
   if (!item.latest_shipment_date) return "待补最迟装船日";
   if (item.stage === "已放款待装船") return "待确认装船进度";
   if (!item.document_date) return "待确认交单";
@@ -2207,7 +2208,7 @@ function renderOrderFinanceContracts() {
 async function loadOrderFinanceProgress() {
   try {
     orderFinanceStatus.textContent = "正在加载";
-    const result = await api("/api/order-finance/progress");
+    const result = await api(`/api/order-finance/progress?ts=${Date.now()}`);
     state.orderFinanceContracts = result.contracts || [];
     state.orderFinanceSummary = result.summary || {};
     renderOrderFinanceSummary();
