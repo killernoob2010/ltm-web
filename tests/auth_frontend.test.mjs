@@ -40,6 +40,10 @@ test("user management exposes account lifecycle permission levels and password s
   assert.match(appJs, /temporary_password/);
   assert.match(appJs, /permission-level/);
   assert.match(appJs, /renderUserPermissionEditor/);
+  assert.match(
+    appJs,
+    /\[\s*"#addShJunnengBtn", "#editShJunnengBtn", "#closeShJunnengBtn",\s*"#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn",\s*\]\.forEach\(\(selector\) => setHidden\(selector, guest \|\| !canModuleEdit\("sh_junneng"\)\)\)/,
+  );
   assert.match(appJs, /setHidden\("#importCacheBtn", guest \|\| !canModuleSensitive\("info_summary"\)\)/);
   assert.match(appJs, /setHidden\("#batchDeleteAlertsBtn", guest \|\| !canModuleSensitive\("risk_alert"\)\)/);
 });

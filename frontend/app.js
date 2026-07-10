@@ -78,11 +78,11 @@ function applyUiPermissions() {
   ["#calculateAllInfoBtn", "#refreshInfoCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
   setHidden("#importCacheBtn", guest || !canModuleSensitive("info_summary"));
   setHidden("#batchDeleteAlertsBtn", guest || !canModuleSensitive("risk_alert"));
+  ["#addGroupBtn", "#addPositionBtn"].forEach((selector) => setHidden(selector, guest));
   [
-    "#addGroupBtn", "#addPositionBtn",
     "#addShJunnengBtn", "#editShJunnengBtn", "#closeShJunnengBtn",
     "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn",
-  ].forEach((selector) => setHidden(selector, guest));
+  ].forEach((selector) => setHidden(selector, guest || !canModuleEdit("sh_junneng")));
   setHidden("#deleteShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
   setHidden("#exportShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
   setHidden("#orderFinanceImportBtn", guest || !canModuleSensitive("order_finance_progress"));
