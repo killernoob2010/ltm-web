@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=order-finance-indicator-risk-20260710" />
+    <link rel="stylesheet" href="/static/styles.css?v=order-finance-weekly-focus-20260710" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -368,7 +368,7 @@
             </div>
             <div class="order-finance-stage-filters" id="orderFinanceStageFilters">
               <button class="filter-button active" data-filter="all" type="button">全部</button>
-              <button class="filter-button" data-filter="focusRisk" type="button">本周重点/高风险</button>
+              <button class="filter-button" data-filter="focusRisk" type="button">本周重点</button>
               <button class="filter-button" data-filter="financedUnshipped" type="button">已放款待装船</button>
               <button class="filter-button" data-filter="shippedUnpaid" type="button">已装船待回款</button>
               <button class="filter-button" data-filter="collectedUnrepaid" type="button">已交单待回款</button>
@@ -521,6 +521,26 @@
             <div class="dialog-actions">
               <button id="cancelOrderFinanceShipmentBtn" type="button" class="secondary">取消</button>
               <button type="submit">确认已装船</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="orderFinanceReminderDialog">
+          <form id="orderFinanceReminderForm" method="dialog" class="dialog-form">
+            <h2>备注/提醒</h2>
+            <p id="orderFinanceReminderItem" class="toolbar-status"></p>
+            <label>
+              跟进日期
+              <input id="orderFinanceReminderDate" type="date" />
+            </label>
+            <label>
+              备注内容
+              <textarea id="orderFinanceReminderNote" rows="4" placeholder="例如：口头约定10天后确认工厂进度"></textarea>
+            </label>
+            <div class="dialog-actions">
+              <button id="clearOrderFinanceReminderBtn" type="button" class="secondary">清除</button>
+              <button id="cancelOrderFinanceReminderBtn" type="button" class="secondary">取消</button>
+              <button type="submit">保存</button>
             </div>
           </form>
         </dialog>
@@ -1101,6 +1121,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=order-finance-indicator-risk-20260710-2"></script>
+    <script src="/static/app.js?v=order-finance-weekly-focus-20260710"></script>
   </body>
 </html>

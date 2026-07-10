@@ -116,6 +116,13 @@ const orderFinanceShipmentForm = document.querySelector("#orderFinanceShipmentFo
 const orderFinanceShipmentItem = document.querySelector("#orderFinanceShipmentItem");
 const orderFinanceShipmentDate = document.querySelector("#orderFinanceShipmentDate");
 const cancelOrderFinanceShipmentBtn = document.querySelector("#cancelOrderFinanceShipmentBtn");
+const orderFinanceReminderDialog = document.querySelector("#orderFinanceReminderDialog");
+const orderFinanceReminderForm = document.querySelector("#orderFinanceReminderForm");
+const orderFinanceReminderItem = document.querySelector("#orderFinanceReminderItem");
+const orderFinanceReminderDate = document.querySelector("#orderFinanceReminderDate");
+const orderFinanceReminderNote = document.querySelector("#orderFinanceReminderNote");
+const clearOrderFinanceReminderBtn = document.querySelector("#clearOrderFinanceReminderBtn");
+const cancelOrderFinanceReminderBtn = document.querySelector("#cancelOrderFinanceReminderBtn");
 const ofManualSubsidiary = document.querySelector("#ofManualSubsidiary");
 const ofManualTerminalCustomer = document.querySelector("#ofManualTerminalCustomer");
 const ofManualProductName = document.querySelector("#ofManualProductName");
@@ -130,6 +137,7 @@ const ofManualRepaymentRequirement = document.querySelector("#ofManualRepaymentR
 const ofManualNextAction = document.querySelector("#ofManualNextAction");
 const ofManualManagerNote = document.querySelector("#ofManualManagerNote");
 let orderFinanceShipmentItemNo = "";
+let orderFinanceReminderItemNo = "";
 const dvIntegrationPage = document.querySelector("#dvIntegrationPage");
 const dvIntegrationFiles = document.querySelector("#dvIntegrationFiles");
 const dvExportBtn = document.querySelector("#dvExportBtn");
@@ -1993,7 +2001,7 @@ function orderFinanceShipmentText(item) {
   if (days === null) return value;
   if (days < 0) return `${value} / 已超过 ${Math.abs(days)} 天`;
   if (days === 0) return `${value} / 今日需联系工厂`;
-  if (days <= 7) return `${value} / ${days} 天内需联系工厂`;
+  if (days <= 10) return `${value} / ${days} 天内需联系工厂`;
   return `${value} / ${days} 天后`;
 }
 
@@ -2010,7 +2018,7 @@ function orderFinanceFilteredContracts() {
   const filter = state.orderFinanceFilter;
   const keyword = orderFinanceKeywordFilter.value.trim().toLowerCase();
   return state.orderFinanceContracts.filter((item) => {
-    if (filter === "focusRisk" && item.risk !== "高") return false;
+    if (filter === "focusRisk" && !item.is_weekly_focus) return false;
     if (filter === "financedUnshipped" && item.stage !== "已放款待装船") return false;
     if (filter === "shippedUnpaid" && item.stage !== "已装船待回款") return false;
     if (filter === "collectedUnrepaid" && item.stage !== "已交单待回款") return false;
@@ -2069,7 +2077,7 @@ function renderOrderFinanceSummary() {
     ["存续融资金额", orderFinanceWan(summary.active_finance || 0)],
     ["7天内到期", summary.due_7d || 0],
     ["30天内到期", summary.due_30d || 0],
-    ["本周重点/高风险", summary.focus_risk || 0],
+    ["本周重点", summary.focus_risk || 0],
     ["已放款待装船", summary.financed_unshipped || 0],
     ["已交单待回款", summary.documented_uncollected || 0],
     ["已还款待结案", summary.collected_unrepaid || 0],
@@ -2137,13 +2145,20 @@ function renderOrderFinanceFinancingRows(item) {
 function renderOrderFinanceContract(item) {
   const expanded = state.expandedOrderFinanceContracts.has(item.id);
   const riskClass = item.risk === "高" ? "risk-high" : item.risk === "中" ? "risk-mid" : item.risk === "已完成" ? "risk-done" : "risk-low";
-  const canConfirmShipment = !isGuest() && canModuleEdit("order_finance_progress");
-  const shipmentAction = canConfirmShipment && item.stage !== "已完成"
+  const canEditOrderFinance = !isGuest() && canModuleEdit("order_finance_progress");
+  const shipmentAction = canEditOrderFinance && item.stage !== "已完成"
     ? item.shipment_confirmed_date
       ? `<button class="secondary order-finance-shipment-undo-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">撤销装船确认</button>`
       : !item.shipment_completed
         ? `<button class="secondary order-finance-shipment-confirm-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">确认已装船</button>`
         : ""
+    : "";
+  const reminderAction = canEditOrderFinance && item.stage !== "已完成"
+    ? `<button class="secondary order-finance-reminder-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">备注/提醒</button>`
+    : "";
+  const reminderParts = [item.next_follow_up_date, item.manager_note].filter(Boolean);
+  const reminderLine = reminderParts.length
+    ? `<div class="order-finance-reminder-line ${item.indicator_risks?.reminder === "中" ? "warning" : ""}"><span>备注提醒</span><strong>${escapeHtml(reminderParts.join(" · "))}</strong></div>`
     : "";
   return `
     <article class="order-finance-card ${expanded ? "expanded" : ""}">
@@ -2159,6 +2174,7 @@ function renderOrderFinanceContract(item) {
         </div>
         <div class="order-finance-card-actions">
           ${shipmentAction}
+          ${reminderAction}
           <button class="secondary order-finance-expand-btn" type="button" data-contract="${escapeHtml(item.id)}">${expanded ? "收起明细" : "查看明细"}</button>
         </div>
       </div>
@@ -2176,6 +2192,7 @@ function renderOrderFinanceContract(item) {
         <span>下一步</span>
         <strong>${escapeHtml(item.next_action || "-")}</strong>
       </div>
+      ${reminderLine}
       ${expanded ? renderOrderFinanceFinancingRows(item) : ""}
     </article>
   `;
@@ -2202,6 +2219,9 @@ function renderOrderFinanceContracts() {
   });
   orderFinanceContractList.querySelectorAll(".order-finance-shipment-undo-btn").forEach((button) => {
     button.addEventListener("click", () => undoOrderFinanceShipment(button.dataset.itemNo));
+  });
+  orderFinanceContractList.querySelectorAll(".order-finance-reminder-btn").forEach((button) => {
+    button.addEventListener("click", () => openOrderFinanceReminderDialog(button.dataset.itemNo));
   });
 }
 
@@ -2285,6 +2305,49 @@ async function undoOrderFinanceShipment(itemNo) {
     });
     await loadOrderFinanceProgress();
     orderFinanceStatus.textContent = `已撤销 ${itemNo} 的装船确认`;
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+  }
+}
+
+function openOrderFinanceReminderDialog(itemNo) {
+  const item = state.orderFinanceContracts.find((row) => row.item_no === itemNo);
+  orderFinanceReminderItemNo = itemNo;
+  orderFinanceReminderItem.textContent = `项次：${itemNo}`;
+  orderFinanceReminderDate.value = item?.next_follow_up_date || "";
+  orderFinanceReminderNote.value = item?.manager_note || "";
+  orderFinanceReminderDialog.showModal();
+}
+
+async function saveOrderFinanceReminder(event) {
+  event.preventDefault();
+  try {
+    await api(`/api/order-finance/contracts/${encodeURIComponent(orderFinanceReminderItemNo)}/reminder`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        manager_note: orderFinanceReminderNote.value,
+        next_follow_up_date: orderFinanceReminderDate.value || null,
+      }),
+    });
+    orderFinanceReminderDialog.close();
+    await loadOrderFinanceProgress();
+    orderFinanceStatus.textContent = `已更新 ${orderFinanceReminderItemNo} 的备注提醒`;
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+  }
+}
+
+async function clearOrderFinanceReminder() {
+  const confirmed = await confirmAction("清除备注提醒", `确认清除 ${orderFinanceReminderItemNo} 的备注和跟进日期？`);
+  if (!confirmed) return;
+  try {
+    await api(`/api/order-finance/contracts/${encodeURIComponent(orderFinanceReminderItemNo)}/reminder`, {
+      method: "PATCH",
+      body: JSON.stringify({ manager_note: "", next_follow_up_date: null }),
+    });
+    orderFinanceReminderDialog.close();
+    await loadOrderFinanceProgress();
+    orderFinanceStatus.textContent = `已清除 ${orderFinanceReminderItemNo} 的备注提醒`;
   } catch (error) {
     orderFinanceStatus.textContent = error.message;
   }
@@ -2464,6 +2527,9 @@ cancelOrderFinanceManualBtn.addEventListener("click", () => orderFinanceManualDi
 orderFinanceManualForm.addEventListener("submit", saveOrderFinanceManual);
 cancelOrderFinanceShipmentBtn.addEventListener("click", () => orderFinanceShipmentDialog.close());
 orderFinanceShipmentForm.addEventListener("submit", saveOrderFinanceShipment);
+cancelOrderFinanceReminderBtn.addEventListener("click", () => orderFinanceReminderDialog.close());
+clearOrderFinanceReminderBtn.addEventListener("click", clearOrderFinanceReminder);
+orderFinanceReminderForm.addEventListener("submit", saveOrderFinanceReminder);
 orderFinanceImportBtn.addEventListener("click", () => orderFinanceImportFile.click());
 orderFinanceImportFile.addEventListener("change", () => importOrderFinanceFile(orderFinanceImportFile.files[0]));
 orderFinanceCapitalRefreshBtn.addEventListener("click", loadOrderFinanceCapital);

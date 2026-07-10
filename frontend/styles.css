@@ -1299,6 +1299,34 @@ dialog::backdrop {
   background: #fff4f2;
 }
 
+.order-finance-reminder-line {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 8px;
+  border-left: 3px solid #9fb0c2;
+  border-radius: 4px;
+  background: #f7f9fb;
+  padding: 8px 10px;
+}
+
+.order-finance-reminder-line.warning {
+  border-left-color: #d89a2b;
+  background: #fff8ea;
+}
+
+.order-finance-reminder-line span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-finance-reminder-line strong {
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .order-finance-detail-table {
   margin-top: 12px;
   overflow-x: auto;

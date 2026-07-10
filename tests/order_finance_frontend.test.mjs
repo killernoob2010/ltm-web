@@ -85,9 +85,27 @@ test("order finance detail omits unavailable bill date and keeps document and re
 test("order finance shipment deadline has warning and overdue visual tones", () => {
   assert.match(stylesCss, /\.order-finance-field\.danger/);
   assert.match(appJs, /if \(item\.stage === "已完成"\) return value \|\| "未提供"/);
-  assert.match(appJs, /days <= 7/);
+  assert.match(appJs, /days <= 10/);
   assert.match(appJs, /需联系工厂/);
   assert.match(appJs, /已超过/);
+});
+
+test("order finance weekly focus uses ten-day actions and persistent reminders", () => {
+  assert.doesNotMatch(indexHtml, />本周重点\/高风险</);
+  assert.match(indexHtml, />本周重点</);
+  assert.match(indexHtml, /id="orderFinanceReminderDialog"/);
+  assert.match(indexHtml, /id="orderFinanceReminderNote"/);
+  assert.match(indexHtml, /id="orderFinanceReminderDate"[^>]*type="date"/);
+  assert.match(indexHtml, /id="clearOrderFinanceReminderBtn"/);
+  assert.match(appJs, /filter === "focusRisk" && !item\.is_weekly_focus/);
+  assert.match(appJs, /\["本周重点", summary\.focus_risk \|\| 0\]/);
+  assert.match(appJs, /order-finance-reminder-btn/);
+  assert.match(appJs, /order-finance-reminder-line/);
+  assert.match(appJs, /\/reminder`/);
+  assert.match(appJs, /manager_note/);
+  assert.match(appJs, /next_follow_up_date/);
+  assert.match(appJs, /confirmAction\("清除备注提醒"/);
+  assert.match(stylesCss, /\.order-finance-reminder-line/);
 });
 
 test("order finance colors only the indicator fields that cause risk", () => {
