@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -25,7 +25,7 @@ router = APIRouter()
 
 SUBSIDIARIES = ["东钢", "北满", "承德", "抚顺", "西林", "阿城"]
 LOCAL_DEFAULT_LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
-LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账(副本).xlsx")
+LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
 ORDER_FINANCE_SEED_PATH = Path(__file__).with_name("order_finance_seed.json")
 ORDER_FINANCE_MODULE = "order_finance_progress"
 ORDER_FINANCE_CAPITAL_MODULE = "order_finance_capital"
@@ -261,6 +261,17 @@ def _parse_date(value: Any) -> Optional[date]:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
+
+
+def _effective_finance_due(new_due: Any, original_due: Any, extension_days: int = 0) -> str:
+    normalized_new = _normalize_xlsx_date(new_due)
+    if normalized_new:
+        return normalized_new
+    normalized_original = _normalize_xlsx_date(original_due)
+    parsed_original = _parse_date(normalized_original)
+    if parsed_original and extension_days > 0:
+        return (parsed_original + timedelta(days=extension_days)).isoformat()
+    return normalized_original
 
 
 def _find_col(headers: List[Any], *needles: str) -> Optional[int]:
@@ -846,9 +857,14 @@ def _order_sheet_record(
     finance_amount = _xlsx_float(_row_alias(row, "贷款人民币金额", "融资金额", "放款金额"))
     status = _normalized_order_status(_row_alias(row, "状态", "订单状态", "存续/结案", "贷款状态"))
     repay_date = _normalize_xlsx_date(_row_alias(row, "还款日", "还款日期"))
-    finance_due = _normalize_xlsx_date(_row_alias(row, "新到期日", "融资到期日", "到期日")) or _normalize_xlsx_date(_row_alias(row, "原到期日"))
     original_due = _normalize_xlsx_date(_row_alias(row, "原到期日"))
     extension_days = _to_int(_row_alias(row, "展期天数")) or 0
+    finance_due = _effective_finance_due(
+        _row_alias(row, "新到期日", "融资到期日", "到期日"),
+        original_due,
+        extension_days,
+    )
+    latest_shipment_date = _normalize_xlsx_date(_row_alias(row, "最迟装船日", "最晚装船日"))
     bill_date = _normalize_xlsx_date(_row_alias(row, "提单日", "提单日期"))
     document_date = _normalize_xlsx_date(_row_alias(row, "交单日", "交单日期", "银行交单日"))
     source_date = f"{item_no.split('-')[1]}-01-01" if len(item_no.split("-")) > 2 and item_no.split("-")[1].isdigit() else date.today().isoformat()
@@ -893,7 +909,7 @@ def _order_sheet_record(
         "finance_due_date": finance_due,
         "finance_days": _to_int(_row_alias(row, "实际融资周期", "融资天数")),
         "finance_status": status,
-        "latest_shipment_date": "",
+        "latest_shipment_date": latest_shipment_date,
         "lc_latest_shipment_date": "",
         "vessel_voyage": "",
         "bill_of_lading_date": bill_date,
@@ -934,14 +950,6 @@ def _parse_order_sheet(book, path: Path, alerts_by_item: Dict[str, List[Dict[str
         record["business_key"] = f"ITEM|{item_no}|{len(siblings) + 1}"
         siblings.append(record)
         records.append(record)
-    for item_no, siblings in by_item.items():
-        if len(siblings) <= 1:
-            continue
-        duplicate_warning = {"field": "item_no", "level": "高", "message": f"重复项次：{item_no}，共 {len(siblings)} 行"}
-        for record in siblings:
-            warnings = _json_loads(record.get("import_warnings_json"), [])
-            warnings.append(duplicate_warning)
-            record["import_warnings_json"] = json.dumps(warnings, ensure_ascii=False)
     active_amount = sum(
         float(record.get("finance_amount_actual") or record.get("finance_amount_expected") or 0)
         for record in records
@@ -1490,11 +1498,28 @@ def _group_risk(rows: List[Dict[str, Any]], stage: str) -> str:
     warnings = sum(len(_json_loads(row.get("import_warnings_json"), [])) for row in rows)
     min_due = min([item for item in due_days if item is not None], default=None)
     missing_repay = not _group_has_value(rows, "tail_payment_date")
-    if warnings or (min_due is not None and min_due < 0 and missing_repay) or (min_due is not None and min_due <= 7 and missing_repay):
+    if warnings or (min_due is None and missing_repay) or (min_due is not None and min_due <= 7 and missing_repay):
         return "高"
-    if (min_due is not None and min_due <= 30 and missing_repay) or stage in {"已放款待装船", "已装船待回款", "已交单待回款", "已还款待结案"} or len(rows) > 1:
+    if (min_due is not None and min_due <= 30 and missing_repay) or not missing_repay:
         return "中"
     return "低"
+
+
+def _group_repayment_timing(rows: List[Dict[str, Any]]) -> str:
+    deltas = []
+    for row in rows:
+        due = _parse_date(row.get("finance_due_date"))
+        repaid = _parse_date(row.get("tail_payment_date"))
+        if due and repaid:
+            deltas.append((repaid - due).days)
+    if not deltas:
+        return ""
+    latest_delta = max(deltas)
+    if latest_delta > 0:
+        return f"逾期 {latest_delta} 天还款"
+    if latest_delta < 0:
+        return f"提前 {abs(latest_delta)} 天还款"
+    return "按期还款"
 
 
 def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str:
@@ -1508,7 +1533,7 @@ def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str
     if stage == "待放款":
         return "确认贷款行、金额和借款日期"
     if stage == "已放款待装船":
-        return "优先确认提单进度" if risk == "高" else "跟进钢厂和提单进度"
+        return "优先联系工厂确认装船进度" if risk == "高" else "跟进工厂装船进度"
     if stage == "已装船待回款":
         return "确认银行交单安排"
     if stage == "已交单待回款":
@@ -1526,6 +1551,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     risk = _group_risk(rows, stage)
     finance_total = sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows)
     due_dates = sorted([row.get("finance_due_date") for row in rows if row.get("finance_due_date")])
+    latest_shipment_dates = sorted([row.get("latest_shipment_date") for row in rows if row.get("latest_shipment_date")])
     document_dates = sorted([row.get("document_submission_date") for row in rows if row.get("document_submission_date")])
     bill_dates = sorted([row.get("bill_of_lading_date") for row in rows if row.get("bill_of_lading_date")])
     repay_dates = sorted([row.get("tail_payment_date") for row in rows if row.get("tail_payment_date")])
@@ -1549,12 +1575,13 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "lc_type": lc.get("lc_type") or "",
         "transferable": lc.get("transferable") or "",
         "receiving_bank": lc.get("receiving_bank") or "",
-        "latest_shipment_date": first.get("latest_shipment_date") or "",
+        "latest_shipment_date": latest_shipment_dates[0] if latest_shipment_dates else "",
         "vessel": next((row.get("vessel_voyage") for row in rows if row.get("vessel_voyage")), ""),
         "latest_due_date": due_dates[0] if due_dates else "",
         "bill_date": bill_dates[-1] if bill_dates else "",
         "document_date": document_dates[-1] if document_dates else "",
         "repay_date": repay_dates[-1] if repay_dates else "",
+        "repayment_timing": _group_repayment_timing(rows),
         "stage": stage,
         "risk": risk,
         "next_action": _group_next_action(rows, stage, risk),
@@ -1608,8 +1635,8 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
         "documented_uncollected": len([item for item in open_contracts if item["stage"] == "已交单待回款"]),
         "collected_unrepaid": len([item for item in open_contracts if item["stage"] == "已还款待结案"]),
         "completed": len([item for item in contracts if item["stage"] == "已完成"]),
-        "missing_milestones": len([item for item in open_contracts if not item.get("bill_date") or not item.get("document_date") or not item.get("repay_date")]),
-        "data_issues": sum(item["data_issue_count"] for item in contracts),
+        "missing_milestones": len([item for item in open_contracts if not item.get("latest_shipment_date") or not item.get("document_date") or not item.get("repay_date")]),
+        "data_issues": sum(item["data_issue_count"] for item in open_contracts),
         "total_contracts": len(contracts),
     }
     return {"summary": summary, "contracts": contracts}

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import date, timedelta
 
 from openpyxl import Workbook
 
@@ -28,7 +29,7 @@ from app.order_finance import (
 
 
 LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
-NEW_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账(副本).xlsx")
+NEW_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
 
 
 def build_three_sheet_workbook(path: Path) -> Path:
@@ -40,22 +41,27 @@ def build_three_sheet_workbook(path: Path) -> Path:
     order.append([
         "项次", "合同数量(吨)", "品名", "供应商简称", "合同编号", "贷款行",
         "贷款人民币金额", "利率", "借款日期", "原到期日", "展期天数", "新到期日",
-        "提单日期", "交单日期", "还款日", "状态",
+        "最迟装船日", "提单日期", "交单日期", "还款日", "状态",
     ])
     order.append([
         "Y-2026-1", 1000, "热轧圆钢 42CrMo", "北满", "26BM001", "UOB",
         10_000_000, 0.031, "2026-06-01", "2026-08-01", 5, "2026-08-06",
-        "2026-06-20", "2026-06-23", None, "存续",
+        "2026-07-20", "2026-06-20", "2026-06-23", None, "存续",
     ])
     order.append([
         "Y-2026-2", 2000, "方坯 Q235", "东钢", "26DG002", "OCBC",
         20_000_000, 0.032, "2026-05-01", "2026-07-01", 0, "2026-07-01",
-        None, None, None, "结案",
+        None, None, None, None, "结案",
     ])
     order.append([
         "Y-2026-1", 0, "热轧圆钢 42CrMo", "北满", "26BM001", "UOB",
         1_000_000, 0.033, "2026-06-05", "2026-08-01", 5, "2026-08-06",
-        "2026-06-20", "2026-06-24", None, "存续",
+        "2026-07-15", "2026-06-20", "2026-06-24", None, "存续",
+    ])
+    order.append([
+        "Y-2026-3", 500, "方坯", "西林", "26XL003", "中信唐山",
+        5_000_000, 0.031, "2026-06-01", "2026-07-01", 10, None,
+        "2026-07-25", None, None, None, "存续",
     ])
 
     quota = book.create_sheet("额度")
@@ -151,13 +157,14 @@ def test_three_sheet_parser_uses_order_as_only_order_source(tmp_path):
     assert all("CONFLICT-DATA-MERGE" not in record["source_json"] for record in result["records"])
     first = next(record for record in result["records"] if json.loads(record["source_json"])["item_no"] == "Y-2026-1")
     assert first["bill_of_lading_date"] == "2026-06-20"
+    assert first["latest_shipment_date"] == "2026-07-20"
     assert first["document_submission_date"] == "2026-06-23"
     assert first["tail_payment_date"] == ""
     assert first["business_status"] == "存续"
     assert first["source_sheet"] == "订单"
 
 
-def test_three_sheet_parser_reports_duplicate_items_alerts_and_quota(tmp_path):
+def test_three_sheet_parser_keeps_multiple_financings_without_duplicate_warning(tmp_path):
     workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
 
     result = parse_order_finance_directory(workbook)
@@ -165,12 +172,53 @@ def test_three_sheet_parser_reports_duplicate_items_alerts_and_quota(tmp_path):
     y1_rows = [record for record in result["records"] if json.loads(record["source_json"])["item_no"] == "Y-2026-1"]
     assert len(y1_rows) == 2
     warnings = [warning for record in y1_rows for warning in json.loads(record["import_warnings_json"])]
-    assert any("重复项次" in warning["message"] for warning in warnings)
+    assert not any("重复项次" in warning["message"] for warning in warnings)
     assert any("银行交单后待回款预警" in warning["message"] for warning in warnings)
     capital = next(json.loads(record["source_json"]).get("workbook_capital") for record in result["records"] if json.loads(record["source_json"]).get("workbook_capital"))
     assert capital["total_credit"] == 536_000_000
     assert capital["used_credit"] == 31_000_000
     assert {bank["bank"] for bank in capital["banks"]} == {"UOB", "OCBC"}
+
+
+def test_parser_uses_original_due_plus_extension_when_new_due_is_empty(tmp_path):
+    workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
+
+    result = parse_order_finance_directory(workbook)
+    record = next(record for record in result["records"] if json.loads(record["source_json"])["item_no"] == "Y-2026-3")
+
+    assert record["finance_due_date"] == "2026-07-11"
+
+
+def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_path):
+    workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
+    records = parse_order_finance_directory(workbook)["records"]
+    records.append(progress_record(
+        "CLOSED",
+        "结案",
+        id=99,
+        finance_due_date="2026-03-10",
+        tail_payment_date="2026-03-08",
+        import_warnings_json=json.dumps([{"field": "item_no", "level": "高", "message": "历史异常"}], ensure_ascii=False),
+    ))
+
+    view = build_order_finance_progress_view(records)
+    by_item = {item["item_no"]: item for item in view["contracts"]}
+
+    assert by_item["Y-2026-1"]["latest_shipment_date"] == "2026-07-15"
+    assert by_item["CLOSED"]["repayment_timing"] == "提前 2 天还款"
+    assert view["summary"]["data_issues"] == sum(item["data_issue_count"] for item in view["contracts"] if item["stage"] != "已完成")
+
+
+def test_multiple_financing_and_active_stage_do_not_raise_risk():
+    due = (date.today() + timedelta(days=45)).isoformat()
+    first = progress_record("MULTI", "存续", finance_due_date=due)
+    second = progress_record("MULTI", "存续", id=2, business_key="ITEM|MULTI|2", finance_due_date=due)
+
+    view = build_order_finance_progress_view([first, second])
+    item = view["contracts"][0]
+
+    assert item["financing_count"] == 2
+    assert item["risk"] == "低"
 
 
 def test_explicit_status_and_finance_milestones_drive_lifecycle():
@@ -304,7 +352,7 @@ def test_upload_import_preserves_original_file_name(tmp_path, monkeypatch):
 
 
 def test_parse_order_finance_default_path_falls_back_to_seed_when_file_is_missing(tmp_path, monkeypatch):
-    missing_workbook = tmp_path / "YOLANDA和香港建龙出口钢材信用证台账(副本).xlsx"
+    missing_workbook = tmp_path / "YOLANDA和香港建龙出口钢材信用证台账.xlsx"
     monkeypatch.setattr(order_finance, "LOCAL_DEFAULT_LEDGER_WORKBOOK", missing_workbook)
 
     result = parse_order_finance_directory(missing_workbook)

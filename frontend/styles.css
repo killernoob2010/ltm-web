@@ -1264,6 +1264,15 @@ dialog::backdrop {
   background: #fff8ea;
 }
 
+.order-finance-field.danger {
+  border-color: #e7a7a2;
+  background: #fff1f0;
+}
+
+.order-finance-field.danger strong {
+  color: var(--danger);
+}
+
 .order-finance-field.success {
   border-color: #b8d8ca;
   background: #f1faf6;

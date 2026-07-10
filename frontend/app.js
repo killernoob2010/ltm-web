@@ -1979,6 +1979,25 @@ function orderFinanceDueText(value) {
   return `${days} 天后到期`;
 }
 
+function orderFinanceShipmentText(item) {
+  const value = item.latest_shipment_date;
+  if (!value) return item.stage === "已完成" ? "未提供" : "待 Excel 补充";
+  const days = orderFinanceDaysTo(value);
+  if (days === null) return value;
+  if (days < 0) return `${value} / 已超过 ${Math.abs(days)} 天`;
+  if (days === 0) return `${value} / 今日需联系工厂`;
+  if (days <= 7) return `${value} / ${days} 天内需联系工厂`;
+  return `${value} / ${days} 天后`;
+}
+
+function orderFinanceShipmentTone(item) {
+  if (!item.latest_shipment_date) return item.stage === "已完成" ? "" : "warning";
+  const days = orderFinanceDaysTo(item.latest_shipment_date);
+  if (days !== null && days < 0) return "danger";
+  if (days !== null && days <= 7) return "warning";
+  return "";
+}
+
 function orderFinanceFilteredContracts() {
   const filter = state.orderFinanceFilter;
   const keyword = orderFinanceKeywordFilter.value.trim().toLowerCase();
@@ -2047,7 +2066,7 @@ function renderOrderFinanceSummary() {
     ["已交单待回款", summary.documented_uncollected || 0],
     ["已还款待结案", summary.collected_unrepaid || 0],
     ["已完成", summary.completed || 0],
-    ["缺提单/交单/还款", summary.missing_milestones || 0],
+    ["缺最迟装船/交单/还款", summary.missing_milestones || 0],
     ["数据异常数", summary.data_issues || 0],
   ];
   orderFinanceSummary.innerHTML = items.map(([label, value]) => (
@@ -2061,7 +2080,8 @@ function orderFinanceField(label, value, tone = "") {
 
 function orderFinanceConfirmation(item) {
   if (item.stage === "已完成") return "已结案";
-  if (!item.bill_date) return "待确认提单";
+  if (!item.latest_shipment_date) return "待补最迟装船日";
+  if (item.stage === "已放款待装船") return "待确认装船进度";
   if (!item.document_date) return "待确认交单";
   if (!item.repay_date && item.stage !== "已完成") return "待确认还款";
   return "已确认";
@@ -2082,7 +2102,6 @@ function renderOrderFinanceFinancingRows(item) {
             <th>融资金额</th>
             <th>借款日</th>
             <th>到期日</th>
-            <th>提单日</th>
             <th>交单日</th>
             <th>还款日</th>
             <th>状态</th>
@@ -2095,7 +2114,6 @@ function renderOrderFinanceFinancingRows(item) {
               <td class="numeric">${escapeHtml(orderFinanceWan(row.amount || 0, 2))}</td>
               <td>${escapeHtml(row.borrow_date || "-")}</td>
               <td>${escapeHtml(row.due_date || "-")}</td>
-              <td>${escapeHtml(row.bill_date || "-")}</td>
               <td>${escapeHtml(row.document_date || "-")}</td>
               <td>${escapeHtml(row.repay_date || "-")}</td>
               <td>${escapeHtml(row.status || "-")}</td>
@@ -2128,10 +2146,10 @@ function renderOrderFinanceContract(item) {
         ${orderFinanceField("数量", item.quantity ? `${money(item.quantity)}吨` : "-")}
         ${orderFinanceField("融资金额", item.financing_count > 1 ? `${item.financing_count}笔 / ${orderFinanceWan(item.total_finance, 1)}` : orderFinanceWan(item.total_finance, 1))}
         ${orderFinanceField("放款情况", (item.financings || []).some((row) => row.borrow_date) ? `已放款 ${(item.financings || []).find((row) => row.borrow_date)?.borrow_date || ""}` : "待放款")}
-        ${orderFinanceField("提单日", item.bill_date || (item.stage === "已完成" ? "未提供" : "待 Excel 补充"), item.bill_date ? "success" : item.stage === "已完成" ? "" : "warning")}
+        ${orderFinanceField("最迟装船日", orderFinanceShipmentText(item), orderFinanceShipmentTone(item))}
         ${orderFinanceField("展期状态", orderFinanceExtensionStatus(item), orderFinanceExtensionStatus(item).includes("展期 ") ? "warning" : "")}
-        ${orderFinanceField("融资到期", `${item.latest_due_date || "-"} / ${orderFinanceDueText(item.latest_due_date)}`, item.risk === "高" ? "warning" : "")}
-        ${orderFinanceField("还款情况", item.repay_date || "待回款/还款", item.repay_date ? "success" : "warning")}
+        ${orderFinanceField("融资到期", `${item.latest_due_date || "-"} / ${item.stage === "已完成" ? (item.repayment_timing || "还款日未提供") : orderFinanceDueText(item.latest_due_date)}`, item.stage !== "已完成" && item.risk === "高" ? "warning" : "")}
+        ${orderFinanceField("还款日", item.repay_date || (item.stage === "已完成" ? "未提供" : "待还款"), item.repay_date ? "success" : item.stage === "已完成" ? "" : "warning")}
         ${orderFinanceField("确认状态", orderFinanceConfirmation(item), orderFinanceConfirmation(item).includes("待") ? "warning" : "success")}
       </div>
       <div class="order-finance-next-action ${item.risk === "高" ? "danger" : ""}">
