@@ -183,3 +183,31 @@ def test_operation_log_route_avoids_count_and_offset():
 
     assert "COUNT(*)" not in source
     assert "OFFSET" not in source
+
+
+def test_automatic_batch_calculation_is_not_logged_but_manual_is(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+
+    with db.connect() as conn:
+        before = conn.execute("SELECT COUNT(*) AS c FROM operation_logs").fetchone()["c"]
+
+    main.calculate_info_summary_all(
+        main.InfoCalculateAllIn(items=[], audit_source="automatic"),
+        user=admin,
+    )
+    with db.connect() as conn:
+        after_automatic = conn.execute("SELECT COUNT(*) AS c FROM operation_logs").fetchone()["c"]
+
+    main.calculate_info_summary_all(
+        main.InfoCalculateAllIn(items=[], audit_source="manual"),
+        user=admin,
+    )
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT operation_type FROM operation_logs ORDER BY id"
+        ).fetchall()
+
+    assert after_automatic == before
+    assert len(rows) == before + 1
+    assert rows[-1]["operation_type"] == "批量计算指标"

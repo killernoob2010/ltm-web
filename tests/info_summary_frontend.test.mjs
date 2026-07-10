@@ -25,7 +25,7 @@ test("info summary exposes historical cache refresh entry", () => {
 
 test("info summary auto calculates on page load with in-flight guard", () => {
   assert.match(appJs, /展示已加载，正在自动计算/);
-  assert.match(appJs, /calculateAllInfo\(false\)\.catch/);
+  assert.match(appJs, /calculateAllInfo\(false, "automatic"\)\.catch/);
   assert.match(appJs, /if \(state\.infoSummaryRefreshInFlight\)/);
   assert.match(appJs, /state\.infoSummaryRefreshInFlight = true;/);
   assert.match(appJs, /state\.infoSummaryRefreshInFlight = false;/);
@@ -51,7 +51,7 @@ test("info summary visibility refresh triggers guarded calculation", () => {
   const start = appJs.indexOf('document.addEventListener("visibilitychange"');
   const end = appJs.indexOf("async function loadRiskAlert", start);
   const body = appJs.slice(start, end);
-  assert.match(body, /calculateAllInfo\(false\)/);
+  assert.match(body, /calculateAllInfo\(false, "automatic"\)/);
 });
 
 test("info summary manual refresh uses one batched request", () => {
@@ -60,6 +60,13 @@ test("info summary manual refresh uses one batched request", () => {
   assert.match(appJs, /const resultsByType = new Map\(\(result\.cards \|\| \[\]\)\.map\(\(item\) => \[item\.info_type, item\]\)\);/);
   assert.match(appJs, /applyInfoResult\(card, item\);/);
   assert.match(appJs, /calculateAllInfoBtn/);
+});
+
+test("info summary labels automatic and manual calculation audit sources", () => {
+  assert.match(appJs, /async function calculateAllInfo\(mock = false, auditSource = "automatic"\)/);
+  assert.match(appJs, /audit_source: auditSource/);
+  assert.match(appJs, /calculateAllInfo\(false, "manual"\)/);
+  assert.match(appJs, /calculateAllInfo\(false, "automatic"\)/);
 });
 
 test("info summary batch payload uses the selected month controls", () => {

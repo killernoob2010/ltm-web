@@ -510,7 +510,7 @@ async function loadInfoSummary() {
   updateInfoCacheStatus("读取中");
   loadInfoCacheStatus().catch((error) => updateInfoCacheStatus(error.message));
   updateInfoStatus("展示已加载，正在自动计算");
-  calculateAllInfo(false).catch((error) => updateInfoStatus(error.message));
+  calculateAllInfo(false, "automatic").catch((error) => updateInfoStatus(error.message));
 }
 
 async function loadInfoCacheStatus() {
@@ -693,7 +693,7 @@ async function loadInfoHistory() {
   `).join("");
 }
 
-async function calculateAllInfo(mock = false) {
+async function calculateAllInfo(mock = false, auditSource = "automatic") {
   if (state.infoSummaryRefreshInFlight) {
     updateInfoStatus("计算进行中，请稍候");
     return;
@@ -711,7 +711,7 @@ async function calculateAllInfo(mock = false) {
   try {
     const result = await api(`/api/info-summary/calculate-all${mock ? "?mock=true" : ""}`, {
       method: "POST",
-      body: JSON.stringify({ items: cards.map(buildInfoPayload) }),
+      body: JSON.stringify({ items: cards.map(buildInfoPayload), audit_source: auditSource }),
     });
     const resultsByType = new Map((result.cards || []).map((item) => [item.info_type, item]));
     for (const card of cards) {
@@ -1366,7 +1366,7 @@ function stopAlertNotifications() {
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.token) {
-    if (state.activeModule === "info_summary") calculateAllInfo(false).catch(() => {});
+    if (state.activeModule === "info_summary") calculateAllInfo(false, "automatic").catch(() => {});
     if (!isGuest()) loadNotifications(false).catch(() => {});
   }
 });
@@ -1543,8 +1543,8 @@ document.querySelector("#logoutBtn").addEventListener("click", async () => {
   showLogin();
 });
 
-document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false));
-document.querySelector("#refreshIndicatorsBtn").addEventListener("click", () => calculateAllInfo(false));
+document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false, "manual"));
+document.querySelector("#refreshIndicatorsBtn").addEventListener("click", () => calculateAllInfo(false, "manual"));
 refreshInfoCacheBtn.addEventListener("click", refreshInfoCache);
 importCacheBtn.addEventListener("click", async () => {
   importCacheBtn.disabled = true;

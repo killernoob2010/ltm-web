@@ -7,7 +7,7 @@ import csv
 import io
 import json
 import os
-from typing import List, Optional
+from typing import List, Literal, Optional
 import re
 import statistics
 import threading
@@ -197,6 +197,7 @@ class InfoCalculateIn(BaseModel):
 
 class InfoCalculateAllIn(BaseModel):
     items: List[InfoCalculateIn]
+    audit_source: Literal["automatic", "manual"] = "automatic"
 
 
 class InfoBackfillIn(BaseModel):
@@ -1817,7 +1818,8 @@ def calculate_info_summary_all(payload: InfoCalculateAllIn, mock: bool = False, 
         )
         for item in payload.items
     ]
-    db.log_operation(user["id"], "info_summary", "批量计算指标", "全部", "calculated_data", None)
+    if payload.audit_source == "manual":
+        db.log_operation(user["id"], "info_summary", "批量计算指标", "全部", "calculated_data", None)
     return {
         "calc_date": payload.items[0].calc_date if payload.items else date.today().isoformat(),
         "cards": cards,
