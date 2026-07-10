@@ -281,7 +281,7 @@ def test_indicator_risks_color_only_the_fields_that_cause_risk():
     view = build_order_finance_progress_view(records)
     items = {item["item_no"]: item for item in view["contracts"]}
 
-    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "finance_due": "低", "repayment": "低", "confirmation": "低"}
+    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
     assert items["MISSING-SHIP"]["risk"] == "高"
     assert items["SHIP-SOON"]["indicator_risks"]["shipment"] == "中"
     assert items["DUE-SOON"]["indicator_risks"]["finance_due"] == "中"
@@ -289,8 +289,54 @@ def test_indicator_risks_color_only_the_fields_that_cause_risk():
     assert items["MANUAL-SHIP"]["indicator_risks"]["shipment"] == "低"
     assert items["MANUAL-SHIP"]["stage"] == "已装船待回款"
     assert items["DOCUMENTED"]["indicator_risks"]["shipment"] == "低"
-    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低"}
+    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
     assert items["DONE"]["risk"] == "已完成"
+
+
+def test_weekly_focus_uses_rolling_ten_day_actions():
+    today = date.today()
+    future_due = (today + timedelta(days=45)).isoformat()
+    future_shipment = (today + timedelta(days=45)).isoformat()
+    records = [
+        progress_record(
+            "HIGH",
+            "存续",
+            id=1,
+            finance_due_date=future_due,
+            next_follow_up_date=(today + timedelta(days=10)).isoformat(),
+        ),
+        progress_record("SHIP-10", "存续", id=2, finance_due_date=future_due, latest_shipment_date=(today + timedelta(days=10)).isoformat()),
+        progress_record("SHIP-11", "存续", id=3, finance_due_date=future_due, latest_shipment_date=(today + timedelta(days=11)).isoformat()),
+        progress_record("REMINDER-10", "存续", id=4, finance_due_date=future_due, latest_shipment_date=future_shipment, next_follow_up_date=(today + timedelta(days=10)).isoformat(), manager_note="十天后跟进"),
+        progress_record("REMINDER-11", "存续", id=5, finance_due_date=future_due, latest_shipment_date=future_shipment, next_follow_up_date=(today + timedelta(days=11)).isoformat(), manager_note="十一天后跟进"),
+        progress_record("REMINDER-OVERDUE", "存续", id=6, finance_due_date=future_due, latest_shipment_date=future_shipment, next_follow_up_date=(today - timedelta(days=2)).isoformat(), manager_note="口头约定"),
+        progress_record("NOTE-ONLY", "存续", id=7, finance_due_date=future_due, latest_shipment_date=future_shipment, manager_note="只记录备注"),
+        progress_record("DONE-REMINDER", "结案", id=8, finance_due_date=future_due, next_follow_up_date=(today - timedelta(days=2)).isoformat(), manager_note="历史备注"),
+    ]
+
+    view = build_order_finance_progress_view(records)
+    items = {item["item_no"]: item for item in view["contracts"]}
+
+    assert items["SHIP-10"]["indicator_risks"]["shipment"] == "中"
+    assert items["SHIP-10"]["is_weekly_focus"] is True
+    assert items["SHIP-10"]["weekly_focus_reasons"] == ["shipment_follow_up"]
+    assert items["SHIP-11"]["indicator_risks"]["shipment"] == "低"
+    assert items["SHIP-11"]["is_weekly_focus"] is False
+    assert items["REMINDER-10"]["indicator_risks"]["reminder"] == "中"
+    assert items["REMINDER-10"]["risk"] == "中"
+    assert items["REMINDER-10"]["is_weekly_focus"] is True
+    assert items["REMINDER-11"]["indicator_risks"]["reminder"] == "低"
+    assert items["REMINDER-11"]["risk"] == "低"
+    assert items["REMINDER-11"]["is_weekly_focus"] is False
+    assert items["REMINDER-OVERDUE"]["indicator_risks"]["reminder"] == "中"
+    assert items["REMINDER-OVERDUE"]["is_weekly_focus"] is True
+    assert items["NOTE-ONLY"]["is_weekly_focus"] is False
+    assert items["DONE-REMINDER"]["indicator_risks"]["reminder"] == "低"
+    assert items["DONE-REMINDER"]["is_weekly_focus"] is False
+    assert items["HIGH"]["weekly_focus_reasons"] == ["high_risk", "manual_follow_up"]
+    assert items["REMINDER-10"]["manager_note"] == "十天后跟进"
+    assert items["REMINDER-10"]["next_follow_up_date"] == (today + timedelta(days=10)).isoformat()
+    assert view["summary"]["focus_risk"] == 4
 
 
 def test_explicit_status_and_finance_milestones_drive_lifecycle():

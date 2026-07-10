@@ -1553,7 +1553,7 @@ def _warning_indicator(warning: Dict[str, Any]) -> str:
 
 
 def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, str]:
-    risks = {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低"}
+    risks = {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
     if stage == "已完成":
         return risks
     shipment_completed = _group_shipment_completed(rows)
@@ -1573,8 +1573,12 @@ def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, 
         min_shipment = min([item for item in shipment_days if item is not None], default=None)
         if min_shipment is None or min_shipment < 0:
             risks["shipment"] = "高"
-        elif min_shipment <= 7 and risks["shipment"] != "高":
+        elif min_shipment <= 10 and risks["shipment"] != "高":
             risks["shipment"] = "中"
+
+    follow_up_days = [_days_to(row.get("next_follow_up_date")) for row in rows if row.get("next_follow_up_date")]
+    if any(item is not None and item <= 10 for item in follow_up_days):
+        risks["reminder"] = "中"
 
     due_days = [_days_to(row.get("finance_due_date")) for row in rows if row.get("finance_due_date")]
     min_due = min([item for item in due_days if item is not None], default=None)
@@ -1597,6 +1601,22 @@ def _group_risk(indicator_risks: Dict[str, str], stage: str) -> str:
     if "中" in indicator_risks.values():
         return "中"
     return "低"
+
+
+def _group_weekly_focus_reasons(rows: List[Dict[str, Any]], stage: str, risk: str) -> List[str]:
+    if stage == "已完成":
+        return []
+    reasons = []
+    if risk == "高":
+        reasons.append("high_risk")
+    if not _group_shipment_completed(rows):
+        shipment_days = [_days_to(row.get("latest_shipment_date")) for row in rows if row.get("latest_shipment_date")]
+        if any(item is not None and 0 <= item <= 10 for item in shipment_days):
+            reasons.append("shipment_follow_up")
+    follow_up_days = [_days_to(row.get("next_follow_up_date")) for row in rows if row.get("next_follow_up_date")]
+    if any(item is not None and item <= 10 for item in follow_up_days):
+        reasons.append("manual_follow_up")
+    return reasons
 
 
 def _group_repayment_timing(rows: List[Dict[str, Any]]) -> str:
@@ -1652,6 +1672,9 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     repay_dates = sorted([row.get("tail_payment_date") for row in rows if row.get("tail_payment_date")])
     shipment_confirmed_dates = sorted([row.get("shipment_confirmed_date") for row in rows if row.get("shipment_confirmed_date")])
     shipment_confirmed_at = sorted([row.get("shipment_confirmed_at") for row in rows if row.get("shipment_confirmed_at")])
+    follow_up_dates = sorted([row.get("next_follow_up_date") for row in rows if row.get("next_follow_up_date")])
+    manager_note = next((_normalize_text(row.get("manager_note")) for row in rows if _normalize_text(row.get("manager_note"))), "")
+    weekly_focus_reasons = _group_weekly_focus_reasons(rows, stage, risk)
     warnings = []
     for row in rows:
         warnings.extend(_json_loads(row.get("import_warnings_json"), []))
@@ -1686,6 +1709,10 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "stage": stage,
         "risk": risk,
         "indicator_risks": indicator_risks,
+        "manager_note": manager_note,
+        "next_follow_up_date": follow_up_dates[0] if follow_up_dates else "",
+        "is_weekly_focus": bool(weekly_focus_reasons),
+        "weekly_focus_reasons": weekly_focus_reasons,
         "next_action": _group_next_action(rows, stage, risk),
         "total_finance": finance_total,
         "financing_count": len(rows),
@@ -1732,7 +1759,7 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
         "active_finance": sum(item["total_finance"] for item in open_contracts),
         "due_7d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 7]),
         "due_30d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 30]),
-        "focus_risk": len([item for item in open_contracts if item["risk"] == "高"]),
+        "focus_risk": len([item for item in open_contracts if item["is_weekly_focus"]]),
         "financed_unshipped": len([item for item in open_contracts if item["stage"] == "已放款待装船"]),
         "documented_uncollected": len([item for item in open_contracts if item["stage"] == "已交单待回款"]),
         "collected_unrepaid": len([item for item in open_contracts if item["stage"] == "已还款待结案"]),
