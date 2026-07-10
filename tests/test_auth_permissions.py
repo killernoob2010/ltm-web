@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db
 from app.permissions import can, get_user_permissions
+from app.order_finance import ContractReminderRequest, order_finance_contract_reminder
 from app.main import (
     get_user_permissions as get_managed_user_permissions,
     list_users,
@@ -67,6 +68,22 @@ def test_guest_user_has_only_allowed_view_permissions(tmp_path, monkeypatch):
     permissions = get_user_permissions(guest)
     assert "alert.realtime_summary:view" in permissions
     assert "data_visualization.display:view" in permissions
+
+
+def test_order_finance_reminder_requires_edit_permission(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    guest = db.ensure_guest_user()
+
+    try:
+        order_finance_contract_reminder(
+            "H-2026-3",
+            ContractReminderRequest(manager_note="无权修改", next_follow_up_date="2026-07-20"),
+            user=guest,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("order finance reminder should require edit permission")
 
 
 def test_guest_is_system_identity_hidden_from_user_management(tmp_path, monkeypatch):

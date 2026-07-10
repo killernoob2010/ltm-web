@@ -130,6 +130,11 @@ class ShipmentConfirmationRequest(BaseModel):
     shipment_confirmed_date: Optional[str] = None
 
 
+class ContractReminderRequest(BaseModel):
+    manager_note: Optional[str] = None
+    next_follow_up_date: Optional[str] = None
+
+
 class ManualOrderFinanceRequest(BaseModel):
     subsidiary: str
     product_name: Optional[str] = None
@@ -1431,6 +1436,32 @@ def set_shipment_confirmation(
     return {"item_no": normalized_item, "confirmed": confirmed, "updated": len(matching)}
 
 
+def set_contract_reminder(
+    item_no: str,
+    manager_note: Optional[str] = None,
+    next_follow_up_date: Optional[str] = None,
+    updated_by: str = "",
+) -> Dict[str, Any]:
+    normalized_item = _normalize_text(item_no)
+    matching = [row for row in list_order_finance_records() if _item_no(row) == normalized_item]
+    if not matching:
+        raise KeyError(normalized_item)
+    normalized_note = _normalize_text(manager_note)
+    normalized_date = _normalize_date(next_follow_up_date)
+    if normalized_date and not _parse_date(normalized_date):
+        raise ValueError("跟进日期格式不正确")
+    stored_date = normalized_date or None
+    changes = {"manager_note": normalized_note, "next_follow_up_date": stored_date}
+    for row in matching:
+        update_management_fields(row["id"], changes, updated_by=updated_by)
+    return {
+        "item_no": normalized_item,
+        "manager_note": normalized_note,
+        "next_follow_up_date": normalized_date,
+        "updated": len(matching),
+    }
+
+
 def summarize_order_finance(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     active = [row for row in records if _normalize_text(row.get("business_status")) not in {"结案", "已完成", "已结算"}]
     due_soon = 0
@@ -1968,6 +1999,26 @@ def order_finance_shipment_confirmation(
             item_no,
             confirmed=request.confirmed,
             shipment_confirmed_date=request.shipment_confirmed_date,
+            updated_by=user["name"],
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项次不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/order-finance/contracts/{item_no}/reminder")
+def order_finance_contract_reminder(
+    item_no: str,
+    request: ContractReminderRequest,
+    user: dict = Depends(order_finance_current_user),
+):
+    order_finance_require_edit(user)
+    try:
+        return set_contract_reminder(
+            item_no,
+            manager_note=request.manager_note,
+            next_follow_up_date=request.next_follow_up_date,
             updated_by=user["name"],
         )
     except KeyError as exc:

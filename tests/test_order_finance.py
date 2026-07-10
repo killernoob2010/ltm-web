@@ -256,6 +256,46 @@ def test_manual_shipment_confirmation_updates_group_and_survives_reimport(tmp_pa
     assert {row["shipment_confirmed_date"] for row in undone} == {None}
 
 
+def test_contract_reminder_updates_group_survives_reimport_and_clears(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
+
+    result = order_finance.set_contract_reminder(
+        "H-2026-3",
+        manager_note="7月20日确认工厂进度",
+        next_follow_up_date="2026-07-20",
+        updated_by="pytest",
+    )
+    saved = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
+
+    assert result == {
+        "item_no": "H-2026-3",
+        "manager_note": "7月20日确认工厂进度",
+        "next_follow_up_date": "2026-07-20",
+        "updated": 2,
+    }
+    assert {row["manager_note"] for row in saved} == {"7月20日确认工厂进度"}
+    assert {row["next_follow_up_date"] for row in saved} == {"2026-07-20"}
+
+    import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
+    reimported = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
+    assert {row["manager_note"] for row in reimported} == {"7月20日确认工厂进度"}
+    assert {row["next_follow_up_date"] for row in reimported} == {"2026-07-20"}
+
+    cleared = order_finance.set_contract_reminder("H-2026-3", manager_note="", next_follow_up_date=None, updated_by="pytest")
+    rows_after_clear = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
+    assert cleared["updated"] == 2
+    assert {row["manager_note"] for row in rows_after_clear} == {""}
+    assert {row["next_follow_up_date"] for row in rows_after_clear} == {None}
+
+    try:
+        order_finance.set_contract_reminder("H-2026-3", manager_note="日期错误", next_follow_up_date="2026-99-99", updated_by="pytest")
+    except ValueError as exc:
+        assert str(exc) == "跟进日期格式不正确"
+    else:
+        raise AssertionError("invalid follow-up date should be rejected")
+
+
 def test_indicator_risks_color_only_the_fields_that_cause_risk():
     today = date.today()
     records = [
