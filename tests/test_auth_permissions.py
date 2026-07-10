@@ -204,6 +204,7 @@ def test_legacy_sqlite_auth_migration_is_idempotent_and_allows_duplicate_display
             status TEXT NOT NULL DEFAULT '活跃'
         );
         INSERT INTO users (name, department, password_hash, role) VALUES ('张三', '贸易处', 'hash', '用户');
+        INSERT INTO users (name, department, password_hash, role) VALUES ('历史管理员', '期货组', 'hash', '管理员');
         INSERT INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (1, 'info_summary', 1, 1);
         """
     )
@@ -219,6 +220,7 @@ def test_legacy_sqlite_auth_migration_is_idempotent_and_allows_duplicate_display
 
     assert migrated["username"] == "张三"
     assert permission["can_sensitive"] == 1
+    assert conn.execute("SELECT department FROM users WHERE id = 2").fetchone()["department"] == "管理部门"
     assert conn.execute("SELECT COUNT(*) AS c FROM users WHERE name = '张三'").fetchone()["c"] == 2
     conn.close()
 

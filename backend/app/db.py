@@ -1145,6 +1145,7 @@ def migrate_auth_schema(conn) -> None:
         cur.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_change_recommended INTEGER NOT NULL DEFAULT 0"
         )
+        cur.execute("UPDATE users SET department = '管理部门' WHERE role IN ('管理员', 'admin') AND department != '管理部门'")
         cur.execute("ALTER TABLE module_permissions ADD COLUMN IF NOT EXISTS can_sensitive INTEGER NOT NULL DEFAULT 0")
         if "can_sensitive" not in permission_columns:
             cur.execute("UPDATE module_permissions SET can_sensitive = can_edit")
@@ -1207,6 +1208,7 @@ def migrate_auth_schema(conn) -> None:
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username)")
+    conn.execute("UPDATE users SET department = '管理部门' WHERE role IN ('管理员', 'admin') AND department != '管理部门'")
     permission_columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(module_permissions)").fetchall()
