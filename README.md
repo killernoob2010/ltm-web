@@ -14,6 +14,7 @@
 - 风险预警历史查看。
 - 事中风险监控的策略组和持仓接口骨架。
 - 订单融资管理：从本地订单融资 Excel 台账导入合同、融资、信用证、交单、收汇、还款和额度数据，提供 `订单融资进度` 与 `融资资金监控` 两个页面。
+- 用户与权限管理：独立登录账号、用户/领导/管理员类型、部门默认权限、个人例外、查看/日常/敏感操作分级、自助改密、管理员重置和账号停用。
 
 ## 本地运行
 
@@ -42,6 +43,28 @@ http://127.0.0.1:8000
 http://127.0.0.1:8001
 ```
 
+## 操作日志保留与归档
+
+- 在线日志默认每次加载 100 条，使用游标分页；页面只在管理员打开操作日志时请求数据。
+- 在线保留规则为最近 12 个月，并以 20 万条作为软上限；只归档已经结束的完整自然月。
+- 归档文件为 gzip NDJSON，存放在 Supabase 私有 bucket `operation-log-archives`。只有管理员主动下载历史归档时才读取文件。
+- 正式归档需要在服务端配置 `SUPABASE_URL` 和 `SUPABASE_SERVICE_ROLE_KEY`；service-role 不得进入前端、仓库、日志或接口响应。
+
+归档命令默认只预览，不写数据库或 Storage：
+
+```bash
+.venv/bin/python scripts/archive_operation_logs.py --environment staging
+```
+
+确认 dry-run 后才使用 `--apply`。恢复命令同样默认只预览，必须显式传入归档 ID 和 `--apply`：
+
+```bash
+.venv/bin/python scripts/restore_operation_logs.py 1
+.venv/bin/python scripts/restore_operation_logs.py 1 --apply
+```
+
+归档过程先上传并校验文件，再在数据库事务中写入元数据和删除对应在线日志；校验失败、删除行数不一致或恢复 ID 冲突都会停止并回滚数据库写入。当前没有自动创建 Render Cron，是否增加付费定时服务需单独确认。
+
 订单融资 Excel 台账当前默认读取本机新模板文件，包含 2025 和 2026 全部项次：
 
 ```text
@@ -63,5 +86,4 @@ http://127.0.0.1:8001
 - 接入原桌面版 `risk_alert.py` 中的真实指标计算和预警扫描逻辑。
 - 接入行情数据源。
 - 将 SQLite 替换或迁移到 PostgreSQL/Supabase Postgres。
-- 增加用户管理页面和权限管理页面。
 - 逐步迁移台账模块。

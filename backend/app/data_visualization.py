@@ -106,6 +106,10 @@ def dv_require_edit(module_code: str, user: dict):
         raise HTTPException(status_code=403, detail="没有编辑权限")
 
 
+def dv_require_sensitive(module_code: str, user: dict):
+    require_permission(user, module_code, "import")
+
+
 def dv_require_view(resource: str, user: dict):
     require_permission(user, resource, "view")
 
@@ -2374,7 +2378,7 @@ async def integration_local_preview(user=Depends(dv_current_user)):
 
 @router.post("/data-visualization/integration/local-commit")
 async def integration_local_commit(user=Depends(dv_current_user)):
-    dv_require_edit("data_visualization_integration", user)
+    dv_require_sensitive("data_visualization_integration", user)
     file_paths = _local_mysteel_files()
     result = integrate_mysteel_files(file_paths)
     batch_id = _save_integrated_points(result["points"], [path.name for path in file_paths], user["name"])
@@ -2404,7 +2408,7 @@ async def integration_upload_preview(payload: IntegrationFilesRequest, user=Depe
 
 @router.post("/data-visualization/integration/commit")
 async def integration_upload_commit(payload: IntegrationFilesRequest, user=Depends(dv_current_user)):
-    dv_require_edit("data_visualization_integration", user)
+    dv_require_sensitive("data_visualization_integration", user)
     tmp_paths = _write_uploads_to_tmp(payload.files)
     try:
         result = integrate_mysteel_files(tmp_paths)
@@ -2614,7 +2618,7 @@ async def import_integrated_preview(
     payload: ImportRequest,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit('data_visualization_data', user)
+    dv_require_sensitive('data_visualization_data', user)
     if not payload.file_data:
         raise HTTPException(status_code=400, detail="请先选择整合 Excel 文件")
 
@@ -2646,7 +2650,7 @@ async def import_integrated_preview_file(
     file_name: str,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit('data_visualization_data', user)
+    dv_require_sensitive('data_visualization_data', user)
     path = await _save_integrated_preview_upload(request, file_name)
     return _create_integrated_preview_job(background_tasks, str(path), file_name)
 
@@ -2656,7 +2660,7 @@ async def import_integrated_preview_job_status(
     job_id: str,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit('data_visualization_data', user)
+    dv_require_sensitive('data_visualization_data', user)
     job = _INTEGRATED_PREVIEW_JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="预检任务不存在或已失效")
@@ -2671,7 +2675,7 @@ async def import_integrated_commit(
     background_tasks: BackgroundTasks,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit('data_visualization_data', user)
+    dv_require_sensitive('data_visualization_data', user)
 
     if payload.preview_id:
         cached = _load_integrated_preview_cache(payload.preview_id)
@@ -2725,7 +2729,7 @@ async def import_integrated_job_status(
     job_id: str,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit('data_visualization_data', user)
+    dv_require_sensitive('data_visualization_data', user)
     job = _INTEGRATED_IMPORT_JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="导入任务不存在或已失效")
@@ -2739,7 +2743,7 @@ async def import_preview(
     payload: ImportRequest,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit("data_visualization_data", user)
+    dv_require_sensitive("data_visualization_data", user)
 
     import base64
     file_bytes = base64.b64decode(payload.file_data)
@@ -2829,7 +2833,7 @@ async def import_commit(
     payload: ImportRequest,
     user=Depends(dv_current_user),
 ):
-    dv_require_edit("data_visualization_data", user)
+    dv_require_sensitive("data_visualization_data", user)
 
     import base64
     file_bytes = base64.b64decode(payload.file_data)

@@ -32,6 +32,9 @@ const state = {
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
+  operationLogs: [],
+  operationLogCursor: null,
+  operationLogsHasMore: false,
 };
 
 const loginView = document.querySelector("#loginView");
@@ -62,6 +65,10 @@ function canModuleEdit(code) {
   return Boolean(modulePermission(code)?.can_edit);
 }
 
+function canModuleSensitive(code) {
+  return Boolean(modulePermission(code)?.can_sensitive || state.user?.role === "管理员");
+}
+
 function setHidden(selector, hidden) {
   const el = document.querySelector(selector);
   if (el) el.classList.toggle("hidden", hidden);
@@ -70,14 +77,27 @@ function setHidden(selector, hidden) {
 function applyUiPermissions() {
   const guest = isGuest();
   setHidden("#notificationBtn", guest);
-  ["#calculateAllInfoBtn", "#refreshInfoCacheBtn", "#importCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
+  setHidden("#changePasswordBtn", guest);
+  ["#calculateAllInfoBtn", "#refreshInfoCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
+  setHidden("#importCacheBtn", guest || !canModuleSensitive("info_summary"));
+  ["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleEdit("risk_alert")));
+  setHidden("#batchDeleteAlertsBtn", guest || !canModuleSensitive("risk_alert"));
+  setHidden("#selectAllAlerts", guest || (!canModuleEdit("risk_alert") && !canModuleSensitive("risk_alert")));
+  setHidden("#markAllNotificationsBtn", guest || !canModuleEdit("risk_alert"));
+  ["#addGroupBtn", "#addPositionBtn", "#refreshPricesBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleEdit("mid_event_monitor")));
   [
-    "#addGroupBtn", "#addPositionBtn",
-    "#addShJunnengBtn", "#editShJunnengBtn", "#deleteShJunnengBtn", "#closeShJunnengBtn",
-    "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn", "#exportShJunnengBtn",
-    "#orderFinanceImportBtn",
-    "#dvUploadBtn", "#dvCommitImportBtn", "#dvPreviewImportBtn", "#dvIntegrationExportBtn",
-  ].forEach((selector) => setHidden(selector, guest));
+    "#addShJunnengBtn", "#editShJunnengBtn", "#closeShJunnengBtn",
+    "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn",
+  ].forEach((selector) => setHidden(selector, guest || !canModuleEdit("sh_junneng")));
+  setHidden("#deleteShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
+  setHidden("#exportShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
+  setHidden("#orderFinanceImportBtn", guest || !canModuleSensitive("order_finance_progress"));
+  ["#dvIntegrationImportLabel", "#dvExportBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleSensitive("data_visualization_integration")));
+  ["#dvImportBtn", "#dvCommitImportBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -403,13 +423,15 @@ async function activateModule(code, subName) {
   if (code === "mid_event_monitor") {
     showOnly(midEventPage);
     await loadMidEvent();
-    startMidEventAutoRefresh();
+    if (canModuleEdit("mid_event_monitor")) startMidEventAutoRefresh();
     return;
   }
   if (code === "sh_junneng") {
     showOnly(shJunnengPage);
     await loadShJunneng();
-    refreshShJunnengPrices(false).catch((error) => updateShJunnengStatus(error.message));
+    if (canModuleEdit("sh_junneng")) {
+      refreshShJunnengPrices(false).catch((error) => updateShJunnengStatus(error.message));
+    }
     return;
   }
   if (code === "risk_alert") {
@@ -472,6 +494,7 @@ async function bootstrap() {
     return;
   }
   currentUser.textContent = isGuest() ? "访客" : `${state.user.name}｜${state.user.role}`;
+  passwordChangeNotice.classList.toggle("hidden", isGuest() || !state.user.password_change_recommended);
   showApp();
   renderMenu();
   applyUiPermissions();
@@ -487,7 +510,7 @@ async function loadInfoSummary() {
   updateInfoCacheStatus("读取中");
   loadInfoCacheStatus().catch((error) => updateInfoCacheStatus(error.message));
   updateInfoStatus("展示已加载，正在自动计算");
-  calculateAllInfo(false).catch((error) => updateInfoStatus(error.message));
+  calculateAllInfo(false, "automatic").catch((error) => updateInfoStatus(error.message));
 }
 
 async function loadInfoCacheStatus() {
@@ -670,7 +693,7 @@ async function loadInfoHistory() {
   `).join("");
 }
 
-async function calculateAllInfo(mock = false) {
+async function calculateAllInfo(mock = false, auditSource = "automatic") {
   if (state.infoSummaryRefreshInFlight) {
     updateInfoStatus("计算进行中，请稍候");
     return;
@@ -688,7 +711,7 @@ async function calculateAllInfo(mock = false) {
   try {
     const result = await api(`/api/info-summary/calculate-all${mock ? "?mock=true" : ""}`, {
       method: "POST",
-      body: JSON.stringify({ items: cards.map(buildInfoPayload) }),
+      body: JSON.stringify({ items: cards.map(buildInfoPayload), audit_source: auditSource }),
     });
     const resultsByType = new Map((result.cards || []).map((item) => [item.info_type, item]));
     for (const card of cards) {
@@ -776,6 +799,8 @@ async function loadMidEvent(preferredGroupId = null) {
 }
 
 function renderGroups() {
+  const canEditMidEvent = canModuleEdit("mid_event_monitor");
+  const canSensitiveMidEvent = canModuleSensitive("mid_event_monitor");
   groupCount.textContent = `${state.groups.length} 个`;
   groupsTable.innerHTML = state.groups.map((group) => `
     <tr class="${group.id === state.selectedGroupId ? "selected-row" : ""}">
@@ -785,8 +810,8 @@ function renderGroups() {
       <td>
         <div class="row-actions">
           <button class="link" data-action="select" data-id="${group.id}">查看</button>
-          <button class="link" data-action="edit" data-id="${group.id}">编辑</button>
-          <button class="link" data-action="delete" data-id="${group.id}">删除</button>
+          ${canEditMidEvent ? `<button class="link" data-action="edit" data-id="${group.id}">编辑</button>` : ""}
+          ${canSensitiveMidEvent ? `<button class="link" data-action="delete" data-id="${group.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
@@ -883,6 +908,8 @@ async function refreshPrices(mock = false) {
 }
 
 async function loadPositions() {
+  const canEditMidEvent = canModuleEdit("mid_event_monitor");
+  const canSensitiveMidEvent = canModuleSensitive("mid_event_monitor");
   if (!state.selectedGroupId) {
     positionsTitle.textContent = "持仓";
     positionSummary.textContent = "请选择策略组";
@@ -910,8 +937,8 @@ async function loadPositions() {
       <td class="${pnlClass(item.floating_pnl)}">${money(item.floating_pnl)}</td>
       <td>
         <div class="row-actions">
-          <button class="link" data-action="edit" data-id="${item.id}">编辑</button>
-          <button class="link" data-action="delete" data-id="${item.id}">删除</button>
+          ${canEditMidEvent ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
+          ${canSensitiveMidEvent ? `<button class="link" data-action="delete" data-id="${item.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
@@ -1285,18 +1312,23 @@ async function loadNotifications(showNewToast = true) {
   try {
     const payload = await api("/api/risk-alert/notifications");
     const items = payload.items || [];
+    const canAcknowledgeRiskAlerts = canModuleEdit("risk_alert");
     notificationBadge.textContent = String(payload.count || 0);
     notificationBadge.classList.toggle("hidden", !payload.count);
     notificationList.innerHTML = items.length
-      ? items.map((item) => `
-        <button class="notification-item" data-id="${item.id}">
+      ? items.map((item) => {
+        const notificationTag = canAcknowledgeRiskAlerts ? "button" : "div";
+        const notificationId = canAcknowledgeRiskAlerts ? ` data-id="${item.id}"` : "";
+        return `
+        <${notificationTag} class="notification-item"${notificationId}>
           <strong>${item.info_type || "-"}</strong>
           <span>${alertMessage(item)}</span>
           <small>${item.alert_time || ""}</small>
-        </button>
-      `).join("")
+        </${notificationTag}>
+      `;
+      }).join("")
       : `<p class="empty-notification">暂无未读预警</p>`;
-    notificationList.querySelectorAll(".notification-item").forEach((button) => {
+    notificationList.querySelectorAll("button.notification-item").forEach((button) => {
       button.addEventListener("click", async () => {
         await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
         await loadNotifications(false);
@@ -1334,12 +1366,15 @@ function stopAlertNotifications() {
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.token) {
-    if (state.activeModule === "info_summary") calculateAllInfo(false).catch(() => {});
+    if (state.activeModule === "info_summary") calculateAllInfo(false, "automatic").catch(() => {});
     if (!isGuest()) loadNotifications(false).catch(() => {});
   }
 });
 
 async function loadRiskAlert() {
+  const canEditRiskAlert = canModuleEdit("risk_alert");
+  const canSensitiveRiskAlert = canModuleSensitive("risk_alert");
+  const canSelectRiskAlert = canEditRiskAlert || canSensitiveRiskAlert;
   const [settingsPayload, historyPayload] = await Promise.all([
     api("/api/risk-alert/settings"),
     api("/api/risk-alert/history"),
@@ -1354,7 +1389,7 @@ async function loadRiskAlert() {
   historyCount.textContent = `${history.length}/${historyTotal} 条`;
   alertsTable.innerHTML = settings.map((item) => `
     <tr>
-      <td><input class="alert-select" type="checkbox" value="${item.id}" /></td>
+      <td>${canSelectRiskAlert ? `<input class="alert-select" type="checkbox" value="${item.id}" />` : ""}</td>
       <td>${item.info_type}</td>
       <td>${item.contract_year}-${item.contract_month}</td>
       <td>${item.alert_value}</td>
@@ -1363,10 +1398,10 @@ async function loadRiskAlert() {
       <td>${item.reminder_users || "全部"}</td>
       <td>
         <div class="row-actions">
-          <button class="link" data-action="edit" data-id="${item.id}">编辑</button>
-          <button class="link" data-action="toggle" data-id="${item.id}">${item.status === "enabled" ? "停用" : "启用"}</button>
-          <button class="link" data-action="simulate" data-id="${item.id}">模拟</button>
-          <button class="link" data-action="delete" data-id="${item.id}">删除</button>
+          ${canEditRiskAlert ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
+          ${canEditRiskAlert ? `<button class="link" data-action="toggle" data-id="${item.id}">${item.status === "enabled" ? "停用" : "启用"}</button>` : ""}
+          ${canEditRiskAlert ? `<button class="link" data-action="simulate" data-id="${item.id}">模拟</button>` : ""}
+          ${canSensitiveRiskAlert ? `<button class="link" data-action="delete" data-id="${item.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
@@ -1382,7 +1417,7 @@ async function loadRiskAlert() {
       <td>${money(item.alert_value)}</td>
       <td>${alertDirectionText(item.direction)}</td>
       <td>${item.status === "unread" ? "未读" : "已读"}</td>
-      <td>${item.status === "unread" ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
+      <td>${item.status === "unread" && canEditRiskAlert ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
     </tr>
   `).join("");
   historyTable.querySelectorAll("button").forEach((button) => {
@@ -1508,8 +1543,8 @@ document.querySelector("#logoutBtn").addEventListener("click", async () => {
   showLogin();
 });
 
-document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false));
-document.querySelector("#refreshIndicatorsBtn").addEventListener("click", () => calculateAllInfo(false));
+document.querySelector("#calculateAllInfoBtn").addEventListener("click", () => calculateAllInfo(false, "manual"));
+document.querySelector("#refreshIndicatorsBtn").addEventListener("click", () => calculateAllInfo(false, "manual"));
 refreshInfoCacheBtn.addEventListener("click", refreshInfoCache);
 importCacheBtn.addEventListener("click", async () => {
   importCacheBtn.disabled = true;
@@ -1751,10 +1786,12 @@ bootstrap();
 // ── 用户管理 ────────────────────────────────────────────
 
 let selectedUserId = null;
+let managedUsers = [];
 
 async function loadUserManagement() {
   try {
     const data = await api("/api/users");
+    managedUsers = data.users;
     renderUsersTable(data.users);
     const total = data.pagination?.total ?? data.users.length;
     userMgmtStatus.textContent = `已加载 ${data.users.length}/${total} 个用户`;
@@ -1768,9 +1805,12 @@ function renderUsersTable(users) {
   usersTable.innerHTML = users.map((u) => `<tr data-user-id="${u.id}">
     <td>${u.id}</td>
     <td>${u.name}</td>
+    <td>${u.username || ""}</td>
     <td>${u.department}</td>
     <td>${u.role}</td>
     <td>${u.status || "启用"}</td>
+    <td>${u.password_change_recommended ? "建议改密" : "已设定"}</td>
+    <td>${u.permission_summary?.enabled || 0} 个模块｜敏感 ${u.permission_summary?.sensitive || 0}</td>
     <td>${u.created_at || ""}</td>
   </tr>`).join("");
 
@@ -1787,18 +1827,54 @@ function renderUsersTable(users) {
 function openUserDialog(editMode = false) {
   userId.value = "";
   userName.value = "";
-  userDepartment.value = "";
-  userPassword.value = "";
+  userUsername.value = "";
+  userDepartment.value = "贸易处";
   userRole.value = "用户";
   userDialogTitle.textContent = editMode ? "编辑用户" : "添加用户";
-  if (!editMode) {
-    userPassword.required = true;
-    userPassword.placeholder = "请输入密码（至少6位）";
-  } else {
-    userPassword.required = false;
-    userPassword.placeholder = "留空则不修改密码";
-  }
+  userPreview.textContent = "保存前将预览账号、临时密码和最终权限。";
+  userPermissionEditor.innerHTML = "";
   userDialog.showModal();
+}
+
+function renderUserPermissionEditor(levels) {
+  const entries = Array.isArray(levels)
+    ? levels.map((item) => [item.module_code, item.level])
+    : Object.entries(levels).filter(([code]) => moduleLabel(code));
+  userPermissionEditor.innerHTML = `<table><thead><tr><th>模块</th><th>创建后权限</th></tr></thead><tbody>${entries.map(([code, level]) => {
+    const label = moduleLabel(code);
+    return `<tr data-module="${code}"><td>${label ? `${label.group} / ${label.name}` : code}</td><td>
+      <select class="user-permission-level">
+        <option value="none" ${level === "none" ? "selected" : ""}>无权限</option>
+        <option value="view" ${level === "view" ? "selected" : ""}>查看</option>
+        <option value="operate" ${level === "operate" ? "selected" : ""}>日常操作</option>
+        <option value="sensitive" ${level === "sensitive" ? "selected" : ""}>敏感操作</option>
+      </select>
+    </td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+function collectUserPermissionLevels() {
+  return Array.from(userPermissionEditor.querySelectorAll("tr[data-module]")).map((row) => ({
+    module_code: row.dataset.module,
+    level: row.querySelector(".user-permission-level").value,
+  }));
+}
+
+async function previewUserDraft() {
+  const payload = {
+    user_id: userId.value ? Number(userId.value) : null,
+    name: userName.value.trim(),
+    username: userUsername.value.trim(),
+    department: userDepartment.value,
+    role: userRole.value,
+    permissions: [],
+  };
+  const preview = await api("/api/users/preview", { method: "POST", body: JSON.stringify(payload) });
+  if (!preview.username_available) throw new Error("登录账号已存在，请修改后重试");
+  userUsername.value = preview.username;
+  renderUserPermissionEditor(preview.final_permissions);
+  userPreview.textContent = `账号 ${preview.username}｜临时密码 ${preview.temporary_password}｜请在下方确认或调整权限`;
+  return preview;
 }
 
 async function openEditUserDialog() {
@@ -1807,19 +1883,18 @@ async function openEditUserDialog() {
     return;
   }
   try {
-    const data = await api("/api/users");
-    const target = data.users.find((u) => u.id === selectedUserId);
+    const target = managedUsers.find((u) => u.id === selectedUserId);
     if (!target) {
       alert("用户不存在");
       return;
     }
     userId.value = target.id;
     userName.value = target.name;
+    userUsername.value = target.username || "";
     userDepartment.value = target.department;
-    userPassword.value = "";
-    userPassword.required = false;
-    userPassword.placeholder = "留空则不修改密码";
     userRole.value = target.role;
+    const currentPermissions = await api(`/api/users/${selectedUserId}/permissions`);
+    renderUserPermissionEditor(currentPermissions.permissions);
     userDialogTitle.textContent = "编辑用户";
     userDialog.showModal();
   } catch (error) {
@@ -1829,25 +1904,51 @@ async function openEditUserDialog() {
 
 async function saveUser() {
   const id = userId.value;
+  const original = id ? managedUsers.find((item) => item.id === Number(id)) : null;
+  let permissions = collectUserPermissionLevels();
+  if (!permissions.length && original && original.department === userDepartment.value && original.role === userRole.value) {
+    const current = await api(`/api/users/${id}/permissions`);
+    permissions = current.permissions;
+  }
   const payload = {
     name: userName.value.trim(),
-    department: userDepartment.value.trim(),
-    password: userPassword.value,
+    username: userUsername.value.trim(),
+    department: userDepartment.value,
     role: userRole.value,
+    permissions,
   };
-  if (!payload.name || !payload.department) {
+  if (!payload.name) {
     alert("请填写所有必填字段");
     return;
   }
-  if (!id && payload.password.length < 6) {
-    alert("密码长度至少为6位");
-    return;
-  }
   try {
+    if (!permissions.length) {
+      await previewUserDraft();
+      alert("已生成默认权限，请在弹窗中确认或调整后再保存。");
+      return;
+    }
+    const preview = await api("/api/users/preview", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, user_id: id ? Number(id) : null }),
+    });
+    if (!preview.username_available) {
+      throw new Error("登录账号已存在，请修改后重试");
+    }
+    userUsername.value = preview.username;
+    const enabled = Object.entries(preview.final_permissions)
+      .filter(([, level]) => level !== "none").length;
+    userPreview.textContent = `账号 ${preview.username}｜临时密码 ${preview.temporary_password}｜已授权 ${enabled} 个模块`;
+    const confirmed = await confirmAction(
+      id ? "确认修改用户" : "确认创建用户",
+      `${userPreview.textContent}\n权限变更 ${preview.changes.length} 项，确认后立即生效。`,
+    );
+    if (!confirmed) return;
+    payload.username = preview.username;
     if (id) {
       await api(`/api/users/${id}`, { method: "PUT", body: JSON.stringify(payload) });
     } else {
-      await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      const created = await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      alert(`用户已创建\n登录账号：${created.username}\n临时密码：${created.temporary_password}`);
     }
     userDialog.close();
     await loadUserManagement();
@@ -1880,15 +1981,21 @@ async function openPermissionDialog() {
   try {
     const data = await api(`/api/users/${selectedUserId}/permissions`);
     const perms = data.permissions;
-    permissionTable.innerHTML = Object.entries(perms).map(([code, p]) => {
-      const label = moduleLabel(code);
-      return `<tr data-module="${code}">
-        <td>${label ? label.name : code}</td>
-        <td><input type="checkbox" class="perm-view" ${p.can_view ? "checked" : ""} /></td>
-        <td><input type="checkbox" class="perm-edit" ${p.can_edit ? "checked" : ""} /></td>
+    const target = managedUsers.find((item) => item.id === selectedUserId);
+    permissionTable.innerHTML = perms.map((permission) => {
+      const label = moduleLabel(permission.module_code);
+      return `<tr data-module="${permission.module_code}">
+        <td>${label ? `${label.group} / ${label.name}` : permission.module_code}</td>
+        <td><select class="permission-level">
+          <option value="none" ${permission.level === "none" ? "selected" : ""}>无权限</option>
+          <option value="view" ${permission.level === "view" ? "selected" : ""}>查看</option>
+          <option value="operate" ${permission.level === "operate" ? "selected" : ""}>日常操作</option>
+          <option value="sensitive" ${permission.level === "sensitive" ? "selected" : ""}>敏感操作</option>
+        </select></td>
       </tr>`;
     }).join("");
-    permissionDialogTitle.textContent = "权限设置";
+    permissionDialogTitle.textContent = `权限设置｜${target?.name || ""}`;
+    permissionSummary.textContent = `部门默认：${target?.department || "--"}｜用户类型：${target?.role || "--"}｜保存前将显示变更摘要`;
     permissionDialog.showModal();
   } catch (error) {
     alert(`获取权限失败: ${error.message}`);
@@ -1900,11 +2007,25 @@ async function savePermissions() {
   const permissions = [];
   rows.forEach((row) => {
     const code = row.dataset.module;
-    const view = row.querySelector(".perm-view").checked ? 1 : 0;
-    const edit = row.querySelector(".perm-edit").checked ? 1 : 0;
-    permissions.push({ module_code: code, can_view: view, can_edit: edit });
+    const level = row.querySelector(".permission-level").value;
+    permissions.push({ module_code: code, level });
   });
   try {
+    const target = managedUsers.find((item) => item.id === selectedUserId);
+    const preview = await api("/api/users/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: selectedUserId,
+        name: target.name,
+        username: target.username,
+        department: target.department,
+        role: target.role,
+        permissions,
+      }),
+    });
+    permissionSummary.textContent = `将变更 ${preview.changes.length} 项权限`;
+    const confirmed = await confirmAction("确认权限变更", `${target.name} 将变更 ${preview.changes.length} 项权限，确认后立即生效。`);
+    if (!confirmed) return;
     await api(`/api/users/${selectedUserId}/permissions`, {
       method: "PUT",
       body: JSON.stringify({ permissions }),
@@ -1916,41 +2037,124 @@ async function savePermissions() {
   }
 }
 
+async function resetSelectedUserPassword() {
+  const target = managedUsers.find((item) => item.id === selectedUserId);
+  if (!target) return alert("请先选择用户");
+  const confirmed = await confirmAction("重置密码", `确认重置 ${target.name} 的密码并注销其已有会话？`);
+  if (!confirmed) return;
+  try {
+    const result = await api(`/api/users/${selectedUserId}/reset-password`, { method: "POST" });
+    alert(`密码已重置\n登录账号：${result.username}\n临时密码：${result.temporary_password}`);
+    await loadUserManagement();
+  } catch (error) {
+    alert(`重置失败: ${error.message}`);
+  }
+}
+
+async function toggleSelectedUserStatus() {
+  const target = managedUsers.find((item) => item.id === selectedUserId);
+  if (!target) return alert("请先选择用户");
+  const status = target.status === "停用" ? "启用" : "停用";
+  const confirmed = await confirmAction(`${status}用户`, `确认${status} ${target.name}？${status === "停用" ? "已有会话将立即注销。" : ""}`);
+  if (!confirmed) return;
+  try {
+    await api(`/api/users/${selectedUserId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+    await loadUserManagement();
+  } catch (error) {
+    alert(`${status}失败: ${error.message}`);
+  }
+}
+
+function openChangePasswordDialog() {
+  currentPassword.value = "";
+  newPassword.value = "";
+  confirmNewPassword.value = "";
+  changePasswordError.textContent = "";
+  changePasswordDialog.showModal();
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  changePasswordError.textContent = "";
+  if (newPassword.value !== confirmNewPassword.value) {
+    changePasswordError.textContent = "两次输入的新密码不一致";
+    return;
+  }
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword.value, new_password: newPassword.value }),
+    });
+    state.user.password_change_recommended = false;
+    passwordChangeNotice.classList.add("hidden");
+    changePasswordDialog.close();
+    alert("密码已修改");
+  } catch (error) {
+    changePasswordError.textContent = error.message;
+  }
+}
+
 // 操作日志
 async function openLogsDialog() {
   operationLogsDialog.showModal();
-  await loadLogs();
+  await Promise.all([
+    loadLogs({ append: false }),
+    loadOperationLogArchives(),
+  ]);
 }
 
-async function loadLogs() {
+function renderOperationLogs() {
+  logsTable.innerHTML = state.operationLogs.map((l) => `<tr>
+    <td>${escapeHtml(l.id)}</td>
+    <td>${escapeHtml(l.user_name || "")}</td>
+    <td>${escapeHtml(l.operation_type || "")}</td>
+    <td>${escapeHtml(l.description || "")}</td>
+    <td>${escapeHtml(l.module_code || "")}</td>
+    <td>${escapeHtml(l.created_at || "")}</td>
+  </tr>`).join("");
+  logsPageInfo.textContent = `当前已加载 ${state.operationLogs.length} 条`;
+  logsLoadMoreBtn.classList.toggle("hidden", !state.operationLogsHasMore);
+  logsLoadMoreBtn.disabled = false;
+}
+
+async function loadLogs({ append = false } = {}) {
   try {
+    if (!append) {
+      state.operationLogs = [];
+      state.operationLogCursor = null;
+      state.operationLogsHasMore = false;
+    }
     const params = new URLSearchParams();
+    params.set("limit", "100");
     const opType = logsOpType.value;
     const userName = logsUserName.value.trim();
-    if (opType) params.append("operation_type", opType);
-    if (userName) params.append("user_name", userName);
+    const startDate = logsStartDate.value;
+    const endDate = logsEndDate.value;
+    if (opType) params.set("operation_type", opType);
+    if (userName) params.set("user_name", userName);
+    if (startDate) params.set("start_date", startDate);
+    if (endDate) params.set("end_date", endDate);
+    if (append && state.operationLogCursor) params.set("cursor", state.operationLogCursor);
+    logsLoadMoreBtn.disabled = true;
     const data = await api(`/api/operation-logs?${params.toString()}`);
-    logsTable.innerHTML = data.logs.map((l) => `<tr>
-      <td>${l.id}</td>
-      <td>${l.user_name || ""}</td>
-      <td>${l.operation_type || ""}</td>
-      <td>${l.description || ""}</td>
-      <td>${l.module_code || ""}</td>
-      <td>${l.created_at || ""}</td>
-    </tr>`).join("");
+    state.operationLogs = append ? state.operationLogs.concat(data.logs || []) : (data.logs || []);
+    state.operationLogCursor = data.next_cursor || null;
+    state.operationLogsHasMore = Boolean(data.has_more && data.next_cursor);
+    renderOperationLogs();
   } catch (error) {
-    logsTable.innerHTML = `<tr><td colspan="6" style="color:red">加载失败: ${error.message}</td></tr>`;
+    logsLoadMoreBtn.disabled = false;
+    if (!append) {
+      logsTable.innerHTML = `<tr><td colspan="6" style="color:red">加载失败: ${escapeHtml(error.message)}</td></tr>`;
+      logsPageInfo.textContent = "加载失败";
+    }
   }
 }
 
 function exportLogs() {
-  const rows = logsTable.querySelectorAll("tr");
   let csv = "\uFEFFID,用户,操作类型,描述,模块,时间\n";
-  rows.forEach((row) => {
-    const cells = row.querySelectorAll("td");
-    if (cells.length >= 6) {
-      csv += Array.from(cells).map((c) => `"${c.textContent.replace(/"/g, '""')}"`).join(",") + "\n";
-    }
+  state.operationLogs.forEach((row) => {
+    const cells = [row.id, row.user_name, row.operation_type, row.description, row.module_code, row.created_at];
+    csv += cells.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",") + "\n";
   });
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -1958,6 +2162,52 @@ function exportLogs() {
   a.href = url;
   a.download = `operation_logs_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadOperationLogArchives() {
+  try {
+    const data = await api("/api/operation-log-archives");
+    const archives = data.archives || [];
+    operationLogArchiveStatus.textContent = archives.length
+      ? `共 ${archives.length} 个月份归档，仅点击下载时读取文件`
+      : "暂无历史归档";
+    operationLogArchives.innerHTML = archives.map((item) => `
+      <div class="operation-log-archive-row">
+        <span>${escapeHtml(item.period_start.slice(0, 7))} · ${escapeHtml(item.row_count)} 条 · ${escapeHtml(item.compressed_bytes)} 字节</span>
+        <button type="button" class="secondary" data-archive-id="${escapeHtml(item.id)}" data-period="${escapeHtml(item.period_start.slice(0, 7))}">下载</button>
+      </div>
+    `).join("");
+    operationLogArchives.querySelectorAll("button[data-archive-id]").forEach((button) => {
+      button.addEventListener("click", () => downloadOperationLogArchive(button.dataset.archiveId, button.dataset.period));
+    });
+  } catch (error) {
+    operationLogArchiveStatus.textContent = `归档目录读取失败：${error.message}`;
+    operationLogArchives.innerHTML = "";
+  }
+}
+
+async function downloadOperationLogArchive(archiveId, period) {
+  const response = await fetch(`/api/operation-log-archives/${archiveId}/download`, {
+    headers: { Authorization: `Bearer ${state.token}` },
+  });
+  if (!response.ok) {
+    let message = "归档下载失败";
+    try {
+      const payload = await response.json();
+      message = payload.detail || message;
+    } catch {
+      // Keep the generic message when the response is not JSON.
+    }
+    window.alert(message);
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `operation-logs-${period}.ndjson.gz`;
+  link.click();
   URL.revokeObjectURL(url);
 }
 
@@ -2505,7 +2755,24 @@ addUserBtn.addEventListener("click", () => openUserDialog(false));
 editUserBtn.addEventListener("click", openEditUserDialog);
 deleteUserBtn.addEventListener("click", deleteSelectedUser);
 setPermissionBtn.addEventListener("click", openPermissionDialog);
+resetUserPasswordBtn.addEventListener("click", resetSelectedUserPassword);
+toggleUserStatusBtn.addEventListener("click", toggleSelectedUserStatus);
 viewLogsBtn.addEventListener("click", openLogsDialog);
+previewUserBtn.addEventListener("click", () => previewUserDraft().catch((error) => {
+  userPreview.textContent = `预览失败: ${error.message}`;
+}));
+userDepartment.addEventListener("change", () => {
+  userPermissionEditor.innerHTML = "";
+  userPreview.textContent = "部门已变更，请重新生成并确认权限。";
+});
+userRole.addEventListener("change", () => {
+  userPermissionEditor.innerHTML = "";
+  userPreview.textContent = "用户类型已变更，请重新生成并确认权限。";
+});
+changePasswordBtn.addEventListener("click", openChangePasswordDialog);
+passwordNoticeAction.addEventListener("click", openChangePasswordDialog);
+changePasswordForm.addEventListener("submit", submitPasswordChange);
+cancelChangePasswordBtn.addEventListener("click", () => changePasswordDialog.close());
 
 userForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -2519,7 +2786,8 @@ permissionForm.addEventListener("submit", (e) => {
 });
 cancelPermissionBtn.addEventListener("click", () => permissionDialog.close());
 
-searchLogsBtn.addEventListener("click", loadLogs);
+searchLogsBtn.addEventListener("click", () => loadLogs({ append: false }));
+logsLoadMoreBtn.addEventListener("click", () => loadLogs({ append: true }));
 exportLogsBtn.addEventListener("click", exportLogs);
 closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 

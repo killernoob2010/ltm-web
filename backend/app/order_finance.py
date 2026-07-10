@@ -183,6 +183,10 @@ def order_finance_require_edit(user: dict):
     require_permission(user, "order_finance.records", "edit")
 
 
+def order_finance_require_import(user: dict):
+    require_permission(user, "order_finance.records", "import")
+
+
 def order_finance_require_view(user: dict):
     require_permission(user, "order_finance.records", "view")
 
@@ -1906,7 +1910,7 @@ def build_order_finance_capital_view(records: Optional[List[Dict[str, Any]]] = N
 
 @router.post("/order-finance/import-local")
 def import_order_finance_local(request: ImportLocalRequest, user: dict = Depends(order_finance_current_user)):
-    order_finance_require_edit(user)
+    order_finance_require_import(user)
     try:
         result = import_order_finance_directory(Path(request.directory), imported_by=user["name"])
     except Exception as exc:
@@ -1920,7 +1924,7 @@ async def import_order_finance_file(
     file_name: str,
     user: dict = Depends(order_finance_current_user),
 ):
-    order_finance_require_edit(user)
+    order_finance_require_import(user)
     try:
         return await import_order_finance_upload(request, file_name=file_name, imported_by=user["name"])
     except Exception as exc:

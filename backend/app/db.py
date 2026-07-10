@@ -48,10 +48,11 @@ def _pg_rewrite(sql: str) -> str:
     """Convert SQLite-specific syntax to PostgreSQL on the fly."""
     if not _is_pg():
         return sql
+    normalized = sql.strip()
     # INSERT OR REPLACE -> INSERT ... ON CONFLICT DO UPDATE
     m = re.match(
-        r"INSERT OR REPLACE INTO (\w+) \((.+?)\) VALUES \((.+?)\)$",
-        sql, re.DOTALL | re.IGNORECASE,
+        r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\((.+?)\)\s*VALUES\s*\((.+?)\)$",
+        normalized, re.DOTALL | re.IGNORECASE,
     )
     if m:
         table = m.group(1)
@@ -62,10 +63,10 @@ def _pg_rewrite(sql: str) -> str:
         return "INSERT INTO " + table + " (" + cols_str + ") VALUES (" + vals + ") ON CONFLICT (" + cols_str + ") DO UPDATE SET " + set_str
     # INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
     m2 = re.match(
-        r"INSERT OR IGNORE INTO (\w+) .*", sql, re.DOTALL | re.IGNORECASE,
+        r"INSERT\s+OR\s+IGNORE\s+INTO\s+(\w+)\b.*", normalized, re.DOTALL | re.IGNORECASE,
     )
     if m2:
-        return re.sub(r"INSERT OR IGNORE", "INSERT", sql, flags=re.IGNORECASE) + " ON CONFLICT DO NOTHING"
+        return re.sub(r"INSERT\s+OR\s+IGNORE", "INSERT", normalized, count=1, flags=re.IGNORECASE) + " ON CONFLICT DO NOTHING"
     return sql
 
 PBKDF2_ITERATIONS = 260_000
@@ -217,11 +218,13 @@ def init_db() -> None:
                 """
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                username TEXT NOT NULL UNIQUE,
                 department TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT '启用',
+                password_change_recommended INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -232,6 +235,7 @@ def init_db() -> None:
                 module_code TEXT NOT NULL,
                 can_view INTEGER NOT NULL DEFAULT 1,
                 can_edit INTEGER NOT NULL DEFAULT 0,
+                can_sensitive INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, module_code),
@@ -259,6 +263,39 @@ def init_db() -> None:
                 before_data TEXT,
                 after_data TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_created_id
+            ON operation_logs(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_user_created_id
+            ON operation_logs(user_id, created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_type_created_id
+            ON operation_logs(operation_type, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS operation_log_archives (
+                id SERIAL PRIMARY KEY,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                object_path TEXT NOT NULL UNIQUE,
+                row_count INTEGER NOT NULL,
+                first_created_at TEXT NOT NULL,
+                last_created_at TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                compressed_bytes INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                restored_at TEXT,
+                UNIQUE(period_start, period_end)
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_log_archive_users (
+                id SERIAL PRIMARY KEY,
+                archive_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                UNIQUE(archive_id, user_id),
+                FOREIGN KEY (archive_id) REFERENCES operation_log_archives(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS alert_settings (
@@ -592,11 +629,13 @@ def init_db() -> None:
                 """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                username TEXT NOT NULL UNIQUE,
                 department TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT '启用',
+                password_change_recommended INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -607,6 +646,7 @@ def init_db() -> None:
                 module_code TEXT NOT NULL,
                 can_view INTEGER NOT NULL DEFAULT 1,
                 can_edit INTEGER NOT NULL DEFAULT 0,
+                can_sensitive INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, module_code),
@@ -634,6 +674,39 @@ def init_db() -> None:
                 before_data TEXT,
                 after_data TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_created_id
+            ON operation_logs(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_user_created_id
+            ON operation_logs(user_id, created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_type_created_id
+            ON operation_logs(operation_type, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS operation_log_archives (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                object_path TEXT NOT NULL UNIQUE,
+                row_count INTEGER NOT NULL,
+                first_created_at TEXT NOT NULL,
+                last_created_at TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                compressed_bytes INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                restored_at TEXT,
+                UNIQUE(period_start, period_end)
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_log_archive_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                archive_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                UNIQUE(archive_id, user_id),
+                FOREIGN KEY (archive_id) REFERENCES operation_log_archives(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS alert_settings (
@@ -981,20 +1054,20 @@ def ensure_admin_user(cur, name: str) -> int:
         admin_id = admin["id"]
     elif _is_pg():
         cur.execute(
-            "INSERT INTO users (name, department, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING id",
-            (name, "管理部门", password_hash("admin"), "管理员"),
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, name, "管理部门", password_hash("admin"), "管理员"),
         )
         admin_id = cur.fetchone()["id"]
     else:
         cur.execute(
-            "INSERT INTO users (name, department, password_hash, role) VALUES (?, ?, ?, ?)",
-            (name, "管理部门", password_hash("admin"), "管理员"),
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            (name, name, "管理部门", password_hash("admin"), "管理员"),
         )
         admin_id = cur.lastrowid
     for _, module_code, _ in MODULES:
         _exec(
             cur,
-            "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, 1, 1)",
+            "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, 1, 1, 1)",
             (admin_id, module_code),
         )
     return admin_id
@@ -1124,8 +1197,24 @@ def migrate_mid_event_schema(conn) -> None:
 def migrate_auth_schema(conn) -> None:
     if _is_pg():
         cur = conn.cursor()
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'module_permissions'"
+        )
+        permission_columns = {row["column_name"] for row in cur.fetchall()}
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest INTEGER NOT NULL DEFAULT 0")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS cannot_change_password INTEGER NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+        cur.execute("UPDATE users SET username = name WHERE username IS NULL OR username = ''")
+        cur.execute("ALTER TABLE users ALTER COLUMN username SET NOT NULL")
+        cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_name_key")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username)")
+        cur.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_change_recommended INTEGER NOT NULL DEFAULT 0"
+        )
+        cur.execute("UPDATE users SET department = '管理部门' WHERE role IN ('管理员', 'admin') AND department != '管理部门'")
+        cur.execute("ALTER TABLE module_permissions ADD COLUMN IF NOT EXISTS can_sensitive INTEGER NOT NULL DEFAULT 0")
+        if "can_sensitive" not in permission_columns:
+            cur.execute("UPDATE module_permissions SET can_sensitive = can_edit")
         cur.execute("ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
         conn.commit()
         return
@@ -1137,6 +1226,62 @@ def migrate_auth_schema(conn) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0")
     if "cannot_change_password" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN cannot_change_password INTEGER NOT NULL DEFAULT 0")
+    if "username" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        conn.execute("UPDATE users SET username = name WHERE username IS NULL OR username = ''")
+    if "password_change_recommended" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_change_recommended INTEGER NOT NULL DEFAULT 0")
+    unique_name = False
+    for index_row in conn.execute("PRAGMA index_list(users)").fetchall():
+        if not index_row["unique"]:
+            continue
+        columns = [row["name"] for row in conn.execute(f"PRAGMA index_info('{index_row['name']}')").fetchall()]
+        if columns == ["name"]:
+            unique_name = True
+            break
+    if unique_name:
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            """
+            DROP TABLE IF EXISTS users_auth_migration;
+            CREATE TABLE users_auth_migration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                username TEXT NOT NULL,
+                department TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '启用',
+                password_change_recommended INTEGER NOT NULL DEFAULT 0,
+                is_guest INTEGER NOT NULL DEFAULT 0,
+                cannot_change_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO users_auth_migration
+                (id, name, username, department, password_hash, role, status,
+                 password_change_recommended, is_guest, cannot_change_password,
+                 created_at, updated_at)
+            SELECT id, name, username, department, password_hash, role, status,
+                   password_change_recommended, is_guest, cannot_change_password,
+                   created_at, updated_at
+            FROM users;
+            DROP TABLE users;
+            ALTER TABLE users_auth_migration RENAME TO users;
+            """
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username)")
+    conn.execute("UPDATE users SET department = '管理部门' WHERE role IN ('管理员', 'admin') AND department != '管理部门'")
+    permission_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(module_permissions)").fetchall()
+    }
+    if "can_sensitive" not in permission_columns:
+        conn.execute("ALTER TABLE module_permissions ADD COLUMN can_sensitive INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE module_permissions SET can_sensitive = can_edit")
     session_columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(user_sessions)").fetchall()
@@ -1489,14 +1634,15 @@ def get_user_by_token(token: Optional[str]) -> Optional[dict]:
 def ensure_guest_user() -> dict:
     with connect() as conn:
         cur = conn.cursor()
-        row = _exec(cur, "SELECT * FROM users WHERE name = ?", ("guest",)).fetchone()
+        row = _exec(cur, "SELECT * FROM users WHERE username = ?", ("guest",)).fetchone()
         if row:
             guest_id = row["id"]
             _exec(
                 cur,
                 """
                 UPDATE users
-                SET role = 'guest', status = '启用', is_guest = 1, cannot_change_password = 1, updated_at = CURRENT_TIMESTAMP
+                SET name = 'guest', username = 'guest', role = 'guest', status = '启用',
+                    is_guest = 1, cannot_change_password = 1, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (guest_id,),
@@ -1504,20 +1650,20 @@ def ensure_guest_user() -> dict:
         elif _is_pg():
             cur.execute(
                 """
-                INSERT INTO users (name, department, password_hash, role, status, is_guest, cannot_change_password)
-                VALUES (%s, %s, %s, %s, %s, 1, 1)
+                INSERT INTO users (name, username, department, password_hash, role, status, is_guest, cannot_change_password)
+                VALUES (%s, %s, %s, %s, %s, %s, 1, 1)
                 RETURNING id
                 """,
-                ("guest", "访客", password_hash(secrets.token_urlsafe(16)), "guest", "启用"),
+                ("guest", "guest", "访客", password_hash(secrets.token_urlsafe(16)), "guest", "启用"),
             )
             guest_id = cur.fetchone()["id"]
         else:
             cur.execute(
                 """
-                INSERT INTO users (name, department, password_hash, role, status, is_guest, cannot_change_password)
-                VALUES (?, ?, ?, ?, ?, 1, 1)
+                INSERT INTO users (name, username, department, password_hash, role, status, is_guest, cannot_change_password)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 1)
                 """,
-                ("guest", "访客", password_hash(secrets.token_urlsafe(16)), "guest", "启用"),
+                ("guest", "guest", "访客", password_hash(secrets.token_urlsafe(16)), "guest", "启用"),
             )
             guest_id = cur.lastrowid
         _exec(cur, "DELETE FROM module_permissions WHERE user_id = ?", (guest_id,))

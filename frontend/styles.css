@@ -601,6 +601,39 @@ textarea {
   gap: 8px;
 }
 
+.logs-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.operation-log-archive-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.operation-log-archive-section h3,
+.operation-log-archive-section p {
+  margin: 0 0 8px;
+}
+
+.operation-log-archives {
+  display: grid;
+  gap: 8px;
+}
+
+.operation-log-archive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .summary-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -788,6 +821,39 @@ dialog::backdrop {
 }
 
 /* 用户管理选中行 */
+.password-change-notice {
+  margin: 0 24px 12px;
+  padding: 10px 14px;
+  border: 1px solid #f1c66d;
+  border-radius: 8px;
+  background: #fff8e6;
+  color: #7a4b00;
+}
+
+.password-change-notice button {
+  margin-left: 10px;
+}
+
+.permission-summary,
+.form-hint {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f4f7f9;
+  color: #52606d;
+}
+
+.permission-level {
+  min-width: 130px;
+}
+
+.user-permission-editor {
+  max-height: 340px;
+  overflow: auto;
+}
+
+.user-permission-editor table {
+  width: 100%;
+}
 
 
 /* ── 数据可视化管理 ───────────────────────────────────── */

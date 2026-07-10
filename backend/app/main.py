@@ -1,12 +1,13 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+import base64
 import calendar
 import csv
 import io
 import json
 import os
-from typing import List, Optional
+from typing import List, Literal, Optional
 import re
 import statistics
 import threading
@@ -18,12 +19,25 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+try:
+    from pypinyin import lazy_pinyin
+except ImportError:  # Local environments must install requirements before using username suggestions.
+    lazy_pinyin = None
+
 from . import db
-from .permissions import get_user_permissions as list_user_permissions, require_permission
+from .permissions import (
+    ACTIVE_BUSINESS_MODULES,
+    DEPARTMENTS,
+    USER_ROLES,
+    default_permission_levels,
+    get_user_permissions as list_user_permissions,
+    require_permission,
+)
+from .user_policy import temporary_password_policy
 from .cache_service import (
     cache_counts,
     get_cached_data,
@@ -42,7 +56,7 @@ from .info_summary_backfill import (
 )
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
-from . import data_visualization, order_finance
+from . import data_visualization, operation_log_archive, order_finance
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -183,6 +197,7 @@ class InfoCalculateIn(BaseModel):
 
 class InfoCalculateAllIn(BaseModel):
     items: List[InfoCalculateIn]
+    audit_source: Literal["automatic", "manual"] = "automatic"
 
 
 class InfoBackfillIn(BaseModel):
@@ -1344,7 +1359,7 @@ def login(payload: LoginRequest):
         user = db._exec(cur,
             """
             SELECT * FROM users
-            WHERE name = ? AND status = '启用'
+            WHERE username = ? AND status = '启用'
             """,
             (payload.username,),
         ).fetchone()
@@ -1364,8 +1379,10 @@ def login(payload: LoginRequest):
         "user": {
             "id": user["id"],
             "name": user["name"],
+            "username": user["username"],
             "department": user["department"],
             "role": user["role"],
+            "password_change_recommended": bool(user["password_change_recommended"]),
         },
     }
 
@@ -1406,9 +1423,11 @@ def me(user=Depends(current_user)):
     return {
         "id": user["id"],
         "name": display_name,
+        "username": user.get("username", user["name"]),
         "department": user["department"],
         "role": display_role,
         "is_guest": bool(user.get("is_guest")),
+        "password_change_recommended": bool(user.get("password_change_recommended")),
         "permissions": list_user_permissions(user),
     }
 
@@ -1417,7 +1436,7 @@ def me(user=Depends(current_user)):
 def modules(user=Depends(current_user)):
     if user["role"] == "管理员":
         visible = {
-            code: {"can_view": True, "can_edit": True}
+            code: {"can_view": True, "can_edit": True, "can_sensitive": True}
             for _, code, _ in db.MODULES
         }
     else:
@@ -1425,7 +1444,7 @@ def modules(user=Depends(current_user)):
             cur = conn.cursor()
             rows = db._exec(cur, 
                 """
-                SELECT module_code, can_view, can_edit
+                SELECT module_code, can_view, can_edit, can_sensitive
                 FROM module_permissions
                 WHERE user_id = ? AND can_view = 1
                 """,
@@ -1435,6 +1454,7 @@ def modules(user=Depends(current_user)):
             row["module_code"]: {
                 "can_view": bool(row["can_view"]),
                 "can_edit": bool(row["can_edit"]),
+                "can_sensitive": bool(row["can_sensitive"]),
             }
             for row in rows
         }
@@ -1557,7 +1577,7 @@ def toggle_alert_setting(alert_id: int, user=Depends(current_user)):
 
 @app.delete("/api/risk-alert/settings/{alert_id}")
 def delete_alert_setting(alert_id: int, user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_permission(user, "risk_alert", "delete")
     with db.connect() as conn:
         cur = conn.cursor()
         row = db._exec(cur, "SELECT id FROM alert_settings WHERE id = ?", (alert_id,)).fetchone()
@@ -1631,6 +1651,7 @@ def list_alert_notifications(user=Depends(current_user)):
 
 @app.post("/api/risk-alert/history/{history_id}/read")
 def mark_alert_history_read(history_id: int, user=Depends(current_user)):
+    require_edit("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, 
@@ -1644,6 +1665,7 @@ def mark_alert_history_read(history_id: int, user=Depends(current_user)):
 
 @app.post("/api/risk-alert/history/read-all")
 def mark_all_alert_history_read(user=Depends(current_user)):
+    require_edit("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         db._exec(cur, "UPDATE alert_history SET status = 'read' WHERE status = 'unread'")
@@ -1796,7 +1818,8 @@ def calculate_info_summary_all(payload: InfoCalculateAllIn, mock: bool = False, 
         )
         for item in payload.items
     ]
-    db.log_operation(user["id"], "info_summary", "批量计算指标", "全部", "calculated_data", None)
+    if payload.audit_source == "manual":
+        db.log_operation(user["id"], "info_summary", "批量计算指标", "全部", "calculated_data", None)
     return {
         "calc_date": payload.items[0].calc_date if payload.items else date.today().isoformat(),
         "cards": cards,
@@ -1878,7 +1901,7 @@ def backfill_info_summary_cache(payload: InfoBackfillIn, user=Depends(current_us
 
 @app.post("/api/info-summary/cache/import")
 def import_info_summary_cache(user=Depends(current_user)):
-    require_edit("info_summary", user)
+    require_permission(user, "info_summary", "import")
     try:
         result = import_desktop_cache()
     except FileNotFoundError as exc:
@@ -1926,7 +1949,7 @@ def create_indicator(payload: InfoIndicatorIn, user=Depends(current_user)):
 
 @app.delete("/api/info-summary/indicators/{indicator_id}")
 def delete_indicator(indicator_id: int, user=Depends(current_user)):
-    require_edit("info_summary", user)
+    require_permission(user, "info_summary", "delete")
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, "DELETE FROM calculated_data WHERE id = ?", (indicator_id,))
@@ -2210,7 +2233,7 @@ def update_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeIn, user=Depen
 
 @app.delete("/api/ledgers/sh-junneng/trades/{trade_id}")
 def delete_sh_junneng_trade(trade_id: int, user=Depends(current_user)):
-    require_edit("sh_junneng", user)
+    require_permission(user, "sh_junneng.trades", "delete")
     with db.connect() as conn:
         cur = conn.cursor()
         existing = db._exec(cur, "SELECT id FROM sh_junneng_positions WHERE id = ?", (trade_id,)).fetchone()
@@ -2493,7 +2516,7 @@ def update_strategy_group(group_id: int, payload: StrategyGroupIn, user=Depends(
 
 @app.delete("/api/mid-event/groups/{group_id}")
 def delete_strategy_group(group_id: int, user=Depends(current_user)):
-    require_edit("mid_event_monitor", user)
+    require_permission(user, "mid_event.monitor", "delete")
     with db.connect() as conn:
         cur = conn.cursor()
         group = db._exec(cur, "SELECT id FROM strategy_groups WHERE id = ?", (group_id,)).fetchone()
@@ -2648,7 +2671,7 @@ def refresh_mid_event_prices(mock: bool = False, user=Depends(current_user)):
 
 @app.delete("/api/mid-event/positions/{position_id}")
 def delete_strategy_position(position_id: int, user=Depends(current_user)):
-    require_edit("mid_event_monitor", user)
+    require_permission(user, "mid_event.monitor", "delete")
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, "DELETE FROM strategy_positions WHERE id = ?", (position_id,))
@@ -2662,13 +2685,156 @@ def delete_strategy_position(position_id: int, user=Depends(current_user)):
 
 class UserIn(BaseModel):
     name: str = Field(min_length=1)
+    username: str = ""
     department: str = Field(min_length=1)
-    password: str = Field(default="", min_length=0)
     role: str = "用户"
+    permissions: Optional[list[dict[str, str]]] = None
+
+
+class UserPreviewIn(UserIn):
+    user_id: Optional[int] = None
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class AdminSetPasswordIn(BaseModel):
+    new_password: str = Field(min_length=1)
+    password_change_recommended: bool = True
+
+
+class UserStatusIn(BaseModel):
+    status: str
 
 
 class PermissionsBatchIn(BaseModel):
     permissions: list[dict[str, object]]
+
+
+PERMISSION_LEVEL_VALUES = {
+    "none": (0, 0, 0),
+    "view": (1, 0, 0),
+    "operate": (1, 1, 0),
+    "sensitive": (1, 1, 1),
+}
+PERMISSION_LEVEL_RANK = {level: rank for rank, level in enumerate(PERMISSION_LEVEL_VALUES)}
+
+
+def _require_admin(user: dict) -> None:
+    if user.get("role") not in {"管理员", "admin"}:
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+
+
+def _suggest_username(name: str) -> str:
+    if lazy_pinyin is None:
+        raise HTTPException(status_code=503, detail="拼音组件未安装，请手工填写登录账号")
+    return re.sub(r"[^a-z0-9]", "", "".join(lazy_pinyin(name.strip())).lower())
+
+
+def _validate_user_identity(name: str, username: str, department: str, role: str) -> tuple[str, str]:
+    clean_name = name.strip()
+    clean_username = (username or "").strip().lower() or _suggest_username(clean_name)
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    if department not in DEPARTMENTS:
+        raise HTTPException(status_code=400, detail="部门不在允许范围内")
+    if role not in USER_ROLES:
+        raise HTTPException(status_code=400, detail="用户类型不在允许范围内")
+    if role == "管理员" and department != "管理部门":
+        raise HTTPException(status_code=400, detail="只有管理部门用户可设为管理员")
+    if not re.fullmatch(r"[a-z][a-z0-9._-]{1,63}", clean_username):
+        raise HTTPException(status_code=400, detail="登录账号需以字母开头，仅能包含小写字母、数字、点、下划线或短横线")
+    return clean_name, clean_username
+
+
+def _final_permission_levels(department: str, role: str, overrides: Optional[list[dict]]) -> dict[str, str]:
+    levels = default_permission_levels(department, role)
+    if role == "管理员":
+        return levels
+    valid_codes = set(levels)
+    for item in overrides or []:
+        code = str(item.get("module_code", ""))
+        level = str(item.get("level", ""))
+        if code not in valid_codes or level not in PERMISSION_LEVEL_VALUES:
+            raise HTTPException(status_code=400, detail="权限模块或级别无效")
+        if role == "领导" and PERMISSION_LEVEL_RANK[level] < PERMISSION_LEVEL_RANK[levels[code]]:
+            continue
+        levels[code] = level
+    return levels
+
+
+def _write_permission_snapshot(cur, user_id: int, levels: dict[str, str]) -> None:
+    for module_code, level in levels.items():
+        can_view, can_edit, can_sensitive = PERMISSION_LEVEL_VALUES[level]
+        db._exec(
+            cur,
+            """
+            INSERT OR IGNORE INTO module_permissions
+                (user_id, module_code, can_view, can_edit, can_sensitive)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, module_code, can_view, can_edit, can_sensitive),
+        )
+        db._exec(
+            cur,
+            """
+            UPDATE module_permissions
+            SET can_view = ?, can_edit = ?, can_sensitive = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND module_code = ?
+            """,
+            (can_view, can_edit, can_sensitive, user_id, module_code),
+        )
+
+
+def _permission_level(row: dict) -> str:
+    if row.get("can_sensitive"):
+        return "sensitive"
+    if row.get("can_edit"):
+        return "operate"
+    if row.get("can_view"):
+        return "view"
+    return "none"
+
+
+@app.post("/api/users/preview")
+def preview_user(payload: UserPreviewIn, user=Depends(current_user)):
+    _require_admin(user)
+    name, username = _validate_user_identity(payload.name, payload.username, payload.department, payload.role)
+    password_policy = temporary_password_policy(name, username, payload.department, payload.role)
+    default_levels = default_permission_levels(payload.department, payload.role)
+    final_levels = _final_permission_levels(payload.department, payload.role, payload.permissions)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        duplicate = db._exec(
+            cur,
+            "SELECT id FROM users WHERE username = ? AND (? IS NULL OR id != ?)",
+            (username, payload.user_id, payload.user_id),
+        ).fetchone()
+        current_levels: dict[str, str] = {}
+        if payload.user_id:
+            rows = db._exec(
+                cur,
+                "SELECT module_code, can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ?",
+                (payload.user_id,),
+            ).fetchall()
+            current_levels = {row["module_code"]: _permission_level(dict(row)) for row in rows}
+    changes = [
+        {"module_code": code, "before": current_levels.get(code, "none"), "after": level}
+        for code, level in final_levels.items()
+        if current_levels.get(code, "none") != level
+    ]
+    return {
+        "name": name,
+        "username": username,
+        "temporary_password": password_policy["temporary_password"],
+        "password_rule": password_policy["password_rule"],
+        "username_available": duplicate is None,
+        "default_permissions": {code: level for code, level in default_levels.items() if code in ACTIVE_BUSINESS_MODULES},
+        "final_permissions": {code: level for code, level in final_levels.items() if code in ACTIVE_BUSINESS_MODULES},
+        "changes": [item for item in changes if item["module_code"] in ACTIVE_BUSINESS_MODULES],
+    }
 
 
 @app.get("/api/users")
@@ -2685,7 +2851,8 @@ def list_users(
         total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM users WHERE COALESCE(is_guest, 0) = 0").fetchone()
         rows = db._exec(cur, 
             """
-            SELECT id, name, department, role, status, created_at
+            SELECT id, name, username, department, role, status,
+                   password_change_recommended, created_at
             FROM users
             WHERE COALESCE(is_guest, 0) = 0
             ORDER BY id
@@ -2693,9 +2860,33 @@ def list_users(
             """,
             (limit, offset),
         ).fetchall()
+        summary_rows = db._exec(
+            cur,
+            """
+            SELECT user_id,
+                   SUM(CASE WHEN can_view = 1 THEN 1 ELSE 0 END) AS enabled,
+                   SUM(CASE WHEN can_edit = 1 AND can_sensitive = 0 THEN 1 ELSE 0 END) AS operate,
+                   SUM(CASE WHEN can_sensitive = 1 THEN 1 ELSE 0 END) AS sensitive
+            FROM module_permissions
+            GROUP BY user_id
+            """,
+        ).fetchall()
+    summaries = {
+        row["user_id"]: {
+            "enabled": int(row["enabled"] or 0),
+            "operate": int(row["operate"] or 0),
+            "sensitive": int(row["sensitive"] or 0),
+        }
+        for row in summary_rows
+    }
+    users = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["permission_summary"] = summaries.get(item["id"], {"enabled": 0, "operate": 0, "sensitive": 0})
+        users.append(item)
     total = int(total_row["c"] or 0)
     return {
-        "users": [row_to_dict(row) for row in rows],
+        "users": users,
         "pagination": {
             "total": total,
             "limit": limit,
@@ -2707,78 +2898,161 @@ def list_users(
 
 @app.post("/api/users")
 def create_user(payload: UserIn, user=Depends(current_user)):
-    require_edit("user_management", user)
-    if len(payload.password) < 6:
-        raise HTTPException(status_code=400, detail="密码长度至少为6位")
-    hashed = db.password_hash(payload.password)
+    _require_admin(user)
+    name, username = _validate_user_identity(payload.name, payload.username, payload.department, payload.role)
+    levels = _final_permission_levels(payload.department, payload.role, payload.permissions)
+    password_policy = temporary_password_policy(name, username, payload.department, payload.role)
+    temporary_password = password_policy["temporary_password"]
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT id FROM users WHERE name = ?", (payload.name,)).fetchone()
+        existing = db._exec(cur, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
         if existing:
-            raise HTTPException(status_code=400, detail="用户名已存在")
-        cursor = db._exec(cur, 
-            "INSERT INTO users (name, department, password_hash, role) VALUES (?, ?, ?, ?)",
-            (payload.name, payload.department, hashed, payload.role),
+            raise HTTPException(status_code=400, detail="登录账号已存在")
+        db._exec(cur,
+            """
+            INSERT INTO users
+                (name, username, department, password_hash, role, password_change_recommended)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (name, username, payload.department, db.password_hash(temporary_password), payload.role),
         )
         new_id = db.last_insert_id(conn)
-        for _, module_code, _ in db.MODULES:
-            db._exec(cur, 
-                "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, 1, ?)",
-                (new_id, module_code, 1 if payload.role == "管理员" else 0),
-            )
-    db.log_operation(user["id"], "user_management", "添加用户", f"添加用户: {payload.name}", "users", new_id)
-    return {"id": new_id}
+        _write_permission_snapshot(cur, new_id, levels)
+    db.log_operation(user["id"], "user_management", "添加用户", f"添加用户: {name} ({username})", "users", new_id)
+    return {"id": new_id, "username": username, "temporary_password": temporary_password}
 
 
 @app.put("/api/users/{user_id}")
 def update_user(user_id: int, payload: UserIn, user=Depends(current_user)):
-    require_edit("user_management", user)
+    _require_admin(user)
+    name, username = _validate_user_identity(payload.name, payload.username, payload.department, payload.role)
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT id, name, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
+        existing = db._exec(cur, "SELECT id, name, username, role, status, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="用户不存在")
         if existing["is_guest"]:
             raise HTTPException(status_code=400, detail="系统访客不允许在用户管理中编辑")
-        if payload.name != existing["name"]:
-            dup = db._exec(cur, "SELECT id FROM users WHERE name = ? AND id != ?", (payload.name, user_id)).fetchone()
-            if dup:
-                raise HTTPException(status_code=400, detail="用户名已存在")
-        if payload.password:
-            if len(payload.password) < 6:
-                raise HTTPException(status_code=400, detail="密码长度至少为6位")
-            hashed = db.password_hash(payload.password)
-            db._exec(cur, 
-                "UPDATE users SET name = ?, department = ?, password_hash = ?, role = ? WHERE id = ?",
-                (payload.name, payload.department, hashed, payload.role, user_id),
-            )
-        else:
-            db._exec(cur, 
-                "UPDATE users SET name = ?, department = ?, role = ? WHERE id = ?",
-                (payload.name, payload.department, payload.role, user_id),
-            )
-        if payload.role == "管理员":
-            db._exec(cur, 
-                "UPDATE module_permissions SET can_view = 1, can_edit = 1 WHERE user_id = ?",
-                (user_id,),
-            )
-            for _, module_code, _ in db.MODULES:
-                db._exec(cur, 
-                    "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, 1, 1)",
-                    (user_id, module_code),
-                )
-        else:
-            db._exec(cur, 
-                "UPDATE module_permissions SET can_view = 1, can_edit = 0 WHERE user_id = ?",
-                (user_id,),
-            )
-    db.log_operation(user["id"], "user_management", "编辑用户", f"编辑用户: {payload.name}", "users", user_id)
+        duplicate = db._exec(cur, "SELECT id FROM users WHERE username = ? AND id != ?", (username, user_id)).fetchone()
+        if duplicate:
+            raise HTTPException(status_code=400, detail="登录账号已存在")
+        if existing["role"] == "管理员" and payload.role != "管理员" and existing["status"] == "启用":
+            count = db._exec(cur, "SELECT COUNT(*) AS c FROM users WHERE role = '管理员' AND status = '启用'").fetchone()["c"]
+            if int(count) <= 1:
+                raise HTTPException(status_code=400, detail="不能降级最后一名启用管理员")
+        db._exec(cur,
+            "UPDATE users SET name = ?, username = ?, department = ?, role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (name, username, payload.department, payload.role, user_id),
+        )
+        if payload.permissions is not None:
+            _write_permission_snapshot(cur, user_id, _final_permission_levels(payload.department, payload.role, payload.permissions))
+    db.log_operation(user["id"], "user_management", "编辑用户", f"编辑用户: {name} ({username})", "users", user_id)
+    return {"ok": True}
+
+
+@app.post("/api/auth/change-password")
+def change_password(
+    payload: ChangePasswordIn,
+    user=Depends(current_user),
+    authorization: Optional[str] = Header(default=None),
+):
+    if user.get("is_guest") or user.get("cannot_change_password"):
+        raise HTTPException(status_code=400, detail="当前账号不允许修改密码")
+    if not db.verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="新密码至少8位")
+    default_password = temporary_password_policy(
+        user["name"], user["username"], user["department"], user["role"]
+    )["temporary_password"]
+    if payload.new_password in {payload.current_password, default_password}:
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码或默认密码相同")
+    token = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(cur, "UPDATE users SET password_hash = ?, password_change_recommended = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (db.password_hash(payload.new_password), user["id"]))
+        db._exec(cur, "UPDATE user_sessions SET status = '已注销' WHERE user_id = ? AND token != ?", (user["id"], token))
+    db.log_operation(user["id"], "auth", "修改密码", f"{user['name']} 修改了自己的密码")
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/reset-password")
+def reset_user_password(user_id: int, user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        target = db._exec(cur, "SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if target["is_guest"] or target["cannot_change_password"]:
+            raise HTTPException(status_code=400, detail="系统访客不允许重置密码")
+        password_policy = temporary_password_policy(
+            target["name"], target["username"], target["department"], target["role"]
+        )
+        temporary_password = password_policy["temporary_password"]
+        db._exec(cur, "UPDATE users SET password_hash = ?, password_change_recommended = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (db.password_hash(temporary_password), user_id))
+        db._exec(cur, "UPDATE user_sessions SET status = '已注销' WHERE user_id = ?", (user_id,))
+    db.log_operation(user["id"], "user_management", "重置密码", f"重置用户密码: {target['name']}", "users", user_id)
+    return {"ok": True, "username": target["username"], "temporary_password": temporary_password}
+
+
+@app.post("/api/users/{user_id}/set-password")
+def set_user_password(user_id: int, payload: AdminSetPasswordIn, user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        target = db._exec(
+            cur,
+            "SELECT id, name, is_guest, cannot_change_password FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if target["is_guest"] or target["cannot_change_password"]:
+            raise HTTPException(status_code=400, detail="系统访客不允许设置密码")
+        db._exec(
+            cur,
+            "UPDATE users SET password_hash = ?, password_change_recommended = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (db.password_hash(payload.new_password), int(payload.password_change_recommended), user_id),
+        )
+        db._exec(cur, "UPDATE user_sessions SET status = '已注销' WHERE user_id = ?", (user_id,))
+    db.log_operation(
+        user["id"],
+        "user_management",
+        "管理员设置密码",
+        f"管理员设置用户密码: {target['name']}",
+        "users",
+        user_id,
+    )
+    return {"ok": True}
+
+
+@app.patch("/api/users/{user_id}/status")
+def set_user_status(user_id: int, payload: UserStatusIn, user=Depends(current_user)):
+    _require_admin(user)
+    if payload.status not in {"启用", "停用"}:
+        raise HTTPException(status_code=400, detail="账号状态无效")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        target = db._exec(cur, "SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if target["is_guest"]:
+            raise HTTPException(status_code=400, detail="系统访客不允许停用")
+        if payload.status == "停用" and target["role"] == "管理员" and target["status"] == "启用":
+            count = db._exec(cur, "SELECT COUNT(*) AS c FROM users WHERE role = '管理员' AND status = '启用'").fetchone()["c"]
+            if int(count) <= 1:
+                raise HTTPException(status_code=400, detail="不能停用最后一名管理员")
+        db._exec(cur, "UPDATE users SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (payload.status, user_id))
+        if payload.status == "停用":
+            db._exec(cur, "UPDATE user_sessions SET status = '已注销' WHERE user_id = ?", (user_id,))
+    db.log_operation(user["id"], "user_management", "账号状态", f"{payload.status}用户: {target['name']}", "users", user_id)
     return {"ok": True}
 
 
 @app.delete("/api/users/{user_id}")
 def delete_user(user_id: int, user=Depends(current_user)):
-    require_edit("user_management", user)
+    _require_admin(user)
     if user_id == user["id"]:
         raise HTTPException(status_code=400, detail="不能删除自己")
     with db.connect() as conn:
@@ -2788,6 +3062,18 @@ def delete_user(user_id: int, user=Depends(current_user)):
             raise HTTPException(status_code=404, detail="用户不存在")
         if target["is_guest"]:
             raise HTTPException(status_code=400, detail="系统访客不允许在用户管理中删除")
+        history = db._exec(
+            cur,
+            """
+            SELECT
+                (SELECT COUNT(*) FROM user_sessions WHERE user_id = ?) +
+                (SELECT COUNT(*) FROM operation_logs WHERE user_id = ?) +
+                (SELECT COUNT(*) FROM operation_log_archive_users WHERE user_id = ?) AS c
+            """,
+            (user_id, user_id, user_id),
+        ).fetchone()
+        if int(history["c"] or 0) > 0:
+            raise HTTPException(status_code=400, detail="该账号已有会话或操作历史，请使用停用")
         db._exec(cur, "DELETE FROM module_permissions WHERE user_id = ?", (user_id,))
         db._exec(cur, "DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
         db._exec(cur, "DELETE FROM users WHERE id = ?", (user_id,))
@@ -2797,7 +3083,7 @@ def delete_user(user_id: int, user=Depends(current_user)):
 
 @app.get("/api/users/{user_id}/permissions")
 def get_user_permissions(user_id: int, user=Depends(current_user)):
-    require_permission(user, "permissions", "manage")
+    _require_admin(user)
     with db.connect() as conn:
         cur = conn.cursor()
         existing = db._exec(cur, "SELECT id, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -2807,63 +3093,105 @@ def get_user_permissions(user_id: int, user=Depends(current_user)):
             raise HTTPException(status_code=400, detail="系统访客权限由后端固定控制")
         for _, module_code, _ in db.MODULES:
             db._exec(cur, 
-                "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit) VALUES (?, ?, 1, 0)",
+                "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, 0, 0, 0)",
                 (user_id, module_code),
             )
         rows = db._exec(cur, 
-            "SELECT module_code, can_view, can_edit FROM module_permissions WHERE user_id = ? ORDER BY module_code",
+            "SELECT module_code, can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? ORDER BY module_code",
             (user_id,),
         ).fetchall()
-    return {"permissions": {row["module_code"]: {"can_view": row["can_view"], "can_edit": row["can_edit"]} for row in rows}}
+    return {
+        "permissions": [
+            {"module_code": row["module_code"], "level": _permission_level(dict(row))}
+            for row in rows
+            if row["module_code"] in ACTIVE_BUSINESS_MODULES
+        ]
+    }
 
 
 @app.put("/api/users/{user_id}/permissions")
 def set_user_permissions(user_id: int, payload: PermissionsBatchIn, user=Depends(current_user)):
-    require_edit("user_management", user)
+    _require_admin(user)
     target_name = ""
     with db.connect() as conn:
         cur = conn.cursor()
-        existing = db._exec(cur, "SELECT id, name, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
+        existing = db._exec(cur, "SELECT id, name, department, role, is_guest FROM users WHERE id = ?", (user_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="用户不存在")
         if existing["is_guest"]:
             raise HTTPException(status_code=400, detail="系统访客权限由后端固定控制")
         target_name = existing["name"]
-        for perm in payload.permissions:
-            db._exec(cur, 
-                "UPDATE module_permissions SET can_view = ?, can_edit = ? WHERE user_id = ? AND module_code = ?",
-                (int(perm["can_view"]), int(perm["can_edit"]), user_id, perm["module_code"]),
-            )
+        levels = _final_permission_levels(existing["department"], existing["role"], payload.permissions)
+        _write_permission_snapshot(cur, user_id, levels)
     db.log_operation(user["id"], "user_management", "设置权限", f"设置用户权限: {target_name}", "module_permissions", user_id)
     return {"ok": True}
+
+
+def encode_operation_log_cursor(created_at: str, log_id: int) -> str:
+    raw = json.dumps([created_at, int(log_id)], ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_operation_log_cursor(cursor: str) -> tuple[str, int]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8"))
+        if not isinstance(payload, list) or len(payload) != 2:
+            raise ValueError("cursor payload")
+        created_at, log_id = payload
+        if not isinstance(created_at, str) or not created_at:
+            raise ValueError("cursor timestamp")
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if isinstance(log_id, bool) or int(log_id) < 1:
+            raise ValueError("cursor id")
+        return created_at, int(log_id)
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="日志分页游标无效") from exc
 
 
 @app.get("/api/operation-logs")
 def list_operation_logs(
     operation_type: Optional[str] = None,
     user_name: Optional[str] = None,
-    limit: int = 200,
-    offset: int = 0,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    cursor: Optional[str] = None,
+    limit: int = 100,
     user=Depends(current_user),
 ):
     require_permission(user, "operation_logs", "view")
-    limit = max(1, min(limit or 200, 200))
-    offset = max(0, offset or 0)
+    limit = max(1, min(limit or 100, 200))
     clauses = ["1=1"]
     params: list = []
     if operation_type:
         clauses.append("ol.operation_type = ?")
         params.append(operation_type)
-    if user_name:
-        clauses.append("u.name = ?")
-        params.append(user_name)
+    try:
+        if start_date:
+            start = date.fromisoformat(start_date)
+            clauses.append("ol.created_at >= ?")
+            params.append(f"{start.isoformat()} 00:00:00")
+        if end_date:
+            end_exclusive = date.fromisoformat(end_date) + timedelta(days=1)
+            clauses.append("ol.created_at < ?")
+            params.append(f"{end_exclusive.isoformat()} 00:00:00")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="日志日期格式无效") from exc
+    if start_date and end_date and start > date.fromisoformat(end_date):
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    if cursor:
+        cursor_created_at, cursor_id = decode_operation_log_cursor(cursor)
+        clauses.append("(ol.created_at < ? OR (ol.created_at = ? AND ol.id < ?))")
+        params.extend([cursor_created_at, cursor_created_at, cursor_id])
     with db.connect() as conn:
         cur = conn.cursor()
-        total_row = db._exec(
-            cur,
-            f"SELECT COUNT(*) AS c FROM operation_logs ol LEFT JOIN users u ON u.id = ol.user_id WHERE {' AND '.join(clauses)}",
-            params,
-        ).fetchone()
+        if user_name:
+            user_rows = db._exec(cur, "SELECT id FROM users WHERE name = ?", (user_name,)).fetchall()
+            user_ids = [row["id"] for row in user_rows]
+            if not user_ids:
+                return {"logs": [], "has_more": False, "next_cursor": None}
+            clauses.append(f"ol.user_id IN ({','.join('?' for _ in user_ids)})")
+            params.extend(user_ids)
         rows = db._exec(cur, 
             f"""
             SELECT ol.id, u.name AS user_name, ol.operation_type, ol.description,
@@ -2871,18 +3199,62 @@ def list_operation_logs(
             FROM operation_logs ol
             LEFT JOIN users u ON u.id = ol.user_id
             WHERE {' AND '.join(clauses)}
-            ORDER BY ol.created_at DESC
-            LIMIT ? OFFSET ?
+            ORDER BY ol.created_at DESC, ol.id DESC
+            LIMIT ?
             """,
-            params + [limit, offset],
+            params + [limit + 1],
         ).fetchall()
-    total = int(total_row["c"] or 0)
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+    next_cursor = None
+    if has_more and page_rows:
+        last_row = page_rows[-1]
+        next_cursor = encode_operation_log_cursor(last_row["created_at"], last_row["id"])
     return {
-        "logs": [row_to_dict(row) for row in rows],
-        "pagination": {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "has_more": offset + len(rows) < total,
-        },
+        "logs": [row_to_dict(row) for row in page_rows],
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }
+
+
+def get_operation_log_archive_storage():
+    try:
+        return operation_log_archive.SupabaseArchiveStorage.from_env()
+    except operation_log_archive.ArchiveConfigError as exc:
+        raise HTTPException(status_code=503, detail="归档存储未配置") from exc
+
+
+@app.get("/api/operation-log-archives")
+def list_operation_log_archives(user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            """
+            SELECT id, period_start, period_end, row_count, first_created_at,
+                   last_created_at, compressed_bytes, created_at, restored_at
+            FROM operation_log_archives
+            ORDER BY period_start DESC, id DESC
+            """,
+        ).fetchall()
+    return {"archives": [row_to_dict(row) for row in rows]}
+
+
+@app.get("/api/operation-log-archives/{archive_id}/download")
+def download_operation_log_archive(archive_id: int, user=Depends(current_user)):
+    _require_admin(user)
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            "SELECT id, period_start, object_path FROM operation_log_archives WHERE id = ?",
+            (archive_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="归档记录不存在")
+    storage = get_operation_log_archive_storage()
+    filename = f"operation-logs-{row['period_start'][:7]}.ndjson.gz"
+    return StreamingResponse(
+        storage.iter_download(row["object_path"]),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

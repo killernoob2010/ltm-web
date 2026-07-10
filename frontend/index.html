@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=order-finance-weekly-focus-20260710" />
+    <link rel="stylesheet" href="/static/styles.css?v=operation-log-retention-20260710" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -50,9 +50,14 @@
               预警 <span id="notificationBadge" class="notification-badge hidden">0</span>
             </button>
             <span id="currentUser"></span>
+            <button id="changePasswordBtn" class="secondary">修改密码</button>
             <button id="logoutBtn" class="secondary">退出</button>
           </div>
         </header>
+        <div id="passwordChangeNotice" class="password-change-notice hidden">
+          当前仍在使用临时密码，建议尽快修改。
+          <button id="passwordNoticeAction" type="button">立即修改</button>
+        </div>
 
         <section id="infoSummaryPage" class="page">
           <div class="toolbar">
@@ -311,8 +316,10 @@
           <div class="toolbar">
             <button id="addUserBtn">添加用户</button>
             <button id="editUserBtn" class="secondary">编辑用户</button>
-            <button id="deleteUserBtn" class="secondary">删除用户</button>
             <button id="setPermissionBtn" class="secondary">权限设置</button>
+            <button id="resetUserPasswordBtn" class="secondary">重置密码</button>
+            <button id="toggleUserStatusBtn" class="secondary">停用/启用</button>
+            <button id="deleteUserBtn" class="secondary">删除误建账号</button>
             <button id="viewLogsBtn" class="secondary">操作日志</button>
             <span id="userMgmtStatus" class="toolbar-status">就绪</span>
           </div>
@@ -327,9 +334,12 @@
                   <tr>
                     <th>ID</th>
                     <th>姓名</th>
+                    <th>登录账号</th>
                     <th>部门</th>
-                    <th>角色</th>
+                    <th>用户类型</th>
                     <th>状态</th>
+                    <th>密码状态</th>
+                    <th>权限摘要</th>
                     <th>创建时间</th>
                   </tr>
                 </thead>
@@ -548,7 +558,7 @@
         <!-- 数据可视化管理 - 数据整合 -->
         <section id="dvIntegrationPage" class="page hidden">
           <div class="toolbar">
-            <label class="file-button">
+            <label id="dvIntegrationImportLabel" class="file-button">
               导入 Excel
               <input type="file" id="dvIntegrationFiles" accept=".xlsx,.xls" multiple hidden />
             </label>
@@ -996,30 +1006,41 @@
       </form>
     </dialog>
 
-        <dialog id="userDialog">
+        <dialog id="userDialog" class="wide-dialog">
       <form id="userForm" method="dialog" class="dialog-form">
         <h2 id="userDialogTitle">添加用户</h2>
         <input id="userId" type="hidden" />
         <div class="form-stack">
           <label>
             姓名
-            <input id="userName" required placeholder="请输入用户名" />
+            <input id="userName" required placeholder="请输入真实姓名" />
+          </label>
+          <label>
+            登录账号
+            <input id="userUsername" placeholder="留空则按姓名生成全拼" />
           </label>
           <label>
             部门
-            <input id="userDepartment" required placeholder="请输入部门" />
+            <select id="userDepartment" required>
+              <option value="贸易处">贸易处</option>
+              <option value="期货组">期货组</option>
+              <option value="财企处">财企处</option>
+              <option value="资金处">资金处</option>
+              <option value="管理部门">管理部门</option>
+              <option value="公司领导">公司领导</option>
+            </select>
           </label>
           <label>
-            密码
-            <input id="userPassword" type="password" placeholder="留空则不修改" />
-          </label>
-          <label>
-            角色
+            用户类型
             <select id="userRole">
               <option value="用户">用户</option>
+              <option value="领导">领导</option>
               <option value="管理员">管理员</option>
             </select>
           </label>
+          <button id="previewUserBtn" type="button" class="secondary">生成账号与权限</button>
+          <p id="userPreview" class="form-hint">保存前将预览账号、临时密码和最终权限。</p>
+          <div id="userPermissionEditor" class="user-permission-editor"></div>
         </div>
         <div class="dialog-actions">
           <button type="button" id="cancelUserBtn" class="secondary">取消</button>
@@ -1031,13 +1052,13 @@
     <dialog id="permissionDialog" class="wide-dialog">
       <form id="permissionForm" method="dialog" class="dialog-form">
         <h2 id="permissionDialogTitle">权限设置</h2>
+        <div id="permissionSummary" class="permission-summary"></div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>模块</th>
-                <th>查看</th>
-                <th>编辑</th>
+                <th>权限级别</th>
               </tr>
             </thead>
             <tbody id="permissionTable"></tbody>
@@ -1046,6 +1067,22 @@
         <div class="dialog-actions">
           <button type="button" id="cancelPermissionBtn" class="secondary">取消</button>
           <button type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="changePasswordDialog">
+      <form id="changePasswordForm" method="dialog" class="dialog-form">
+        <h2>修改密码</h2>
+        <div class="form-stack">
+          <label>当前密码<input id="currentPassword" type="password" autocomplete="current-password" required /></label>
+          <label>新密码<input id="newPassword" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>确认新密码<input id="confirmNewPassword" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <p id="changePasswordError" class="error-text"></p>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelChangePasswordBtn" class="secondary">取消</button>
+          <button type="submit">确认修改</button>
         </div>
       </form>
     </dialog>
@@ -1068,9 +1105,17 @@
             用户名
             <input id="logsUserName" placeholder="用户名搜索" />
           </label>
+          <label>
+            开始日期
+            <input id="logsStartDate" type="date" />
+          </label>
+          <label>
+            结束日期
+            <input id="logsEndDate" type="date" />
+          </label>
           <div class="filter-actions">
             <button type="button" id="searchLogsBtn" class="secondary">搜索</button>
-            <button type="button" id="exportLogsBtn" class="secondary">导出</button>
+            <button type="button" id="exportLogsBtn" class="secondary">导出当前已加载记录</button>
           </div>
         </div>
         <div class="table-wrap logs-table-wrap">
@@ -1088,6 +1133,15 @@
             <tbody id="logsTable"></tbody>
           </table>
         </div>
+        <div class="logs-pagination">
+          <span id="logsPageInfo">当前已加载 0 条</span>
+          <button type="button" id="logsLoadMoreBtn" class="secondary hidden">加载更多</button>
+        </div>
+        <section class="operation-log-archive-section">
+          <h3>历史归档</h3>
+          <p id="operationLogArchiveStatus">正在读取归档目录</p>
+          <div id="operationLogArchives" class="operation-log-archives"></div>
+        </section>
         <div class="dialog-actions">
           <button type="button" id="closeLogsBtn" class="secondary">关闭</button>
         </div>
@@ -1121,6 +1175,6 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=order-finance-weekly-focus-20260710"></script>
+    <script src="/static/app.js?v=operation-log-retention-20260710"></script>
   </body>
 </html>

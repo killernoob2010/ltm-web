@@ -28,7 +28,55 @@ GUEST_PERMISSIONS = {
 }
 
 VIEW_ACTIONS = {"view", "detail"}
-EDIT_ACTIONS = {"create", "edit", "delete", "import"}
+EDIT_ACTIONS = {"create", "edit"}
+SENSITIVE_ACTIONS = {"delete", "import", "export", "manage"}
+ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status"}
+
+DEPARTMENTS = ("贸易处", "期货组", "财企处", "资金处", "管理部门", "公司领导")
+USER_ROLES = ("用户", "领导", "管理员")
+ACTIVE_BUSINESS_MODULES = {
+    "sh_junneng",
+    "info_summary",
+    "risk_alert",
+    "mid_event_monitor",
+    "data_visualization_integration",
+    "data_visualization_data",
+    "data_visualization_chart",
+    "order_finance_progress",
+    "order_finance_capital",
+}
+DEPARTMENT_MODULES = {
+    "贸易处": {
+        "info_summary", "risk_alert", "mid_event_monitor",
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+    },
+    "期货组": {
+        "sh_junneng", "info_summary", "risk_alert", "mid_event_monitor",
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+    },
+    "财企处": {
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "order_finance_progress", "order_finance_capital",
+    },
+    "资金处": {
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "order_finance_progress", "order_finance_capital",
+    },
+    "管理部门": set(ACTIVE_BUSINESS_MODULES),
+}
+
+
+def default_permission_levels(department: str, role: str) -> dict[str, str]:
+    levels = {code: "none" for _, code, _ in db.MODULES}
+    if role == "管理员":
+        return {code: "sensitive" for _, code, _ in db.MODULES}
+    if role == "领导":
+        for code in ACTIVE_BUSINESS_MODULES:
+            levels[code] = "view"
+        return levels
+    for code in DEPARTMENT_MODULES.get(department, set()):
+        levels[code] = "operate"
+    return levels
 
 
 def is_admin(user: dict) -> bool:
@@ -45,7 +93,7 @@ def _module_permission(user: dict, module_code: str) -> Optional[dict]:
         row = db._exec(
             cur,
             """
-            SELECT can_view, can_edit
+            SELECT can_view, can_edit, can_sensitive
             FROM module_permissions
             WHERE user_id = ? AND module_code = ?
             """,
@@ -61,6 +109,8 @@ def can(user: dict, resource: str, action: str, context: Optional[dict] = None) 
         return True
     if is_guest(user):
         return (resource, action) in GUEST_PERMISSIONS
+    if resource in ADMIN_ONLY_RESOURCES:
+        return False
 
     module_code = RESOURCE_MODULES.get(resource, resource)
     permission = _module_permission(user, module_code)
@@ -68,10 +118,10 @@ def can(user: dict, resource: str, action: str, context: Optional[dict] = None) 
         return False
     if action in VIEW_ACTIONS:
         return bool(permission.get("can_view"))
-    if action == "export":
+    if action in EDIT_ACTIONS:
         return bool(permission.get("can_edit"))
-    if action in EDIT_ACTIONS or action == "manage":
-        return bool(permission.get("can_edit"))
+    if action in SENSITIVE_ACTIONS:
+        return bool(permission.get("can_sensitive"))
     return False
 
 
@@ -92,7 +142,7 @@ def get_user_permissions(user: dict) -> list[str]:
         rows = db._exec(
             cur,
             """
-            SELECT module_code, can_view, can_edit
+            SELECT module_code, can_view, can_edit, can_sensitive
             FROM module_permissions
             WHERE user_id = ?
             """,
@@ -108,7 +158,12 @@ def get_user_permissions(user: dict) -> list[str]:
             if row["can_edit"]:
                 permissions.extend(
                     f"{resource}:{action}"
-                    for action in ("create", "edit", "delete", "import", "export")
+                    for action in ("create", "edit")
+                )
+            if row["can_sensitive"]:
+                permissions.extend(
+                    f"{resource}:{action}"
+                    for action in ("delete", "import", "export", "manage")
                 )
     return sorted(set(permissions))
 
