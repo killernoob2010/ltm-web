@@ -19,7 +19,7 @@ test("login page exposes real guest login without prefilled admin credentials", 
 });
 
 test("user management exposes account lifecycle permission levels and password self-service", () => {
-  assert.match(html, /src="\/static\/app\.js\?v=roster-permissions-20260710-2"/);
+  assert.match(html, /src="\/static\/app\.js\?v=roster-permissions-20260710-3"/);
   for (const id of [
     "resetUserPasswordBtn", "toggleUserStatusBtn", "changePasswordBtn",
     "passwordChangeNotice", "changePasswordDialog", "currentPassword",
@@ -73,6 +73,10 @@ test("view-only risk-alert users do not receive mutation actions", () => {
   assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="toggle"/);
   assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="simulate"/);
   assert.match(appJs, /canSensitiveRiskAlert \? `<button class="link" data-action="delete"/);
+  assert.match(appJs, /setHidden\("#markAllNotificationsBtn", guest \|\| !canModuleEdit\("risk_alert"\)\)/);
+  assert.match(appJs, /const canAcknowledgeRiskAlerts = canModuleEdit\("risk_alert"\);/);
+  assert.match(appJs, /canAcknowledgeRiskAlerts \? "button" : "div"/);
+  assert.match(appJs, /item\.status === "unread" && canEditRiskAlert/);
 });
 
 test("data-visualization import and export controls follow sensitive permission", () => {

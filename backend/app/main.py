@@ -1649,6 +1649,7 @@ def list_alert_notifications(user=Depends(current_user)):
 
 @app.post("/api/risk-alert/history/{history_id}/read")
 def mark_alert_history_read(history_id: int, user=Depends(current_user)):
+    require_edit("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, 
@@ -1662,6 +1663,7 @@ def mark_alert_history_read(history_id: int, user=Depends(current_user)):
 
 @app.post("/api/risk-alert/history/read-all")
 def mark_all_alert_history_read(user=Depends(current_user)):
+    require_edit("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         db._exec(cur, "UPDATE alert_history SET status = 'read' WHERE status = 'unread'")

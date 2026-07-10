@@ -81,6 +81,7 @@ function applyUiPermissions() {
     setHidden(selector, guest || !canModuleEdit("risk_alert")));
   setHidden("#batchDeleteAlertsBtn", guest || !canModuleSensitive("risk_alert"));
   setHidden("#selectAllAlerts", guest || (!canModuleEdit("risk_alert") && !canModuleSensitive("risk_alert")));
+  setHidden("#markAllNotificationsBtn", guest || !canModuleEdit("risk_alert"));
   ["#addGroupBtn", "#addPositionBtn", "#refreshPricesBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleEdit("mid_event_monitor")));
   [
@@ -1308,18 +1309,23 @@ async function loadNotifications(showNewToast = true) {
   try {
     const payload = await api("/api/risk-alert/notifications");
     const items = payload.items || [];
+    const canAcknowledgeRiskAlerts = canModuleEdit("risk_alert");
     notificationBadge.textContent = String(payload.count || 0);
     notificationBadge.classList.toggle("hidden", !payload.count);
     notificationList.innerHTML = items.length
-      ? items.map((item) => `
-        <button class="notification-item" data-id="${item.id}">
+      ? items.map((item) => {
+        const notificationTag = canAcknowledgeRiskAlerts ? "button" : "div";
+        const notificationId = canAcknowledgeRiskAlerts ? ` data-id="${item.id}"` : "";
+        return `
+        <${notificationTag} class="notification-item"${notificationId}>
           <strong>${item.info_type || "-"}</strong>
           <span>${alertMessage(item)}</span>
           <small>${item.alert_time || ""}</small>
-        </button>
-      `).join("")
+        </${notificationTag}>
+      `;
+      }).join("")
       : `<p class="empty-notification">暂无未读预警</p>`;
-    notificationList.querySelectorAll(".notification-item").forEach((button) => {
+    notificationList.querySelectorAll("button.notification-item").forEach((button) => {
       button.addEventListener("click", async () => {
         await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
         await loadNotifications(false);
@@ -1408,7 +1414,7 @@ async function loadRiskAlert() {
       <td>${money(item.alert_value)}</td>
       <td>${alertDirectionText(item.direction)}</td>
       <td>${item.status === "unread" ? "未读" : "已读"}</td>
-      <td>${item.status === "unread" ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
+      <td>${item.status === "unread" && canEditRiskAlert ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
     </tr>
   `).join("");
   historyTable.querySelectorAll("button").forEach((button) => {

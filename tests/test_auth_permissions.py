@@ -473,6 +473,8 @@ def test_admin_can_set_password_without_recommendation_or_plaintext_log(tmp_path
             ("王景泽", "王景泽", "管理部门", db.password_hash("old-password"), "管理员"),
         )
         target_id = db.last_insert_id(conn)
+    target_token = db.create_session(target_id)
+    assert db.get_user_by_token(target_token) is not None
     result = main.set_user_password(
         target_id,
         main.AdminSetPasswordIn(new_password="FixturePass5", password_change_recommended=False),
@@ -486,3 +488,44 @@ def test_admin_can_set_password_without_recommendation_or_plaintext_log(tmp_path
     assert db.verify_password("FixturePass5", target["password_hash"])
     assert target["password_change_recommended"] == 0
     assert "FixturePass5" not in log["description"]
+    assert db.get_user_by_token(target_token) is None
+
+
+def test_view_only_leader_cannot_mark_shared_alert_history_read(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    leader = main.create_user(
+        main.UserIn(name="只读领导", username="readonlyleader", department="公司领导", role="领导"),
+        user=admin,
+    )
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """
+            INSERT INTO alert_settings
+                (info_type, contract_year, contract_month, alert_value, direction, status, creator)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("卷螺差", "2026", "09", 10, "above", "enabled", admin["name"]),
+        )
+        alert_id = db.last_insert_id(conn)
+        db._exec(
+            cur,
+            "INSERT INTO alert_history (alert_id, current_value, alert_value, direction, status) VALUES (?, ?, ?, ?, ?)",
+            (alert_id, 11, 10, "above", "unread"),
+        )
+        history_id = db.last_insert_id(conn)
+        leader_user = dict(db._exec(cur, "SELECT * FROM users WHERE id = ?", (leader["id"],)).fetchone())
+
+    with pytest.raises(HTTPException) as single_exc:
+        main.mark_alert_history_read(history_id, user=leader_user)
+    assert single_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as bulk_exc:
+        main.mark_all_alert_history_read(user=leader_user)
+    assert bulk_exc.value.status_code == 403
+
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), "SELECT status FROM alert_history WHERE id = ?", (history_id,)).fetchone()
+    assert row["status"] == "unread"

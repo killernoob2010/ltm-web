@@ -192,7 +192,8 @@ def test_configure_wangjingze_validates_existing_admin_and_hides_secret(capsys):
             "POST",
         ),
     ]
-    assert secret not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err
 
 
 def test_configure_wangjingze_rejects_wrong_department_or_role():
