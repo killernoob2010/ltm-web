@@ -1,8 +1,11 @@
 """订单融资进度监控 — Excel parser and import tests."""
 from pathlib import Path
 import asyncio
+import json
 import os
 import sys
+
+from openpyxl import Workbook
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
@@ -17,6 +20,7 @@ from app.order_finance import (
     import_order_finance_upload,
     list_order_finance_records,
     parse_order_finance_directory,
+    summarize_order_finance,
     update_management_fields,
     build_order_finance_capital_view,
     build_order_finance_progress_view,
@@ -25,6 +29,87 @@ from app.order_finance import (
 
 LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
 NEW_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账(副本).xlsx")
+
+
+def build_three_sheet_workbook(path: Path) -> Path:
+    book = Workbook()
+    order = book.active
+    order.title = "订单"
+    order.append(["订单融资台账"])
+    order.append(["单位：人民币元"])
+    order.append([
+        "项次", "合同数量(吨)", "品名", "供应商简称", "合同编号", "贷款行",
+        "贷款人民币金额", "利率", "借款日期", "原到期日", "展期天数", "新到期日",
+        "提单日期", "交单日期", "还款日", "状态",
+    ])
+    order.append([
+        "Y-2026-1", 1000, "热轧圆钢 42CrMo", "北满", "26BM001", "UOB",
+        10_000_000, 0.031, "2026-06-01", "2026-08-01", 5, "2026-08-06",
+        "2026-06-20", "2026-06-23", None, "存续",
+    ])
+    order.append([
+        "Y-2026-2", 2000, "方坯 Q235", "东钢", "26DG002", "OCBC",
+        20_000_000, 0.032, "2026-05-01", "2026-07-01", 0, "2026-07-01",
+        None, None, None, "结案",
+    ])
+    order.append([
+        "Y-2026-1", 0, "热轧圆钢 42CrMo", "北满", "26BM001", "UOB",
+        1_000_000, 0.033, "2026-06-05", "2026-08-01", 5, "2026-08-06",
+        "2026-06-20", "2026-06-24", None, "存续",
+    ])
+
+    quota = book.create_sheet("额度")
+    quota.append(["订单融资额度", None, None, None, None, None])
+    quota.append(["单位：万元", None, None, None, None, None])
+    quota.append([None, None, None, None, "UOB", "OCBC"])
+    quota.append(["限定工厂", None, None, None, "集团内钢厂", "东钢"])
+    quota.append(["信用证要求", None, None, None, "不能接受FCR", "可接受FCR"])
+    quota.append(["提单要求", None, None, None, "to order", "客户银行"])
+    quota.append(["授信额度", None, None, None, 13_400, 40_200])
+    quota.append(["目前占用额度", None, None, None, 1_100, 2_000])
+    quota.append(["订单融资比例", None, None, None, "90%", "80%-85%"])
+    quota.append(["期限", None, None, None, "90天", "90天"])
+    quota.append(["目前可用额度", None, None, None, 12_300, 38_200])
+
+    alert = book.create_sheet("预警")
+    alert.append(["一、银行交单后待回款预警"])
+    alert.append(["项次", "合同编号", "情况说明"])
+    alert.append(["Y-2026-1", "26BM001", "请跟进银行回款"])
+
+    conflicting = book.create_sheet("数据合并")
+    conflicting.append(["项次", "合同编号", "贷款人民币金额"])
+    conflicting.append(["CONFLICT-DATA-MERGE", "WRONG", 999_999_999])
+    book.create_sheet("合作")
+    book.save(path)
+    return path
+
+
+def progress_record(item_no: str, status: str, **overrides):
+    record = {
+        "id": overrides.pop("id", 1),
+        "business_key": f"ITEM|{item_no}|1",
+        "subsidiary": "北满",
+        "source_file": "test.xlsx",
+        "source_sheet": "订单",
+        "purchase_contract_no": f"C-{item_no}",
+        "system_contract_no": "",
+        "product_name": "钢材",
+        "contract_quantity_mt": 1000,
+        "finance_bank": "UOB",
+        "finance_amount_actual": 10_000_000,
+        "finance_drawdown_date": "2026-06-01",
+        "finance_due_date": "2099-08-01",
+        "business_status": status,
+        "finance_status": status,
+        "bill_of_lading_date": "",
+        "document_submission_date": "",
+        "tail_payment_date": "",
+        "collection_date": "",
+        "import_warnings_json": "[]",
+        "source_json": json.dumps({"item_no": item_no}, ensure_ascii=False),
+    }
+    record.update(overrides)
+    return record
 
 
 def use_temp_db(tmp_path, monkeypatch):
@@ -53,6 +138,85 @@ def test_parse_order_finance_keeps_management_fields_empty_for_import():
     assert "manager_note" not in sample
     assert sample["business_key"]
     assert sample["source_file"].endswith(".xlsx")
+
+
+def test_three_sheet_parser_uses_order_as_only_order_source(tmp_path):
+    workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
+
+    result = parse_order_finance_directory(workbook)
+
+    assert result["files"][0]["sheet"] == "订单"
+    assert result["files"][0]["sheets"] == {"订单": True, "额度": True, "预警": True}
+    assert {record["source_sheet"] for record in result["records"]} == {"订单"}
+    assert all("CONFLICT-DATA-MERGE" not in record["source_json"] for record in result["records"])
+    first = next(record for record in result["records"] if json.loads(record["source_json"])["item_no"] == "Y-2026-1")
+    assert first["bill_of_lading_date"] == "2026-06-20"
+    assert first["document_submission_date"] == "2026-06-23"
+    assert first["tail_payment_date"] == ""
+    assert first["business_status"] == "存续"
+    assert first["source_sheet"] == "订单"
+
+
+def test_three_sheet_parser_reports_duplicate_items_alerts_and_quota(tmp_path):
+    workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
+
+    result = parse_order_finance_directory(workbook)
+
+    y1_rows = [record for record in result["records"] if json.loads(record["source_json"])["item_no"] == "Y-2026-1"]
+    assert len(y1_rows) == 2
+    warnings = [warning for record in y1_rows for warning in json.loads(record["import_warnings_json"])]
+    assert any("重复项次" in warning["message"] for warning in warnings)
+    assert any("银行交单后待回款预警" in warning["message"] for warning in warnings)
+    capital = next(json.loads(record["source_json"]).get("workbook_capital") for record in result["records"] if json.loads(record["source_json"]).get("workbook_capital"))
+    assert capital["total_credit"] == 536_000_000
+    assert capital["used_credit"] == 31_000_000
+    assert {bank["bank"] for bank in capital["banks"]} == {"UOB", "OCBC"}
+
+
+def test_explicit_status_and_finance_milestones_drive_lifecycle():
+    active_repaid = progress_record("Y-1", "存续", tail_payment_date="2026-07-01")
+    closed_without_repayment = progress_record("Y-2", "结案", id=2)
+    active_documented = progress_record("Y-3", "存续", id=3, document_submission_date="2026-06-20")
+    active_billed = progress_record("Y-4", "存续", id=4, bill_of_lading_date="2026-06-18")
+
+    view = build_order_finance_progress_view([active_repaid, closed_without_repayment, active_documented, active_billed])
+    stages = {item["item_no"]: item["stage"] for item in view["contracts"]}
+
+    assert stages == {
+        "Y-1": "已还款待结案",
+        "Y-2": "已完成",
+        "Y-3": "已交单待回款",
+        "Y-4": "已装船待回款",
+    }
+    assert view["summary"]["completed"] == 1
+    assert view["summary"]["collected_unrepaid"] == 1
+
+
+def test_capital_view_uses_quota_sheet_metadata_and_cross_checks_order_usage():
+    capital = {
+        "total_credit": 100_000_000,
+        "used_credit": 40_000_000,
+        "available_credit": 60_000_000,
+        "banks": [{
+            "bank": "UOB", "limit": 100_000_000, "used": 40_000_000,
+            "available": 60_000_000, "note": "集团内钢厂", "lc_requirement": "",
+            "bill_requirement": "to order", "finance_ratio": "90%", "term": "90天",
+        }],
+    }
+    record = progress_record(
+        "Y-1",
+        "存续",
+        finance_amount_actual=30_000_000,
+        source_json=json.dumps({"item_no": "Y-1", "workbook_capital": capital}, ensure_ascii=False),
+    )
+
+    view = build_order_finance_capital_view([record])
+
+    assert view["summary"]["total_credit"] == 100_000_000
+    assert view["summary"]["used_credit"] == 40_000_000
+    assert view["summary"]["order_used_credit"] == 30_000_000
+    assert view["summary"]["usage_difference"] == 10_000_000
+    assert view["bank_usage"][0]["order_used"] == 30_000_000
 
 
 def test_derive_business_status_for_drawdown_without_bill_of_lading():
@@ -97,6 +261,16 @@ def test_import_order_finance_directory_preserves_management_fields(tmp_path, mo
     assert updated["repayment_requirement"] == "放款当日先回25%陈欠"
     assert updated["next_action"] == "等领导确认"
     assert updated["manager_note"] == "pytest manual note"
+
+
+def test_imported_record_list_keeps_overseas_entity_for_existing_card_header(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
+    records = list_order_finance_records()
+
+    assert records
+    assert {record["overseas_entity"] for record in records} >= {"YOLANDA", "香港建龙"}
 
 
 def test_import_new_workbook_archives_previous_excel_source_records(tmp_path, monkeypatch):
@@ -150,7 +324,7 @@ def test_progress_view_groups_contract_items_and_multi_financing():
     multi = [item for item in view["contracts"] if item["financing_count"] > 1]
     assert multi
     sample = multi[0]
-    assert sample["stage"] in {"已放款待装船", "已装船待回款", "已收汇待还款", "已回款待结算", "已完成"}
+    assert sample["stage"] in {"已放款待装船", "已装船待回款", "已交单待回款", "已还款待结案", "已完成"}
     assert len(sample["financings"]) == sample["financing_count"]
 
 
@@ -163,6 +337,25 @@ def test_capital_view_contains_bank_limits_and_due_buckets():
     assert view["summary"]["used_credit"] > 0
     assert any(row["bank"] == "UOB" and row["limit"] > 0 for row in view["bank_usage"])
     assert {bucket["label"] for bucket in view["due_buckets"]} == {"7天内", "8-30天", "31-60天", "60天以上", "已逾期"}
+
+
+def test_record_summary_excludes_explicit_closed_orders_from_active_count():
+    active = progress_record("Y-1", "存续")
+    closed = progress_record("Y-2", "结案", id=2)
+
+    summary = summarize_order_finance([active, closed])
+
+    assert summary["total_count"] == 2
+    assert summary["active_count"] == 1
+
+
+def test_current_workbook_order_amount_unit_reconciles_to_quota_usage():
+    records = parse_order_finance_directory(NEW_LEDGER_WORKBOOK)["records"]
+
+    view = build_order_finance_capital_view(records)
+
+    assert abs(view["summary"]["order_used_credit"] - view["summary"]["used_credit"]) < 1
+    assert abs(view["summary"]["usage_difference"]) < 1
 
 
 def test_manual_create_blocks_exact_contract_duplicate(tmp_path, monkeypatch):
@@ -228,7 +421,7 @@ def test_manual_create_reports_similar_duplicates_without_blocking(tmp_path, mon
     assert second["business_key"].startswith("承德|手动新增|")
 
 
-def test_import_merges_manual_record_with_same_contract_key_and_preserves_management(tmp_path, monkeypatch):
+def test_item_key_import_does_not_silently_merge_manual_contract_match(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     excel_sample = next(record for record in parse_order_finance_directory(NEW_LEDGER_WORKBOOK)["records"] if record["purchase_contract_no"])
     manual = create_manual_order_finance_record(
@@ -246,10 +439,12 @@ def test_import_merges_manual_record_with_same_contract_key_and_preserves_manage
     )
 
     import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
-    merged = next(item for item in list_order_finance_records() if item["id"] == manual["id"])
+    records = list_order_finance_records()
+    preserved_manual = next(item for item in records if item["id"] == manual["id"])
+    imported = [item for item in records if item["source_file"].endswith(".xlsx")]
 
-    assert merged["source_file"].endswith(".xlsx")
-    assert merged["terminal_customer"] == excel_sample["terminal_customer"]
-    assert merged["planned_finance_amount"] == 7654321
-    assert merged["repayment_requirement"] == "先回陈欠"
-    assert merged["manager_note"] == "导入前手工备注"
+    assert imported
+    assert preserved_manual["source_file"] == "手动新增"
+    assert preserved_manual["planned_finance_amount"] == 7654321
+    assert preserved_manual["repayment_requirement"] == "先回陈欠"
+    assert preserved_manual["manager_note"] == "导入前手工备注"

@@ -50,15 +50,31 @@ test("order finance capital monitor follows the approved prototype structure", (
   assert.match(stylesCss, /\.bank-row:hover,\s*\.bank-row\.selected/);
 });
 
-test("order finance progress keeps shipment date and vessel in separate fields", () => {
+test("order finance progress keeps approved layout while showing corrected milestones", () => {
   const contractStart = appJs.indexOf("function renderOrderFinanceContract");
   assert.notEqual(contractStart, -1);
   const contractEnd = appJs.indexOf("function renderOrderFinanceContracts", contractStart);
   assert.notEqual(contractEnd, -1);
   const contractRenderer = appJs.slice(contractStart, contractEnd);
 
-  assert.doesNotMatch(contractRenderer, /orderFinanceField\("装运节点"/);
-  assert.match(contractRenderer, /orderFinanceField\("最迟装船日"/);
-  assert.match(contractRenderer, /orderFinanceField\("船名\/航次"/);
-  assert.doesNotMatch(contractRenderer, /item\.vessel \|\| \(item\.latest_shipment_date/);
+  assert.match(contractRenderer, /class="order-finance-field-strip"/);
+  assert.match(contractRenderer, /orderFinanceField\("提单日"/);
+  assert.match(contractRenderer, /orderFinanceField\("展期状态"/);
+  assert.match(contractRenderer, /orderFinanceField\("还款情况"/);
+  assert.doesNotMatch(contractRenderer, /orderFinanceField\("最迟装船日"/);
+  assert.doesNotMatch(contractRenderer, /orderFinanceField\("船名\/航次"/);
+});
+
+test("order finance detail and filters distinguish bill document and repayment", () => {
+  assert.match(appJs, /<th>提单日<\/th>/);
+  assert.match(appJs, /<th>交单日<\/th>/);
+  assert.match(appJs, /<th>还款日<\/th>/);
+  assert.doesNotMatch(appJs, /<th>收汇日<\/th>/);
+  assert.match(indexHtml, />已交单待回款<\/button>/);
+  assert.match(indexHtml, />已还款待结案<\/button>/);
+  assert.match(appJs, /\["缺提单\/交单\/还款"/);
+  assert.match(appJs, /item\.bill_date/);
+  assert.match(appJs, /if \(item\.stage === "已完成"\) return "已结案"/);
+  assert.match(appJs, /bank\.difference/);
+  assert.match(appJs, /订单计算/);
 });

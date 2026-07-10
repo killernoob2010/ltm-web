@@ -29,6 +29,7 @@ LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA
 ORDER_FINANCE_SEED_PATH = Path(__file__).with_name("order_finance_seed.json")
 ORDER_FINANCE_MODULE = "order_finance_progress"
 ORDER_FINANCE_CAPITAL_MODULE = "order_finance_capital"
+TARGET_XLSX_SHEETS = ("订单", "额度", "预警")
 
 DEFAULT_BANK_LIMITS = [
     {
@@ -692,23 +693,290 @@ def _xlsx_row_record(path: Path, sheet_name: str, headers: List[str], values: tu
     return record
 
 
+def _compact_header(value: Any) -> str:
+    return _xlsx_text(value).replace("\n", "").replace(" ", "")
+
+
+def _find_xlsx_header_row(sheet, aliases: tuple[str, ...] = ("项次",)) -> tuple[int, List[Any]]:
+    normalized_aliases = {_compact_header(alias) for alias in aliases}
+    for row_idx, values in enumerate(sheet.iter_rows(min_row=1, max_row=min(sheet.max_row, 20), values_only=True), start=1):
+        headers = [_compact_header(value) for value in values]
+        if any(alias in headers for alias in normalized_aliases):
+            return row_idx, list(values)
+    raise ValueError(f"{sheet.title}页签未找到项次表头")
+
+
+def _row_alias(row: Dict[str, Any], *aliases: str) -> Any:
+    compact = {_compact_header(key): value for key, value in row.items()}
+    for alias in aliases:
+        key = _compact_header(alias)
+        if key in compact:
+            return compact[key]
+    return None
+
+
+def _normalized_order_status(value: Any) -> str:
+    text = _xlsx_text(value)
+    if "结案" in text or text in {"已完成", "已结算"}:
+        return "结案"
+    if "存续" in text or text in {"进行中", "未结案"}:
+        return "存续"
+    return text
+
+
+def _alerts_grouped_by_item(sheet) -> Dict[str, List[Dict[str, str]]]:
+    alerts: Dict[str, List[Dict[str, str]]] = {}
+    rows = [list(values) for values in sheet.iter_rows(values_only=True)]
+    for index, values in enumerate(rows):
+        compact = [_compact_header(value) for value in values]
+        if "项次" not in compact:
+            continue
+        item_col = compact.index("项次")
+        title = ""
+        if index > 0:
+            title = next((_xlsx_text(value) for value in rows[index - 1] if _xlsx_text(value)), "")
+        row_index = index + 1
+        while row_index < len(rows):
+            next_values = rows[row_index]
+            next_compact = [_compact_header(value) for value in next_values]
+            if "项次" in next_compact:
+                break
+            item_no = _xlsx_text(next_values[item_col] if item_col < len(next_values) else None)
+            if not item_no:
+                break
+            if item_no.startswith("#"):
+                row_index += 1
+                continue
+            message_parts = [_xlsx_text(value) for value in next_values if _xlsx_text(value)]
+            message = title or "Excel预警"
+            if message_parts:
+                message = f"{message}：{' / '.join(message_parts[1:])}" if len(message_parts) > 1 else message
+            alerts.setdefault(item_no, []).append({
+                "field": "excel_alert",
+                "level": "高",
+                "message": message,
+                "source_sheet": sheet.title,
+                "source_row": str(row_index + 1),
+            })
+            row_index += 1
+    return alerts
+
+
+def _quota_label_rows(sheet) -> Dict[str, List[int]]:
+    labels: Dict[str, List[int]] = {}
+    for row_idx in range(1, sheet.max_row + 1):
+        label = _compact_header(sheet.cell(row_idx, 1).value)
+        if label:
+            labels.setdefault(label, []).append(row_idx)
+    return labels
+
+
+def _quota_numeric_value(sheet, row_indices: List[int], col_idx: int) -> Optional[float]:
+    value = None
+    for row_idx in row_indices:
+        parsed = _xlsx_float(sheet.cell(row_idx, col_idx).value)
+        if parsed is not None:
+            value = parsed
+    return value
+
+
+def _parse_quota_sheet(book) -> Dict[str, Any]:
+    if "额度" not in book.sheetnames:
+        return {"banks": [], "total_credit": 0.0, "used_credit": 0.0, "available_credit": 0.0}
+    sheet = book["额度"]
+    labels = _quota_label_rows(sheet)
+    condition_rows = labels.get("限定工厂", [])
+    if not condition_rows:
+        return {"banks": [], "total_credit": 0.0, "used_credit": 0.0, "available_credit": 0.0}
+    bank_header_row = condition_rows[0] - 1
+    unit_text = " ".join(
+        _xlsx_text(sheet.cell(row, col).value)
+        for row in range(1, min(sheet.max_row, 5) + 1)
+        for col in range(1, min(sheet.max_column, 12) + 1)
+    )
+    multiplier = 10000.0 if "万元" in unit_text else 1.0
+    banks = []
+    for col_idx in range(2, sheet.max_column + 1):
+        bank = _xlsx_text(sheet.cell(bank_header_row, col_idx).value)
+        if not bank:
+            continue
+        limit = _quota_numeric_value(sheet, labels.get("授信额度", []), col_idx)
+        used = _quota_numeric_value(sheet, labels.get("目前占用额度", []), col_idx)
+        available = _quota_numeric_value(sheet, labels.get("目前可用额度", []), col_idx)
+        if limit is None and used is None and available is None:
+            continue
+        banks.append({
+            "bank": bank,
+            "limit": (limit or 0.0) * multiplier,
+            "used": used * multiplier if used is not None else None,
+            "available": available * multiplier if available is not None else None,
+            "note": _xlsx_text(sheet.cell(condition_rows[0], col_idx).value),
+            "lc_requirement": _xlsx_text(sheet.cell(labels.get("信用证要求", [condition_rows[0]])[0], col_idx).value),
+            "bill_requirement": _xlsx_text(sheet.cell(labels.get("提单要求", [condition_rows[0]])[0], col_idx).value),
+            "finance_ratio": _xlsx_text(sheet.cell(labels.get("订单融资比例", [condition_rows[0]])[0], col_idx).value),
+            "term": _xlsx_text(sheet.cell(labels.get("期限", [condition_rows[0]])[0], col_idx).value),
+        })
+    total_credit = sum(float(bank["limit"] or 0) for bank in banks)
+    used_values = [bank["used"] for bank in banks if bank["used"] is not None]
+    used_credit = sum(float(value) for value in used_values) if used_values else None
+    available_values = [bank["available"] for bank in banks if bank["available"] is not None]
+    return {
+        "banks": banks,
+        "total_credit": total_credit,
+        "used_credit": used_credit,
+        "available_credit": sum(available_values) if len(available_values) == len(banks) else (total_credit - used_credit if used_credit is not None else None),
+        "unit": "元",
+    }
+
+
+def _order_sheet_record(
+    path: Path,
+    sheet_name: str,
+    headers: List[Any],
+    values: tuple[Any, ...],
+    row_idx: int,
+    alerts_by_item: Dict[str, List[Dict[str, str]]],
+) -> Optional[Dict[str, Any]]:
+    row = dict(zip(headers, values))
+    item_no = _xlsx_text(_row_alias(row, "项次", "订单项次"))
+    if not item_no or item_no.startswith("#") or item_no in {"合计", "TOTAL"}:
+        return None
+    supplier_short = _xlsx_text(_row_alias(row, "供应商简称", "钢厂", "发货方", "供应商"))
+    supplier_full = _xlsx_text(_row_alias(row, "供应商", "发货方", "钢厂"))
+    finance_amount = _xlsx_float(_row_alias(row, "贷款人民币金额", "融资金额", "放款金额"))
+    status = _normalized_order_status(_row_alias(row, "状态", "订单状态", "存续/结案", "贷款状态"))
+    repay_date = _normalize_xlsx_date(_row_alias(row, "还款日", "还款日期"))
+    finance_due = _normalize_xlsx_date(_row_alias(row, "新到期日", "融资到期日", "到期日")) or _normalize_xlsx_date(_row_alias(row, "原到期日"))
+    original_due = _normalize_xlsx_date(_row_alias(row, "原到期日"))
+    extension_days = _to_int(_row_alias(row, "展期天数")) or 0
+    bill_date = _normalize_xlsx_date(_row_alias(row, "提单日", "提单日期"))
+    document_date = _normalize_xlsx_date(_row_alias(row, "交单日", "交单日期", "银行交单日"))
+    source_date = f"{item_no.split('-')[1]}-01-01" if len(item_no.split("-")) > 2 and item_no.split("-")[1].isdigit() else date.today().isoformat()
+    source_meta = {
+        "item_no": item_no,
+        "headers": [str(header or "") for header in headers],
+        "row": list(values),
+        "finance_rate": _xlsx_float(_row_alias(row, "利率")),
+        "original_due_date": original_due,
+        "extension_days": extension_days,
+        "order_status": status,
+        "alerts": alerts_by_item.get(item_no, []),
+    }
+    record = {
+        "business_key": f"ITEM|{item_no}|1",
+        "subsidiary": supplier_short or supplier_full or "未填供应商",
+        "source_file": path.name,
+        "source_sheet": sheet_name,
+        "source_row_start": row_idx,
+        "source_row_end": row_idx,
+        "source_snapshot_date": source_date,
+        "product_name": _xlsx_text(_row_alias(row, "品种材质", "品名", "品种", "材质")),
+        "purchase_contract_no": _xlsx_text(_row_alias(row, "合同编号", "合同号", "合同")),
+        "system_contract_no": _xlsx_text(_row_alias(row, "系统合同号")),
+        "buyer": _xlsx_text(_row_alias(row, "合同买方", "买方")),
+        "seller": supplier_full or supplier_short,
+        "overseas_entity": _xlsx_entity(item_no),
+        "terminal_customer": _xlsx_text(_row_alias(row, "合同买方", "终端客户", "客户")),
+        "contract_date": _normalize_xlsx_date(_row_alias(row, "合同日期")),
+        "trade_term": _xlsx_text(_row_alias(row, "贸易条款", "价格条款")),
+        "origin_port": _xlsx_text(_row_alias(row, "起运港")),
+        "destination_port": _xlsx_text(_row_alias(row, "目的港", "卸港")),
+        "contract_quantity_mt": _xlsx_float(_row_alias(row, "合同数量(吨)", "吨数", "合同数量", "数量")),
+        "contract_currency": _xlsx_text(_row_alias(row, "合同币别", "币种")) or "CNY",
+        "contract_amount": _xlsx_float(_row_alias(row, "合同金额", "付款金额")),
+        "finance_bank": _xlsx_text(_row_alias(row, "贷款行", "融资银行")),
+        "finance_amount_expected": finance_amount,
+        "finance_amount_actual": finance_amount,
+        "repaid_amount": finance_amount if repay_date else None,
+        "remaining_credit_amount": None,
+        "finance_drawdown_date": _normalize_xlsx_date(_row_alias(row, "借款日期", "借款日", "放款日期")),
+        "finance_due_date": finance_due,
+        "finance_days": _to_int(_row_alias(row, "实际融资周期", "融资天数")),
+        "finance_status": status,
+        "latest_shipment_date": "",
+        "lc_latest_shipment_date": "",
+        "vessel_voyage": "",
+        "bill_of_lading_date": bill_date,
+        "bill_of_lading_no": _xlsx_text(_row_alias(row, "提单号")),
+        "document_submission_date": document_date,
+        "collection_date": _normalize_xlsx_date(_row_alias(row, "收汇日期", "收汇日")),
+        "actual_shipped_quantity_mt": None,
+        "actual_goods_amount": None,
+        "tail_amount": None,
+        "tail_payment_date": repay_date,
+        "executor": _xlsx_text(_row_alias(row, "执行人员", "负责人")),
+        "business_status": status,
+        "risk_level": "低" if status == "结案" else "中",
+        "remark": _xlsx_text(_row_alias(row, "情况说明", "备注")),
+        "sales_contracts_json": "[]",
+        "settlement_json": "{}",
+        "corrections_json": "[]",
+        "source_json": json.dumps(source_meta, ensure_ascii=False, default=str),
+    }
+    warnings = _build_warnings(record) + list(alerts_by_item.get(item_no, []))
+    if not status:
+        warnings.append({"field": "business_status", "level": "高", "message": "存续/结案状态为空"})
+    record["import_warnings_json"] = json.dumps(warnings, ensure_ascii=False)
+    return record
+
+
+def _parse_order_sheet(book, path: Path, alerts_by_item: Dict[str, List[Dict[str, str]]], capital: Dict[str, Any]) -> List[Dict[str, Any]]:
+    sheet = book["订单"]
+    header_row, headers = _find_xlsx_header_row(sheet)
+    records: List[Dict[str, Any]] = []
+    by_item: Dict[str, List[Dict[str, Any]]] = {}
+    for row_idx, values in enumerate(sheet.iter_rows(min_row=header_row + 1, max_row=sheet.max_row, values_only=True), start=header_row + 1):
+        record = _order_sheet_record(path, sheet.title, headers, values, row_idx, alerts_by_item)
+        if not record:
+            continue
+        item_no = _item_no(record)
+        siblings = by_item.setdefault(item_no, [])
+        record["business_key"] = f"ITEM|{item_no}|{len(siblings) + 1}"
+        siblings.append(record)
+        records.append(record)
+    for item_no, siblings in by_item.items():
+        if len(siblings) <= 1:
+            continue
+        duplicate_warning = {"field": "item_no", "level": "高", "message": f"重复项次：{item_no}，共 {len(siblings)} 行"}
+        for record in siblings:
+            warnings = _json_loads(record.get("import_warnings_json"), [])
+            warnings.append(duplicate_warning)
+            record["import_warnings_json"] = json.dumps(warnings, ensure_ascii=False)
+    active_amount = sum(
+        float(record.get("finance_amount_actual") or record.get("finance_amount_expected") or 0)
+        for record in records
+        if record.get("business_status") == "存续"
+    )
+    quota_used = float(capital.get("used_credit") or 0)
+    amount_multiplier = quota_used / active_amount if active_amount and quota_used else 1.0
+    if 5000 <= amount_multiplier <= 15000:
+        for record in records:
+            for field in ("finance_amount_expected", "finance_amount_actual", "repaid_amount"):
+                if record.get(field) is not None:
+                    record[field] = float(record[field]) * 10000
+            source = _json_loads(record.get("source_json"), {})
+            source["finance_amount_unit"] = "万元"
+            record["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
+    if records and capital.get("banks"):
+        source = _json_loads(records[0].get("source_json"), {})
+        source["workbook_capital"] = capital
+        records[0]["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
+    return records
+
+
 def parse_order_finance_xlsx_workbook(path: Path) -> Dict[str, Any]:
     book = load_workbook(path, data_only=True, read_only=False)
-    sheet = book["数据合并"]
-    headers = [cell.value or f"col_{index + 1}" for index, cell in enumerate(sheet[1])]
-    records = []
-    seen_keys: Dict[str, int] = {}
-    for row_idx, values in enumerate(sheet.iter_rows(min_row=2, max_row=sheet.max_row, values_only=True), start=2):
-        record = _xlsx_row_record(path, sheet.title, headers, values, row_idx)
-        if record:
-            base_key = record["business_key"]
-            seen_keys[base_key] = seen_keys.get(base_key, 0) + 1
-            if seen_keys[base_key] > 1:
-                record["business_key"] = f"{base_key}|{_xlsx_business_key_suffix(record, row_idx)}"
-            records.append(record)
+    if "订单" not in book.sheetnames:
+        raise ValueError("Excel 缺少必需的订单页签")
+    sheets = {name: name in book.sheetnames for name in TARGET_XLSX_SHEETS}
+    alerts_by_item = _alerts_grouped_by_item(book["预警"]) if sheets["预警"] else {}
+    capital = _parse_quota_sheet(book)
+    records = _parse_order_sheet(book, path, alerts_by_item, capital)
     return {
         "file": path.name,
-        "sheet": sheet.title,
+        "sheet": "订单",
+        "sheets": sheets,
+        "capital": capital,
         "records": records,
         "summary": {"record_count": len(records), "warning_count": sum(len(json.loads(r["import_warnings_json"])) for r in records)},
     }
@@ -740,7 +1008,12 @@ def parse_order_finance_directory(directory: Path | str) -> Dict[str, Any]:
         else:
             result = parse_order_finance_workbook(path)
         records.extend(result["records"])
-        file_results.append({"file": result["file"], "sheet": result["sheet"], **result["summary"]})
+        file_results.append({
+            "file": result["file"],
+            "sheet": result["sheet"],
+            "sheets": result.get("sheets"),
+            **result["summary"],
+        })
     return {
         "records": records,
         "files": file_results,
@@ -880,7 +1153,7 @@ async def import_order_finance_upload(request: Request, file_name: str, imported
 ORDER_FINANCE_LIST_FIELDS = [
     "id", "business_key", "subsidiary", "source_file", "source_sheet", "source_row_start",
     "source_snapshot_date", "product_name", "purchase_contract_no", "system_contract_no",
-    "terminal_customer", "contract_quantity_mt", "contract_currency", "contract_amount",
+    "overseas_entity", "terminal_customer", "contract_quantity_mt", "contract_currency", "contract_amount",
     "finance_bank", "finance_amount_expected", "finance_amount_actual", "finance_drawdown_date",
     "finance_due_date", "latest_shipment_date", "vessel_voyage", "bill_of_lading_date",
     "document_submission_date", "collection_date", "actual_shipped_quantity_mt", "executor", "business_status",
@@ -1107,7 +1380,7 @@ def update_management_fields(record_id: int, changes: Dict[str, Any], updated_by
 
 
 def summarize_order_finance(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    active = [row for row in records if row.get("business_status") != "已结算"]
+    active = [row for row in records if _normalize_text(row.get("business_status")) not in {"结案", "已完成", "已结算"}]
     due_soon = 0
     today = date.today()
     for row in active:
@@ -1145,6 +1418,9 @@ def _json_loads(value: Any, fallback: Any) -> Any:
 
 
 def _group_key(row: Dict[str, Any]) -> str:
+    item_no = _item_no(row)
+    if item_no and row.get("source_file") != "手动新增":
+        return f"ITEM|{item_no}"
     parts = str(row.get("business_key") or "").split("|")
     if len(parts) >= 3:
         return "|".join(parts[:3])
@@ -1168,10 +1444,13 @@ def _lc_info(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _is_completed_group(rows: List[Dict[str, Any]]) -> bool:
-    statuses = [_normalize_text(row.get("finance_status")) for row in rows]
     business_statuses = [_normalize_text(row.get("business_status")) for row in rows]
-    if any(status in {"结案", "已结算"} for status in business_statuses):
+    if any(status == "存续" for status in business_statuses):
+        return False
+    explicit = [status for status in business_statuses if status]
+    if explicit and all(status in {"结案", "已完成", "已结算"} for status in explicit):
         return True
+    statuses = [_normalize_text(row.get("finance_status")) for row in rows]
     return bool(statuses) and all(status == "已还款" or row.get("repaid_amount") for status, row in zip(statuses, rows))
 
 
@@ -1183,18 +1462,18 @@ def _group_stage(rows: List[Dict[str, Any]]) -> str:
     if _is_completed_group(rows):
         return "已完成"
     has_loan = any(row.get("finance_drawdown_date") or _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected")) for row in rows)
-    has_ship_or_doc = _group_has_value(rows, "vessel_voyage") or _group_has_value(rows, "document_submission_date")
-    has_collection = _group_has_value(rows, "collection_date")
-    has_repay = _group_has_value(rows, "tail_payment_date") or any(_normalize_text(row.get("finance_status")) == "已还款" for row in rows)
+    has_bill = _group_has_value(rows, "bill_of_lading_date")
+    has_document = _group_has_value(rows, "document_submission_date")
+    has_repay = _group_has_value(rows, "tail_payment_date")
     if not has_loan:
         return "待放款"
-    if not has_ship_or_doc:
-        return "已放款待装船"
-    if not has_collection:
+    if has_repay:
+        return "已还款待结案"
+    if has_document:
+        return "已交单待回款"
+    if has_bill:
         return "已装船待回款"
-    if has_collection and not has_repay:
-        return "已收汇待还款"
-    return "已回款待结算"
+    return "已放款待装船"
 
 
 def _days_to(value: Any) -> Optional[int]:
@@ -1208,15 +1487,12 @@ def _group_risk(rows: List[Dict[str, Any]], stage: str) -> str:
     if stage == "已完成":
         return "已完成"
     due_days = [_days_to(row.get("finance_due_date")) for row in rows if row.get("finance_due_date")]
-    ship_days = [_days_to(row.get("latest_shipment_date")) for row in rows if row.get("latest_shipment_date")]
     warnings = sum(len(_json_loads(row.get("import_warnings_json"), [])) for row in rows)
     min_due = min([item for item in due_days if item is not None], default=None)
-    min_ship = min([item for item in ship_days if item is not None], default=None)
-    missing_collection_or_repay = not _group_has_value(rows, "collection_date") or not any(_normalize_text(row.get("finance_status")) == "已还款" for row in rows)
-    missing_ship_or_doc = not _group_has_value(rows, "vessel_voyage") or not _group_has_value(rows, "document_submission_date")
-    if warnings or (min_due is not None and min_due < 0) or (min_due is not None and min_due <= 7 and missing_collection_or_repay) or (min_ship is not None and min_ship <= 7 and missing_ship_or_doc):
+    missing_repay = not _group_has_value(rows, "tail_payment_date")
+    if warnings or (min_due is not None and min_due < 0 and missing_repay) or (min_due is not None and min_due <= 7 and missing_repay):
         return "高"
-    if (min_due is not None and min_due <= 30 and missing_collection_or_repay) or (min_ship is not None and min_ship <= 30 and missing_ship_or_doc) or len(rows) > 1:
+    if (min_due is not None and min_due <= 30 and missing_repay) or stage in {"已放款待装船", "已装船待回款", "已交单待回款", "已还款待结案"} or len(rows) > 1:
         return "中"
     return "低"
 
@@ -1228,16 +1504,18 @@ def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str
     if stage == "已完成":
         return "已闭环，保留历史查询"
     if len(rows) > 1:
-        return "多笔融资，分别跟进到期、收汇和还款"
+        return "同一项次存在多行融资，请核对并分别跟进"
     if stage == "待放款":
         return "确认贷款行、金额和借款日期"
     if stage == "已放款待装船":
-        return "优先确认船期、船名和交单计划" if risk == "高" else "跟进船期与交单资料"
+        return "优先确认提单进度" if risk == "高" else "跟进钢厂和提单进度"
     if stage == "已装船待回款":
-        return "跟进交单、贴现和收汇节点"
-    if stage == "已收汇待还款":
-        return "确认还款日和银行结清状态"
-    return "确认结算完成状态"
+        return "确认银行交单安排"
+    if stage == "已交单待回款":
+        return "跟进交单后的回款和还款日"
+    if stage == "已还款待结案":
+        return "确认订单结案状态"
+    return "确认当前订单状态"
 
 
 def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1249,7 +1527,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     finance_total = sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows)
     due_dates = sorted([row.get("finance_due_date") for row in rows if row.get("finance_due_date")])
     document_dates = sorted([row.get("document_submission_date") for row in rows if row.get("document_submission_date")])
-    collection_dates = sorted([row.get("collection_date") for row in rows if row.get("collection_date")])
+    bill_dates = sorted([row.get("bill_of_lading_date") for row in rows if row.get("bill_of_lading_date")])
     repay_dates = sorted([row.get("tail_payment_date") for row in rows if row.get("tail_payment_date")])
     warnings = []
     for row in rows:
@@ -1274,8 +1552,8 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "latest_shipment_date": first.get("latest_shipment_date") or "",
         "vessel": next((row.get("vessel_voyage") for row in rows if row.get("vessel_voyage")), ""),
         "latest_due_date": due_dates[0] if due_dates else "",
+        "bill_date": bill_dates[-1] if bill_dates else "",
         "document_date": document_dates[-1] if document_dates else "",
-        "collection_date": collection_dates[-1] if collection_dates else "",
         "repay_date": repay_dates[-1] if repay_dates else "",
         "stage": stage,
         "risk": risk,
@@ -1292,11 +1570,13 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "id": row.get("id"),
                 "bank": row.get("finance_bank") or "",
                 "amount": _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")),
-                "rate": None,
                 "borrow_date": row.get("finance_drawdown_date") or "",
+                "original_due_date": _json_loads(row.get("source_json"), {}).get("original_due_date") or "",
+                "extension_days": _json_loads(row.get("source_json"), {}).get("extension_days") or 0,
                 "due_date": row.get("finance_due_date") or "",
+                "rate": _json_loads(row.get("source_json"), {}).get("finance_rate"),
+                "bill_date": row.get("bill_of_lading_date") or "",
                 "document_date": row.get("document_submission_date") or "",
-                "collection_date": row.get("collection_date") or "",
                 "repay_date": row.get("tail_payment_date") or "",
                 "status": row.get("finance_status") or row.get("business_status") or "",
                 "next_action": row.get("next_action") or "",
@@ -1325,10 +1605,10 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
         "due_30d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 30]),
         "focus_risk": len([item for item in open_contracts if item["risk"] == "高"]),
         "financed_unshipped": len([item for item in open_contracts if item["stage"] == "已放款待装船"]),
-        "documented_uncollected": len([item for item in open_contracts if item["stage"] == "已装船待回款"]),
-        "collected_unrepaid": len([item for item in open_contracts if item["stage"] == "已收汇待还款"]),
+        "documented_uncollected": len([item for item in open_contracts if item["stage"] == "已交单待回款"]),
+        "collected_unrepaid": len([item for item in open_contracts if item["stage"] == "已还款待结案"]),
         "completed": len([item for item in contracts if item["stage"] == "已完成"]),
-        "missing_milestones": len([item for item in open_contracts if not item.get("document_date") or not item.get("collection_date") or not item.get("repay_date")]),
+        "missing_milestones": len([item for item in open_contracts if not item.get("bill_date") or not item.get("document_date") or not item.get("repay_date")]),
         "data_issues": sum(item["data_issue_count"] for item in contracts),
         "total_contracts": len(contracts),
     }
@@ -1343,6 +1623,15 @@ def _sum_by(records: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:
     return [{"name": key, "amount": value} for key, value in sorted(totals.items(), key=lambda item: item[1], reverse=True)]
 
 
+def _workbook_capital_metadata(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for row in records:
+        source = _json_loads(row.get("source_json"), {})
+        capital = source.get("workbook_capital") if isinstance(source, dict) else None
+        if isinstance(capital, dict) and capital.get("banks"):
+            return capital
+    return {}
+
+
 def build_order_finance_capital_view(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     records = records if records is not None else list_order_finance_records()
     open_rows = [row for row in records if _group_stage([row]) != "已完成"]
@@ -1350,17 +1639,32 @@ def build_order_finance_capital_view(records: Optional[List[Dict[str, Any]]] = N
     for row in open_rows:
         bank = _normalize_text(row.get("finance_bank")) or "未填贷款行"
         bank_used[bank] = bank_used.get(bank, 0.0) + _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount"))
-    bank_limit_map = {row["bank"]: row for row in DEFAULT_BANK_LIMITS}
+    capital_metadata = _workbook_capital_metadata(records)
+    quota_banks = capital_metadata.get("banks") or DEFAULT_BANK_LIMITS
+    bank_limit_map = {row["bank"]: row for row in quota_banks}
     all_banks = sorted(set(bank_limit_map) | set(bank_used))
     bank_usage = []
     for bank in all_banks:
         limit_row = bank_limit_map.get(bank, {"bank": bank, "limit": 0, "note": "", "lc_requirement": "", "bill_requirement": "", "finance_ratio": "", "term": ""})
-        used = bank_used.get(bank, 0.0)
+        order_used = bank_used.get(bank, 0.0)
         limit = float(limit_row.get("limit") or 0)
-        bank_usage.append({**limit_row, "used": used, "available": limit - used if limit else None, "usage_rate": used / limit if limit else None})
+        used = float(limit_row.get("used") if limit_row.get("used") is not None else order_used)
+        available = limit_row.get("available")
+        if available is None and limit:
+            available = limit - used
+        bank_usage.append({
+            **limit_row,
+            "used": used,
+            "available": available,
+            "usage_rate": used / limit if limit else None,
+            "order_used": order_used,
+            "difference": used - order_used,
+        })
     bank_usage.sort(key=lambda item: item["used"], reverse=True)
-    total_credit = sum(float(row.get("limit") or 0) for row in DEFAULT_BANK_LIMITS)
-    used_credit = sum(bank_used.values())
+    total_credit = float(capital_metadata.get("total_credit") or sum(float(row.get("limit") or 0) for row in quota_banks))
+    order_used_credit = sum(bank_used.values())
+    used_credit = float(capital_metadata.get("used_credit") if capital_metadata.get("used_credit") is not None else order_used_credit)
+    available_credit = float(capital_metadata.get("available_credit") if capital_metadata.get("available_credit") is not None else total_credit - used_credit)
     buckets = [
         {"label": "7天内", "min": 0, "max": 7},
         {"label": "8-30天", "min": 8, "max": 30},
@@ -1385,7 +1689,9 @@ def build_order_finance_capital_view(records: Optional[List[Dict[str, Any]]] = N
         "summary": {
             "total_credit": total_credit,
             "used_credit": used_credit,
-            "available_credit": total_credit - used_credit,
+            "available_credit": available_credit,
+            "order_used_credit": order_used_credit,
+            "usage_difference": used_credit - order_used_credit,
             "utilization_rate": used_credit / total_credit if total_credit else 0,
             "near_limit_banks": len([row for row in bank_usage if row.get("usage_rate") is not None and row["usage_rate"] >= 0.9]),
             "due_30_amount": due_30_amount,
