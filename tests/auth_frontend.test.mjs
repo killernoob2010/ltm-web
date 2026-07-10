@@ -19,7 +19,7 @@ test("login page exposes real guest login without prefilled admin credentials", 
 });
 
 test("user management exposes account lifecycle permission levels and password self-service", () => {
-  assert.match(html, /src="\/static\/app\.js\?v=roster-permissions-20260710"/);
+  assert.match(html, /src="\/static\/app\.js\?v=roster-permissions-20260710-2"/);
   for (const id of [
     "resetUserPasswordBtn", "toggleUserStatusBtn", "changePasswordBtn",
     "passwordChangeNotice", "changePasswordDialog", "currentPassword",
@@ -47,4 +47,42 @@ test("user management exposes account lifecycle permission levels and password s
   );
   assert.match(appJs, /setHidden\("#importCacheBtn", guest \|\| !canModuleSensitive\("info_summary"\)\)/);
   assert.match(appJs, /setHidden\("#batchDeleteAlertsBtn", guest \|\| !canModuleSensitive\("risk_alert"\)\)/);
+});
+
+test("view-only mid-event users only receive view actions", () => {
+  assert.match(
+    appJs,
+    /\["#addGroupBtn", "#addPositionBtn", "#refreshPricesBtn"\]\.forEach\(\(selector\) =>\s*setHidden\(selector, guest \|\| !canModuleEdit\("mid_event_monitor"\)\)\)/,
+  );
+  assert.match(appJs, /const canEditMidEvent = canModuleEdit\("mid_event_monitor"\);/);
+  assert.match(appJs, /const canSensitiveMidEvent = canModuleSensitive\("mid_event_monitor"\);/);
+  assert.match(appJs, /canEditMidEvent \? `<button class="link" data-action="edit"/);
+  assert.match(appJs, /canSensitiveMidEvent \? `<button class="link" data-action="delete"/);
+  assert.match(appJs, /if \(canModuleEdit\("mid_event_monitor"\)\) startMidEventAutoRefresh\(\);/);
+});
+
+test("view-only risk-alert users do not receive mutation actions", () => {
+  assert.match(
+    appJs,
+    /\["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn"\][\s\S]*?canModuleEdit\("risk_alert"\)/,
+  );
+  assert.match(appJs, /setHidden\("#batchDeleteAlertsBtn", guest \|\| !canModuleSensitive\("risk_alert"\)\)/);
+  assert.match(appJs, /const canEditRiskAlert = canModuleEdit\("risk_alert"\);/);
+  assert.match(appJs, /const canSensitiveRiskAlert = canModuleSensitive\("risk_alert"\);/);
+  assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="edit"/);
+  assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="toggle"/);
+  assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="simulate"/);
+  assert.match(appJs, /canSensitiveRiskAlert \? `<button class="link" data-action="delete"/);
+});
+
+test("data-visualization import and export controls follow sensitive permission", () => {
+  assert.match(html, /id="dvIntegrationImportLabel"/);
+  assert.match(
+    appJs,
+    /\["#dvIntegrationImportLabel", "#dvExportBtn"\][\s\S]*?canModuleSensitive\("data_visualization_integration"\)/,
+  );
+  assert.match(
+    appJs,
+    /\["#dvImportBtn", "#dvCommitImportBtn"\][\s\S]*?canModuleSensitive\("data_visualization_data"\)/,
+  );
 });

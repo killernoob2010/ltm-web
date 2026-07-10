@@ -77,8 +77,12 @@ function applyUiPermissions() {
   setHidden("#changePasswordBtn", guest);
   ["#calculateAllInfoBtn", "#refreshInfoCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
   setHidden("#importCacheBtn", guest || !canModuleSensitive("info_summary"));
+  ["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleEdit("risk_alert")));
   setHidden("#batchDeleteAlertsBtn", guest || !canModuleSensitive("risk_alert"));
-  ["#addGroupBtn", "#addPositionBtn"].forEach((selector) => setHidden(selector, guest));
+  setHidden("#selectAllAlerts", guest || (!canModuleEdit("risk_alert") && !canModuleSensitive("risk_alert")));
+  ["#addGroupBtn", "#addPositionBtn", "#refreshPricesBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleEdit("mid_event_monitor")));
   [
     "#addShJunnengBtn", "#editShJunnengBtn", "#closeShJunnengBtn",
     "#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn",
@@ -86,9 +90,10 @@ function applyUiPermissions() {
   setHidden("#deleteShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
   setHidden("#exportShJunnengBtn", guest || !canModuleSensitive("sh_junneng"));
   setHidden("#orderFinanceImportBtn", guest || !canModuleSensitive("order_finance_progress"));
-  ["#dvUploadBtn", "#dvCommitImportBtn", "#dvPreviewImportBtn"].forEach((selector) =>
+  ["#dvIntegrationImportLabel", "#dvExportBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleSensitive("data_visualization_integration")));
+  ["#dvImportBtn", "#dvCommitImportBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
-  setHidden("#dvIntegrationExportBtn", guest || !canModuleSensitive("data_visualization_integration"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -414,13 +419,15 @@ async function activateModule(code, subName) {
   if (code === "mid_event_monitor") {
     showOnly(midEventPage);
     await loadMidEvent();
-    startMidEventAutoRefresh();
+    if (canModuleEdit("mid_event_monitor")) startMidEventAutoRefresh();
     return;
   }
   if (code === "sh_junneng") {
     showOnly(shJunnengPage);
     await loadShJunneng();
-    refreshShJunnengPrices(false).catch((error) => updateShJunnengStatus(error.message));
+    if (canModuleEdit("sh_junneng")) {
+      refreshShJunnengPrices(false).catch((error) => updateShJunnengStatus(error.message));
+    }
     return;
   }
   if (code === "risk_alert") {
@@ -788,6 +795,8 @@ async function loadMidEvent(preferredGroupId = null) {
 }
 
 function renderGroups() {
+  const canEditMidEvent = canModuleEdit("mid_event_monitor");
+  const canSensitiveMidEvent = canModuleSensitive("mid_event_monitor");
   groupCount.textContent = `${state.groups.length} 个`;
   groupsTable.innerHTML = state.groups.map((group) => `
     <tr class="${group.id === state.selectedGroupId ? "selected-row" : ""}">
@@ -797,8 +806,8 @@ function renderGroups() {
       <td>
         <div class="row-actions">
           <button class="link" data-action="select" data-id="${group.id}">查看</button>
-          <button class="link" data-action="edit" data-id="${group.id}">编辑</button>
-          <button class="link" data-action="delete" data-id="${group.id}">删除</button>
+          ${canEditMidEvent ? `<button class="link" data-action="edit" data-id="${group.id}">编辑</button>` : ""}
+          ${canSensitiveMidEvent ? `<button class="link" data-action="delete" data-id="${group.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
@@ -895,6 +904,8 @@ async function refreshPrices(mock = false) {
 }
 
 async function loadPositions() {
+  const canEditMidEvent = canModuleEdit("mid_event_monitor");
+  const canSensitiveMidEvent = canModuleSensitive("mid_event_monitor");
   if (!state.selectedGroupId) {
     positionsTitle.textContent = "持仓";
     positionSummary.textContent = "请选择策略组";
@@ -922,8 +933,8 @@ async function loadPositions() {
       <td class="${pnlClass(item.floating_pnl)}">${money(item.floating_pnl)}</td>
       <td>
         <div class="row-actions">
-          <button class="link" data-action="edit" data-id="${item.id}">编辑</button>
-          <button class="link" data-action="delete" data-id="${item.id}">删除</button>
+          ${canEditMidEvent ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
+          ${canSensitiveMidEvent ? `<button class="link" data-action="delete" data-id="${item.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
@@ -1352,6 +1363,9 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function loadRiskAlert() {
+  const canEditRiskAlert = canModuleEdit("risk_alert");
+  const canSensitiveRiskAlert = canModuleSensitive("risk_alert");
+  const canSelectRiskAlert = canEditRiskAlert || canSensitiveRiskAlert;
   const [settingsPayload, historyPayload] = await Promise.all([
     api("/api/risk-alert/settings"),
     api("/api/risk-alert/history"),
@@ -1366,7 +1380,7 @@ async function loadRiskAlert() {
   historyCount.textContent = `${history.length}/${historyTotal} 条`;
   alertsTable.innerHTML = settings.map((item) => `
     <tr>
-      <td><input class="alert-select" type="checkbox" value="${item.id}" /></td>
+      <td>${canSelectRiskAlert ? `<input class="alert-select" type="checkbox" value="${item.id}" />` : ""}</td>
       <td>${item.info_type}</td>
       <td>${item.contract_year}-${item.contract_month}</td>
       <td>${item.alert_value}</td>
@@ -1375,10 +1389,10 @@ async function loadRiskAlert() {
       <td>${item.reminder_users || "全部"}</td>
       <td>
         <div class="row-actions">
-          <button class="link" data-action="edit" data-id="${item.id}">编辑</button>
-          <button class="link" data-action="toggle" data-id="${item.id}">${item.status === "enabled" ? "停用" : "启用"}</button>
-          <button class="link" data-action="simulate" data-id="${item.id}">模拟</button>
-          <button class="link" data-action="delete" data-id="${item.id}">删除</button>
+          ${canEditRiskAlert ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
+          ${canEditRiskAlert ? `<button class="link" data-action="toggle" data-id="${item.id}">${item.status === "enabled" ? "停用" : "启用"}</button>` : ""}
+          ${canEditRiskAlert ? `<button class="link" data-action="simulate" data-id="${item.id}">模拟</button>` : ""}
+          ${canSensitiveRiskAlert ? `<button class="link" data-action="delete" data-id="${item.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
