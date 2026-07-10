@@ -1,6 +1,7 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+import base64
 import calendar
 import csv
 import io
@@ -3124,32 +3125,71 @@ def set_user_permissions(user_id: int, payload: PermissionsBatchIn, user=Depends
     return {"ok": True}
 
 
+def encode_operation_log_cursor(created_at: str, log_id: int) -> str:
+    raw = json.dumps([created_at, int(log_id)], ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_operation_log_cursor(cursor: str) -> tuple[str, int]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8"))
+        if not isinstance(payload, list) or len(payload) != 2:
+            raise ValueError("cursor payload")
+        created_at, log_id = payload
+        if not isinstance(created_at, str) or not created_at:
+            raise ValueError("cursor timestamp")
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if isinstance(log_id, bool) or int(log_id) < 1:
+            raise ValueError("cursor id")
+        return created_at, int(log_id)
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="日志分页游标无效") from exc
+
+
 @app.get("/api/operation-logs")
 def list_operation_logs(
     operation_type: Optional[str] = None,
     user_name: Optional[str] = None,
-    limit: int = 200,
-    offset: int = 0,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    cursor: Optional[str] = None,
+    limit: int = 100,
     user=Depends(current_user),
 ):
     require_permission(user, "operation_logs", "view")
-    limit = max(1, min(limit or 200, 200))
-    offset = max(0, offset or 0)
+    limit = max(1, min(limit or 100, 200))
     clauses = ["1=1"]
     params: list = []
     if operation_type:
         clauses.append("ol.operation_type = ?")
         params.append(operation_type)
-    if user_name:
-        clauses.append("u.name = ?")
-        params.append(user_name)
+    try:
+        if start_date:
+            start = date.fromisoformat(start_date)
+            clauses.append("ol.created_at >= ?")
+            params.append(f"{start.isoformat()} 00:00:00")
+        if end_date:
+            end_exclusive = date.fromisoformat(end_date) + timedelta(days=1)
+            clauses.append("ol.created_at < ?")
+            params.append(f"{end_exclusive.isoformat()} 00:00:00")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="日志日期格式无效") from exc
+    if start_date and end_date and start > date.fromisoformat(end_date):
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    if cursor:
+        cursor_created_at, cursor_id = decode_operation_log_cursor(cursor)
+        clauses.append("(ol.created_at < ? OR (ol.created_at = ? AND ol.id < ?))")
+        params.extend([cursor_created_at, cursor_created_at, cursor_id])
     with db.connect() as conn:
         cur = conn.cursor()
-        total_row = db._exec(
-            cur,
-            f"SELECT COUNT(*) AS c FROM operation_logs ol LEFT JOIN users u ON u.id = ol.user_id WHERE {' AND '.join(clauses)}",
-            params,
-        ).fetchone()
+        if user_name:
+            user_rows = db._exec(cur, "SELECT id FROM users WHERE name = ?", (user_name,)).fetchall()
+            user_ids = [row["id"] for row in user_rows]
+            if not user_ids:
+                return {"logs": [], "has_more": False, "next_cursor": None}
+            clauses.append(f"ol.user_id IN ({','.join('?' for _ in user_ids)})")
+            params.extend(user_ids)
         rows = db._exec(cur, 
             f"""
             SELECT ol.id, u.name AS user_name, ol.operation_type, ol.description,
@@ -3157,18 +3197,19 @@ def list_operation_logs(
             FROM operation_logs ol
             LEFT JOIN users u ON u.id = ol.user_id
             WHERE {' AND '.join(clauses)}
-            ORDER BY ol.created_at DESC
-            LIMIT ? OFFSET ?
+            ORDER BY ol.created_at DESC, ol.id DESC
+            LIMIT ?
             """,
-            params + [limit, offset],
+            params + [limit + 1],
         ).fetchall()
-    total = int(total_row["c"] or 0)
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+    next_cursor = None
+    if has_more and page_rows:
+        last_row = page_rows[-1]
+        next_cursor = encode_operation_log_cursor(last_row["created_at"], last_row["id"])
     return {
-        "logs": [row_to_dict(row) for row in rows],
-        "pagination": {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "has_more": offset + len(rows) < total,
-        },
+        "logs": [row_to_dict(row) for row in page_rows],
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }

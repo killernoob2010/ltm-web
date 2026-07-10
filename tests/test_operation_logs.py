@@ -1,4 +1,5 @@
 import os
+import inspect
 import sys
 
 import pytest
@@ -88,3 +89,97 @@ def test_archived_operation_history_prevents_physical_user_deletion(tmp_path, mo
     assert exc.value.status_code == 400
     assert "会话或操作历史" in exc.value.detail
 
+
+def insert_log(user_id, operation_type, created_at, description="测试日志"):
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """
+            INSERT INTO operation_logs
+                (user_id, module_code, operation_type, description, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, "user_management", operation_type, description, created_at),
+        )
+        return db.last_insert_id(conn)
+
+
+def test_operation_logs_use_stable_cursor_without_duplicates(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    for index in range(5):
+        insert_log(admin["id"], "编辑用户", "2026-07-10 10:00:00", f"日志 {index}")
+
+    first = main.list_operation_logs(limit=2, user=admin)
+    second = main.list_operation_logs(limit=2, cursor=first["next_cursor"], user=admin)
+
+    assert len(first["logs"]) == 2
+    assert first["has_more"] is True
+    assert first["next_cursor"]
+    assert len(second["logs"]) == 2
+    assert {row["id"] for row in first["logs"]}.isdisjoint(row["id"] for row in second["logs"])
+    assert first["logs"][0]["id"] > first["logs"][1]["id"]
+    assert "pagination" not in first
+
+
+def test_operation_logs_default_to_100_and_cap_at_200(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    for index in range(205):
+        insert_log(admin["id"], "登录", f"2026-07-10 10:{index // 60:02d}:{index % 60:02d}")
+
+    default_page = main.list_operation_logs(user=admin)
+    capped_page = main.list_operation_logs(limit=999, user=admin)
+
+    assert len(default_page["logs"]) == 100
+    assert len(capped_page["logs"]) == 200
+    assert capped_page["has_more"] is True
+
+
+def test_operation_logs_filter_by_user_type_and_inclusive_dates(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """
+            INSERT INTO users (name, username, department, password_hash, role)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("筛选用户", "filter-user", "贸易处", db.password_hash("filter-user"), "用户"),
+        )
+        target_id = db.last_insert_id(conn)
+    insert_log(target_id, "添加用户", "2026-07-09 23:59:59", "范围外")
+    expected_id = insert_log(target_id, "添加用户", "2026-07-10 23:59:59", "范围内")
+    insert_log(target_id, "编辑用户", "2026-07-10 12:00:00", "类型不符")
+    insert_log(admin["id"], "添加用户", "2026-07-10 12:00:00", "用户不符")
+    insert_log(target_id, "添加用户", "2026-07-11 00:00:00", "结束日之后")
+
+    result = main.list_operation_logs(
+        operation_type="添加用户",
+        user_name="筛选用户",
+        start_date="2026-07-10",
+        end_date="2026-07-10",
+        user=admin,
+    )
+
+    assert [row["id"] for row in result["logs"]] == [expected_id]
+
+
+def test_operation_logs_reject_invalid_cursor(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        main.list_operation_logs(cursor="not-a-valid-cursor", user=admin_user())
+
+    assert exc.value.status_code == 400
+    assert "游标" in exc.value.detail
+
+
+def test_operation_log_route_avoids_count_and_offset():
+    source = inspect.getsource(main.list_operation_logs).upper()
+
+    assert "COUNT(*)" not in source
+    assert "OFFSET" not in source
