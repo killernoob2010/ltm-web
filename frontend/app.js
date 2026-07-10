@@ -1981,7 +1981,8 @@ function orderFinanceDueText(value) {
 
 function orderFinanceShipmentText(item) {
   const value = item.latest_shipment_date;
-  if (!value) return item.stage === "已完成" ? "未提供" : "待 Excel 补充";
+  if (item.stage === "已完成") return value || "未提供";
+  if (!value) return "待 Excel 补充";
   const days = orderFinanceDaysTo(value);
   if (days === null) return value;
   if (days < 0) return `${value} / 已超过 ${Math.abs(days)} 天`;
@@ -1991,7 +1992,8 @@ function orderFinanceShipmentText(item) {
 }
 
 function orderFinanceShipmentTone(item) {
-  if (!item.latest_shipment_date) return item.stage === "已完成" ? "" : "warning";
+  if (item.stage === "已完成") return "";
+  if (!item.latest_shipment_date) return "warning";
   const days = orderFinanceDaysTo(item.latest_shipment_date);
   if (days !== null && days < 0) return "danger";
   if (days !== null && days <= 7) return "warning";

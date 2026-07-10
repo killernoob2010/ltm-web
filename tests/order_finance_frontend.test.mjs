@@ -84,6 +84,7 @@ test("order finance detail omits unavailable bill date and keeps document and re
 
 test("order finance shipment deadline has warning and overdue visual tones", () => {
   assert.match(stylesCss, /\.order-finance-field\.danger/);
+  assert.match(appJs, /if \(item\.stage === "已完成"\) return value \|\| "未提供"/);
   assert.match(appJs, /days <= 7/);
   assert.match(appJs, /需联系工厂/);
   assert.match(appJs, /已超过/);
