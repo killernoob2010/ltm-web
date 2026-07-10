@@ -3064,9 +3064,10 @@ def delete_user(user_id: int, user=Depends(current_user)):
             """
             SELECT
                 (SELECT COUNT(*) FROM user_sessions WHERE user_id = ?) +
-                (SELECT COUNT(*) FROM operation_logs WHERE user_id = ?) AS c
+                (SELECT COUNT(*) FROM operation_logs WHERE user_id = ?) +
+                (SELECT COUNT(*) FROM operation_log_archive_users WHERE user_id = ?) AS c
             """,
-            (user_id, user_id),
+            (user_id, user_id, user_id),
         ).fetchone()
         if int(history["c"] or 0) > 0:
             raise HTTPException(status_code=400, detail="该账号已有会话或操作历史，请使用停用")

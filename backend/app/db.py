@@ -265,6 +265,39 @@ def init_db() -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_created_id
+            ON operation_logs(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_user_created_id
+            ON operation_logs(user_id, created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_type_created_id
+            ON operation_logs(operation_type, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS operation_log_archives (
+                id SERIAL PRIMARY KEY,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                object_path TEXT NOT NULL UNIQUE,
+                row_count INTEGER NOT NULL,
+                first_created_at TEXT NOT NULL,
+                last_created_at TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                compressed_bytes INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                restored_at TEXT,
+                UNIQUE(period_start, period_end)
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_log_archive_users (
+                id SERIAL PRIMARY KEY,
+                archive_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                UNIQUE(archive_id, user_id),
+                FOREIGN KEY (archive_id) REFERENCES operation_log_archives(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
             CREATE TABLE IF NOT EXISTS alert_settings (
                 id SERIAL PRIMARY KEY,
                 info_type TEXT NOT NULL,
@@ -641,6 +674,39 @@ def init_db() -> None:
                 before_data TEXT,
                 after_data TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_created_id
+            ON operation_logs(created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_user_created_id
+            ON operation_logs(user_id, created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_operation_logs_type_created_id
+            ON operation_logs(operation_type, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS operation_log_archives (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                object_path TEXT NOT NULL UNIQUE,
+                row_count INTEGER NOT NULL,
+                first_created_at TEXT NOT NULL,
+                last_created_at TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                compressed_bytes INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                restored_at TEXT,
+                UNIQUE(period_start, period_end)
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_log_archive_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                archive_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                UNIQUE(archive_id, user_id),
+                FOREIGN KEY (archive_id) REFERENCES operation_log_archives(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS alert_settings (
