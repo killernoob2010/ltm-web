@@ -938,6 +938,33 @@ def test_fact_trade_classification_filter_returns_assignment_metadata(tmp_path, 
     assert all(row["assignment_status"] == "unclassified" for row in pending["items"])
 
 
+def test_fact_positions_aggregate_snapshot_rows_by_contract_direction_and_asset(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO trading_position_snapshots
+                (identity_id,batch_id,source_row_id,snapshot_date,snapshot_time,exchange,contract,
+                 asset_type,direction,open_date,quantity,average_price,margin,valuation_price,
+                 floating_pnl,market_time,valuation_status,data_status,verification_status)
+            SELECT identity_id,batch_id,source_row_id,snapshot_date,snapshot_time,exchange,contract,
+                   asset_type,direction,open_date,quantity,average_price,margin,valuation_price,
+                   floating_pnl,market_time,valuation_status,data_status,verification_status
+            FROM trading_position_snapshots ORDER BY id LIMIT 1
+            """
+        )
+        conn.commit()
+
+    result = trading_management.query_fact_rows(
+        "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    keys = [(row["contract"], row["direction"], row["asset_type"]) for row in result["items"]]
+    assert len(keys) == len(set(keys))
+    assert any(row["source_record_count"] == 2 for row in result["items"])
+
+
 def test_option_business_positions_include_unclassified_open_options(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")

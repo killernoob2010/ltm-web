@@ -797,7 +797,26 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 """,
                 (snapshot_date,),
             ).fetchall() if snapshot_date else []
-            items = [dict(row) for row in rows]
+            grouped_positions: dict[tuple[str, str, str], dict[str, Any]] = {}
+            for raw_row in rows:
+                row = dict(raw_row)
+                key = (row["contract"], row["direction"], row["asset_type"])
+                group = grouped_positions.get(key)
+                if not group:
+                    group = dict(row)
+                    group["quantity"] = 0.0
+                    group["margin"] = 0.0
+                    group["weighted_price"] = 0.0
+                    group["source_record_count"] = 0
+                    grouped_positions[key] = group
+                quantity = float(row["quantity"] or 0)
+                group["quantity"] += quantity
+                group["margin"] += float(row["margin"] or 0)
+                group["weighted_price"] += float(row["average_price"] or 0) * quantity
+                group["source_record_count"] += 1
+            items = list(grouped_positions.values())
+            for item in items:
+                item["average_price"] = item.pop("weighted_price") / item["quantity"] if item["quantity"] else 0
             assignment_rows = db._exec(
                 cur,
                 """
@@ -821,7 +840,6 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 item["assignment_status"] = "classified" if related and len(classified) == len(related) else "unclassified"
                 item["business_type"] = classified[0]["business_type"] if classified and len({row["business_type"] for row in classified}) == 1 else None
                 item["strategy"] = classified[0]["strategy"] if classified and len({row["strategy"] for row in classified}) == 1 else None
-                item["source_record_count"] = len(related)
             if filters.contract:
                 items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
             if filters.direction:
