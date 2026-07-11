@@ -1,6 +1,7 @@
 .trading-management-page {
   display: grid;
   gap: 16px;
+  align-content: start;
 }
 
 .trading-toolbar {
