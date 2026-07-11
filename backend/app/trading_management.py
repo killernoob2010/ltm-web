@@ -3,16 +3,18 @@
 P0 只读事实、业务归类和业务开平关系均通过本独立路由扩展。
 """
 from datetime import date, datetime
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from openpyxl import load_workbook
 
 from . import db
+from .permissions import require_permission
 
 
 router = APIRouter()
@@ -510,6 +512,304 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
     }
 
 
+def match_imported_facts(batch_id: int) -> dict[str, int]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        closes = db._exec(
+            cur,
+            "SELECT * FROM trading_close_facts WHERE batch_id = ? ORDER BY id",
+            (batch_id,),
+        ).fetchall()
+        trades = db._exec(
+            cur,
+            "SELECT * FROM trading_trade_facts WHERE batch_id = ? ORDER BY trade_date, trade_time, source_row_id, id",
+            (batch_id,),
+        ).fetchall()
+        close_ids = [row["identity_id"] for row in closes]
+        for close_id in close_ids:
+            db._exec(cur, "DELETE FROM trading_close_trade_links WHERE close_identity_id = ?", (close_id,))
+            db._exec(cur, "DELETE FROM trading_fact_close_allocations WHERE close_identity_id = ?", (close_id,))
+
+        close_trade_links = 0
+        fact_allocations = 0
+        pending = 0
+        remaining_close_trades = {row["id"]: float(row["quantity"]) for row in trades if row["open_close"] == "平仓"}
+        remaining_open_trades = {row["id"]: float(row["quantity"]) for row in trades if row["open_close"] == "开仓"}
+        for close in closes:
+            matching_closes = [
+                row for row in trades
+                if row["open_close"] == "平仓"
+                and row["trade_date"] == close["close_date"]
+                and row["contract"] == close["contract"]
+                and row["side"] == close["close_side"]
+                and abs(float(row["price"]) - float(close["close_price"])) < 1e-8
+                and remaining_close_trades.get(row["id"], 0) > 0
+            ]
+            needed = float(close["quantity"])
+            if sum(remaining_close_trades[row["id"]] for row in matching_closes) + 1e-9 < needed:
+                pending += 1
+                continue
+            allocated_fee = 0.0
+            for trade in matching_closes:
+                quantity = min(needed, remaining_close_trades[trade["id"]])
+                if quantity <= 0:
+                    continue
+                fee = float(trade["fee"] or 0) * quantity / float(trade["quantity"])
+                db._exec(
+                    cur,
+                    """
+                    INSERT INTO trading_close_trade_links
+                        (close_identity_id, close_trade_identity_id, matched_quantity, allocated_fee, rule_version)
+                    VALUES (?, ?, ?, ?, 'wenhua-group-v1')
+                    """,
+                    (close["identity_id"], trade["identity_id"], quantity, fee),
+                )
+                close_trade_links += 1
+                allocated_fee += fee
+                remaining_close_trades[trade["id"]] -= quantity
+                needed -= quantity
+                if needed <= 1e-9:
+                    break
+            db._exec(
+                cur,
+                "UPDATE trading_close_facts SET matched_fee = ?, fee_status = 'matched' WHERE id = ?",
+                (allocated_fee, close["id"]),
+            )
+
+            matching_opens = [
+                row for row in trades
+                if row["open_close"] == "开仓"
+                and row["trade_date"] == close["open_date"]
+                and row["contract"] == close["contract"]
+                and row["side"] == close["open_side"]
+                and abs(float(row["price"]) - float(close["open_price"])) < 1e-8
+                and remaining_open_trades.get(row["id"], 0) > 0
+            ]
+            needed = float(close["quantity"])
+            if sum(remaining_open_trades[row["id"]] for row in matching_opens) + 1e-9 < needed:
+                pending += 1
+                continue
+            for trade in matching_opens:
+                quantity = min(needed, remaining_open_trades[trade["id"]])
+                if quantity <= 0:
+                    continue
+                db._exec(
+                    cur,
+                    """
+                    INSERT INTO trading_fact_close_allocations
+                        (close_identity_id, open_trade_identity_id, matched_quantity, match_rule_version)
+                    VALUES (?, ?, ?, 'wenhua-fifo-v1')
+                    """,
+                    (close["identity_id"], trade["identity_id"], quantity),
+                )
+                fact_allocations += 1
+                remaining_open_trades[trade["id"]] -= quantity
+                needed -= quantity
+                if needed <= 1e-9:
+                    break
+        conn.commit()
+    return {
+        "close_trade_links": close_trade_links,
+        "fact_close_allocations": fact_allocations,
+        "pending_closes": pending,
+    }
+
+
+@dataclass
+class FactFilters:
+    contract: str = ""
+    direction: str = ""
+    asset_type: str = ""
+    open_close: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    page: int = 1
+    page_size: int = 20
+
+    def __post_init__(self):
+        if self.page_size not in {20, 50, 100}:
+            raise ValueError("每页条数只允许 20、50、100")
+        self.page = max(1, self.page)
+
+
+def _page_result(items: list[dict[str, Any]], summary: dict[str, Any], filters: FactFilters, data_status: str = "ok") -> dict[str, Any]:
+    total = len(items)
+    total_pages = max(1, (total + filters.page_size - 1) // filters.page_size)
+    page = min(filters.page, total_pages)
+    start = (page - 1) * filters.page_size
+    return {
+        "items": items[start:start + filters.page_size],
+        "summary": summary,
+        "page": page,
+        "page_size": filters.page_size,
+        "total_items": total,
+        "total_pages": total_pages,
+        "data_status": data_status,
+    }
+
+
+def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        if view == "positions":
+            snapshot_date = filters.end_date
+            if not snapshot_date:
+                row = db._exec(
+                    cur,
+                    """
+                    SELECT MAX(ps.snapshot_date) AS d
+                    FROM trading_position_snapshots ps
+                    JOIN trading_import_batches b ON b.id = ps.batch_id
+                    WHERE b.status = 'active'
+                    """,
+                ).fetchone()
+                snapshot_date = row["d"] if row else None
+            rows = db._exec(
+                cur,
+                """
+                SELECT ps.* FROM trading_position_snapshots ps
+                JOIN trading_import_batches b ON b.id = ps.batch_id
+                WHERE b.status = 'active' AND ps.snapshot_date = ?
+                ORDER BY ps.contract, ps.direction, ps.id
+                """,
+                (snapshot_date,),
+            ).fetchall() if snapshot_date else []
+            items = [dict(row) for row in rows]
+            if filters.contract:
+                items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+            if filters.direction:
+                items = [row for row in items if row["direction"] == filters.direction]
+            summary = {
+                "record_count": len(items),
+                "quantity": sum(float(row["quantity"]) for row in items),
+                "margin": sum(float(row["margin"] or 0) for row in items),
+            }
+            status = "ok" if items else "no_position_snapshot"
+            return _page_result(items, summary, filters, status)
+        if view == "closes":
+            rows = db._exec(
+                cur,
+                """
+                SELECT cf.* FROM trading_close_facts cf
+                JOIN trading_import_batches b ON b.id = cf.batch_id
+                WHERE b.status = 'active'
+                ORDER BY cf.close_date DESC, cf.id DESC
+                """,
+            ).fetchall()
+            items = [dict(row) for row in rows]
+            if filters.contract:
+                items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+            if filters.direction:
+                items = [row for row in items if row["open_side"] == filters.direction]
+            if filters.asset_type:
+                items = [row for row in items if row["asset_type"] == filters.asset_type]
+            if filters.start_date:
+                items = [row for row in items if row["close_date"] >= filters.start_date]
+            if filters.end_date:
+                items = [row for row in items if row["close_date"] <= filters.end_date]
+            summary = {
+                "record_count": len(items),
+                "quantity": sum(float(row["quantity"]) for row in items),
+                "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
+                "fee": sum(float(row["matched_fee"] or 0) for row in items),
+            }
+            return _page_result(items, summary, filters)
+        if view != "trades":
+            raise ValueError(f"未知事实视图：{view}")
+        rows = db._exec(
+            cur,
+            """
+            SELECT tf.*,
+                   (SELECT SUM(cf.fact_close_pnl * l.matched_quantity / cf.quantity)
+                    FROM trading_close_trade_links l
+                    JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
+                    WHERE l.close_trade_identity_id = tf.identity_id) AS fact_close_pnl
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id
+            WHERE b.status = 'active'
+            ORDER BY tf.trade_date DESC, tf.id DESC
+            """,
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        if filters.contract:
+            items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+        if filters.direction:
+            items = [row for row in items if row["side"] == filters.direction]
+        if filters.asset_type:
+            items = [row for row in items if row["asset_type"] == filters.asset_type]
+        if filters.open_close:
+            items = [row for row in items if row["open_close"] == filters.open_close]
+        if filters.start_date:
+            items = [row for row in items if row["trade_date"] >= filters.start_date]
+        if filters.end_date:
+            items = [row for row in items if row["trade_date"] <= filters.end_date]
+        summary = {
+            "record_count": len(items),
+            "quantity": sum(float(row["quantity"]) for row in items),
+            "fee": sum(float(row["fee"] or 0) for row in items),
+            "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
+        }
+        return _page_result(items, summary, filters)
+
+
+def build_overview(filters: FactFilters) -> dict[str, Any]:
+    trades = query_fact_rows("trades", FactFilters(
+        contract=filters.contract,
+        direction=filters.direction,
+        asset_type=filters.asset_type,
+        open_close=filters.open_close,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+        page=1,
+        page_size=100,
+    ))
+    closes = query_fact_rows("closes", FactFilters(
+        contract=filters.contract,
+        direction=filters.direction,
+        asset_type=filters.asset_type,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+        page=1,
+        page_size=100,
+    ))
+    positions = query_fact_rows("positions", FactFilters(
+        contract=filters.contract,
+        direction=filters.direction,
+        asset_type=filters.asset_type,
+        end_date=filters.end_date,
+        page=1,
+        page_size=100,
+    ))
+    snapshot_date = positions["items"][0]["snapshot_date"] if positions["items"] else None
+    return {
+        "trades": trades["summary"],
+        "closes": closes["summary"],
+        "positions": {
+            **positions["summary"],
+            "snapshot_date": snapshot_date,
+            "floating_pnl": None,
+            "floating_pnl_status": "pending_calculation",
+        },
+        "data_status": {
+            "fact": "file_imported",
+            "positions": positions["data_status"],
+        },
+    }
+
+
+def _api_filters(
+    contract: str = "",
+    direction: str = "",
+    asset_type: str = "",
+    open_close: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> FactFilters:
+    return FactFilters(contract, direction, asset_type, open_close, start_date, end_date, page, page_size)
+
+
 async def trading_management_current_user(
     authorization: Optional[str] = Header(default=None),
 ) -> dict:
@@ -520,3 +820,76 @@ async def trading_management_current_user(
     if not user:
         raise HTTPException(status_code=401, detail="请先登录")
     return user
+
+
+@router.get("/overview")
+def get_trading_overview(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.overview", "view")
+    return build_overview(filters)
+
+
+def _get_trading_facts(
+    view: str,
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.facts", "view")
+    if view not in {"positions", "closes", "trades"}:
+        raise HTTPException(status_code=404, detail="未知事实视图")
+    return query_fact_rows(view, filters)
+
+
+@router.get("/facts/positions")
+def get_trading_positions(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    return _get_trading_facts("positions", filters, user)
+
+
+@router.get("/facts/closes")
+def get_trading_closes(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    return _get_trading_facts("closes", filters, user)
+
+
+@router.get("/facts/trades")
+def get_trading_trades(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    return _get_trading_facts("trades", filters, user)
+
+
+@router.get("/imports")
+def get_trading_imports(user=Depends(trading_management_current_user)):
+    require_permission(user, "trading.imports", "view")
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            "SELECT * FROM trading_import_batches ORDER BY created_at DESC, id DESC",
+        ).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@router.get("/imports/{batch_id}/validation")
+def get_trading_import_validation(batch_id: int, user=Depends(trading_management_current_user)):
+    require_permission(user, "trading.imports", "view")
+    with db.connect() as conn:
+        batch = db._exec(
+            conn.cursor(),
+            "SELECT id, status, parse_summary FROM trading_import_batches WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+    if not batch:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    return {
+        "batch_id": batch["id"],
+        "status": batch["status"],
+        "summary": json.loads(batch["parse_summary"] or "{}"),
+    }

@@ -77,8 +77,9 @@ def build_trade_workbook(path):
         "交易所", "合约", "买卖", "开平", "手数", "成交价", "成交额",
         "平仓盈亏", "手续费", "投保", "权利金收支",
     ])
-    sheet.append(["20260630"])
+    sheet.append(["20260620"])
     sheet.append(["SHFE", "rb2610", "买", "开", 2, 3100, 62000, 0, 6, "保", 0])
+    sheet.append(["20260630"])
     sheet.append(["SHFE", "rb2610", "卖", "平今", 2, 3120, 62400, 999, 6, "保", 0])
     sheet.append(["DCE", "i2609-C-700", "买", "开", 1, 4.2, 420, 0, 1.2, "投", -420])
     book.save(path)
@@ -372,3 +373,96 @@ def test_changed_assigned_trade_is_not_force_inherited(tmp_path, monkeypatch):
     assert active_row["identity_id"] != old_identity_id
     assert inherited == 0
     assert active_row["verification_status"] == "inheritance_review_required"
+
+
+def test_fact_matching_links_close_trade_and_open_trade(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    result = trading_management.match_imported_facts(confirmed["batch_id"])
+
+    assert result == {"close_trade_links": 1, "fact_close_allocations": 1, "pending_closes": 0}
+    with db.connect() as conn:
+        close = conn.execute(
+            "SELECT fact_close_pnl, matched_fee, fee_status FROM trading_close_facts"
+        ).fetchone()
+        link = conn.execute(
+            "SELECT matched_quantity, allocated_fee FROM trading_close_trade_links"
+        ).fetchone()
+        allocation = conn.execute(
+            "SELECT matched_quantity FROM trading_fact_close_allocations"
+        ).fetchone()
+
+    assert close["fact_close_pnl"] == 1200
+    assert close["matched_fee"] == 6
+    assert close["fee_status"] == "matched"
+    assert link["matched_quantity"] == 2
+    assert allocation["matched_quantity"] == 2
+
+
+def test_fact_query_uses_same_filters_for_items_and_summary(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    trading_management.match_imported_facts(confirmed["batch_id"])
+
+    result = trading_management.query_fact_rows(
+        "trades",
+        trading_management.FactFilters(contract="rb", page=1, page_size=20),
+    )
+
+    assert result["total_items"] == 2
+    assert result["summary"]["record_count"] == 2
+    assert result["summary"]["quantity"] == 4
+    assert result["page"] == 1
+    assert result["total_pages"] == 1
+    close_trade = next(item for item in result["items"] if item["open_close"] == "平仓")
+    assert close_trade["fact_close_pnl"] == 1200
+
+
+def test_fact_positions_report_missing_historical_snapshot(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    result = trading_management.query_fact_rows(
+        "positions",
+        trading_management.FactFilters(end_date="20260629", page=1, page_size=20),
+    )
+
+    assert result["items"] == []
+    assert result["data_status"] == "no_position_snapshot"
+
+
+def test_close_query_and_overview_use_fact_pnl(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    trading_management.match_imported_facts(confirmed["batch_id"])
+
+    closes = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(contract="rb", page=1, page_size=20),
+    )
+    overview = trading_management.build_overview(
+        trading_management.FactFilters(start_date="20260601", end_date="20260630")
+    )
+
+    assert closes["summary"]["record_count"] == 1
+    assert closes["summary"]["fact_close_pnl"] == 1200
+    assert closes["summary"]["fee"] == 6
+    assert overview["trades"]["record_count"] == 3
+    assert overview["closes"]["fact_close_pnl"] == 1200
+    assert overview["positions"]["margin"] == 50000
+    assert overview["positions"]["snapshot_date"] == "20260630"
+    assert overview["positions"]["floating_pnl_status"] == "pending_calculation"
+
+
+def test_fact_api_routes_are_registered():
+    paths = {route.path for route in trading_management.router.routes}
+
+    assert {
+        "/overview",
+        "/facts/positions",
+        "/facts/closes",
+        "/facts/trades",
+        "/imports",
+        "/imports/{batch_id}/validation",
+    } <= paths
