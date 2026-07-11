@@ -197,6 +197,8 @@ def _executemany(cur, sql, seq):
     sql = _pg_rewrite(sql)
     if _is_pg():
         sql = sql.replace("?", "%s")
+        psycopg2.extras.execute_batch(cur, sql, seq, page_size=1000)
+        return
     cur.executemany(sql, seq)
 
 

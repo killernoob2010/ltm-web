@@ -119,6 +119,25 @@ def test_trading_management_router_module_exists():
     assert importlib.util.find_spec("app.trading_management") is not None
 
 
+def test_postgres_executemany_uses_batched_protocol(monkeypatch):
+    calls = []
+
+    class Cursor:
+        def executemany(self, sql, rows):
+            raise AssertionError("PostgreSQL should not send one execute per row")
+
+    monkeypatch.setattr(db, "_is_pg", lambda: True)
+    monkeypatch.setattr(
+        db.psycopg2.extras,
+        "execute_batch",
+        lambda cur, sql, rows, page_size: calls.append((sql, list(rows), page_size)),
+    )
+
+    db._executemany(Cursor(), "INSERT INTO sample (value) VALUES (?)", [(1,), (2,)])
+
+    assert calls == [("INSERT INTO sample (value) VALUES (%s)", [(1,), (2,)], 1000)]
+
+
 def test_trading_management_modules_are_new_first_level_menu():
     modules = [item for item in db.MODULES if item[0] == "交易管理"]
 
@@ -515,6 +534,103 @@ def test_close_query_and_overview_use_fact_pnl(tmp_path, monkeypatch):
     assert overview["positions"]["margin"] == 50000
     assert overview["positions"]["snapshot_date"] == "20260630"
     assert overview["positions"]["floating_pnl_status"] == "pending_calculation"
+
+
+def test_fact_matching_batches_database_writes_instead_of_round_trip_per_close(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    batch_id = confirmed["batch_id"]
+    with db.connect() as conn:
+        conn.execute("UPDATE trading_trade_facts SET quantity = 100 WHERE batch_id = ?", (batch_id,))
+        template = conn.execute(
+            "SELECT * FROM trading_close_facts WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        conn.execute("UPDATE trading_close_facts SET quantity = 0.05 WHERE id = ?", (template["id"],))
+        for index in range(19):
+            identity_id = conn.execute(
+                "INSERT INTO trading_fact_identities (account_id, fact_type, stable_key) VALUES (1, 'close', ?)",
+                (f"bulk-close-{index}",),
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO trading_close_facts
+                    (identity_id, batch_id, source_row_id, open_date, close_date, exchange, contract,
+                     asset_type, open_side, close_side, quantity, open_price, close_price,
+                     fact_close_pnl, matched_fee, fee_status, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.05, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    identity_id, batch_id, template["source_row_id"], template["open_date"],
+                    template["close_date"], template["exchange"], template["contract"],
+                    template["asset_type"], template["open_side"], template["close_side"],
+                    template["open_price"], template["close_price"], template["fact_close_pnl"],
+                    template["matched_fee"], template["fee_status"], template["verification_status"],
+                ),
+            )
+        conn.commit()
+
+    calls = {"execute": 0, "executemany": 0}
+    original_exec = db._exec
+    original_executemany = db._executemany
+
+    def counted_exec(*args, **kwargs):
+        calls["execute"] += 1
+        return original_exec(*args, **kwargs)
+
+    def counted_executemany(*args, **kwargs):
+        calls["executemany"] += 1
+        return original_executemany(*args, **kwargs)
+
+    monkeypatch.setattr(db, "_exec", counted_exec)
+    monkeypatch.setattr(db, "_executemany", counted_executemany)
+
+    result = trading_management.match_imported_facts(batch_id)
+
+    assert result["fact_close_allocations"] == 20
+    assert calls["execute"] + calls["executemany"] <= 12
+
+
+def test_default_business_allocations_batch_specs_and_writes(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    batch_id = confirmed["batch_id"]
+    trading_management.match_imported_facts(batch_id)
+    with db.connect() as conn:
+        template = conn.execute(
+            "SELECT * FROM trading_fact_close_allocations WHERE close_identity_id IN "
+            "(SELECT identity_id FROM trading_close_facts WHERE batch_id = ?)",
+            (batch_id,),
+        ).fetchone()
+        for _ in range(19):
+            conn.execute(
+                """
+                INSERT INTO trading_fact_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, match_rule_version)
+                VALUES (?, ?, ?, 'wenhua-fifo-v1')
+                """,
+                (template["close_identity_id"], template["open_trade_identity_id"], 0.01),
+            )
+        conn.commit()
+
+    calls = {"execute": 0, "executemany": 0}
+    original_exec = db._exec
+    original_executemany = db._executemany
+
+    def counted_exec(*args, **kwargs):
+        calls["execute"] += 1
+        return original_exec(*args, **kwargs)
+
+    def counted_executemany(*args, **kwargs):
+        calls["executemany"] += 1
+        return original_executemany(*args, **kwargs)
+
+    monkeypatch.setattr(db, "_exec", counted_exec)
+    monkeypatch.setattr(db, "_executemany", counted_executemany)
+
+    result = trading_management.rebuild_default_business_allocations(batch_id)
+
+    assert result["allocation_count"] == 20
+    assert calls["execute"] + calls["executemany"] <= 8
 
 
 def test_fact_api_routes_are_registered():

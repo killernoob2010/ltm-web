@@ -530,14 +530,33 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
             "SELECT * FROM trading_trade_facts WHERE batch_id = ? ORDER BY trade_date, trade_time, source_row_id, id",
             (batch_id,),
         ).fetchall()
-        close_ids = [row["identity_id"] for row in closes]
-        for close_id in close_ids:
-            db._exec(cur, "DELETE FROM trading_close_trade_links WHERE close_identity_id = ?", (close_id,))
-            db._exec(cur, "DELETE FROM trading_fact_close_allocations WHERE close_identity_id = ?", (close_id,))
+        db._exec(
+            cur,
+            """
+            DELETE FROM trading_close_trade_links
+            WHERE close_identity_id IN (
+                SELECT identity_id FROM trading_close_facts WHERE batch_id = ?
+            )
+            """,
+            (batch_id,),
+        )
+        db._exec(
+            cur,
+            """
+            DELETE FROM trading_fact_close_allocations
+            WHERE close_identity_id IN (
+                SELECT identity_id FROM trading_close_facts WHERE batch_id = ?
+            )
+            """,
+            (batch_id,),
+        )
 
         close_trade_links = 0
         fact_allocations = 0
         pending = 0
+        close_trade_rows = []
+        close_fee_updates = []
+        fact_allocation_rows = []
         remaining_close_trades = {row["id"]: float(row["quantity"]) for row in trades if row["open_close"] == "平仓"}
         remaining_open_trades = {row["id"]: float(row["quantity"]) for row in trades if row["open_close"] == "开仓"}
         for close in closes:
@@ -560,26 +579,14 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
                 if quantity <= 0:
                     continue
                 fee = float(trade["fee"] or 0) * quantity / float(trade["quantity"])
-                db._exec(
-                    cur,
-                    """
-                    INSERT INTO trading_close_trade_links
-                        (close_identity_id, close_trade_identity_id, matched_quantity, allocated_fee, rule_version)
-                    VALUES (?, ?, ?, ?, 'wenhua-group-v1')
-                    """,
-                    (close["identity_id"], trade["identity_id"], quantity, fee),
-                )
+                close_trade_rows.append((close["identity_id"], trade["identity_id"], quantity, fee))
                 close_trade_links += 1
                 allocated_fee += fee
                 remaining_close_trades[trade["id"]] -= quantity
                 needed -= quantity
                 if needed <= 1e-9:
                     break
-            db._exec(
-                cur,
-                "UPDATE trading_close_facts SET matched_fee = ?, fee_status = 'matched' WHERE id = ?",
-                (allocated_fee, close["id"]),
-            )
+            close_fee_updates.append((allocated_fee, close["id"]))
 
             matching_opens = [
                 row for row in trades
@@ -598,20 +605,38 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
                 quantity = min(needed, remaining_open_trades[trade["id"]])
                 if quantity <= 0:
                     continue
-                db._exec(
-                    cur,
-                    """
-                    INSERT INTO trading_fact_close_allocations
-                        (close_identity_id, open_trade_identity_id, matched_quantity, match_rule_version)
-                    VALUES (?, ?, ?, 'wenhua-fifo-v1')
-                    """,
-                    (close["identity_id"], trade["identity_id"], quantity),
-                )
+                fact_allocation_rows.append((close["identity_id"], trade["identity_id"], quantity))
                 fact_allocations += 1
                 remaining_open_trades[trade["id"]] -= quantity
                 needed -= quantity
                 if needed <= 1e-9:
                     break
+        if close_trade_rows:
+            db._executemany(
+                cur,
+                """
+                INSERT INTO trading_close_trade_links
+                    (close_identity_id, close_trade_identity_id, matched_quantity, allocated_fee, rule_version)
+                VALUES (?, ?, ?, ?, 'wenhua-group-v1')
+                """,
+                close_trade_rows,
+            )
+        if close_fee_updates:
+            db._executemany(
+                cur,
+                "UPDATE trading_close_facts SET matched_fee = ?, fee_status = 'matched' WHERE id = ?",
+                close_fee_updates,
+            )
+        if fact_allocation_rows:
+            db._executemany(
+                cur,
+                """
+                INSERT INTO trading_fact_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, match_rule_version)
+                VALUES (?, ?, ?, 'wenhua-fifo-v1')
+                """,
+                fact_allocation_rows,
+            )
         conn.commit()
     return {
         "close_trade_links": close_trade_links,
@@ -1053,16 +1078,16 @@ def _product_code(contract: str) -> str:
 def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
     with db.connect() as conn:
         cur = conn.cursor()
-        close_ids = [
-            row["identity_id"]
-            for row in db._exec(cur, "SELECT identity_id FROM trading_close_facts WHERE batch_id = ?", (batch_id,)).fetchall()
-        ]
-        for close_id in close_ids:
-            db._exec(
-                cur,
-                "DELETE FROM trading_business_close_allocations WHERE close_identity_id = ? AND source = 'fact_default'",
-                (close_id,),
+        db._exec(
+            cur,
+            """
+            DELETE FROM trading_business_close_allocations
+            WHERE source = 'fact_default' AND close_identity_id IN (
+                SELECT identity_id FROM trading_close_facts WHERE batch_id = ?
             )
+            """,
+            (batch_id,),
+        )
         fact_rows = db._exec(
             cur,
             """
@@ -1074,24 +1099,35 @@ def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
             """,
             (batch_id,),
         ).fetchall()
+        specs = db._exec(
+            cur,
+            """
+            SELECT exchange, product_code, asset_type, contract_multiplier
+            FROM trading_contract_specs WHERE is_active = 1
+            """,
+        ).fetchall()
+        spec_by_contract = {
+            (row["exchange"].lower(), row["product_code"].lower(), row["asset_type"]): float(row["contract_multiplier"])
+            for row in specs
+        }
         count = 0
+        allocation_rows = []
         for row in fact_rows:
-            spec = db._exec(
-                cur,
-                """
-                SELECT contract_multiplier FROM trading_contract_specs
-                WHERE LOWER(exchange) = LOWER(?) AND LOWER(product_code) = ?
-                  AND asset_type = ? AND is_active = 1
-                """,
-                (row["exchange"], _product_code(row["contract"]), row["asset_type"]),
-            ).fetchone()
+            multiplier = spec_by_contract.get(
+                (row["exchange"].lower(), _product_code(row["contract"]), row["asset_type"])
+            )
             business_pnl = None
-            if spec:
+            if multiplier is not None:
                 business_pnl = calculate_business_pnl(
                     float(row["open_price"]), float(row["close_price"]), row["open_side"],
-                    float(row["matched_quantity"]), float(spec["contract_multiplier"]),
+                    float(row["matched_quantity"]), multiplier,
                 )
-            db._exec(
+            allocation_rows.append(
+                (row["close_identity_id"], row["open_trade_identity_id"], row["matched_quantity"], business_pnl)
+            )
+            count += 1
+        if allocation_rows:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_business_close_allocations
@@ -1099,9 +1135,8 @@ def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
                      business_pnl, rule_version)
                 VALUES (?, ?, ?, 'fact_default', ?, 'business-default-v1')
                 """,
-                (row["close_identity_id"], row["open_trade_identity_id"], row["matched_quantity"], business_pnl),
+                allocation_rows,
             )
-            count += 1
         conn.commit()
     return {"allocation_count": count}
 
