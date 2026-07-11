@@ -48,6 +48,8 @@ const currentUser = document.querySelector("#currentUser");
 const menu = document.querySelector("#menu");
 const pageTitle = document.querySelector("#pageTitle");
 const pageSubtitle = document.querySelector("#pageSubtitle");
+const globalTopbar = document.querySelector("#globalTopbar");
+const passwordChangeNotice = document.querySelector("#passwordChangeNotice");
 
 function isGuest() {
   return state.user?.role === "guest" || state.user?.is_guest;
@@ -408,6 +410,10 @@ function showOnly(page) {
 
 async function activateModule(code, subName) {
   state.activeModule = code;
+  const tradingModuleCodes = ["trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export"];
+  const isTradingModule = tradingModuleCodes.includes(code);
+  globalTopbar.classList.toggle("hidden", isTradingModule);
+  passwordChangeNotice.classList.toggle("hidden", isTradingModule || isGuest() || !state.user?.password_change_recommended);
   stopMidEventAutoRefresh();
   stopInfoSummaryAutoRefresh();
   const label = moduleLabel(code);
@@ -475,7 +481,7 @@ async function activateModule(code, subName) {
     await loadDVChart();
     return;
   }
-  if (["trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export"].includes(code)) {
+  if (tradingModuleCodes.includes(code)) {
     showOnly(tradingManagementPage);
     await window.TradingManagement.activate(code, {
       canEdit: canModuleEdit(code),
