@@ -373,6 +373,72 @@ def _insert_source_row(cur, batch_id: int, source_type: str, source_file: str, s
     )
 
 
+def _prepare_import_rows(
+    cur,
+    batch_id: int,
+    account_id: int,
+    fact_type: str,
+    source_file: str,
+    source_sheet: str,
+    rows: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], int, int]]:
+    source_values = []
+    for row in rows:
+        raw_json = json.dumps(row["raw_data"], ensure_ascii=False, sort_keys=True)
+        source_values.append((
+            batch_id, fact_type, source_file, source_sheet, row["source_row_no"],
+            hashlib.sha256(raw_json.encode("utf-8")).hexdigest(), raw_json,
+        ))
+    if source_values:
+        db._executemany(
+            cur,
+            """
+            INSERT INTO trading_source_rows
+                (batch_id, source_type, source_file, source_sheet, source_row_no, raw_hash, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            source_values,
+        )
+    source_ids = {
+        row["source_row_no"]: row["id"]
+        for row in db._exec(
+            cur,
+            "SELECT id, source_row_no FROM trading_source_rows WHERE batch_id = ? AND source_type = ?",
+            (batch_id, fact_type),
+        ).fetchall()
+    }
+    identities = {
+        row["stable_key"]: row["id"]
+        for row in db._exec(
+            cur,
+            "SELECT id, stable_key FROM trading_fact_identities WHERE account_id = ? AND fact_type = ?",
+            (account_id, fact_type),
+        ).fetchall()
+    }
+    missing = [
+        (account_id, fact_type, row["stable_key"])
+        for row in rows if row["stable_key"] not in identities
+    ]
+    if missing:
+        db._executemany(
+            cur,
+            """
+            INSERT INTO trading_fact_identities (account_id, fact_type, stable_key)
+            VALUES (?, ?, ?) ON CONFLICT(account_id, fact_type, stable_key) DO NOTHING
+            """,
+            missing,
+        )
+        identities = {
+            row["stable_key"]: row["id"]
+            for row in db._exec(
+                cur,
+                "SELECT id, stable_key FROM trading_fact_identities WHERE account_id = ? AND fact_type = ?",
+                (account_id, fact_type),
+            ).fetchall()
+        }
+    return [(row, source_ids[row["source_row_no"]], identities[row["stable_key"]]) for row in rows]
+
+
 def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
@@ -437,9 +503,11 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
                 )
                 previous_assignments.setdefault(key, []).append(old_row["identity_id"])
 
-        for row in trades:
-            source_row_id = _insert_source_row(cur, preview_batch_id, "trade", batch["trade_file_name"], "成交记录", row)
-            identity_id = _identity_id(cur, batch["account_id"], "trade", row["stable_key"])
+        prepared_trades = _prepare_import_rows(
+            cur, preview_batch_id, batch["account_id"], "trade", batch["trade_file_name"], "成交记录", trades
+        )
+        trade_values = []
+        for row, source_row_id, identity_id in prepared_trades:
             inheritance_review = None
             if previous:
                 key = (
@@ -451,7 +519,15 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
                     None,
                 )
             verification_status = "inheritance_review_required" if inheritance_review else "file_imported"
-            db._exec(
+            trade_values.append((
+                identity_id, preview_batch_id, source_row_id, row["date"], row["trade_time"],
+                row["exchange"], row["contract"], row["asset_type"], row["side"],
+                row["open_close_raw"], row["open_close"], row["quantity"], row["price"],
+                row["turnover"], row["fee"], row["hedge_flag"], row["premium_cashflow"],
+                verification_status,
+            ))
+        if trade_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_trade_facts
@@ -460,19 +536,23 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
                      hedge_flag, premium_cashflow, verification_status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    identity_id, preview_batch_id, source_row_id, row["date"], row["trade_time"],
-                    row["exchange"], row["contract"], row["asset_type"], row["side"],
-                    row["open_close_raw"], row["open_close"], row["quantity"], row["price"],
-                    row["turnover"], row["fee"], row["hedge_flag"], row["premium_cashflow"],
-                    verification_status,
-                ),
+                trade_values,
             )
 
-        for row in closes:
-            source_row_id = _insert_source_row(cur, preview_batch_id, "close", batch["close_file_name"], "平仓记录", row)
-            identity_id = _identity_id(cur, batch["account_id"], "close", row["stable_key"])
-            db._exec(
+        prepared_closes = _prepare_import_rows(
+            cur, preview_batch_id, batch["account_id"], "close", batch["close_file_name"], "平仓记录", closes
+        )
+        close_values = [
+            (
+                identity_id, preview_batch_id, source_row_id, row["open_date"], row["close_date"],
+                row["exchange"], row["contract"], row["asset_type"], row["open_side"],
+                row["close_side"], row["quantity"], row["open_price"], row["close_price"],
+                row["fact_close_pnl"], row["fee"], "matched" if row["fee"] is not None else "pending_match",
+            )
+            for row, source_row_id, identity_id in prepared_closes
+        ]
+        if close_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_close_facts
@@ -481,18 +561,23 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
                      fact_close_pnl, matched_fee, fee_status, verification_status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
                 """,
-                (
-                    identity_id, preview_batch_id, source_row_id, row["open_date"], row["close_date"],
-                    row["exchange"], row["contract"], row["asset_type"], row["open_side"],
-                    row["close_side"], row["quantity"], row["open_price"], row["close_price"],
-                    row["fact_close_pnl"], row["fee"], "matched" if row["fee"] is not None else "pending_match",
-                ),
+                close_values,
             )
 
-        for row in positions:
-            source_row_id = _insert_source_row(cur, preview_batch_id, "position", batch["position_file_name"], "期末持仓", row)
-            identity_id = _identity_id(cur, batch["account_id"], "position", row["stable_key"])
-            db._exec(
+        prepared_positions = _prepare_import_rows(
+            cur, preview_batch_id, batch["account_id"], "position", batch["position_file_name"], "期末持仓", positions
+        )
+        position_values = [
+            (
+                identity_id, preview_batch_id, source_row_id, row["snapshot_date"], row["exchange"],
+                row["contract"], row["asset_type"], row["direction"], row["open_date"],
+                row["quantity"], row["average_price"], row["margin"], row["valuation_price"],
+                row["floating_pnl"], row["valuation_status"],
+            )
+            for row, source_row_id, identity_id in prepared_positions
+        ]
+        if position_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_position_snapshots
@@ -501,12 +586,7 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
                      valuation_status, verification_status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
                 """,
-                (
-                    identity_id, preview_batch_id, source_row_id, row["snapshot_date"], row["exchange"],
-                    row["contract"], row["asset_type"], row["direction"], row["open_date"],
-                    row["quantity"], row["average_price"], row["margin"], row["valuation_price"],
-                    row["floating_pnl"], row["valuation_status"],
-                ),
+                position_values,
             )
 
         if previous:

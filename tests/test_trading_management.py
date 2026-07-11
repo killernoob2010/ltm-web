@@ -658,6 +658,30 @@ def test_overwrite_import_prefetches_business_inheritance_once(tmp_path, monkeyp
     assert len(inheritance_queries) == 1
 
 
+def test_confirm_import_batches_source_identity_and_fact_inserts(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    calls = {"single_insert": 0, "batch_insert": 0}
+    original_last_insert = db._last_insert_id
+    original_executemany = db._executemany
+
+    def counted_last_insert(*args, **kwargs):
+        calls["single_insert"] += 1
+        return original_last_insert(*args, **kwargs)
+
+    def counted_executemany(*args, **kwargs):
+        calls["batch_insert"] += 1
+        return original_executemany(*args, **kwargs)
+
+    monkeypatch.setattr(db, "_last_insert_id", counted_last_insert)
+    monkeypatch.setattr(db, "_executemany", counted_executemany)
+
+    result = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    assert result["counts"] == {"trade": 3, "close": 1, "position": 1}
+    assert calls["single_insert"] == 0
+    assert calls["batch_insert"] >= 6
+
+
 def test_fact_api_routes_are_registered():
     paths = {route.path for route in trading_management.router.routes}
 
