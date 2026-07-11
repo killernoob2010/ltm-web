@@ -19,7 +19,7 @@ test("login page exposes real guest login without prefilled admin credentials", 
 });
 
 test("user management exposes account lifecycle permission levels and password self-service", () => {
-  assert.match(html, /src="\/static\/app\.js\?v=trading-management-20260712b"/);
+  assert.match(html, /src="\/static\/app\.js\?v=trading-management-20260712c"/);
   for (const id of [
     "resetUserPasswordBtn", "toggleUserStatusBtn", "changePasswordBtn",
     "passwordChangeNotice", "changePasswordDialog", "currentPassword",

@@ -80,3 +80,27 @@ test("fact tabs cache by filters and prefetch sibling tabs", () => {
   assert.match(tradingJs, /function invalidateFactCache/);
   assert.match(tradingJs + css, /tm-table-loading/);
 });
+
+test("trading filters use compact one-row desktop sizing", () => {
+  assert.match(tradingJs, /tm-filters compact/);
+  assert.match(tradingJs, /tm-filter-search/);
+  assert.match(tradingJs, /tm-filter-select/);
+  assert.match(tradingJs, /tm-filter-date/);
+  assert.match(css, /grid-template-columns:140px 58px/);
+  assert.match(css, /@media \(max-width:1209px\)/);
+});
+
+test("business ledgers replace the口径 card with approved summary rows", () => {
+  assert.doesNotMatch(tradingJs, /<h2>口径说明<\/h2>/);
+  assert.match(tradingJs, /tm-ledger-summary-primary/);
+  assert.match(tradingJs, /tm-ledger-summary-risk/);
+  assert.match(tradingJs, /\["浮动盈亏","待计算"\]/);
+});
+
+test("overview chart renders real daily close pnl instead of a fixed placeholder", () => {
+  assert.match(tradingJs, /function dailyPnlChart/);
+  assert.match(tradingJs, /data\.daily_close_pnl/);
+  assert.match(tradingJs, /row\.fact_close_pnl/);
+  assert.doesNotMatch(tradingJs, /52,125 190,125 328,125/);
+  assert.match(tradingJs, /暂无平仓盈亏数据/);
+});

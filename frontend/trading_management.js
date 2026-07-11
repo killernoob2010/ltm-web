@@ -90,6 +90,32 @@
     return `<div class="tm-quality-row"><div><strong>${label}</strong><span>${note}</span></div><span class="tm-tag ${tone}">${state}</span></div>`;
   }
 
+  function dailyPnlChart(rows) {
+    if (!rows.length) return '<div class="tm-chart-empty">暂无平仓盈亏数据</div>';
+    const width = 760;
+    const height = 250;
+    const left = 52;
+    const right = 18;
+    const top = 18;
+    const bottom = 34;
+    const values = rows.map((row) => Number(row.fact_close_pnl || 0));
+    const minimum = Math.min(0, ...values);
+    const maximum = Math.max(0, ...values);
+    const span = maximum - minimum || 1;
+    const x = (index) => left + (rows.length === 1 ? (width - left - right) / 2 : index * (width - left - right) / (rows.length - 1));
+    const y = (value) => top + (maximum - value) * (height - top - bottom) / span;
+    const zeroY = y(0);
+    const labelStep = Math.max(1, Math.ceil(rows.length / 6));
+    const points = rows.map((row, index) => `${x(index)},${y(values[index])}`).join(" ");
+    const dots = rows.map((row, index) => {
+      const value = values[index];
+      const tone = value >= 0 ? "positive" : "negative";
+      const label = index % labelStep === 0 || index === rows.length - 1 ? `<text class="tm-chart-label" x="${x(index)}" y="238" text-anchor="middle">${esc(row.date || "")}</text>` : "";
+      return `<line class="tm-chart-stem ${tone}" x1="${x(index)}" y1="${zeroY}" x2="${x(index)}" y2="${y(value)}"></line><circle class="tm-chart-point ${tone}" cx="${x(index)}" cy="${y(value)}" r="3.5"><title>${esc(row.date || "")}：${money(value)} 元</title></circle>${label}`;
+    }).join("");
+    return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="逐日平仓盈亏趋势"><line class="tm-chart-zero" x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}"></line><polyline class="tm-chart-line" points="${points}"></polyline>${dots}</svg>`;
+  }
+
   function renderOverviewView(data) {
     const summary = `<div class="tm-summary-band">
       ${metric("期间成交", `${num(data.trades.record_count)} 笔`, `${num(data.trades.quantity)} 手 · 文华成交记录`)}
@@ -102,8 +128,8 @@
       <div class="tm-period-bar"><div class="tm-tabs"><button class="tm-tab-button active">月</button><button class="tm-tab-button">日</button><button class="tm-tab-button">季</button><button class="tm-tab-button">自定义</button></div><span class="tm-tag blue">事实层 · 只读</span></div>
       ${summary}
       <div class="tm-content-grid">
-        <section class="tm-panel"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按文华逐笔平仓盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap"><svg viewBox="0 0 760 250" role="img" aria-label="逐日平仓盈亏趋势"><line class="tm-chart-grid" x1="52" y1="125" x2="742" y2="125"></line><polyline class="tm-chart-line" points="52,125 190,125 328,125 466,125 604,125 742,125"></polyline><text class="tm-chart-label" x="330" y="150">导入数据后按日展示</text></svg></div></section>
-        <section class="tm-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与手续费", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
+        <section class="tm-panel"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按文华逐笔平仓盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_close_pnl || [])}</div></section>
+        <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与手续费", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
       </div>
       <div class="tm-content-grid">
         <section class="tm-panel"><div class="tm-panel-header"><div><h2>业务归属分布</h2><p class="tm-section-copy">事实交易归类进度</p></div><button class="tm-row-button" data-go-positions>前往归类 →</button></div><div class="tm-business-list">${qualityRow("上海钧能", "RB / HC 正式归属", "业务层")}${qualityRow("期权", "默认展示全部期权", "业务层")}${qualityRow("其它与待归属", "保留事实层完整记录", "待确认", "amber")}</div></section>
@@ -155,7 +181,7 @@
   }
 
   function filters(includeOpenClose = true) {
-    return `<div class="tm-filters"><input id="tmSearch" type="search" placeholder="搜索合约" value="${esc(tm.query)}"><button id="tmSearchApply" class="tm-secondary-button">搜索</button><select id="tmAssetType"><option value="">全部资产</option><option value="future">期货</option><option value="option">期权</option></select><select id="tmSide"><option value="">全部方向</option><option value="买">买</option><option value="卖">卖</option></select>${includeOpenClose ? '<select id="tmOpenClose"><option value="">全部开平</option><option value="开仓">开仓</option><option value="平仓">平仓</option></select>' : ""}<select id="tmClassification"><option value="">全部归类状态</option><option value="classified">已归类</option><option value="unclassified">未归类</option></select><input id="tmDateFrom" type="date"><input id="tmDateTo" type="date"></div>`;
+    return `<div class="tm-filters compact ${includeOpenClose ? "with-open-close" : "without-open-close"}"><input id="tmSearch" class="tm-filter-search" type="search" placeholder="搜索合约" value="${esc(tm.query)}"><button id="tmSearchApply" class="tm-secondary-button">搜索</button><select id="tmAssetType" class="tm-filter-select"><option value="">全部资产</option><option value="future">期货</option><option value="option">期权</option></select><select id="tmSide" class="tm-filter-select"><option value="">全部方向</option><option value="买">买</option><option value="卖">卖</option></select>${includeOpenClose ? '<select id="tmOpenClose" class="tm-filter-select"><option value="">全部开平</option><option value="开仓">开仓</option><option value="平仓">平仓</option></select>' : ""}<select id="tmClassification" class="tm-filter-select"><option value="">全部归类状态</option><option value="classified">已归类</option><option value="unclassified">未归类</option></select><input id="tmDateFrom" class="tm-filter-date" type="date"><input id="tmDateTo" class="tm-filter-date" type="date"></div>`;
   }
 
   function filterSummary(summary) {
@@ -310,9 +336,11 @@
     const data = await api(`/api/trading-management/business/${view}/${tab}?page_size=100`);
     const title = view === "junneng" ? "上海钧能台账" : "期权台账";
     const notice = view === "junneng" ? `正式汇总仅包含已归属上海钧能的数据；RB/HC 待归属 ${data.candidates?.record_count || 0} 笔。` : "默认展示全部期权；Delta、Gamma、Theta、Vega 暂显示待计算。";
-    const extra = view === "options" ? `<div><span>Delta</span><strong>待计算</strong></div><div><span>Gamma</span><strong>待计算</strong></div><div><span>Theta</span><strong>待计算</strong></div><div><span>Vega</span><strong>待计算</strong></div>` : "";
+    const primarySummary = [["记录数",data.summary.record_count],["手数",data.summary.quantity],["业务归属盈亏",data.summary.business_pnl],["浮动盈亏","待计算"]];
+    const riskSummary = [["Delta","待计算"],["Gamma","待计算"],["Theta","待计算"],["Vega","待计算"]];
+    const summaryRow = (items, className) => `<div class="tm-ledger-summary ${className}">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
     const ledgerTable = view === "options" && tab === "positions" ? optionPositionTable(data) : businessTable(data,tab,tm.permissions.canEdit);
-    const html = `<div class="tm-ledger-hero"><section class="tm-panel"><div class="tm-panel-header"><div><h2>${title}</h2><p class="tm-section-copy">${notice}</p></div><span class="tm-tag blue">${view === "junneng" ? "钢材套保业务" : "统一事实层 · 期权业务视图"}</span></div><div class="tm-ledger-summary ${view === "options" ? "four" : ""}"><div><span>记录数</span><strong>${num(data.summary.record_count)}</strong></div><div><span>手数</span><strong>${num(data.summary.quantity)}</strong></div><div><span>业务归属盈亏</span><strong>${num(data.summary.business_pnl)}</strong></div>${extra}</div></section><section class="tm-panel"><h2>口径说明</h2><div class="tm-quality-list">${qualityRow("事实层", "原始成交和平仓结果不可修改", "只读")}${qualityRow("业务层", "按业务归属和业务开平关系展示", "可调整")}${qualityRow("浮动盈亏", "待最终确认计算逻辑", "待计算", "amber")}</div></section></div><section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${filters(false)}${filterSummary(data.summary)}${view === "options" && tab === "positions" ? '<div class="tm-filter-summary compact"><div><span>标的</span><strong>按合约解析</strong></div><div><span>看涨/看跌</span><strong>按 C/P 解析</strong></div><div><span>行权价</span><strong>按合约解析</strong></div><div><span>风险指标</span><strong>待计算</strong></div></div>' : ""}${ledgerTable}</section>`;
+    const html = `<div class="tm-ledger-hero"><section class="tm-panel"><div class="tm-panel-header"><div><h2>${title}</h2><p class="tm-section-copy">${notice}</p></div><span class="tm-tag blue">${view === "junneng" ? "钢材套保业务" : "统一事实层 · 期权业务视图"}</span></div>${summaryRow(primarySummary,"tm-ledger-summary-primary")}${view === "options" ? summaryRow(riskSummary,"tm-ledger-summary-risk") : ""}</section></div><section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${filters(false)}${filterSummary(data.summary)}${view === "options" && tab === "positions" ? '<div class="tm-filter-summary compact"><div><span>标的</span><strong>按合约解析</strong></div><div><span>看涨/看跌</span><strong>按 C/P 解析</strong></div><div><span>行权价</span><strong>按合约解析</strong></div><div><span>风险指标</span><strong>待计算</strong></div></div>' : ""}${ledgerTable}</section>`;
     $(view === "junneng" ? "#tmJunnengView" : "#tmOptionsView").innerHTML = html;
     document.querySelectorAll(`[data-${view}-tab]`).forEach((button) => button.addEventListener("click", () => { tm[tabKey] = button.dataset[`${view}Tab`]; renderBusinessLedger(view).catch(showError); }));
     document.querySelectorAll("[data-rematch-id]").forEach((button) => button.addEventListener("click", () => openRematch(Number(button.dataset.rematchId),Number(button.dataset.version))));
