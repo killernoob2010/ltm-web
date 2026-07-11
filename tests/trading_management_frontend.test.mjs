@@ -42,3 +42,23 @@ test("pending calculations and reserved export are visible in the first version"
   assert.match(css, /\.trading-pending/);
   assert.match(css, /\.trading-placeholder/);
 });
+
+test("trading workspace ports the approved prototype components", () => {
+  for (const token of [
+    "tm-workspace-topbar", "tm-summary-band", "tm-content-grid", "tm-panel-header",
+    "tm-filter-summary", "tm-ledger-hero", "tm-drawer", "tm-toast",
+  ]) assert.match(html + tradingJs + css, new RegExp(token));
+});
+
+test("all three ledgers use the approved prototype tab order", () => {
+  assert.match(tradingJs, /当前持仓[\s\S]*平仓记录[\s\S]*全部交易/);
+  assert.doesNotMatch(tradingJs, /业务持仓[\s\S]*业务成交[\s\S]*业务平仓/);
+});
+
+test("prototype sections replace the simplified placeholder layout", () => {
+  assert.match(tradingJs, /逐日平仓盈亏趋势/);
+  assert.match(tradingJs, /数据质量/);
+  assert.match(tradingJs, /业务归属分布/);
+  assert.match(tradingJs, /统一输出/);
+  assert.doesNotMatch(html, /class="trading-metric-grid"/);
+});
