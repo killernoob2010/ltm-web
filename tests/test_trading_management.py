@@ -4,7 +4,7 @@ import os
 import sys
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -211,3 +211,164 @@ def test_import_preview_rejects_partially_overlapping_active_batch(tmp_path, mon
             position_path=build_position_workbook(tmp_path / "positions.xlsx"),
             actor="tester",
         )
+
+
+def create_preview_batch(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO trading_accounts (account_code, display_name) VALUES (?, ?)",
+            ("A001", "测试账户"),
+        )
+    return trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=build_trade_workbook(tmp_path / "trades.xlsx"),
+        close_path=build_close_workbook(tmp_path / "closes.xlsx"),
+        position_path=build_position_workbook(tmp_path / "positions.xlsx"),
+        actor="tester",
+    )
+
+
+def test_confirm_import_writes_immutable_fact_versions(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+
+    result = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    assert result["status"] == "active"
+    assert result["counts"] == {"trade": 3, "close": 1, "position": 1}
+    with db.connect() as conn:
+        batch = conn.execute(
+            "SELECT status, confirmed_by FROM trading_import_batches WHERE id = ?",
+            (preview["preview_batch_id"],),
+        ).fetchone()
+        assert batch["status"] == "active"
+        assert batch["confirmed_by"] == "tester"
+        assert conn.execute("SELECT COUNT(*) AS c FROM trading_source_rows").fetchone()["c"] == 5
+        assert conn.execute("SELECT COUNT(*) AS c FROM trading_trade_facts").fetchone()["c"] == 3
+        raw_rows = [row["raw_json"] for row in conn.execute("SELECT raw_json FROM trading_source_rows")]
+        assert any("平今" in raw for raw in raw_rows)
+
+    with pytest.raises(ValueError, match="预览批次已确认或不可用"):
+        trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+
+def test_confirm_same_range_supersedes_old_batch_and_keeps_source_rows(tmp_path, monkeypatch):
+    first_preview = create_preview_batch(tmp_path, monkeypatch)
+    first = trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
+    with db.connect() as conn:
+        first_identity_ids = {
+            row["id"] for row in conn.execute("SELECT id FROM trading_fact_identities").fetchall()
+        }
+
+    second_preview = trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=tmp_path / "trades.xlsx",
+        close_path=tmp_path / "closes.xlsx",
+        position_path=tmp_path / "positions.xlsx",
+        actor="tester2",
+    )
+    second = trading_management.confirm_trading_import(second_preview["preview_batch_id"], actor="tester2")
+
+    with db.connect() as conn:
+        statuses = {
+            row["id"]: row["status"]
+            for row in conn.execute("SELECT id, status FROM trading_import_batches").fetchall()
+        }
+        second_identity_ids = {
+            row["id"] for row in conn.execute("SELECT id FROM trading_fact_identities").fetchall()
+        }
+        source_count = conn.execute("SELECT COUNT(*) AS c FROM trading_source_rows").fetchone()["c"]
+
+    assert statuses[first["batch_id"]] == "superseded"
+    assert statuses[second["batch_id"]] == "active"
+    assert first_identity_ids == second_identity_ids
+    assert source_count == 10
+
+
+def test_same_stable_identity_keeps_business_assignment_after_reimport(tmp_path, monkeypatch):
+    first_preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
+    with db.connect() as conn:
+        trade_identity_id = conn.execute(
+            "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
+        ).fetchone()["identity_id"]
+        subject_id = conn.execute(
+            "INSERT INTO trading_business_subjects (name, normalized_name) VALUES ('上海钧能', '上海钧能')"
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO trading_business_assignments
+                (trade_identity_id, business_subject_id, business_type, assigned_by)
+            VALUES (?, ?, 'basic_hedging', 'tester')
+            """,
+            (trade_identity_id, subject_id),
+        )
+
+    second_preview = trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=tmp_path / "trades.xlsx",
+        close_path=tmp_path / "closes.xlsx",
+        position_path=tmp_path / "positions.xlsx",
+        actor="tester2",
+    )
+    trading_management.confirm_trading_import(second_preview["preview_batch_id"], actor="tester2")
+
+    with db.connect() as conn:
+        assignment = conn.execute(
+            "SELECT trade_identity_id, business_type FROM trading_business_assignments"
+        ).fetchone()
+
+    assert assignment["trade_identity_id"] == trade_identity_id
+    assert assignment["business_type"] == "basic_hedging"
+
+
+def test_changed_assigned_trade_is_not_force_inherited(tmp_path, monkeypatch):
+    first_preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
+    with db.connect() as conn:
+        old_identity_id = conn.execute(
+            "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
+        ).fetchone()["identity_id"]
+        subject_id = conn.execute(
+            "INSERT INTO trading_business_subjects (name, normalized_name) VALUES ('上海钧能', '上海钧能')"
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO trading_business_assignments
+                (trade_identity_id, business_subject_id, business_type, assigned_by)
+            VALUES (?, ?, 'basic_hedging', 'tester')
+            """,
+            (old_identity_id, subject_id),
+        )
+
+    workbook = load_workbook(tmp_path / "trades.xlsx")
+    workbook["成交记录"]["F3"] = 3110
+    workbook.save(tmp_path / "trades.xlsx")
+    second_preview = trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=tmp_path / "trades.xlsx",
+        close_path=tmp_path / "closes.xlsx",
+        position_path=tmp_path / "positions.xlsx",
+        actor="tester2",
+    )
+    trading_management.confirm_trading_import(second_preview["preview_batch_id"], actor="tester2")
+
+    with db.connect() as conn:
+        active_row = conn.execute(
+            """
+            SELECT tf.identity_id, tf.verification_status
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id
+            WHERE b.status = 'active' AND tf.source_row_id = (
+                SELECT MIN(source_row_id) FROM trading_trade_facts WHERE batch_id = b.id
+            )
+            """
+        ).fetchone()
+        inherited = conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_business_assignments WHERE trade_identity_id = ?",
+            (active_row["identity_id"],),
+        ).fetchone()["c"]
+
+    assert active_row["identity_id"] != old_identity_id
+    assert inherited == 0
+    assert active_row["verification_status"] == "inheritance_review_required"

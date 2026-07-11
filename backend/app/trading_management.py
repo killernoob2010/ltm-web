@@ -104,6 +104,15 @@ def _read_grouped_sheet(path: Path, sheet_name: str, required_headers: set[str])
         workbook.close()
 
 
+def _raw_data(row: dict[str, Any]) -> dict[str, Any]:
+    result = {}
+    for key, value in row.items():
+        if key.startswith("_"):
+            continue
+        result[key] = _text(value) if isinstance(value, (date, datetime)) else value
+    return result
+
+
 def parse_trade_workbook(path: Path) -> list[dict[str, Any]]:
     rows = _read_grouped_sheet(Path(path), "成交记录", TRADE_REQUIRED_HEADERS)
     result = []
@@ -129,6 +138,7 @@ def parse_trade_workbook(path: Path) -> list[dict[str, Any]]:
                 "hedge_flag": _text(row.get("投保")),
                 "premium_cashflow": _number(row.get("权利金收支")),
                 "source_row_no": row["_row_no"],
+                "raw_data": _raw_data(row),
             }
         )
     return result
@@ -165,6 +175,7 @@ def parse_close_workbook(path: Path) -> list[dict[str, Any]]:
                 "fee": _number(row.get("手续费"), None),
                 "premium_cashflow": _number(row.get("权利金收支")),
                 "source_row_no": row["_row_no"],
+                "raw_data": {"open": _raw_data(pending), "close": _raw_data(row)},
             }
         )
         pending = None
@@ -196,6 +207,7 @@ def parse_position_workbook(path: Path) -> list[dict[str, Any]]:
                 "floating_pnl": None,
                 "valuation_status": "pending_calculation",
                 "source_row_no": row["_row_no"],
+                "raw_data": _raw_data(row),
             }
         )
     return result
@@ -302,6 +314,200 @@ def preview_trading_import(
         )
         conn.commit()
     return {"preview_batch_id": batch_id, **summary}
+
+
+def _rows_with_stable_keys(fact_type: str, account_code: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    signatures = [build_fact_signature(fact_type, account_code, row) for row in rows]
+    counts: dict[str, int] = {}
+    totals: dict[str, int] = {}
+    for signature in signatures:
+        totals[signature] = totals.get(signature, 0) + 1
+    result = []
+    for row, signature in zip(rows, signatures):
+        counts[signature] = counts.get(signature, 0) + 1
+        stable_key = signature if totals[signature] == 1 else f"{signature}#{counts[signature]}"
+        result.append({**row, "base_signature": signature, "stable_key": stable_key})
+    return result
+
+
+def _identity_id(cur, account_id: int, fact_type: str, stable_key: str) -> int:
+    existing = db._exec(
+        cur,
+        "SELECT id FROM trading_fact_identities WHERE account_id = ? AND fact_type = ? AND stable_key = ?",
+        (account_id, fact_type, stable_key),
+    ).fetchone()
+    if existing:
+        return existing["id"]
+    return db._last_insert_id(
+        cur,
+        "INSERT INTO trading_fact_identities (account_id, fact_type, stable_key) VALUES (?, ?, ?)",
+        (account_id, fact_type, stable_key),
+    )
+
+
+def _insert_source_row(cur, batch_id: int, source_type: str, source_file: str, source_sheet: str, row: dict[str, Any]) -> int:
+    raw_json = json.dumps(row["raw_data"], ensure_ascii=False, sort_keys=True)
+    return db._last_insert_id(
+        cur,
+        """
+        INSERT INTO trading_source_rows
+            (batch_id, source_type, source_file, source_sheet, source_row_no, raw_hash, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            batch_id,
+            source_type,
+            source_file,
+            source_sheet,
+            row["source_row_no"],
+            hashlib.sha256(raw_json.encode("utf-8")).hexdigest(),
+            raw_json,
+        ),
+    )
+
+
+def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        batch = db._exec(
+            cur,
+            "SELECT * FROM trading_import_batches WHERE id = ?",
+            (preview_batch_id,),
+        ).fetchone()
+        if not batch or batch["status"] != "preview":
+            raise ValueError("预览批次已确认或不可用")
+        summary = json.loads(batch["parse_summary"] or "{}")
+        paths = {key: Path(value) for key, value in summary.get("paths", {}).items()}
+        if set(paths) != {"trade", "close", "position"}:
+            raise ValueError("预览批次缺少三表文件信息")
+        expected_hashes = {
+            "trade": batch["trade_file_sha256"],
+            "close": batch["close_file_sha256"],
+            "position": batch["position_file_sha256"],
+        }
+        if any(not paths[key].exists() or _file_sha256(paths[key]) != expected_hashes[key] for key in paths):
+            raise ValueError("预览文件已变化，请重新预览")
+
+        account = db._exec(
+            cur,
+            "SELECT account_code FROM trading_accounts WHERE id = ? AND is_active = 1",
+            (batch["account_id"],),
+        ).fetchone()
+        if not account:
+            raise ValueError("交易账户不存在或已停用")
+        account_code = account["account_code"]
+        trades = _rows_with_stable_keys("trade", account_code, parse_trade_workbook(paths["trade"]))
+        closes = _rows_with_stable_keys("close", account_code, parse_close_workbook(paths["close"]))
+        positions = _rows_with_stable_keys("position", account_code, parse_position_workbook(paths["position"]))
+
+        previous = db._exec(
+            cur,
+            """
+            SELECT id FROM trading_import_batches
+            WHERE account_id = ? AND status = 'active' AND range_start = ? AND range_end = ? AND id <> ?
+            """,
+            (batch["account_id"], batch["range_start"], batch["range_end"], preview_batch_id),
+        ).fetchone()
+
+        for row in trades:
+            source_row_id = _insert_source_row(cur, preview_batch_id, "trade", batch["trade_file_name"], "成交记录", row)
+            identity_id = _identity_id(cur, batch["account_id"], "trade", row["stable_key"])
+            inheritance_review = None
+            if previous:
+                inheritance_review = db._exec(
+                    cur,
+                    """
+                    SELECT old_tf.identity_id
+                    FROM trading_trade_facts old_tf
+                    JOIN trading_source_rows old_sr ON old_sr.id = old_tf.source_row_id
+                    JOIN trading_business_assignments old_ba ON old_ba.trade_identity_id = old_tf.identity_id
+                    WHERE old_tf.batch_id = ? AND old_sr.source_row_no = ?
+                      AND old_tf.trade_date = ? AND old_tf.exchange = ? AND old_tf.contract = ?
+                      AND old_tf.side = ? AND old_tf.open_close = ? AND old_tf.identity_id <> ?
+                    LIMIT 1
+                    """,
+                    (
+                        previous["id"], row["source_row_no"], row["date"], row["exchange"],
+                        row["contract"], row["side"], row["open_close"], identity_id,
+                    ),
+                ).fetchone()
+            verification_status = "inheritance_review_required" if inheritance_review else "file_imported"
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_trade_facts
+                    (identity_id, batch_id, source_row_id, trade_date, trade_time, exchange, contract,
+                     asset_type, side, open_close_raw, open_close, quantity, price, turnover, fee,
+                     hedge_flag, premium_cashflow, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    identity_id, preview_batch_id, source_row_id, row["date"], row["trade_time"],
+                    row["exchange"], row["contract"], row["asset_type"], row["side"],
+                    row["open_close_raw"], row["open_close"], row["quantity"], row["price"],
+                    row["turnover"], row["fee"], row["hedge_flag"], row["premium_cashflow"],
+                    verification_status,
+                ),
+            )
+
+        for row in closes:
+            source_row_id = _insert_source_row(cur, preview_batch_id, "close", batch["close_file_name"], "平仓记录", row)
+            identity_id = _identity_id(cur, batch["account_id"], "close", row["stable_key"])
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_close_facts
+                    (identity_id, batch_id, source_row_id, open_date, close_date, exchange, contract,
+                     asset_type, open_side, close_side, quantity, open_price, close_price,
+                     fact_close_pnl, matched_fee, fee_status, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
+                """,
+                (
+                    identity_id, preview_batch_id, source_row_id, row["open_date"], row["close_date"],
+                    row["exchange"], row["contract"], row["asset_type"], row["open_side"],
+                    row["close_side"], row["quantity"], row["open_price"], row["close_price"],
+                    row["fact_close_pnl"], row["fee"], "matched" if row["fee"] is not None else "pending_match",
+                ),
+            )
+
+        for row in positions:
+            source_row_id = _insert_source_row(cur, preview_batch_id, "position", batch["position_file_name"], "期末持仓", row)
+            identity_id = _identity_id(cur, batch["account_id"], "position", row["stable_key"])
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_position_snapshots
+                    (identity_id, batch_id, source_row_id, snapshot_date, exchange, contract, asset_type,
+                     direction, open_date, quantity, average_price, margin, valuation_price, floating_pnl,
+                     valuation_status, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
+                """,
+                (
+                    identity_id, preview_batch_id, source_row_id, row["snapshot_date"], row["exchange"],
+                    row["contract"], row["asset_type"], row["direction"], row["open_date"],
+                    row["quantity"], row["average_price"], row["margin"], row["valuation_price"],
+                    row["floating_pnl"], row["valuation_status"],
+                ),
+            )
+
+        if previous:
+            db._exec(cur, "UPDATE trading_import_batches SET status = 'superseded' WHERE id = ?", (previous["id"],))
+        db._exec(
+            cur,
+            """
+            UPDATE trading_import_batches
+            SET status = 'active', supersedes_batch_id = ?, confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (previous["id"] if previous else None, actor, preview_batch_id),
+        )
+        conn.commit()
+    return {
+        "batch_id": preview_batch_id,
+        "status": "active",
+        "counts": {"trade": len(trades), "close": len(closes), "position": len(positions)},
+        "supersedes_batch_id": previous["id"] if previous else None,
+    }
 
 
 async def trading_management_current_user(
