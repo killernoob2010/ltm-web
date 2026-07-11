@@ -797,6 +797,180 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
     }
 
 
+BUSINESS_TYPES = ("basic_hedging", "strategic_hedging")
+
+
+def _normalized_name(value: str) -> str:
+    return " ".join(str(value or "").strip().split()).lower()
+
+
+def create_business_subject(name: str, actor: str) -> dict[str, Any]:
+    display_name = " ".join(str(name or "").strip().split())
+    normalized = _normalized_name(display_name)
+    if not normalized:
+        raise ValueError("业务归属名称不能为空")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(cur, "SELECT * FROM trading_business_subjects WHERE normalized_name = ?", (normalized,)).fetchone()
+        if row:
+            return dict(row)
+        subject_id = db._last_insert_id(
+            cur,
+            "INSERT INTO trading_business_subjects (name, normalized_name, created_by, updated_by) VALUES (?, ?, ?, ?)",
+            (display_name, normalized, actor, actor),
+        )
+        conn.commit()
+        row = db._exec(cur, "SELECT * FROM trading_business_subjects WHERE id = ?", (subject_id,)).fetchone()
+    return dict(row)
+
+
+def get_or_create_strategy(name: str, actor: str) -> Optional[dict[str, Any]]:
+    display_name = " ".join(str(name or "").strip().split())
+    if not display_name:
+        return None
+    normalized = _normalized_name(display_name)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(cur, "SELECT * FROM trading_strategies WHERE normalized_name = ?", (normalized,)).fetchone()
+        if row:
+            return dict(row)
+        strategy_id = db._last_insert_id(
+            cur,
+            "INSERT INTO trading_strategies (name, normalized_name, source, created_by, updated_by) VALUES (?, ?, 'manual', ?, ?)",
+            (display_name, normalized, actor, actor),
+        )
+        conn.commit()
+        row = db._exec(cur, "SELECT * FROM trading_strategies WHERE id = ?", (strategy_id,)).fetchone()
+    return dict(row)
+
+
+def list_trading_config() -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        subjects = db._exec(cur, "SELECT * FROM trading_business_subjects ORDER BY name").fetchall()
+        strategies = db._exec(cur, "SELECT * FROM trading_strategies ORDER BY name").fetchall()
+        accounts = db._exec(cur, "SELECT * FROM trading_accounts WHERE is_active = 1 ORDER BY display_name").fetchall()
+    return {
+        "business_types": list(BUSINESS_TYPES),
+        "subjects": [dict(row) for row in subjects],
+        "strategies": [dict(row) for row in strategies],
+        "accounts": [dict(row) for row in accounts],
+        "junneng_candidate_products": ["rb", "hc"],
+    }
+
+
+def _write_assignment_audit(cur, identity_id: int, operation_type: str, actor: str, before: Any, after: Any) -> None:
+    db._exec(
+        cur,
+        """
+        INSERT INTO operation_logs
+            (module_code, entity_type, entity_id, operation_type, description, before_data, after_data)
+        VALUES ('trading_positions', 'trading_business_assignment', ?, ?, ?, ?, ?)
+        """,
+        (
+            identity_id,
+            operation_type,
+            f"{actor} {operation_type}",
+            json.dumps(before, ensure_ascii=False) if before is not None else None,
+            json.dumps(after, ensure_ascii=False) if after is not None else None,
+        ),
+    )
+
+
+def classify_trade_identities(
+    identity_ids: list[int],
+    business_subject_id: int,
+    business_type: str,
+    strategy_name: str,
+    instruction_text: str,
+    actor: str,
+    requested_quantity: Optional[float] = None,
+) -> dict[str, Any]:
+    if requested_quantity is not None:
+        raise ValueError("一笔成交不允许按手数拆分归类")
+    if business_type not in BUSINESS_TYPES:
+        raise ValueError("业务类型只允许基础套保或战略套保")
+    if not identity_ids:
+        raise ValueError("请选择需要归类的完整成交")
+    strategy = get_or_create_strategy(strategy_name, actor)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        subject = db._exec(
+            cur,
+            "SELECT id FROM trading_business_subjects WHERE id = ? AND is_active = 1",
+            (business_subject_id,),
+        ).fetchone()
+        if not subject:
+            raise ValueError("业务归属不存在或已停用")
+        assigned = 0
+        for identity_id in identity_ids:
+            active_fact = db._exec(
+                cur,
+                """
+                SELECT tf.identity_id FROM trading_trade_facts tf
+                JOIN trading_import_batches b ON b.id = tf.batch_id
+                WHERE b.status = 'active' AND tf.identity_id = ?
+                LIMIT 1
+                """,
+                (identity_id,),
+            ).fetchone()
+            if not active_fact:
+                raise ValueError(f"成交事实不存在或不是有效版本：{identity_id}")
+            before_row = db._exec(
+                cur,
+                "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
+                (identity_id,),
+            ).fetchone()
+            before = dict(before_row) if before_row else None
+            if before_row:
+                db._exec(
+                    cur,
+                    """
+                    UPDATE trading_business_assignments
+                    SET business_subject_id = ?, business_type = ?, strategy_id = ?, instruction_text = ?,
+                        updated_by = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE trade_identity_id = ?
+                    """,
+                    (business_subject_id, business_type, strategy["id"] if strategy else None, instruction_text or None, actor, identity_id),
+                )
+            else:
+                db._exec(
+                    cur,
+                    """
+                    INSERT INTO trading_business_assignments
+                        (trade_identity_id, business_subject_id, business_type, strategy_id,
+                         instruction_text, assigned_by, updated_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (identity_id, business_subject_id, business_type, strategy["id"] if strategy else None, instruction_text or None, actor, actor),
+                )
+            after_row = db._exec(
+                cur,
+                "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
+                (identity_id,),
+            ).fetchone()
+            _write_assignment_audit(cur, identity_id, "业务归类", actor, before, dict(after_row))
+            assigned += 1
+        conn.commit()
+    return {"assigned_count": assigned}
+
+
+def remove_trade_assignment(identity_id: int, actor: str) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        before_row = db._exec(
+            cur,
+            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
+            (identity_id,),
+        ).fetchone()
+        if not before_row:
+            return {"removed": False}
+        db._exec(cur, "DELETE FROM trading_business_assignments WHERE trade_identity_id = ?", (identity_id,))
+        _write_assignment_audit(cur, identity_id, "取消业务归类", actor, dict(before_row), None)
+        conn.commit()
+    return {"removed": True}
+
+
 def _api_filters(
     contract: str = "",
     direction: str = "",

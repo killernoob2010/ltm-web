@@ -466,3 +466,97 @@ def test_fact_api_routes_are_registered():
         "/imports",
         "/imports/{batch_id}/validation",
     } <= paths
+
+
+def test_business_config_supports_controlled_subjects_and_reusable_strategies(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    subject = trading_management.create_business_subject(" 上海钧能 ", actor="tester")
+    same_subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    strategy = trading_management.get_or_create_strategy("代内部公司套保", actor="tester")
+    same_strategy = trading_management.get_or_create_strategy(" 代内部公司套保 ", actor="tester")
+    config = trading_management.list_trading_config()
+
+    assert subject["id"] == same_subject["id"]
+    assert strategy["id"] == same_strategy["id"]
+    assert config["business_types"] == ["basic_hedging", "strategic_hedging"]
+    assert config["subjects"][0]["name"] == "上海钧能"
+    assert config["strategies"][0]["name"] == "代内部公司套保"
+
+
+def test_classification_assigns_complete_trade_identities(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        trade_ids = [
+            row["identity_id"]
+            for row in conn.execute(
+                "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 2"
+            ).fetchall()
+        ]
+
+    result = trading_management.classify_trade_identities(
+        trade_ids,
+        business_subject_id=subject["id"],
+        business_type="basic_hedging",
+        strategy_name="代内部公司套保",
+        instruction_text="上海钧能钢材套保",
+        actor="tester",
+    )
+
+    assert result["assigned_count"] == 2
+    with db.connect() as conn:
+        assignments = conn.execute(
+            "SELECT * FROM trading_business_assignments ORDER BY trade_identity_id"
+        ).fetchall()
+        audit_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM operation_logs WHERE module_code = 'trading_positions'"
+        ).fetchone()["c"]
+    assert len(assignments) == 2
+    assert {row["business_type"] for row in assignments} == {"basic_hedging"}
+    assert audit_count == 2
+
+
+def test_classification_rejects_partial_quantity_and_disabled_subject(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        trade_id = conn.execute(
+            "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
+        ).fetchone()["identity_id"]
+
+    with pytest.raises(ValueError, match="不允许按手数拆分"):
+        trading_management.classify_trade_identities(
+            [trade_id], subject["id"], "basic_hedging", "", "", "tester", requested_quantity=1
+        )
+
+    with db.connect() as conn:
+        conn.execute("UPDATE trading_business_subjects SET is_active = 0 WHERE id = ?", (subject["id"],))
+    with pytest.raises(ValueError, match="业务归属不存在或已停用"):
+        trading_management.classify_trade_identities(
+            [trade_id], subject["id"], "basic_hedging", "", "", "tester"
+        )
+
+
+def test_remove_business_assignment_keeps_audit(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        trade_id = conn.execute(
+            "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
+        ).fetchone()["identity_id"]
+    trading_management.classify_trade_identities(
+        [trade_id], subject["id"], "basic_hedging", "", "", "tester"
+    )
+
+    result = trading_management.remove_trade_assignment(trade_id, actor="tester")
+
+    assert result["removed"] is True
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM trading_business_assignments").fetchone()["c"] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM operation_logs WHERE operation_type = '取消业务归类'"
+        ).fetchone()["c"] == 1
