@@ -560,3 +560,92 @@ def test_remove_business_assignment_keeps_audit(tmp_path, monkeypatch):
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM operation_logs WHERE operation_type = '取消业务归类'"
         ).fetchone()["c"] == 1
+
+
+def setup_classified_business_sample(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        rb_ids = [
+            row["identity_id"] for row in conn.execute(
+                "SELECT identity_id FROM trading_trade_facts WHERE contract = 'rb2610' ORDER BY id"
+            ).fetchall()
+        ]
+        conn.execute(
+            """
+            INSERT INTO trading_contract_specs
+                (exchange, product_code, asset_type, contract_multiplier, price_tick)
+            VALUES ('SHFE', 'rb', 'future', 10, 1)
+            """
+        )
+    trading_management.classify_trade_identities(
+        rb_ids, subject["id"], "basic_hedging", "代内部公司套保", "上海钧能钢材套保", "tester"
+    )
+    return confirmed
+
+
+def test_default_business_allocations_preserve_fact_pnl(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+
+    result = trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    assert result["allocation_count"] == 1
+    with db.connect() as conn:
+        allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
+        fact_pnl = conn.execute("SELECT fact_close_pnl FROM trading_close_facts").fetchone()["fact_close_pnl"]
+    assert allocation["source"] == "fact_default"
+    assert allocation["business_pnl"] == 400
+    assert fact_pnl == 1200
+
+
+def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    junneng_closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    junneng_trades = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+    option_trades = trading_management.query_business_rows(
+        "options", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert junneng_closes["summary"]["business_pnl"] == 400
+    assert junneng_closes["summary"]["fact_close_pnl"] == 1200
+    assert len(junneng_trades["items"]) == 2
+    assert all(item["business_subject"] == "上海钧能" for item in junneng_trades["items"])
+    assert len(option_trades["items"]) == 1
+    assert option_trades["items"][0]["contract"] == "i2609-c-700"
+    assert option_trades["items"][0]["assignment_status"] == "unclassified"
+
+
+def test_unclassified_rb_hc_appear_as_candidates_not_formal_summary(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    result = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert result["items"] == []
+    assert result["summary"]["record_count"] == 0
+    assert result["candidates"]["record_count"] == 2
+
+
+def test_option_business_positions_include_unclassified_open_options(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    result = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert result["summary"]["record_count"] == 1
+    assert result["summary"]["quantity"] == 1
+    assert result["items"][0]["contract"] == "i2609-c-700"
+    assert result["items"][0]["average_price"] == 4.2
+    assert result["items"][0]["floating_pnl_status"] == "pending_calculation"

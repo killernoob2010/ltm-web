@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -969,6 +970,192 @@ def remove_trade_assignment(identity_id: int, actor: str) -> dict[str, Any]:
         _write_assignment_audit(cur, identity_id, "取消业务归类", actor, dict(before_row), None)
         conn.commit()
     return {"removed": True}
+
+
+def calculate_business_pnl(
+    open_price: float,
+    close_price: float,
+    side: str,
+    quantity: float,
+    multiplier: float,
+) -> float:
+    difference = close_price - open_price if side == "买" else open_price - close_price
+    return round(difference * quantity * multiplier, 8)
+
+
+def _product_code(contract: str) -> str:
+    match = re.match(r"[a-zA-Z]+", contract or "")
+    return match.group(0).lower() if match else ""
+
+
+def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        close_ids = [
+            row["identity_id"]
+            for row in db._exec(cur, "SELECT identity_id FROM trading_close_facts WHERE batch_id = ?", (batch_id,)).fetchall()
+        ]
+        for close_id in close_ids:
+            db._exec(
+                cur,
+                "DELETE FROM trading_business_close_allocations WHERE close_identity_id = ? AND source = 'fact_default'",
+                (close_id,),
+            )
+        fact_rows = db._exec(
+            cur,
+            """
+            SELECT fa.close_identity_id, fa.open_trade_identity_id, fa.matched_quantity,
+                   cf.open_price, cf.close_price, cf.open_side, cf.exchange, cf.contract, cf.asset_type
+            FROM trading_fact_close_allocations fa
+            JOIN trading_close_facts cf ON cf.identity_id = fa.close_identity_id AND cf.batch_id = ?
+            ORDER BY fa.id
+            """,
+            (batch_id,),
+        ).fetchall()
+        count = 0
+        for row in fact_rows:
+            spec = db._exec(
+                cur,
+                """
+                SELECT contract_multiplier FROM trading_contract_specs
+                WHERE LOWER(exchange) = LOWER(?) AND LOWER(product_code) = ?
+                  AND asset_type = ? AND is_active = 1
+                """,
+                (row["exchange"], _product_code(row["contract"]), row["asset_type"]),
+            ).fetchone()
+            business_pnl = None
+            if spec:
+                business_pnl = calculate_business_pnl(
+                    float(row["open_price"]), float(row["close_price"]), row["open_side"],
+                    float(row["matched_quantity"]), float(spec["contract_multiplier"]),
+                )
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_business_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, source,
+                     business_pnl, rule_version)
+                VALUES (?, ?, ?, 'fact_default', ?, 'business-default-v1')
+                """,
+                (row["close_identity_id"], row["open_trade_identity_id"], row["matched_quantity"], business_pnl),
+            )
+            count += 1
+        conn.commit()
+    return {"allocation_count": count}
+
+
+def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, Any]:
+    if view not in {"junneng", "options"} or tab not in {"positions", "closes", "trades"}:
+        raise ValueError("未知业务视图")
+    if tab == "positions":
+        with db.connect() as conn:
+            rows = db._exec(
+                conn.cursor(),
+                """
+                SELECT tf.identity_id, tf.contract, tf.asset_type, tf.side AS direction,
+                       tf.price AS average_price, tf.quantity,
+                       tf.quantity - COALESCE((
+                           SELECT SUM(a.matched_quantity)
+                           FROM trading_business_close_allocations a
+                           WHERE a.open_trade_identity_id = tf.identity_id
+                       ), 0) AS remaining_quantity,
+                       s.name AS business_subject, ba.business_type, st.name AS strategy
+                FROM trading_trade_facts tf
+                JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+                LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+                WHERE tf.open_close = '开仓'
+                ORDER BY tf.contract, tf.id
+                """,
+            ).fetchall()
+        all_items = [dict(row) for row in rows if float(row["remaining_quantity"] or 0) > 1e-9]
+        if view == "junneng":
+            items = [row for row in all_items if row["business_subject"] == "上海钧能"]
+        else:
+            items = [row for row in all_items if row["asset_type"] == "option"]
+        if filters.contract:
+            items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+        for item in items:
+            item["quantity"] = item.pop("remaining_quantity")
+            item["floating_pnl"] = None
+            item["floating_pnl_status"] = "pending_calculation"
+        summary = {
+            "record_count": len(items),
+            "quantity": sum(float(row["quantity"]) for row in items),
+            "business_pnl": 0,
+            "floating_pnl": None,
+            "floating_pnl_status": "pending_calculation",
+        }
+        return _page_result(items, summary, filters)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        if tab == "trades":
+            rows = db._exec(
+                cur,
+                """
+                SELECT tf.*, s.name AS business_subject, ba.business_type,
+                       st.name AS strategy, ba.instruction_text,
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+                FROM trading_trade_facts tf
+                JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+                LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+                ORDER BY tf.trade_date DESC, tf.id DESC
+                """,
+            ).fetchall()
+            all_items = [dict(row) for row in rows]
+            candidates = [
+                row for row in all_items
+                if row["assignment_status"] == "unclassified" and _product_code(row["contract"]) in {"rb", "hc"}
+            ]
+            if view == "junneng":
+                items = [row for row in all_items if row["business_subject"] == "上海钧能"]
+            else:
+                items = [row for row in all_items if row["asset_type"] == "option"]
+            if filters.contract:
+                items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+            summary = {
+                "record_count": len(items),
+                "quantity": sum(float(row["quantity"]) for row in items),
+                "fee": sum(float(row["fee"] or 0) for row in items),
+            }
+            result = _page_result(items, summary, filters)
+            result["candidates"] = {
+                "record_count": len(candidates) if view == "junneng" else 0,
+                "quantity": sum(float(row["quantity"]) for row in candidates) if view == "junneng" else 0,
+            }
+            return result
+        rows = db._exec(
+            cur,
+            """
+            SELECT cf.*, a.business_pnl, a.matched_quantity,
+                   s.name AS business_subject, ba.business_type, st.name AS strategy
+            FROM trading_business_close_allocations a
+            JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+            LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+            ORDER BY cf.close_date DESC, cf.id DESC
+            """,
+        ).fetchall()
+        all_items = [dict(row) for row in rows]
+        if view == "junneng":
+            items = [row for row in all_items if row["business_subject"] == "上海钧能"]
+        else:
+            items = [row for row in all_items if row["asset_type"] == "option"]
+        if filters.contract:
+            items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+        summary = {
+            "record_count": len(items),
+            "quantity": sum(float(row["matched_quantity"]) for row in items),
+            "business_pnl": sum(float(row["business_pnl"] or 0) for row in items),
+            "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
+            "fee": sum(float(row["matched_fee"] or 0) for row in items),
+        }
+        return _page_result(items, summary, filters)
 
 
 def _api_filters(
