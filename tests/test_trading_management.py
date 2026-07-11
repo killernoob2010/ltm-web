@@ -649,3 +649,163 @@ def test_option_business_positions_include_unclassified_open_options(tmp_path, m
     assert result["items"][0]["contract"] == "i2609-c-700"
     assert result["items"][0]["average_price"] == 4.2
     assert result["items"][0]["floating_pnl_status"] == "pending_calculation"
+
+
+def add_later_classified_open(batch_id, subject_id):
+    with db.connect() as conn:
+        source_row_id = conn.execute(
+            """
+            INSERT INTO trading_source_rows
+                (batch_id, source_type, source_file, source_sheet, source_row_no, raw_hash, raw_json)
+            VALUES (?, 'trade', 'manual-test.xlsx', '成交记录', 99, 'later-open', '{}')
+            """,
+            (batch_id,),
+        ).lastrowid
+        identity_id = conn.execute(
+            """
+            INSERT INTO trading_fact_identities (account_id, fact_type, stable_key)
+            VALUES (1, 'trade', 'later-open-rb2610')
+            """
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, exchange, contract, asset_type,
+                 side, open_close_raw, open_close, quantity, price, fee, verification_status)
+            VALUES (?, ?, ?, '20260625', 'SHFE', 'rb2610', 'future',
+                    '买', '开', '开仓', 2, 3110, 6, 'file_imported')
+            """,
+            (identity_id, batch_id, source_row_id),
+        )
+        strategy_id = conn.execute(
+            """
+            INSERT INTO trading_strategies (name, normalized_name, source, created_by)
+            VALUES ('晚开策略', '晚开策略', 'manual', 'tester')
+            """
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO trading_business_assignments
+                (trade_identity_id, business_subject_id, business_type, strategy_id, assigned_by)
+            VALUES (?, ?, 'basic_hedging', ?, 'tester')
+            """,
+            (identity_id, subject_id, strategy_id),
+        )
+    return identity_id
+
+
+def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        subject_id = conn.execute(
+            "SELECT id FROM trading_business_subjects WHERE name = '上海钧能'"
+        ).fetchone()["id"]
+        close_id = conn.execute("SELECT identity_id FROM trading_close_facts").fetchone()["identity_id"]
+        old_open_id = conn.execute(
+            "SELECT open_trade_identity_id FROM trading_business_close_allocations"
+        ).fetchone()["open_trade_identity_id"]
+    new_open_id = add_later_classified_open(confirmed["batch_id"], subject_id)
+
+    candidates = trading_management.list_business_close_candidates(close_id)
+    preview = trading_management.preview_business_rematch(
+        close_id,
+        [{"open_trade_identity_id": new_open_id, "quantity": 2}],
+        allocation_version=1,
+    )
+    result = trading_management.confirm_business_rematch(
+        close_id, preview["preview_token"], allocation_version=1, actor="tester", reason="实际平晚开仓"
+    )
+
+    assert {row["identity_id"] for row in candidates} >= {old_open_id, new_open_id}
+    assert preview["before_business_pnl"] == 400
+    assert preview["after_business_pnl"] == 200
+    assert result["allocation_version"] == 2
+    with db.connect() as conn:
+        allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
+        fact_allocation = conn.execute("SELECT * FROM trading_fact_close_allocations").fetchone()
+        audit = conn.execute("SELECT * FROM trading_business_allocation_audit").fetchone()
+        close_assignment = conn.execute(
+            """
+            SELECT ba.*, s.name AS strategy
+            FROM trading_close_trade_links l
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = l.close_trade_identity_id
+            LEFT JOIN trading_strategies s ON s.id = ba.strategy_id
+            WHERE l.close_identity_id = ?
+            """,
+            (close_id,),
+        ).fetchone()
+    assert allocation["open_trade_identity_id"] == new_open_id
+    assert allocation["source"] == "manual_override"
+    assert fact_allocation["open_trade_identity_id"] == old_open_id
+    assert audit["before_business_pnl"] == 400
+    assert audit["after_business_pnl"] == 200
+    assert close_assignment["strategy"] == "晚开策略"
+
+    positions = trading_management.query_business_rows(
+        "junneng", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert positions["summary"]["quantity"] == 2
+    assert positions["items"][0]["identity_id"] == old_open_id
+
+
+def test_manual_rematch_rejects_stale_version_and_cross_contract(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        close_id = conn.execute("SELECT identity_id FROM trading_close_facts").fetchone()["identity_id"]
+        option_id = conn.execute(
+            "SELECT identity_id FROM trading_trade_facts WHERE asset_type = 'option'"
+        ).fetchone()["identity_id"]
+
+    with pytest.raises(ValueError, match="同账户、同合约"):
+        trading_management.preview_business_rematch(
+            close_id, [{"open_trade_identity_id": option_id, "quantity": 2}], allocation_version=1
+        )
+    with pytest.raises(ValueError, match="数据已变化"):
+        trading_management.preview_business_rematch(
+            close_id, [], allocation_version=99
+        )
+
+
+def test_restore_default_business_match_reverts_allocation_and_close_inheritance(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        subject_id = conn.execute(
+            "SELECT id FROM trading_business_subjects WHERE name = '上海钧能'"
+        ).fetchone()["id"]
+        close_id = conn.execute("SELECT identity_id FROM trading_close_facts").fetchone()["identity_id"]
+        fact_open_id = conn.execute(
+            "SELECT open_trade_identity_id FROM trading_fact_close_allocations"
+        ).fetchone()["open_trade_identity_id"]
+    new_open_id = add_later_classified_open(confirmed["batch_id"], subject_id)
+    preview = trading_management.preview_business_rematch(
+        close_id, [{"open_trade_identity_id": new_open_id, "quantity": 2}], allocation_version=1
+    )
+    trading_management.confirm_business_rematch(
+        close_id, preview["preview_token"], allocation_version=1, actor="tester"
+    )
+
+    restored = trading_management.restore_default_business_match(close_id, allocation_version=2, actor="tester")
+
+    assert restored["allocation_version"] == 3
+    assert restored["business_pnl"] == 400
+    with db.connect() as conn:
+        allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
+        close_assignment = conn.execute(
+            """
+            SELECT ba.strategy_id
+            FROM trading_close_trade_links l
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = l.close_trade_identity_id
+            WHERE l.close_identity_id = ?
+            """,
+            (close_id,),
+        ).fetchone()
+        open_assignment = conn.execute(
+            "SELECT strategy_id FROM trading_business_assignments WHERE trade_identity_id = ?",
+            (fact_open_id,),
+        ).fetchone()
+    assert allocation["open_trade_identity_id"] == fact_open_id
+    assert allocation["source"] == "fact_default"
+    assert close_assignment["strategy_id"] == open_assignment["strategy_id"]

@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -799,6 +800,7 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
 
 
 BUSINESS_TYPES = ("basic_hedging", "strategic_hedging")
+_REMATCH_PREVIEWS: dict[str, dict[str, Any]] = {}
 
 
 def _normalized_name(value: str) -> str:
@@ -1088,6 +1090,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "floating_pnl_status": "pending_calculation",
         }
         return _page_result(items, summary, filters)
+
     with db.connect() as conn:
         cur = conn.cursor()
         if tab == "trades":
@@ -1156,6 +1159,350 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "fee": sum(float(row["matched_fee"] or 0) for row in items),
         }
         return _page_result(items, summary, filters)
+
+
+def _current_allocation_version(cur, close_identity_id: int) -> int:
+    row = db._exec(
+        cur,
+        "SELECT MAX(allocation_version) AS v FROM trading_business_close_allocations WHERE close_identity_id = ?",
+        (close_identity_id,),
+    ).fetchone()
+    return int(row["v"] or 0)
+
+
+def list_business_close_candidates(close_identity_id: int) -> list[dict[str, Any]]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        close = db._exec(
+            cur,
+            """
+            SELECT cf.*, fi.account_id FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE cf.identity_id = ?
+            """,
+            (close_identity_id,),
+        ).fetchone()
+        if not close:
+            raise ValueError("平仓事实不存在或不是有效版本")
+        rows = db._exec(
+            cur,
+            """
+            SELECT tf.identity_id, tf.trade_date, tf.contract, tf.side, tf.quantity, tf.price,
+                   tf.quantity - COALESCE((
+                       SELECT SUM(a.matched_quantity) FROM trading_business_close_allocations a
+                       WHERE a.open_trade_identity_id = tf.identity_id AND a.close_identity_id <> ?
+                   ), 0) AS available_quantity,
+                   ba.business_subject_id, ba.business_type, ba.strategy_id,
+                   s.name AS business_subject, st.name AS strategy
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+            WHERE fi.account_id = ? AND tf.open_close = '开仓'
+              AND tf.contract = ? AND tf.side = ? AND tf.trade_date <= ?
+            ORDER BY tf.trade_date, tf.id
+            """,
+            (close_identity_id, close["account_id"], close["contract"], close["open_side"], close["close_date"]),
+        ).fetchall()
+    return [dict(row) for row in rows if float(row["available_quantity"] or 0) > 1e-9]
+
+
+def preview_business_rematch(
+    close_identity_id: int,
+    selections: list[dict[str, Any]],
+    allocation_version: int,
+) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        current_version = _current_allocation_version(cur, close_identity_id)
+        if current_version != allocation_version:
+            raise ValueError("业务开平数据已变化，请刷新后重试")
+        close = db._exec(
+            cur,
+            "SELECT * FROM trading_close_facts WHERE identity_id = ?",
+            (close_identity_id,),
+        ).fetchone()
+        if not close:
+            raise ValueError("平仓事实不存在")
+        candidates = {row["identity_id"]: row for row in list_business_close_candidates(close_identity_id)}
+        if not selections:
+            raise ValueError("请选择业务开仓记录")
+        selected_rows = []
+        total = 0.0
+        configs = set()
+        for selection in selections:
+            identity_id = int(selection["open_trade_identity_id"])
+            quantity = float(selection["quantity"])
+            candidate = candidates.get(identity_id)
+            if not candidate:
+                raise ValueError("只能选择同账户、同合约、同方向且时间合规的业务开仓")
+            if quantity <= 0 or quantity > float(candidate["available_quantity"]) + 1e-9:
+                raise ValueError("业务可平手数不足")
+            configs.add((candidate["business_subject_id"], candidate["business_type"], candidate["strategy_id"]))
+            selected_rows.append({**selection, "candidate": candidate})
+            total += quantity
+        if len(configs) != 1:
+            raise ValueError("多笔开仓的业务归属、业务类型和策略必须一致")
+        if abs(total - float(close["quantity"])) > 1e-9:
+            raise ValueError("业务匹配手数合计必须等于平仓手数")
+        spec = db._exec(
+            cur,
+            """
+            SELECT contract_multiplier FROM trading_contract_specs
+            WHERE LOWER(exchange) = LOWER(?) AND LOWER(product_code) = ? AND asset_type = ? AND is_active = 1
+            """,
+            (close["exchange"], _product_code(close["contract"]), close["asset_type"]),
+        ).fetchone()
+        if not spec:
+            raise ValueError("合约参数待核验")
+        before_row = db._exec(
+            cur,
+            "SELECT SUM(business_pnl) AS pnl FROM trading_business_close_allocations WHERE close_identity_id = ?",
+            (close_identity_id,),
+        ).fetchone()
+        after_pnl = sum(
+            calculate_business_pnl(
+                float(item["candidate"]["price"]), float(close["close_price"]), close["open_side"],
+                float(item["quantity"]), float(spec["contract_multiplier"]),
+            )
+            for item in selected_rows
+        )
+        token = uuid.uuid4().hex
+        payload = {
+            "close_identity_id": close_identity_id,
+            "allocation_version": allocation_version,
+            "selections": [
+                {"open_trade_identity_id": int(item["open_trade_identity_id"]), "quantity": float(item["quantity"])}
+                for item in selected_rows
+            ],
+            "business_config": list(next(iter(configs))),
+            "before_business_pnl": float(before_row["pnl"] or 0),
+            "after_business_pnl": after_pnl,
+        }
+        _REMATCH_PREVIEWS[token] = payload
+    return {"preview_token": token, **payload}
+
+
+def _inherit_close_trade_assignment(cur, close_identity_id: int, business_config: tuple, actor: str) -> None:
+    business_subject_id, business_type, strategy_id = business_config
+    close_trade_rows = db._exec(
+        cur,
+        "SELECT DISTINCT close_trade_identity_id FROM trading_close_trade_links WHERE close_identity_id = ?",
+        (close_identity_id,),
+    ).fetchall()
+    for row in close_trade_rows:
+        trade_identity_id = row["close_trade_identity_id"]
+        before_row = db._exec(
+            cur,
+            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
+            (trade_identity_id,),
+        ).fetchone()
+        before = dict(before_row) if before_row else None
+        if before_row:
+            db._exec(
+                cur,
+                """
+                UPDATE trading_business_assignments
+                SET business_subject_id = ?, business_type = ?, strategy_id = ?,
+                    updated_by = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE trade_identity_id = ?
+                """,
+                (business_subject_id, business_type, strategy_id, actor, trade_identity_id),
+            )
+        else:
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_business_assignments
+                    (trade_identity_id, business_subject_id, business_type, strategy_id,
+                     assigned_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (trade_identity_id, business_subject_id, business_type, strategy_id, actor, actor),
+            )
+        after = db._exec(
+            cur,
+            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
+            (trade_identity_id,),
+        ).fetchone()
+        _write_assignment_audit(cur, trade_identity_id, "业务平仓自动继承", actor, before, dict(after))
+
+
+def confirm_business_rematch(
+    close_identity_id: int,
+    preview_token: str,
+    allocation_version: int,
+    actor: str,
+    reason: str = "",
+) -> dict[str, Any]:
+    payload = _REMATCH_PREVIEWS.pop(preview_token, None)
+    if not payload or payload["close_identity_id"] != close_identity_id:
+        raise ValueError("重配预览已失效，请重新预览")
+    if payload["allocation_version"] != allocation_version:
+        raise ValueError("业务开平数据已变化，请刷新后重试")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        if _current_allocation_version(cur, close_identity_id) != allocation_version:
+            raise ValueError("业务开平数据已变化，请刷新后重试")
+        before_rows = [
+            dict(row) for row in db._exec(
+                cur,
+                "SELECT * FROM trading_business_close_allocations WHERE close_identity_id = ? ORDER BY id",
+                (close_identity_id,),
+            ).fetchall()
+        ]
+        new_version = allocation_version + 1
+        group_id = uuid.uuid4().hex
+        db._exec(cur, "DELETE FROM trading_business_close_allocations WHERE close_identity_id = ?", (close_identity_id,))
+        close = db._exec(cur, "SELECT * FROM trading_close_facts WHERE identity_id = ?", (close_identity_id,)).fetchone()
+        spec = db._exec(
+            cur,
+            "SELECT contract_multiplier FROM trading_contract_specs WHERE LOWER(exchange)=LOWER(?) AND LOWER(product_code)=? AND asset_type=? AND is_active=1",
+            (close["exchange"], _product_code(close["contract"]), close["asset_type"]),
+        ).fetchone()
+        after_rows = []
+        for selection in payload["selections"]:
+            open_fact = db._exec(
+                cur,
+                "SELECT price FROM trading_trade_facts tf JOIN trading_import_batches b ON b.id=tf.batch_id AND b.status='active' WHERE tf.identity_id=?",
+                (selection["open_trade_identity_id"],),
+            ).fetchone()
+            pnl = calculate_business_pnl(
+                float(open_fact["price"]), float(close["close_price"]), close["open_side"],
+                float(selection["quantity"]), float(spec["contract_multiplier"]),
+            )
+            allocation_id = db._last_insert_id(
+                cur,
+                """
+                INSERT INTO trading_business_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, source,
+                     override_group_id, business_pnl, rule_version, allocation_version, created_by, updated_by)
+                VALUES (?, ?, ?, 'manual_override', ?, ?, 'business-manual-v1', ?, ?, ?)
+                """,
+                (close_identity_id, selection["open_trade_identity_id"], selection["quantity"], group_id, pnl, new_version, actor, actor),
+            )
+            after_rows.append({"id": allocation_id, **selection, "business_pnl": pnl})
+        _inherit_close_trade_assignment(cur, close_identity_id, tuple(payload["business_config"]), actor)
+        db._exec(
+            cur,
+            """
+            INSERT INTO trading_business_allocation_audit
+                (override_group_id, close_identity_id, before_allocations, after_allocations,
+                 before_business_pnl, after_business_pnl, reason, operated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                group_id, close_identity_id, json.dumps(before_rows, ensure_ascii=False),
+                json.dumps(after_rows, ensure_ascii=False), payload["before_business_pnl"],
+                payload["after_business_pnl"], reason or None, actor,
+            ),
+        )
+        conn.commit()
+    return {"allocation_version": new_version, "business_pnl": payload["after_business_pnl"]}
+
+
+def restore_default_business_match(
+    close_identity_id: int,
+    allocation_version: int,
+    actor: str,
+    reason: str = "恢复事实层默认开平关系",
+) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        if _current_allocation_version(cur, close_identity_id) != allocation_version:
+            raise ValueError("业务开平数据已变化，请刷新后重试")
+        close = db._exec(
+            cur,
+            "SELECT * FROM trading_close_facts WHERE identity_id = ?",
+            (close_identity_id,),
+        ).fetchone()
+        if not close:
+            raise ValueError("平仓事实不存在")
+        fact_rows = db._exec(
+            cur,
+            """
+            SELECT fa.open_trade_identity_id, fa.matched_quantity, tf.price,
+                   ba.business_subject_id, ba.business_type, ba.strategy_id
+            FROM trading_fact_close_allocations fa
+            JOIN trading_trade_facts tf ON tf.identity_id = fa.open_trade_identity_id
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = fa.open_trade_identity_id
+            WHERE fa.close_identity_id = ?
+            ORDER BY fa.id
+            """,
+            (close_identity_id,),
+        ).fetchall()
+        if not fact_rows:
+            raise ValueError("没有可恢复的事实层默认开平关系")
+        configs = {
+            (row["business_subject_id"], row["business_type"], row["strategy_id"])
+            for row in fact_rows
+        }
+        if len(configs) != 1:
+            raise ValueError("事实层开仓对应多个业务归属，无法自动继承到整笔平仓成交")
+        spec = db._exec(
+            cur,
+            """
+            SELECT contract_multiplier FROM trading_contract_specs
+            WHERE LOWER(exchange)=LOWER(?) AND LOWER(product_code)=? AND asset_type=? AND is_active=1
+            """,
+            (close["exchange"], _product_code(close["contract"]), close["asset_type"]),
+        ).fetchone()
+        if not spec:
+            raise ValueError("合约参数待核验")
+        before_rows = [
+            dict(row) for row in db._exec(
+                cur,
+                "SELECT * FROM trading_business_close_allocations WHERE close_identity_id = ? ORDER BY id",
+                (close_identity_id,),
+            ).fetchall()
+        ]
+        new_version = allocation_version + 1
+        group_id = uuid.uuid4().hex
+        db._exec(cur, "DELETE FROM trading_business_close_allocations WHERE close_identity_id = ?", (close_identity_id,))
+        after_rows = []
+        after_pnl = 0.0
+        for row in fact_rows:
+            pnl = calculate_business_pnl(
+                float(row["price"]), float(close["close_price"]), close["open_side"],
+                float(row["matched_quantity"]), float(spec["contract_multiplier"]),
+            )
+            allocation_id = db._last_insert_id(
+                cur,
+                """
+                INSERT INTO trading_business_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, source,
+                     override_group_id, business_pnl, rule_version, allocation_version, created_by, updated_by)
+                VALUES (?, ?, ?, 'fact_default', ?, ?, 'business-default-v1', ?, ?, ?)
+                """,
+                (close_identity_id, row["open_trade_identity_id"], row["matched_quantity"],
+                 group_id, pnl, new_version, actor, actor),
+            )
+            after_rows.append({
+                "id": allocation_id,
+                "open_trade_identity_id": row["open_trade_identity_id"],
+                "quantity": row["matched_quantity"],
+                "business_pnl": pnl,
+            })
+            after_pnl += pnl
+        _inherit_close_trade_assignment(cur, close_identity_id, next(iter(configs)), actor)
+        before_pnl = sum(float(row.get("business_pnl") or 0) for row in before_rows)
+        db._exec(
+            cur,
+            """
+            INSERT INTO trading_business_allocation_audit
+                (override_group_id, close_identity_id, before_allocations, after_allocations,
+                 before_business_pnl, after_business_pnl, reason, operated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (group_id, close_identity_id, json.dumps(before_rows, ensure_ascii=False),
+             json.dumps(after_rows, ensure_ascii=False), before_pnl, after_pnl, reason, actor),
+        )
+        conn.commit()
+    return {"allocation_version": new_version, "business_pnl": after_pnl}
 
 
 def _api_filters(
