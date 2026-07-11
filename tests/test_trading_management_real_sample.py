@@ -1,0 +1,62 @@
+"""2026 年 6 月文华三表的只读验收基线；样本不在机器上时自动跳过。"""
+from pathlib import Path
+import os
+import sys
+
+import pytest
+
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from app import db, trading_management
+
+
+SAMPLE_DIR = Path("/Users/wangjingze/建龙/期货组/文化交易记录")
+TRADE_FILE = SAMPLE_DIR / "期货账户-成交记录6月.xlsx"
+CLOSE_FILE = SAMPLE_DIR / "期货账户-平仓记录.xlsx"
+POSITION_FILE = SAMPLE_DIR / "期货账户-期末持仓6月.xlsx"
+
+
+@pytest.mark.skipif(
+    not all(path.exists() for path in (TRADE_FILE, CLOSE_FILE, POSITION_FILE)),
+    reason="本机未提供已确认的 2026 年 6 月文华三表",
+)
+def test_june_wenhua_sample_matches_confirmed_acceptance_baseline(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "real-sample.db")
+    db.init_db()
+    with db.connect() as conn:
+        account_id = conn.execute(
+            "SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures'"
+        ).fetchone()["id"]
+
+    preview = trading_management.preview_trading_import(
+        account_id, TRADE_FILE, CLOSE_FILE, POSITION_FILE, actor="acceptance-test"
+    )
+    confirmed = trading_management.confirm_trading_import(
+        preview["preview_batch_id"], actor="acceptance-test"
+    )
+    matching = trading_management.match_imported_facts(confirmed["batch_id"])
+    overview = trading_management.build_overview(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+    option_closes = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    with db.connect() as conn:
+        raw_option_close_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_close_facts WHERE asset_type = 'option'"
+        ).fetchone()["c"]
+
+    assert preview["counts"] == {"trade": 2753, "close": 2351, "position": 13017}
+    assert overview["trades"]["record_count"] == 2753
+    assert overview["closes"]["record_count"] == 2351
+    assert overview["positions"]["record_count"] == 669
+    assert overview["trades"]["fee"] == pytest.approx(35380.88)
+    assert overview["closes"]["fact_close_pnl"] == pytest.approx(3497480)
+    assert overview["closes"]["fee"] == pytest.approx(16885.34)
+    assert overview["positions"]["margin"] == pytest.approx(26177056.50)
+    assert matching["close_trade_links"] == 2351
+    assert option_closes["total_items"] == raw_option_close_count
+    assert overview["positions"]["floating_pnl_status"] == "pending_calculation"

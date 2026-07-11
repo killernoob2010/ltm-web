@@ -53,6 +53,27 @@ def test_trading_management_schema_contains_isolated_tables(tmp_path, monkeypatc
     assert not any(name.startswith("sh_junneng") for name in TRADING_TABLES)
 
 
+def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        account = conn.execute(
+            "SELECT * FROM trading_accounts WHERE account_code = 'hongyuan_futures'"
+        ).fetchone()
+        specs = conn.execute(
+            "SELECT exchange, product_code, asset_type, contract_multiplier FROM trading_contract_specs"
+        ).fetchall()
+
+    assert account["display_name"] == "宏源期货账户"
+    assert {(row["exchange"], row["product_code"], row["asset_type"], row["contract_multiplier"]) for row in specs} >= {
+        ("上期所", "rb", "future", 10),
+        ("上期所", "hc", "future", 10),
+        ("大商所", "i", "future", 100),
+        ("大商所", "i", "option", 100),
+        ("大商所", "j", "future", 100),
+    }
+
+
 def test_trading_management_router_module_exists():
     assert importlib.util.find_spec("app.trading_management") is not None
 
@@ -294,8 +315,8 @@ def test_same_stable_identity_keeps_business_assignment_after_reimport(tmp_path,
             "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
         ).fetchone()["identity_id"]
         subject_id = conn.execute(
-            "INSERT INTO trading_business_subjects (name, normalized_name) VALUES ('上海钧能', '上海钧能')"
-        ).lastrowid
+            "SELECT id FROM trading_business_subjects WHERE normalized_name = '上海钧能'"
+        ).fetchone()["id"]
         conn.execute(
             """
             INSERT INTO trading_business_assignments
@@ -331,8 +352,8 @@ def test_changed_assigned_trade_is_not_force_inherited(tmp_path, monkeypatch):
             "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
         ).fetchone()["identity_id"]
         subject_id = conn.execute(
-            "INSERT INTO trading_business_subjects (name, normalized_name) VALUES ('上海钧能', '上海钧能')"
-        ).lastrowid
+            "SELECT id FROM trading_business_subjects WHERE normalized_name = '上海钧能'"
+        ).fetchone()["id"]
         conn.execute(
             """
             INSERT INTO trading_business_assignments
@@ -480,8 +501,10 @@ def test_business_config_supports_controlled_subjects_and_reusable_strategies(tm
     assert subject["id"] == same_subject["id"]
     assert strategy["id"] == same_strategy["id"]
     assert config["business_types"] == ["basic_hedging", "strategic_hedging"]
-    assert config["subjects"][0]["name"] == "上海钧能"
-    assert config["strategies"][0]["name"] == "代内部公司套保"
+    assert "上海钧能" in {item["name"] for item in config["subjects"]}
+    assert "期货组" in {item["name"] for item in config["subjects"]}
+    assert "代内部公司套保" in {item["name"] for item in config["strategies"]}
+    assert "战略套保-期权结构化套利" in {item["name"] for item in config["strategies"]}
 
 
 def test_classification_assigns_complete_trade_identities(tmp_path, monkeypatch):
@@ -809,3 +832,38 @@ def test_restore_default_business_match_reverts_allocation_and_close_inheritance
     assert allocation["open_trade_identity_id"] == fact_open_id
     assert allocation["source"] == "fact_default"
     assert close_assignment["strategy_id"] == open_assignment["strategy_id"]
+
+
+def test_fully_closed_contract_reports_business_pnl_reconciliation_difference(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        close_id = conn.execute("SELECT identity_id FROM trading_close_facts").fetchone()["identity_id"]
+
+    failed = trading_management.reconcile_business_pnl(close_id)
+    with db.connect() as conn:
+        conn.execute("UPDATE trading_close_facts SET fact_close_pnl = 400")
+    reconciled = trading_management.reconcile_business_pnl(close_id)
+
+    assert failed["status"] == "business_pnl_reconciliation_failed"
+    assert failed["difference"] == -800
+    assert reconciled["status"] == "reconciled"
+    assert reconciled["difference"] == 0
+
+
+def test_trading_management_exposes_complete_p0_api_surface():
+    routes = {(route.path, method) for route in trading_management.router.routes for method in route.methods}
+
+    expected = {
+        ("/imports/preview", "POST"),
+        ("/imports/{preview_batch_id}/confirm", "POST"),
+        ("/config", "GET"),
+        ("/business-assignments/batch-confirm", "POST"),
+        ("/business/junneng/{tab}", "GET"),
+        ("/business/options/{tab}", "GET"),
+        ("/business-closes/{close_identity_id}/candidates", "GET"),
+        ("/business-closes/{close_identity_id}/preview", "POST"),
+        ("/business-closes/{close_identity_id}/confirm", "POST"),
+        ("/business-closes/{close_identity_id}/restore-default", "POST"),
+    }
+    assert expected <= routes

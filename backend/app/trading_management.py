@@ -5,6 +5,8 @@ P0 只读事实、业务归类和业务开平关系均通过本独立路由扩�
 from datetime import date, datetime
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import base64
+import binascii
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from openpyxl import load_workbook
+from pydantic import BaseModel
 
 from . import db
 from .permissions import require_permission
@@ -803,6 +806,55 @@ BUSINESS_TYPES = ("basic_hedging", "strategic_hedging")
 _REMATCH_PREVIEWS: dict[str, dict[str, Any]] = {}
 
 
+class TradingUploadFile(BaseModel):
+    name: str
+    content_base64: str
+
+
+class TradingImportPreviewIn(BaseModel):
+    account_id: int
+    trade_file: TradingUploadFile
+    close_file: TradingUploadFile
+    position_file: TradingUploadFile
+
+
+class BusinessSubjectIn(BaseModel):
+    name: str
+
+
+class StrategyIn(BaseModel):
+    name: str
+
+
+class BusinessAssignmentIn(BaseModel):
+    identity_ids: list[int]
+    business_subject_id: int
+    business_type: str
+    strategy_name: str = ""
+    instruction_text: str = ""
+
+
+class RematchSelectionIn(BaseModel):
+    open_trade_identity_id: int
+    quantity: float
+
+
+class RematchPreviewIn(BaseModel):
+    allocation_version: int
+    selections: list[RematchSelectionIn]
+
+
+class RematchConfirmIn(BaseModel):
+    preview_token: str
+    allocation_version: int
+    reason: str = ""
+
+
+class RestoreDefaultIn(BaseModel):
+    allocation_version: int
+    reason: str = "恢复事实层默认开平关系"
+
+
 def _normalized_name(value: str) -> str:
     return " ".join(str(value or "").strip().split()).lower()
 
@@ -953,6 +1005,14 @@ def classify_trade_identities(
                 (identity_id,),
             ).fetchone()
             _write_assignment_audit(cur, identity_id, "业务归类", actor, before, dict(after_row))
+            linked_closes = db._exec(
+                cur,
+                "SELECT DISTINCT close_identity_id FROM trading_fact_close_allocations WHERE open_trade_identity_id = ?",
+                (identity_id,),
+            ).fetchall()
+            business_config = (business_subject_id, business_type, strategy["id"] if strategy else None)
+            for linked_close in linked_closes:
+                _inherit_close_trade_assignment(cur, linked_close["close_identity_id"], business_config, actor)
             assigned += 1
         conn.commit()
     return {"assigned_count": assigned}
@@ -1130,20 +1190,39 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 "quantity": sum(float(row["quantity"]) for row in candidates) if view == "junneng" else 0,
             }
             return result
-        rows = db._exec(
-            cur,
-            """
-            SELECT cf.*, a.business_pnl, a.matched_quantity,
-                   s.name AS business_subject, ba.business_type, st.name AS strategy
-            FROM trading_business_close_allocations a
-            JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
-            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
-            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
-            LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
-            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
-            ORDER BY cf.close_date DESC, cf.id DESC
-            """,
-        ).fetchall()
+        if view == "options":
+            rows = db._exec(
+                cur,
+                """
+                SELECT cf.*, a.business_pnl, COALESCE(a.matched_quantity, cf.quantity) AS matched_quantity,
+                       COALESCE(a.allocation_version, 1) AS allocation_version,
+                       a.source AS allocation_source, s.name AS business_subject,
+                       ba.business_type, st.name AS strategy
+                FROM trading_close_facts cf
+                JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+                LEFT JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
+                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+                LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+                WHERE cf.asset_type = 'option'
+                ORDER BY cf.close_date DESC, cf.id DESC
+                """,
+            ).fetchall()
+        else:
+            rows = db._exec(
+                cur,
+                """
+                SELECT cf.*, a.business_pnl, a.matched_quantity, a.allocation_version, a.source AS allocation_source,
+                       s.name AS business_subject, ba.business_type, st.name AS strategy
+                FROM trading_business_close_allocations a
+                JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
+                JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+                LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+                ORDER BY cf.close_date DESC, cf.id DESC
+                """,
+            ).fetchall()
         all_items = [dict(row) for row in rows]
         if view == "junneng":
             items = [row for row in all_items if row["business_subject"] == "上海钧能"]
@@ -1286,6 +1365,82 @@ def preview_business_rematch(
     return {"preview_token": token, **payload}
 
 
+def reconcile_business_pnl(close_identity_id: int) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        close = db._exec(
+            cur,
+            """
+            SELECT cf.contract, cf.open_side, fi.account_id
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE cf.identity_id = ?
+            """,
+            (close_identity_id,),
+        ).fetchone()
+        if not close:
+            raise ValueError("平仓事实不存在或不是有效版本")
+        open_row = db._exec(
+            cur,
+            """
+            SELECT SUM(tf.quantity) AS quantity
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+            WHERE fi.account_id = ? AND tf.contract = ? AND tf.side = ? AND tf.open_close = '开仓'
+            """,
+            (close["account_id"], close["contract"], close["open_side"]),
+        ).fetchone()
+        allocation_row = db._exec(
+            cur,
+            """
+            SELECT SUM(a.matched_quantity) AS quantity, SUM(a.business_pnl) AS business_pnl
+            FROM trading_business_close_allocations a
+            JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE fi.account_id = ? AND cf.contract = ? AND cf.open_side = ?
+            """,
+            (close["account_id"], close["contract"], close["open_side"]),
+        ).fetchone()
+        fact_row = db._exec(
+            cur,
+            """
+            SELECT SUM(cf.fact_close_pnl) AS fact_pnl
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE fi.account_id = ? AND cf.contract = ? AND cf.open_side = ?
+            """,
+            (close["account_id"], close["contract"], close["open_side"]),
+        ).fetchone()
+    open_quantity = float(open_row["quantity"] or 0)
+    allocated_quantity = float(allocation_row["quantity"] or 0)
+    business_pnl = float(allocation_row["business_pnl"] or 0)
+    fact_pnl = float(fact_row["fact_pnl"] or 0)
+    remaining_quantity = max(0.0, open_quantity - allocated_quantity)
+    difference = round(business_pnl - fact_pnl, 8)
+    if open_quantity <= 0 or remaining_quantity > 1e-9:
+        status = "not_fully_closed"
+    elif abs(difference) <= 1e-8:
+        status = "reconciled"
+    else:
+        status = "business_pnl_reconciliation_failed"
+    return {
+        "status": status,
+        "account_id": close["account_id"],
+        "contract": close["contract"],
+        "direction": close["open_side"],
+        "open_quantity": open_quantity,
+        "allocated_quantity": allocated_quantity,
+        "remaining_quantity": remaining_quantity,
+        "fact_pnl": fact_pnl,
+        "business_pnl": business_pnl,
+        "difference": difference,
+    }
+
+
 def _inherit_close_trade_assignment(cur, close_identity_id: int, business_config: tuple, actor: str) -> None:
     business_subject_id, business_type, strategy_id = business_config
     close_trade_rows = db._exec(
@@ -1401,7 +1556,11 @@ def confirm_business_rematch(
             ),
         )
         conn.commit()
-    return {"allocation_version": new_version, "business_pnl": payload["after_business_pnl"]}
+    return {
+        "allocation_version": new_version,
+        "business_pnl": payload["after_business_pnl"],
+        "reconciliation": reconcile_business_pnl(close_identity_id),
+    }
 
 
 def restore_default_business_match(
@@ -1502,7 +1661,73 @@ def restore_default_business_match(
              json.dumps(after_rows, ensure_ascii=False), before_pnl, after_pnl, reason, actor),
         )
         conn.commit()
-    return {"allocation_version": new_version, "business_pnl": after_pnl}
+    return {
+        "allocation_version": new_version,
+        "business_pnl": after_pnl,
+        "reconciliation": reconcile_business_pnl(close_identity_id),
+    }
+
+
+def _actor(user: dict[str, Any]) -> str:
+    return str(user.get("username") or user.get("name") or user.get("id") or "unknown")
+
+
+def _as_http_error(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+def _store_import_uploads(payload: TradingImportPreviewIn) -> dict[str, Path]:
+    upload_dir = db.DATA_DIR / "trading_import_uploads" / uuid.uuid4().hex
+    upload_dir.mkdir(parents=True, exist_ok=False)
+    files = {
+        "trade": payload.trade_file,
+        "close": payload.close_file,
+        "position": payload.position_file,
+    }
+    paths: dict[str, Path] = {}
+    try:
+        for key, item in files.items():
+            suffix = Path(item.name).suffix.lower()
+            if suffix not in {".xlsx", ".xlsm"}:
+                raise ValueError("仅支持 xlsx 或 xlsm 文件")
+            try:
+                content = base64.b64decode(item.content_base64, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"{item.name} 文件内容无效") from exc
+            if not content:
+                raise ValueError(f"{item.name} 文件为空")
+            path = upload_dir / f"{key}{suffix}"
+            path.write_bytes(content)
+            paths[key] = path
+        return paths
+    except Exception:
+        for path in upload_dir.glob("*"):
+            path.unlink(missing_ok=True)
+        upload_dir.rmdir()
+        raise
+
+
+def _cleanup_preview_files(batch_id: int) -> None:
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            "SELECT parse_summary FROM trading_import_batches WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+    if not row:
+        return
+    paths = json.loads(row["parse_summary"] or "{}").get("paths", {})
+    parents = set()
+    for value in paths.values():
+        path = Path(value)
+        parents.add(path.parent)
+        path.unlink(missing_ok=True)
+    for parent in parents:
+        if parent.name and parent.parent.name == "trading_import_uploads":
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
 
 
 def _api_filters(
@@ -1601,3 +1826,179 @@ def get_trading_import_validation(batch_id: int, user=Depends(trading_management
         "status": batch["status"],
         "summary": json.loads(batch["parse_summary"] or "{}"),
     }
+
+
+@router.post("/imports/preview")
+def post_trading_import_preview(
+    payload: TradingImportPreviewIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.imports", "import")
+    paths: dict[str, Path] = {}
+    try:
+        paths = _store_import_uploads(payload)
+        return preview_trading_import(
+            payload.account_id, paths["trade"], paths["close"], paths["position"], _actor(user)
+        )
+    except ValueError as exc:
+        for path in paths.values():
+            path.unlink(missing_ok=True)
+        if paths:
+            try:
+                next(iter(paths.values())).parent.rmdir()
+            except OSError:
+                pass
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/imports/{preview_batch_id}/confirm")
+def post_trading_import_confirm(
+    preview_batch_id: int,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.imports", "import")
+    try:
+        result = confirm_trading_import(preview_batch_id, _actor(user))
+        result["matching"] = match_imported_facts(result["batch_id"])
+        result["business_allocations"] = rebuild_default_business_allocations(result["batch_id"])
+        _cleanup_preview_files(preview_batch_id)
+        return result
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.get("/config")
+def get_trading_config(user=Depends(trading_management_current_user)):
+    require_permission(user, "trading.config", "view")
+    return list_trading_config()
+
+
+@router.post("/business-subjects")
+def post_business_subject(payload: BusinessSubjectIn, user=Depends(trading_management_current_user)):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return create_business_subject(payload.name, _actor(user))
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/strategies")
+def post_strategy(payload: StrategyIn, user=Depends(trading_management_current_user)):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return get_or_create_strategy(payload.name, _actor(user))
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-assignments/batch-confirm")
+def post_business_assignments(
+    payload: BusinessAssignmentIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return classify_trade_identities(
+            payload.identity_ids, payload.business_subject_id, payload.business_type,
+            payload.strategy_name, payload.instruction_text, _actor(user),
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.delete("/business-assignments/{trade_identity_id}")
+def delete_business_assignment(
+    trade_identity_id: int,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "delete")
+    return remove_trade_assignment(trade_identity_id, _actor(user))
+
+
+def _get_business_rows(
+    view: str,
+    tab: str,
+    filters: FactFilters,
+    user: dict[str, Any],
+):
+    resource = "trading.junneng" if view == "junneng" else "trading.options"
+    require_permission(user, resource, "view")
+    try:
+        return query_business_rows(view, tab, filters)
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.get("/business/junneng/{tab}")
+def get_junneng_business_rows(
+    tab: str,
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    return _get_business_rows("junneng", tab, filters, user)
+
+
+@router.get("/business/options/{tab}")
+def get_option_business_rows(
+    tab: str,
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    return _get_business_rows("options", tab, filters, user)
+
+
+@router.get("/business-closes/{close_identity_id}/candidates")
+def get_rematch_candidates(close_identity_id: int, user=Depends(trading_management_current_user)):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return {"items": list_business_close_candidates(close_identity_id)}
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-closes/{close_identity_id}/preview")
+def post_rematch_preview(
+    close_identity_id: int,
+    payload: RematchPreviewIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return preview_business_rematch(
+            close_identity_id,
+            [item.dict() for item in payload.selections],
+            payload.allocation_version,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-closes/{close_identity_id}/confirm")
+def post_rematch_confirm(
+    close_identity_id: int,
+    payload: RematchConfirmIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return confirm_business_rematch(
+            close_identity_id, payload.preview_token, payload.allocation_version,
+            _actor(user), payload.reason,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-closes/{close_identity_id}/restore-default")
+def post_restore_default(
+    close_identity_id: int,
+    payload: RestoreDefaultIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return restore_default_business_match(
+            close_identity_id, payload.allocation_version, _actor(user), payload.reason,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc

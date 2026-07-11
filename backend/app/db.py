@@ -1416,6 +1416,63 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
             """
         )
+    reference_accounts = [("hongyuan_futures", "宏源期货账户", "宏源期货")]
+    reference_subjects = [
+        "东北组", "山东组", "天津组", "唐山组", "大客户组", "南方组", "黄骅组", "期货组",
+        "采购组", "上海钧能", "山西建龙", "吉林恒联", "吉林建龙", "建龙北满", "双鸭山建龙",
+        "抚顺新钢铁", "建龙西林", "建龙阿城", "承德建龙", "吕梁建龙",
+    ]
+    reference_strategies = [
+        "一般套保-换月", "一般套保-锁固定价", "一般套保-套保", "一般套保-交割", "一般套保-汇率",
+        "战略套保-自主建仓", "战略套保-跨期套利", "战略套保-跨品种套利", "战略套保-内外盘套利",
+        "战略套保-期权结构化套利", "代内部公司套保", "代内部公司换月", "代内部公司锁汇", "代外部公司下单",
+    ]
+    reference_specs = [
+        ("上期所", "rb", "future", 10, 1),
+        ("上期所", "hc", "future", 10, 1),
+        ("大商所", "i", "future", 100, 0.5),
+        ("大商所", "i", "option", 100, 0.1),
+        ("大商所", "j", "future", 100, 0.5),
+    ]
+    for account_code, display_name, masked_name in reference_accounts:
+        if not _exec(cur, "SELECT id FROM trading_accounts WHERE account_code = ?", (account_code,)).fetchone():
+            _exec(
+                cur,
+                "INSERT INTO trading_accounts (account_code, display_name, masked_name) VALUES (?, ?, ?)",
+                (account_code, display_name, masked_name),
+            )
+    for name in reference_subjects:
+        normalized = name.strip().lower()
+        if not _exec(cur, "SELECT id FROM trading_business_subjects WHERE normalized_name = ?", (normalized,)).fetchone():
+            _exec(
+                cur,
+                "INSERT INTO trading_business_subjects (name, normalized_name, created_by, updated_by) VALUES (?, ?, 'system', 'system')",
+                (name, normalized),
+            )
+    for name in reference_strategies:
+        normalized = name.strip().lower()
+        if not _exec(cur, "SELECT id FROM trading_strategies WHERE normalized_name = ?", (normalized,)).fetchone():
+            _exec(
+                cur,
+                "INSERT INTO trading_strategies (name, normalized_name, source, created_by, updated_by) VALUES (?, ?, 'template', 'system', 'system')",
+                (name, normalized),
+            )
+    for exchange, product_code, asset_type, multiplier, tick in reference_specs:
+        existing = _exec(
+            cur,
+            "SELECT id FROM trading_contract_specs WHERE exchange = ? AND product_code = ? AND asset_type = ?",
+            (exchange, product_code, asset_type),
+        ).fetchone()
+        if not existing:
+            _exec(
+                cur,
+                """
+                INSERT INTO trading_contract_specs
+                    (exchange, product_code, asset_type, contract_multiplier, price_tick, source)
+                VALUES (?, ?, ?, ?, ?, 'sample_verified')
+                """,
+                (exchange, product_code, asset_type, multiplier, tick),
+            )
     conn.commit()
 
 

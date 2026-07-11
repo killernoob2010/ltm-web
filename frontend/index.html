@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
     <link rel="stylesheet" href="/static/styles.css?v=operation-log-retention-20260710" />
+    <link rel="stylesheet" href="/static/trading_management.css?v=20260712" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -347,6 +348,57 @@
               </table>
             </div>
           </section>
+        </section>
+
+        <section id="tradingManagementPage" class="page hidden trading-management-page">
+          <div class="toolbar trading-toolbar">
+            <button id="tradingImportBtn" type="button">导入三表</button>
+            <button id="tradingRefreshBtn" type="button" class="secondary">刷新</button>
+            <span id="tradingStatus" class="toolbar-status">交易数据：待加载</span>
+          </div>
+          <div class="trading-notice">只读安全说明：本模块仅用于数据导入、核对和业务归属管理，不提供任何真实下单、撤单或资金操作。</div>
+
+          <div id="tradingOverviewView" class="trading-view">
+            <div id="tradingOverviewCards" class="trading-metric-grid"></div>
+            <section class="panel">
+              <div class="panel-head"><h2>数据状态</h2><span>事实层只读</span></div>
+              <div id="tradingDataStatus" class="trading-status-grid"></div>
+            </section>
+          </div>
+
+          <div id="tradingFactsView" class="trading-view hidden">
+            <div class="trading-tabbar" data-trading-tabs="facts">
+              <button type="button" data-tab="positions">当前持仓</button>
+              <button type="button" data-tab="trades" class="secondary">成交记录</button>
+              <button type="button" data-tab="closes" class="secondary">平仓记录</button>
+            </div>
+            <div class="trading-filterbar">
+              <input id="tradingContractFilter" placeholder="筛选合约" />
+              <select id="tradingDirectionFilter"><option value="">全部方向</option><option value="买">买</option><option value="卖">卖</option></select>
+              <button id="tradingFilterBtn" type="button" class="secondary">查询</button>
+              <button id="tradingClassifyBtn" type="button">批量业务归属</button>
+            </div>
+            <div id="tradingFactsSummary" class="trading-summary-line"></div>
+            <div class="table-wrap"><table><thead id="tradingFactsHead"></thead><tbody id="tradingFactsBody"></tbody></table></div>
+            <div id="tradingFactsPagination" class="trading-pagination"></div>
+          </div>
+
+          <div id="tradingBusinessView" class="trading-view hidden">
+            <div class="trading-tabbar" data-trading-tabs="business">
+              <button type="button" data-tab="positions">业务持仓</button>
+              <button type="button" data-tab="trades" class="secondary">业务成交</button>
+              <button type="button" data-tab="closes" class="secondary">业务平仓</button>
+            </div>
+            <div id="tradingBusinessNotice" class="trading-notice"></div>
+            <div id="tradingBusinessSummary" class="trading-summary-line"></div>
+            <div class="table-wrap"><table><thead id="tradingBusinessHead"></thead><tbody id="tradingBusinessBody"></tbody></table></div>
+          </div>
+
+          <div id="tradingExportView" class="trading-view hidden trading-placeholder">
+            <span class="trading-placeholder-icon">↗</span>
+            <h2>汇总与导出</h2>
+            <p>功能位置已预留。待持仓、即期持仓和结算口径确认后统一开发。</p>
+          </div>
         </section>
 
         <section id="placeholderPage" class="page hidden">
@@ -1175,6 +1227,56 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=operation-log-retention-20260710"></script>
+    <dialog id="tradingImportDialog">
+      <form method="dialog" class="dialog-form trading-dialog-wide">
+        <h2>导入交易三表</h2>
+        <p class="trading-notice">错误导入通过重新导入完整三表覆盖；三份文件齐全后才能预检。</p>
+        <label>交易账户<select id="tradingImportAccount"></select></label>
+        <label>成交记录<input id="tradingTradeFile" type="file" accept=".xlsx,.xlsm" /></label>
+        <label>平仓记录<input id="tradingCloseFile" type="file" accept=".xlsx,.xlsm" /></label>
+        <label>期末持仓<input id="tradingPositionFile" type="file" accept=".xlsx,.xlsm" /></label>
+        <div id="tradingImportPreview" class="trading-preview"></div>
+        <div class="dialog-actions">
+          <button id="tradingImportCancelBtn" type="button" class="secondary">取消</button>
+          <button id="tradingImportPreviewBtn" type="button">预检</button>
+          <button id="tradingImportConfirmBtn" type="button" class="hidden">确认覆盖导入</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="tradingClassifyDialog">
+      <form method="dialog" class="dialog-form">
+        <h2>批量业务归属</h2>
+        <p id="tradingClassifyCount" class="trading-notice"></p>
+        <label>业务归属<select id="tradingBusinessSubject"></select></label>
+        <label>业务类型<select id="tradingBusinessType"><option value="basic_hedging">基础套保</option><option value="strategic_hedging">战略套保</option></select></label>
+        <label>策略（可选已有项或手动输入）<input id="tradingStrategy" list="tradingStrategyOptions" /></label>
+        <datalist id="tradingStrategyOptions"></datalist>
+        <label>指令/备注<textarea id="tradingInstruction"></textarea></label>
+        <div class="dialog-actions">
+          <button id="tradingClassifyCancelBtn" type="button" class="secondary">取消</button>
+          <button id="tradingClassifyConfirmBtn" type="button">确认整笔归属</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="tradingRematchDialog">
+      <form method="dialog" class="dialog-form trading-dialog-wide">
+        <h2>调整业务开平关系</h2>
+        <p class="trading-notice">事实层不变；业务层可改选同账户、同合约、同方向且时间合规的已开仓记录。</p>
+        <div id="tradingRematchCandidates" class="table-wrap"></div>
+        <div id="tradingRematchImpact" class="trading-preview"></div>
+        <label>调整原因<textarea id="tradingRematchReason"></textarea></label>
+        <div class="dialog-actions">
+          <button id="tradingRematchCancelBtn" type="button" class="secondary">取消</button>
+          <button id="tradingRestoreDefaultBtn" type="button" class="secondary">恢复默认</button>
+          <button id="tradingRematchPreviewBtn" type="button">预览影响</button>
+          <button id="tradingRematchConfirmBtn" type="button" class="hidden">确认调整</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/trading_management.js?v=20260712"></script>
+    <script src="/static/app.js?v=trading-management-20260712"></script>
   </body>
 </html>

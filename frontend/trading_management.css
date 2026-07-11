@@ -1,0 +1,138 @@
+.trading-management-page {
+  display: grid;
+  gap: 16px;
+}
+
+.trading-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+  padding-bottom: 4px;
+}
+
+.trading-view {
+  display: grid;
+  gap: 16px;
+}
+
+.trading-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.trading-metric-card {
+  min-height: 112px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(22, 34, 46, 0.04);
+}
+
+.trading-metric-card span,
+.trading-metric-card small {
+  display: block;
+  color: var(--muted);
+}
+
+.trading-metric-card strong {
+  display: block;
+  margin: 9px 0 5px;
+  font-size: 25px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trading-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.trading-status-item,
+.trading-notice,
+.trading-preview {
+  padding: 10px 12px;
+  border: 1px solid #cfe1dc;
+  border-radius: 7px;
+  background: #f2f8f6;
+  color: #355b53;
+  font-size: 13px;
+}
+
+.trading-tabbar,
+.trading-filterbar,
+.trading-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trading-filterbar input,
+.trading-filterbar select {
+  width: min(220px, 100%);
+}
+
+.trading-summary-line {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trading-management-page table {
+  min-width: 900px;
+}
+
+.trading-pending {
+  color: #8a6116;
+  font-weight: 600;
+}
+
+.trading-placeholder {
+  min-height: 360px;
+  place-items: center;
+  align-content: center;
+  text-align: center;
+  border: 1px dashed #b9c5cf;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.trading-placeholder-icon {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: #e6f1ee;
+  color: var(--primary);
+  font-size: 28px;
+}
+
+.trading-placeholder h2,
+.trading-placeholder p {
+  margin: 6px 0;
+}
+
+.trading-dialog-wide {
+  width: min(780px, 86vw);
+}
+
+.trading-rematch-choice {
+  width: 74px;
+}
+
+@media (max-width: 1000px) {
+  .trading-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .trading-metric-grid,
+  .trading-status-grid {
+    grid-template-columns: 1fr;
+  }
+}

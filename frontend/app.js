@@ -98,6 +98,7 @@ function applyUiPermissions() {
     setHidden(selector, guest || !canModuleSensitive("data_visualization_integration")));
   ["#dvImportBtn", "#dvCommitImportBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
+  setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -118,6 +119,7 @@ const orderFinanceKeywordFilter = document.querySelector("#orderFinanceKeywordFi
 const orderFinanceResetFiltersBtn = document.querySelector("#orderFinanceResetFiltersBtn");
 const orderFinanceStageFilters = document.querySelector("#orderFinanceStageFilters");
 const orderFinanceCapitalPage = document.querySelector("#orderFinanceCapitalPage");
+const tradingManagementPage = document.querySelector("#tradingManagementPage");
 const orderFinanceCapitalRefreshBtn = document.querySelector("#orderFinanceCapitalRefreshBtn");
 const orderFinanceCapitalStatus = document.querySelector("#orderFinanceCapitalStatus");
 const orderFinanceCapitalSummary = document.querySelector("#orderFinanceCapitalSummary");
@@ -400,7 +402,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -471,6 +473,14 @@ async function activateModule(code, subName) {
       dvState.dvChartControlsInitialized = true;
     }
     await loadDVChart();
+    return;
+  }
+  if (["trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export"].includes(code)) {
+    showOnly(tradingManagementPage);
+    await window.TradingManagement.activate(code, {
+      canEdit: canModuleEdit(code),
+      canSensitive: canModuleSensitive(code) || canModuleSensitive("trading_positions"),
+    });
     return;
   }
 
