@@ -56,7 +56,7 @@ from .info_summary_backfill import (
 )
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
-from . import data_visualization, operation_log_archive, order_finance
+from . import data_visualization, operation_log_archive, order_finance, trading_management
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -117,6 +117,7 @@ GUEST_SESSION_TTL_HOURS = int(os.getenv("GUEST_SESSION_TTL_HOURS", "8"))
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
+app.include_router(trading_management.router, prefix="/api/trading-management")
 
 
 class LoginRequest(BaseModel):

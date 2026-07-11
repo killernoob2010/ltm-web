@@ -20,6 +20,11 @@ MODULES = [
     ("台账管理", "steel_export", "钢材出口套保台账"),
     ("台账管理", "subsidiary_hedging", "子公司套保台账"),
     ("台账管理", "option_trading", "期权交易台账"),
+    ("交易管理", "trading_overview", "总览"),
+    ("交易管理", "trading_positions", "持仓与交易"),
+    ("交易管理", "trading_sh_junneng", "上海钧能台账"),
+    ("交易管理", "trading_options", "期权台账"),
+    ("交易管理", "trading_export", "汇总与导出"),
     ("信息预警管理", "info_summary", "实时信息汇总"),
     ("信息预警管理", "risk_alert", "风险预警"),
     ("信息预警管理", "mid_event_monitor", "事中风险监控"),
@@ -1041,10 +1046,377 @@ def init_db() -> None:
         migrate_sh_junneng_schema(conn)
         migrate_order_finance_schema(conn)
         migrate_dv_integration_schema(conn)
+        migrate_trading_management_schema(conn)
 
         ensure_admin_user(cur, "管理员")
         ensure_admin_user(cur, "admin")
         conn.commit()
+
+
+def migrate_trading_management_schema(conn) -> None:
+    """Create isolated trading-management tables without touching legacy ledgers."""
+    cur = conn.cursor()
+    if _is_pg():
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trading_accounts (
+                id SERIAL PRIMARY KEY,
+                account_code TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                masked_name TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS trading_import_batches (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                range_start TEXT,
+                range_end TEXT,
+                position_snapshot_date TEXT,
+                status TEXT NOT NULL DEFAULT 'preview',
+                trade_file_name TEXT, close_file_name TEXT, position_file_name TEXT,
+                trade_file_sha256 TEXT, close_file_sha256 TEXT, position_file_sha256 TEXT,
+                trade_count INTEGER NOT NULL DEFAULT 0,
+                close_count INTEGER NOT NULL DEFAULT 0,
+                position_count INTEGER NOT NULL DEFAULT 0,
+                parse_summary TEXT,
+                supersedes_batch_id INTEGER,
+                created_by TEXT, confirmed_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                confirmed_at TEXT,
+                FOREIGN KEY (account_id) REFERENCES trading_accounts(id),
+                FOREIGN KEY (supersedes_batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_source_rows (
+                id SERIAL PRIMARY KEY,
+                batch_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                source_sheet TEXT NOT NULL,
+                source_row_no INTEGER NOT NULL,
+                raw_hash TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_identities (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                fact_type TEXT NOT NULL,
+                stable_key TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(account_id, fact_type, stable_key),
+                FOREIGN KEY (account_id) REFERENCES trading_accounts(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_trade_facts (
+                id SERIAL PRIMARY KEY,
+                identity_id INTEGER NOT NULL,
+                batch_id INTEGER NOT NULL,
+                source_row_id INTEGER NOT NULL,
+                trade_date TEXT NOT NULL, trade_time TEXT,
+                exchange TEXT, contract TEXT NOT NULL, asset_type TEXT NOT NULL,
+                side TEXT NOT NULL, open_close_raw TEXT, open_close TEXT NOT NULL,
+                quantity DOUBLE PRECISION NOT NULL, price DOUBLE PRECISION NOT NULL,
+                turnover DOUBLE PRECISION, fee DOUBLE PRECISION,
+                hedge_flag TEXT, premium_cashflow DOUBLE PRECISION,
+                data_status TEXT NOT NULL DEFAULT 'file_imported',
+                verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_close_facts (
+                id SERIAL PRIMARY KEY,
+                identity_id INTEGER NOT NULL,
+                batch_id INTEGER NOT NULL,
+                source_row_id INTEGER NOT NULL,
+                open_date TEXT, close_date TEXT NOT NULL,
+                exchange TEXT, contract TEXT NOT NULL, asset_type TEXT NOT NULL,
+                open_side TEXT NOT NULL, close_side TEXT NOT NULL,
+                quantity DOUBLE PRECISION NOT NULL,
+                open_price DOUBLE PRECISION NOT NULL, close_price DOUBLE PRECISION NOT NULL,
+                fact_close_pnl DOUBLE PRECISION NOT NULL,
+                matched_fee DOUBLE PRECISION,
+                fee_status TEXT NOT NULL DEFAULT 'pending_match',
+                data_status TEXT NOT NULL DEFAULT 'file_imported',
+                verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_position_snapshots (
+                id SERIAL PRIMARY KEY,
+                identity_id INTEGER NOT NULL,
+                batch_id INTEGER NOT NULL,
+                source_row_id INTEGER NOT NULL,
+                snapshot_date TEXT NOT NULL, snapshot_time TEXT,
+                exchange TEXT, contract TEXT NOT NULL, asset_type TEXT NOT NULL,
+                direction TEXT NOT NULL, open_date TEXT,
+                quantity DOUBLE PRECISION NOT NULL, average_price DOUBLE PRECISION NOT NULL,
+                margin DOUBLE PRECISION,
+                valuation_price DOUBLE PRECISION, floating_pnl DOUBLE PRECISION,
+                market_time TEXT, valuation_status TEXT NOT NULL DEFAULT 'pending_calculation',
+                data_status TEXT NOT NULL DEFAULT 'file_imported',
+                verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_contract_specs (
+                id SERIAL PRIMARY KEY,
+                exchange TEXT NOT NULL, product_code TEXT NOT NULL, asset_type TEXT NOT NULL,
+                contract_multiplier DOUBLE PRECISION NOT NULL,
+                price_tick DOUBLE PRECISION,
+                source TEXT NOT NULL DEFAULT 'confirmed_config',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(exchange, product_code, asset_type)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_close_allocations (
+                id SERIAL PRIMARY KEY,
+                close_identity_id INTEGER NOT NULL,
+                open_trade_identity_id INTEGER NOT NULL,
+                matched_quantity DOUBLE PRECISION NOT NULL,
+                match_rule_version TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'matched',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (open_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_close_trade_links (
+                id SERIAL PRIMARY KEY,
+                close_identity_id INTEGER NOT NULL,
+                close_trade_identity_id INTEGER NOT NULL,
+                matched_quantity DOUBLE PRECISION NOT NULL,
+                allocated_fee DOUBLE PRECISION,
+                status TEXT NOT NULL DEFAULT 'matched',
+                rule_version TEXT NOT NULL,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (close_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_subjects (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT, updated_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS trading_strategies (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                merged_into_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_by TEXT, updated_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (merged_into_id) REFERENCES trading_strategies(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_assignments (
+                id SERIAL PRIMARY KEY,
+                trade_identity_id INTEGER NOT NULL UNIQUE,
+                business_subject_id INTEGER NOT NULL,
+                business_type TEXT NOT NULL,
+                strategy_id INTEGER,
+                instruction_text TEXT,
+                assigned_by TEXT, assigned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (trade_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (business_subject_id) REFERENCES trading_business_subjects(id),
+                FOREIGN KEY (strategy_id) REFERENCES trading_strategies(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_close_allocations (
+                id SERIAL PRIMARY KEY,
+                close_identity_id INTEGER NOT NULL,
+                open_trade_identity_id INTEGER NOT NULL,
+                matched_quantity DOUBLE PRECISION NOT NULL,
+                source TEXT NOT NULL DEFAULT 'fact_default',
+                override_group_id TEXT,
+                business_pnl DOUBLE PRECISION,
+                rule_version TEXT NOT NULL,
+                allocation_version INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (open_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_allocation_audit (
+                id SERIAL PRIMARY KEY,
+                override_group_id TEXT NOT NULL,
+                close_identity_id INTEGER NOT NULL,
+                before_allocations TEXT NOT NULL,
+                after_allocations TEXT NOT NULL,
+                before_business_pnl DOUBLE PRECISION,
+                after_business_pnl DOUBLE PRECISION,
+                reason TEXT,
+                operated_by TEXT NOT NULL,
+                operated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
+            CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
+            CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
+            CREATE INDEX IF NOT EXISTS idx_trading_positions_batch_date_contract ON trading_position_snapshots(batch_id, snapshot_date, contract);
+            CREATE INDEX IF NOT EXISTS idx_trading_business_close ON trading_business_close_allocations(close_identity_id);
+            CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
+            """
+        )
+    else:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS trading_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_code TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+                masked_name TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS trading_import_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL, range_start TEXT, range_end TEXT,
+                position_snapshot_date TEXT, status TEXT NOT NULL DEFAULT 'preview',
+                trade_file_name TEXT, close_file_name TEXT, position_file_name TEXT,
+                trade_file_sha256 TEXT, close_file_sha256 TEXT, position_file_sha256 TEXT,
+                trade_count INTEGER NOT NULL DEFAULT 0, close_count INTEGER NOT NULL DEFAULT 0,
+                position_count INTEGER NOT NULL DEFAULT 0, parse_summary TEXT,
+                supersedes_batch_id INTEGER, created_by TEXT, confirmed_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT,
+                FOREIGN KEY (account_id) REFERENCES trading_accounts(id),
+                FOREIGN KEY (supersedes_batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_source_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL, source_type TEXT NOT NULL,
+                source_file TEXT NOT NULL, source_sheet TEXT NOT NULL,
+                source_row_no INTEGER NOT NULL, raw_hash TEXT NOT NULL, raw_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_identities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL, fact_type TEXT NOT NULL, stable_key TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(account_id, fact_type, stable_key),
+                FOREIGN KEY (account_id) REFERENCES trading_accounts(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_trade_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_id INTEGER NOT NULL, batch_id INTEGER NOT NULL, source_row_id INTEGER NOT NULL,
+                trade_date TEXT NOT NULL, trade_time TEXT, exchange TEXT, contract TEXT NOT NULL,
+                asset_type TEXT NOT NULL, side TEXT NOT NULL, open_close_raw TEXT,
+                open_close TEXT NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL,
+                turnover REAL, fee REAL, hedge_flag TEXT, premium_cashflow REAL,
+                data_status TEXT NOT NULL DEFAULT 'file_imported',
+                verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_close_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_id INTEGER NOT NULL, batch_id INTEGER NOT NULL, source_row_id INTEGER NOT NULL,
+                open_date TEXT, close_date TEXT NOT NULL, exchange TEXT, contract TEXT NOT NULL,
+                asset_type TEXT NOT NULL, open_side TEXT NOT NULL, close_side TEXT NOT NULL,
+                quantity REAL NOT NULL, open_price REAL NOT NULL, close_price REAL NOT NULL,
+                fact_close_pnl REAL NOT NULL, matched_fee REAL,
+                fee_status TEXT NOT NULL DEFAULT 'pending_match',
+                data_status TEXT NOT NULL DEFAULT 'file_imported',
+                verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_position_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_id INTEGER NOT NULL, batch_id INTEGER NOT NULL, source_row_id INTEGER NOT NULL,
+                snapshot_date TEXT NOT NULL, snapshot_time TEXT, exchange TEXT, contract TEXT NOT NULL,
+                asset_type TEXT NOT NULL, direction TEXT NOT NULL, open_date TEXT,
+                quantity REAL NOT NULL, average_price REAL NOT NULL, margin REAL,
+                valuation_price REAL, floating_pnl REAL, market_time TEXT,
+                valuation_status TEXT NOT NULL DEFAULT 'pending_calculation',
+                data_status TEXT NOT NULL DEFAULT 'file_imported',
+                verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_contract_specs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exchange TEXT NOT NULL, product_code TEXT NOT NULL, asset_type TEXT NOT NULL,
+                contract_multiplier REAL NOT NULL, price_tick REAL,
+                source TEXT NOT NULL DEFAULT 'confirmed_config', is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(exchange, product_code, asset_type)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_close_allocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                close_identity_id INTEGER NOT NULL, open_trade_identity_id INTEGER NOT NULL,
+                matched_quantity REAL NOT NULL, match_rule_version TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'matched', created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (open_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_close_trade_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                close_identity_id INTEGER NOT NULL, close_trade_identity_id INTEGER NOT NULL,
+                matched_quantity REAL NOT NULL, allocated_fee REAL,
+                status TEXT NOT NULL DEFAULT 'matched', rule_version TEXT NOT NULL,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (close_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE,
+                is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, updated_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS trading_strategies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE,
+                is_active INTEGER NOT NULL DEFAULT 1, merged_into_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'manual', created_by TEXT, updated_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (merged_into_id) REFERENCES trading_strategies(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_identity_id INTEGER NOT NULL UNIQUE, business_subject_id INTEGER NOT NULL,
+                business_type TEXT NOT NULL, strategy_id INTEGER, instruction_text TEXT,
+                assigned_by TEXT, assigned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (trade_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (business_subject_id) REFERENCES trading_business_subjects(id),
+                FOREIGN KEY (strategy_id) REFERENCES trading_strategies(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_close_allocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                close_identity_id INTEGER NOT NULL, open_trade_identity_id INTEGER NOT NULL,
+                matched_quantity REAL NOT NULL, source TEXT NOT NULL DEFAULT 'fact_default',
+                override_group_id TEXT, business_pnl REAL, rule_version TEXT NOT NULL,
+                allocation_version INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (open_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_business_allocation_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                override_group_id TEXT NOT NULL, close_identity_id INTEGER NOT NULL,
+                before_allocations TEXT NOT NULL, after_allocations TEXT NOT NULL,
+                before_business_pnl REAL, after_business_pnl REAL, reason TEXT,
+                operated_by TEXT NOT NULL, operated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
+            CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
+            CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
+            CREATE INDEX IF NOT EXISTS idx_trading_positions_batch_date_contract ON trading_position_snapshots(batch_id, snapshot_date, contract);
+            CREATE INDEX IF NOT EXISTS idx_trading_business_close ON trading_business_close_allocations(close_identity_id);
+            CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
+            """
+        )
+    conn.commit()
 
 
 def ensure_admin_user(cur, name: str) -> int:
