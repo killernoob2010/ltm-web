@@ -1357,6 +1357,32 @@ def _filter_business_items(items: list[dict[str, Any]], tab: str, filters: FactF
     return items
 
 
+def _aggregate_business_positions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in items:
+        quantity = float(row.get("remaining_quantity") or 0)
+        key = (
+            row["contract"], row["direction"], row["asset_type"], row.get("business_subject"),
+            row.get("business_type"), row.get("strategy"), row.get("assignment_status"),
+            row.get("ledger_membership"),
+        )
+        group = grouped.get(key)
+        if not group:
+            group = dict(row)
+            group["quantity"] = 0.0
+            group["weighted_price"] = 0.0
+            group["source_record_count"] = 0
+            grouped[key] = group
+        group["quantity"] += quantity
+        group["weighted_price"] += float(row.get("average_price") or 0) * quantity
+        group["source_record_count"] += 1
+    result = list(grouped.values())
+    for row in result:
+        row["average_price"] = row.pop("weighted_price") / row["quantity"] if row["quantity"] else 0
+        row.pop("remaining_quantity", None)
+    return result
+
+
 def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, Any]:
     if view not in {"junneng", "options"} or tab not in {"positions", "closes", "trades"}:
         raise ValueError("未知业务视图")
@@ -1395,9 +1421,9 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     items.append(row)
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
+        items = _aggregate_business_positions(items)
         items = _filter_business_items(items, tab, filters)
         for item in items:
-            item["quantity"] = item.pop("remaining_quantity")
             item["floating_pnl"] = None
             item["floating_pnl_status"] = "pending_calculation"
         summary = {

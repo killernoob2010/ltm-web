@@ -329,7 +329,7 @@
   }
 
   const BUSINESS_COLUMNS = {
-    positions: [["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["business_subject","业务归属"],["business_type","业务类型"],["strategy","策略"],["pending","浮动盈亏"]],
+    positions: [["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["business_subject","业务归属"],["business_type","业务类型"],["strategy","策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
     closes: [["close_date","平仓日"],["contract","合约"],["open_side","方向"],["matched_quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","事实平仓盈亏"],["business_pnl","业务归属盈亏"],["strategy","策略"]],
     trades: [["trade_date","成交日"],["contract","合约"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["business_subject","业务归属"],["business_type","业务类型"],["strategy","策略"]],
   };
