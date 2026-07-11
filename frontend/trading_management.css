@@ -36,6 +36,7 @@
 .tm-page .tm-tab-button { border:0; background:transparent; color:var(--tm-muted); }
 .tm-page .tm-tab-button.active { color:var(--tm-blue); background:var(--tm-blue-soft); font-weight:700; }
 .tm-loading-state,.tm-error-state { padding:28px; border:1px solid var(--tm-border); background:#fff; border-radius:10px; color:var(--tm-muted); }
+.tm-table-loading { min-height:220px; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--tm-muted); }
 
 .tm-period-bar,.tm-selection-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
 .tm-period-selection { display:flex; align-items:center; gap:8px; }

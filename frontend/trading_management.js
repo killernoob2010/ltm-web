@@ -21,6 +21,9 @@
     importPreviewId: null,
     permissions: { canEdit: false, canSensitive: false },
   };
+  const factCache = new Map();
+  const factRequests = new Map();
+  let factCacheVersion = 0;
 
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
@@ -113,8 +116,8 @@
     return `<div class="tm-tabs">${[["positions","当前持仓"],["closes","平仓记录"],["trades","全部交易"]].map(([key,label]) => `<button class="tm-tab-button ${tm.factsTab === key ? "active" : ""}" data-fact-tab="${key}">${label}</button>`).join("")}</div>`;
   }
 
-  function factQuery() {
-    const params = new URLSearchParams({ page: tm.page, page_size: tm.pageSize });
+  function factQuery(page = tm.page) {
+    const params = new URLSearchParams({ page, page_size: tm.pageSize });
     if (tm.query) params.set("contract", tm.query);
     if (tm.assetType) params.set("asset_type", tm.assetType);
     if (tm.side) params.set("direction", tm.side);
@@ -122,6 +125,33 @@
     if (tm.dateFrom) params.set("start_date", tm.dateFrom);
     if (tm.dateTo) params.set("end_date", tm.dateTo);
     return params.toString();
+  }
+
+  function factCacheKey(tab, page = tm.page) {
+    return JSON.stringify([factCacheVersion, tab, tm.query, tm.assetType, tm.side, tm.openClose, tm.classification, tm.dateFrom, tm.dateTo, page, tm.pageSize]);
+  }
+
+  function invalidateFactCache() {
+    factCacheVersion += 1;
+    factCache.clear();
+    factRequests.clear();
+  }
+
+  async function loadFactData(tab, { page = tm.page, refresh = false } = {}) {
+    const key = factCacheKey(tab, page);
+    if (!refresh && factCache.has(key)) return factCache.get(key);
+    if (factRequests.has(key)) return factRequests.get(key);
+    const request = api(`/api/trading-management/facts/${tab}?${factQuery(page)}`)
+      .then((data) => { factCache.set(key, data); return data; })
+      .finally(() => factRequests.delete(key));
+    factRequests.set(key, request);
+    return request;
+  }
+
+  function prefetchFactTabs() {
+    ["positions", "closes", "trades"].filter((tab) => tab !== tm.factsTab).forEach((tab) => {
+      loadFactData(tab, { page: 1 }).catch(() => {});
+    });
   }
 
   function filters(includeOpenClose = true) {
@@ -158,10 +188,15 @@
   }
 
   async function renderPositionsView() {
-    const data = await api(`/api/trading-management/facts/${tm.factsTab}?${factQuery()}`);
+    const cached = factCache.get(factCacheKey(tm.factsTab));
+    if (!cached) {
+      $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><span class="tm-tag blue">统一事实层</span></div>${filters(tm.factsTab === "trades")}<div class="tm-table-loading"><span class="spinner"></span><span>正在读取${tm.factsTab === "positions" ? "持仓" : tm.factsTab === "closes" ? "平仓" : "交易"}记录…</span></div></section>`;
+    }
+    const data = cached || await loadFactData(tm.factsTab);
     const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>已选择 ${tm.selected.size} 条</span><button id="tmSelectPage">选择当前页</button><button id="tmClearSelection">清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size ? "" : "disabled"}>业务归属</button></div>` : "";
     $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入三表</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
+    prefetchFactTabs();
   }
 
   function wireFactActions(data) {
@@ -184,7 +219,7 @@
   async function openClassificationDrawer() {
     await ensureConfig();
     openDrawer("业务归属", `${tm.selected.size} 条已选择`, `<p class="tm-section-copy">一笔成交按完整手数归属，不允许拆分。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>业务归属</span><select id="tmBusinessSubject">${tm.config.subjects.map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>业务类型</span><select id="tmBusinessType"><option value="basic_hedging">基础套保</option><option value="strategic_hedging">战略套保</option></select></label><label class="tm-upload-box"><span>策略</span><input id="tmStrategy" list="tmStrategyList"><datalist id="tmStrategyList">${tm.config.strategies.map((item) => `<option value="${esc(item.name)}"></option>`).join("")}</datalist></label><label class="tm-upload-box"><span>指令/备注</span><textarea id="tmInstruction"></textarea></label><button id="tmSaveClassification" class="tm-primary-button">确认整笔归属</button></div>`);
-    $("#tmSaveClassification").addEventListener("click", async () => { try { await api("/api/trading-management/business-assignments/batch-confirm", {method:"POST",body:JSON.stringify({identity_ids:[...tm.selected],business_subject_id:Number($("#tmBusinessSubject").value),business_type:$("#tmBusinessType").value,strategy_name:$("#tmStrategy").value.trim(),instruction_text:$("#tmInstruction").value.trim()})}); tm.selected.clear(); closeDrawer(); showToast("业务归属已保存"); await renderPositionsView(); } catch (error) { showError(error); } });
+    $("#tmSaveClassification").addEventListener("click", async () => { try { await api("/api/trading-management/business-assignments/batch-confirm", {method:"POST",body:JSON.stringify({identity_ids:[...tm.selected],business_subject_id:Number($("#tmBusinessSubject").value),business_type:$("#tmBusinessType").value,strategy_name:$("#tmStrategy").value.trim(),instruction_text:$("#tmInstruction").value.trim()})}); invalidateFactCache(); tm.selected.clear(); closeDrawer(); showToast("业务归属已保存"); await renderPositionsView(); } catch (error) { showError(error); } });
   }
 
   async function fileBase64(file) {
@@ -237,7 +272,7 @@
     setImportBusy(true,"正在覆盖导入并建立事实匹配，请勿关闭窗口");
     try {
       const result = await api(`/api/trading-management/imports/${tm.importPreviewId}/confirm`, {method:"POST"});
-      tm.importPreviewId = null; closeDrawer(); showToast(`导入完成：成交 ${result.counts.trade}，平仓 ${result.counts.close}，持仓 ${result.counts.position}`); await renderPositionsView();
+      tm.importPreviewId = null; invalidateFactCache(); closeDrawer(); showToast(`导入完成：成交 ${result.counts.trade}，平仓 ${result.counts.close}，持仓 ${result.counts.position}`); await renderPositionsView();
     } catch (error) { showError(error); } finally { setImportBusy(false); }
   }
 
@@ -289,8 +324,8 @@
     let preview = null;
     const selections = () => [...document.querySelectorAll(".tm-rematch-quantity")].map((input) => ({open_trade_identity_id:Number(input.dataset.id),quantity:Number(input.value)})).filter((item) => item.quantity > 0);
     $("#tmPreviewRematch").addEventListener("click", async () => { try { preview = await api(`/api/trading-management/business-closes/${closeId}/preview`,{method:"POST",body:JSON.stringify({allocation_version:version,selections:selections()})}); $("#tmRematchImpact").textContent = `业务盈亏从 ${num(preview.before_business_pnl)} 调整为 ${num(preview.after_business_pnl)}；事实盈亏不变。`; $("#tmConfirmRematch").classList.remove("hidden"); } catch (error) { showError(error); } });
-    $("#tmConfirmRematch").addEventListener("click", async () => { try { await api(`/api/trading-management/business-closes/${closeId}/confirm`,{method:"POST",body:JSON.stringify({preview_token:preview.preview_token,allocation_version:version,reason:$("#tmRematchReason").value.trim()})}); closeDrawer(); showToast("业务开平关系已更新"); await renderBusinessLedger(tm.view); } catch (error) { showError(error); } });
-    $("#tmRestoreDefault").addEventListener("click", async () => { try { await api(`/api/trading-management/business-closes/${closeId}/restore-default`,{method:"POST",body:JSON.stringify({allocation_version:version,reason:"恢复事实层默认开平关系"})}); closeDrawer(); showToast("已恢复默认关系"); await renderBusinessLedger(tm.view); } catch (error) { showError(error); } });
+    $("#tmConfirmRematch").addEventListener("click", async () => { try { await api(`/api/trading-management/business-closes/${closeId}/confirm`,{method:"POST",body:JSON.stringify({preview_token:preview.preview_token,allocation_version:version,reason:$("#tmRematchReason").value.trim()})}); invalidateFactCache(); closeDrawer(); showToast("业务开平关系已更新"); await renderBusinessLedger(tm.view); } catch (error) { showError(error); } });
+    $("#tmRestoreDefault").addEventListener("click", async () => { try { await api(`/api/trading-management/business-closes/${closeId}/restore-default`,{method:"POST",body:JSON.stringify({allocation_version:version,reason:"恢复事实层默认开平关系"})}); invalidateFactCache(); closeDrawer(); showToast("已恢复默认关系"); await renderBusinessLedger(tm.view); } catch (error) { showError(error); } });
   }
 
   function exportRow(title,note) {

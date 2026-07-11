@@ -72,3 +72,11 @@ test("option positions preserve the prototype anatomy and risk columns", () => {
     assert.match(tradingJs, new RegExp(label));
   }
 });
+
+test("fact tabs cache by filters and prefetch sibling tabs", () => {
+  assert.match(tradingJs, /function factCacheKey/);
+  assert.match(tradingJs, /function loadFactData/);
+  assert.match(tradingJs, /function prefetchFactTabs/);
+  assert.match(tradingJs, /function invalidateFactCache/);
+  assert.match(tradingJs + css, /tm-table-loading/);
+});
