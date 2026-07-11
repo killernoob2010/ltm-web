@@ -416,28 +416,40 @@ def confirm_trading_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
             (batch["account_id"], batch["range_start"], batch["range_end"], preview_batch_id),
         ).fetchone()
 
+        previous_assignments: dict[tuple[Any, ...], list[int]] = {}
+        if previous:
+            inheritance_rows = db._exec(
+                cur,
+                """
+                SELECT old_tf.identity_id, old_sr.source_row_no, old_tf.trade_date,
+                       old_tf.exchange, old_tf.contract, old_tf.side, old_tf.open_close
+                FROM trading_trade_facts old_tf
+                JOIN trading_source_rows old_sr ON old_sr.id = old_tf.source_row_id
+                JOIN trading_business_assignments old_ba ON old_ba.trade_identity_id = old_tf.identity_id
+                WHERE old_tf.batch_id = ?
+                """,
+                (previous["id"],),
+            ).fetchall()
+            for old_row in inheritance_rows:
+                key = (
+                    old_row["source_row_no"], old_row["trade_date"], old_row["exchange"],
+                    old_row["contract"], old_row["side"], old_row["open_close"],
+                )
+                previous_assignments.setdefault(key, []).append(old_row["identity_id"])
+
         for row in trades:
             source_row_id = _insert_source_row(cur, preview_batch_id, "trade", batch["trade_file_name"], "成交记录", row)
             identity_id = _identity_id(cur, batch["account_id"], "trade", row["stable_key"])
             inheritance_review = None
             if previous:
-                inheritance_review = db._exec(
-                    cur,
-                    """
-                    SELECT old_tf.identity_id
-                    FROM trading_trade_facts old_tf
-                    JOIN trading_source_rows old_sr ON old_sr.id = old_tf.source_row_id
-                    JOIN trading_business_assignments old_ba ON old_ba.trade_identity_id = old_tf.identity_id
-                    WHERE old_tf.batch_id = ? AND old_sr.source_row_no = ?
-                      AND old_tf.trade_date = ? AND old_tf.exchange = ? AND old_tf.contract = ?
-                      AND old_tf.side = ? AND old_tf.open_close = ? AND old_tf.identity_id <> ?
-                    LIMIT 1
-                    """,
-                    (
-                        previous["id"], row["source_row_no"], row["date"], row["exchange"],
-                        row["contract"], row["side"], row["open_close"], identity_id,
-                    ),
-                ).fetchone()
+                key = (
+                    row["source_row_no"], row["date"], row["exchange"],
+                    row["contract"], row["side"], row["open_close"],
+                )
+                inheritance_review = next(
+                    (old_identity_id for old_identity_id in previous_assignments.get(key, []) if old_identity_id != identity_id),
+                    None,
+                )
             verification_status = "inheritance_review_required" if inheritance_review else "file_imported"
             db._exec(
                 cur,

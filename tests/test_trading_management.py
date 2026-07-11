@@ -633,6 +633,31 @@ def test_default_business_allocations_batch_specs_and_writes(tmp_path, monkeypat
     assert calls["execute"] + calls["executemany"] <= 8
 
 
+def test_overwrite_import_prefetches_business_inheritance_once(tmp_path, monkeypatch):
+    first_preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
+    second_preview = trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=tmp_path / "trades.xlsx",
+        close_path=tmp_path / "closes.xlsx",
+        position_path=tmp_path / "positions.xlsx",
+        actor="tester2",
+    )
+    inheritance_queries = []
+    original_exec = db._exec
+
+    def counted_exec(cur, sql, params=None):
+        if "JOIN trading_business_assignments old_ba" in sql:
+            inheritance_queries.append((sql, params))
+        return original_exec(cur, sql, params)
+
+    monkeypatch.setattr(db, "_exec", counted_exec)
+
+    trading_management.confirm_trading_import(second_preview["preview_batch_id"], actor="tester2")
+
+    assert len(inheritance_queries) == 1
+
+
 def test_fact_api_routes_are_registered():
     paths = {route.path for route in trading_management.router.routes}
 
