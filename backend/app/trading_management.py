@@ -903,6 +903,27 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
         page=1,
         page_size=100,
     ))
+    with db.connect() as conn:
+        daily_rows = db._exec(
+            conn.cursor(),
+            """
+            SELECT cf.close_date AS date, SUM(cf.fact_close_pnl) AS fact_close_pnl
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            WHERE (? = '' OR LOWER(cf.contract) LIKE LOWER(?))
+              AND (? = '' OR cf.open_side = ?)
+              AND (? = '' OR cf.asset_type = ?)
+              AND (? = '' OR cf.close_date >= ?)
+              AND (? = '' OR cf.close_date <= ?)
+            GROUP BY cf.close_date
+            ORDER BY cf.close_date
+            """,
+            (
+                filters.contract, f"%{filters.contract}%", filters.direction, filters.direction,
+                filters.asset_type, filters.asset_type, filters.start_date, filters.start_date,
+                filters.end_date, filters.end_date,
+            ),
+        ).fetchall()
     snapshot_date = positions["items"][0]["snapshot_date"] if positions["items"] else None
     return {
         "trades": trades["summary"],
@@ -917,6 +938,10 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
             "fact": "file_imported",
             "positions": positions["data_status"],
         },
+        "daily_close_pnl": [
+            {"date": row["date"], "fact_close_pnl": float(row["fact_close_pnl"] or 0)}
+            for row in daily_rows
+        ],
     }
 
 

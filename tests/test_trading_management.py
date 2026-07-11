@@ -557,6 +557,39 @@ def test_close_query_and_overview_use_fact_pnl(tmp_path, monkeypatch):
     assert overview["positions"]["floating_pnl_status"] == "pending_calculation"
 
 
+def test_overview_returns_daily_close_pnl_from_active_facts(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    trading_management.match_imported_facts(confirmed["batch_id"])
+
+    overview = trading_management.build_overview(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert overview["daily_close_pnl"] == [{"date": "20260630", "fact_close_pnl": 1200.0}]
+
+
+def test_overview_daily_close_pnl_ignores_superseded_batch(tmp_path, monkeypatch):
+    first_preview = create_preview_batch(tmp_path, monkeypatch)
+    first = trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
+    trading_management.match_imported_facts(first["batch_id"])
+    second_preview = trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=tmp_path / "trades.xlsx",
+        close_path=tmp_path / "closes.xlsx",
+        position_path=tmp_path / "positions.xlsx",
+        actor="tester2",
+    )
+    second = trading_management.confirm_trading_import(second_preview["preview_batch_id"], actor="tester2")
+    trading_management.match_imported_facts(second["batch_id"])
+
+    overview = trading_management.build_overview(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert overview["daily_close_pnl"] == [{"date": "20260630", "fact_close_pnl": 1200.0}]
+
+
 def test_fact_matching_batches_database_writes_instead_of_round_trip_per_close(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     confirmed = trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
