@@ -845,6 +845,7 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                    (SELECT SUM(cf.fact_close_pnl * l.matched_quantity / cf.quantity)
                     FROM trading_close_trade_links l
                     JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
+                    JOIN trading_import_batches cb ON cb.id = cf.batch_id AND cb.status = 'active'
                     WHERE l.close_trade_identity_id = tf.identity_id) AS fact_close_pnl
             FROM trading_trade_facts tf
             JOIN trading_import_batches b ON b.id = tf.batch_id

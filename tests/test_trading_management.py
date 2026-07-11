@@ -367,6 +367,27 @@ def test_confirm_same_range_supersedes_old_batch_and_keeps_source_rows(tmp_path,
     assert source_count == 10
 
 
+def test_overwrite_trade_pnl_uses_only_active_close_fact_version(tmp_path, monkeypatch):
+    first_preview = create_preview_batch(tmp_path, monkeypatch)
+    first = trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
+    trading_management.match_imported_facts(first["batch_id"])
+    second_preview = trading_management.preview_trading_import(
+        account_id=1,
+        trade_path=tmp_path / "trades.xlsx",
+        close_path=tmp_path / "closes.xlsx",
+        position_path=tmp_path / "positions.xlsx",
+        actor="tester2",
+    )
+    second = trading_management.confirm_trading_import(second_preview["preview_batch_id"], actor="tester2")
+    trading_management.match_imported_facts(second["batch_id"])
+
+    trades = trading_management.query_fact_rows(
+        "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert trades["summary"]["fact_close_pnl"] == 1200
+
+
 def test_same_stable_identity_keeps_business_assignment_after_reimport(tmp_path, monkeypatch):
     first_preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
