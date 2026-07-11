@@ -74,6 +74,47 @@ def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monke
     }
 
 
+def test_new_trading_menu_permissions_are_added_without_overwriting_existing_choices(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        futures_user = conn.execute(
+            """
+            INSERT INTO users (name, username, department, password_hash, role)
+            VALUES ('期货测试', 'futures-test', '期货组', 'x', '用户')
+            """
+        ).lastrowid
+        leader_user = conn.execute(
+            """
+            INSERT INTO users (name, username, department, password_hash, role)
+            VALUES ('领导测试', 'leader-test', '公司领导', 'x', '领导')
+            """
+        ).lastrowid
+        db.sync_trading_module_permissions(conn.cursor())
+        futures_permissions = conn.execute(
+            "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code LIKE 'trading_%'",
+            (futures_user,),
+        ).fetchall()
+        leader_permissions = conn.execute(
+            "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code LIKE 'trading_%'",
+            (leader_user,),
+        ).fetchall()
+        conn.execute(
+            "UPDATE module_permissions SET can_edit = 0 WHERE user_id = ? AND module_code = 'trading_overview'",
+            (futures_user,),
+        )
+        db.sync_trading_module_permissions(conn.cursor())
+        preserved = conn.execute(
+            "SELECT can_edit FROM module_permissions WHERE user_id = ? AND module_code = 'trading_overview'",
+            (futures_user,),
+        ).fetchone()["can_edit"]
+
+    assert len(futures_permissions) == 5
+    assert {(row["can_view"], row["can_edit"], row["can_sensitive"]) for row in futures_permissions} == {(1, 1, 0)}
+    assert len(leader_permissions) == 5
+    assert {(row["can_view"], row["can_edit"], row["can_sensitive"]) for row in leader_permissions} == {(1, 0, 0)}
+    assert preserved == 0
+
+
 def test_trading_management_router_module_exists():
     assert importlib.util.find_spec("app.trading_management") is not None
 

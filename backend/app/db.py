@@ -1050,6 +1050,7 @@ def init_db() -> None:
 
         ensure_admin_user(cur, "管理员")
         ensure_admin_user(cur, "admin")
+        sync_trading_module_permissions(cur)
         conn.commit()
 
 
@@ -1057,6 +1058,13 @@ def migrate_trading_management_schema(conn) -> None:
     """Create isolated trading-management tables without touching legacy ledgers."""
     cur = conn.cursor()
     if _is_pg():
+        cur.execute("CREATE SCHEMA IF NOT EXISTS codex_backups")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_backups.module_permissions_before_trading_management_20260712
+            AS TABLE public.module_permissions WITH DATA
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS trading_accounts (
@@ -1474,6 +1482,39 @@ def migrate_trading_management_schema(conn) -> None:
                 (exchange, product_code, asset_type, multiplier, tick),
             )
     conn.commit()
+
+
+def sync_trading_module_permissions(cur) -> None:
+    """Add only missing permissions for the new menu; never overwrite explicit choices."""
+    trading_codes = [code for group, code, _ in MODULES if group == "交易管理"]
+    users = _exec(cur, "SELECT id, department, role FROM users").fetchall()
+    for user in users:
+        role = user["role"]
+        department = user["department"]
+        if role in {"管理员", "admin"}:
+            permission = (1, 1, 1)
+        elif role == "领导":
+            permission = (1, 0, 0)
+        elif department in {"期货组", "管理部门"}:
+            permission = (1, 1, 0)
+        else:
+            continue
+        for module_code in trading_codes:
+            existing = _exec(
+                cur,
+                "SELECT id FROM module_permissions WHERE user_id = ? AND module_code = ?",
+                (user["id"], module_code),
+            ).fetchone()
+            if not existing:
+                _exec(
+                    cur,
+                    """
+                    INSERT INTO module_permissions
+                        (user_id, module_code, can_view, can_edit, can_sensitive)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (user["id"], module_code, *permission),
+                )
 
 
 def ensure_admin_user(cur, name: str) -> int:
