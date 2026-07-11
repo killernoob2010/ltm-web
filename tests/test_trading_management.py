@@ -906,7 +906,7 @@ def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, mo
     assert option_trades["items"][0]["assignment_status"] == "unclassified"
 
 
-def test_unclassified_rb_hc_appear_as_candidates_not_formal_summary(tmp_path, monkeypatch):
+def test_unclassified_rb_hc_appear_in_junneng_until_assigned_elsewhere(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
@@ -914,9 +914,28 @@ def test_unclassified_rb_hc_appear_as_candidates_not_formal_summary(tmp_path, mo
         "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
     )
 
-    assert result["items"] == []
-    assert result["summary"]["record_count"] == 0
+    assert len(result["items"]) == 2
+    assert result["summary"]["record_count"] == 2
+    assert all(row["assignment_status"] == "unclassified" for row in result["items"])
+    assert all(row["ledger_membership"] == "candidate" for row in result["items"])
     assert result["candidates"]["record_count"] == 2
+
+
+def test_fact_trade_classification_filter_returns_assignment_metadata(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+
+    assigned = trading_management.query_fact_rows(
+        "trades", trading_management.FactFilters(classification="classified", page=1, page_size=20)
+    )
+    pending = trading_management.query_fact_rows(
+        "trades", trading_management.FactFilters(classification="unclassified", page=1, page_size=20)
+    )
+
+    assert assigned["items"]
+    assert all(row["assignment_status"] == "classified" for row in assigned["items"])
+    assert all(row["business_type"] == "basic_hedging" for row in assigned["items"])
+    assert pending["items"]
+    assert all(row["assignment_status"] == "unclassified" for row in pending["items"])
 
 
 def test_option_business_positions_include_unclassified_open_options(tmp_path, monkeypatch):

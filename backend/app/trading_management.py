@@ -745,6 +745,7 @@ class FactFilters:
     open_close: str = ""
     start_date: str = ""
     end_date: str = ""
+    classification: str = ""
     page: int = 1
     page_size: int = 20
 
@@ -841,7 +842,9 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
         rows = db._exec(
             cur,
             """
-            SELECT tf.*,
+            SELECT tf.*, s.name AS business_subject, ba.business_type,
+                   st.name AS strategy,
+                   CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status,
                    (SELECT SUM(cf.fact_close_pnl * l.matched_quantity / cf.quantity)
                     FROM trading_close_trade_links l
                     JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
@@ -849,6 +852,9 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                     WHERE l.close_trade_identity_id = tf.identity_id) AS fact_close_pnl
             FROM trading_trade_facts tf
             JOIN trading_import_batches b ON b.id = tf.batch_id
+            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
             WHERE b.status = 'active'
             ORDER BY tf.trade_date DESC, tf.id DESC
             """,
@@ -866,6 +872,10 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
             items = [row for row in items if row["trade_date"] >= filters.start_date]
         if filters.end_date:
             items = [row for row in items if row["trade_date"] <= filters.end_date]
+        if filters.classification == "classified":
+            items = [row for row in items if row["assignment_status"] == "classified"]
+        elif filters.classification == "unclassified":
+            items = [row for row in items if row["assignment_status"] == "unclassified"]
         summary = {
             "record_count": len(items),
             "quantity": sum(float(row["quantity"]) for row in items),
@@ -1327,7 +1337,14 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 if row["assignment_status"] == "unclassified" and _product_code(row["contract"]) in {"rb", "hc"}
             ]
             if view == "junneng":
-                items = [row for row in all_items if row["business_subject"] == "上海钧能"]
+                items = []
+                for row in all_items:
+                    if row["business_subject"] == "上海钧能":
+                        row["ledger_membership"] = "confirmed"
+                        items.append(row)
+                    elif not row["business_subject"] and _product_code(row["contract"]) in {"rb", "hc"}:
+                        row["ledger_membership"] = "candidate"
+                        items.append(row)
             else:
                 items = [row for row in all_items if row["asset_type"] == "option"]
             if filters.contract:
@@ -1890,10 +1907,15 @@ def _api_filters(
     open_close: str = "",
     start_date: str = "",
     end_date: str = "",
+    classification: str = "",
     page: int = 1,
     page_size: int = 20,
 ) -> FactFilters:
-    return FactFilters(contract, direction, asset_type, open_close, start_date, end_date, page, page_size)
+    return FactFilters(
+        contract=contract, direction=direction, asset_type=asset_type, open_close=open_close,
+        start_date=start_date, end_date=end_date, classification=classification,
+        page=page, page_size=page_size,
+    )
 
 
 async def trading_management_current_user(
