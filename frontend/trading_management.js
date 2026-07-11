@@ -6,6 +6,13 @@
     factsTab: "positions",
     junnengTab: "positions",
     optionsTab: "positions",
+    junnengPage: 1,
+    junnengPageSize: 20,
+    optionsPage: 1,
+    optionsPageSize: 20,
+    businessQuery: { junneng: "", options: "" },
+    businessSide: { junneng: "", options: "" },
+    businessClassification: { junneng: "", options: "" },
     page: 1,
     pageSize: 20,
     query: "",
@@ -17,6 +24,7 @@
     dateTo: "",
     config: null,
     overview: null,
+    overviewMode: "month",
     selected: new Set(),
     importPreviewId: null,
     permissions: { canEdit: false, canSensitive: false },
@@ -125,17 +133,29 @@
       ${metric("期末保证金", `${num(data.positions.margin)} 元`, "文华期末持仓文件")}
     </div>`;
     $("#tmOverviewView").innerHTML = `
-      <div class="tm-period-bar"><div class="tm-tabs"><button class="tm-tab-button active">月</button><button class="tm-tab-button">日</button><button class="tm-tab-button">季</button><button class="tm-tab-button">自定义</button></div><span class="tm-tag blue">事实层 · 只读</span></div>
+      <div class="tm-period-bar"><div class="tm-tabs">${[["month","月"],["day","日"],["quarter","季"],["custom","自定义"]].map(([mode,label])=>`<button class="tm-tab-button ${tm.overviewMode===mode?"active":""}" data-overview-period="${mode}">${label}</button>`).join("")}</div><div class="tm-period-selection">${tm.overviewMode === "custom" ? `<input id="tmOverviewFrom" type="date"><span>至</span><input id="tmOverviewTo" type="date"><button id="tmOverviewApply">应用</button>` : ""}<span class="tm-tag blue">事实层 · 只读</span></div></div>
       ${summary}
-      <div class="tm-content-grid">
-        <section class="tm-panel"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按文华逐笔平仓盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_close_pnl || [])}</div></section>
+      <section class="tm-panel tm-overview-chart"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按文华逐笔平仓盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_close_pnl || [])}</div></section>
+      <div class="tm-overview-mini-grid">
         <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与手续费", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
-      </div>
-      <div class="tm-content-grid">
         <section class="tm-panel"><div class="tm-panel-header"><div><h2>业务归属分布</h2><p class="tm-section-copy">事实交易归类进度</p></div><button class="tm-row-button" data-go-positions>前往归类 →</button></div><div class="tm-business-list">${qualityRow("上海钧能", "RB / HC 正式归属", "业务层")}${qualityRow("期权", "默认展示全部期权", "业务层")}${qualityRow("其它与待归属", "保留事实层完整记录", "待确认", "amber")}</div></section>
         <section class="tm-panel"><div class="tm-panel-header"><h2>活跃合约</h2><small>按当前事实范围</small></div><div class="tm-business-list">${qualityRow("成交手数", `${num(data.trades.quantity)} 手`, "全量")}${qualityRow("持仓手数", `${num(data.positions.quantity)} 手`, "期末")}${qualityRow("期权风险指标", "Delta / Gamma / Theta / Vega", "待计算", "amber")}</div></section>
       </div>`;
     $("[data-go-positions]")?.addEventListener("click", () => document.querySelector('.menu-item') && activateModule("trading_positions"));
+    document.querySelectorAll("[data-overview-period]").forEach((button)=>button.addEventListener("click",()=>{tm.overviewMode=button.dataset.overviewPeriod;loadOverview().catch(showError);}));
+    $("#tmOverviewApply")?.addEventListener("click",()=>{tm.dateFrom=$("#tmOverviewFrom").value.replaceAll("-","");tm.dateTo=$("#tmOverviewTo").value.replaceAll("-","");loadOverview().catch(showError);});
+  }
+
+  async function loadOverview() {
+    const params = new URLSearchParams();
+    const dates = (tm.overview?.daily_close_pnl || []).map((row)=>row.date).filter(Boolean);
+    const latest = dates.at(-1) || tm.overview?.positions?.snapshot_date || "";
+    if (tm.overviewMode === "day" && latest) { params.set("start_date",latest); params.set("end_date",latest); }
+    if (tm.overviewMode === "month" && latest) { params.set("start_date",`${latest.slice(0,6)}01`); params.set("end_date",`${latest.slice(0,6)}31`); }
+    if (tm.overviewMode === "quarter" && latest) { const month=Number(latest.slice(4,6)); const start=String(Math.floor((month-1)/3)*3+1).padStart(2,"0"); const end=String(Number(start)+2).padStart(2,"0"); params.set("start_date",`${latest.slice(0,4)}${start}01`); params.set("end_date",`${latest.slice(0,4)}${end}31`); }
+    if (tm.overviewMode === "custom") { if (tm.dateFrom) params.set("start_date",tm.dateFrom); if (tm.dateTo) params.set("end_date",tm.dateTo); }
+    tm.overview = await api(`/api/trading-management/overview${params.size ? `?${params}` : ""}`);
+    renderOverviewView(tm.overview);
   }
 
   function factTabs() {
@@ -148,6 +168,7 @@
     if (tm.assetType) params.set("asset_type", tm.assetType);
     if (tm.side) params.set("direction", tm.side);
     if (tm.openClose) params.set("open_close", tm.openClose);
+    if (tm.classification) params.set("classification", tm.classification);
     if (tm.dateFrom) params.set("start_date", tm.dateFrom);
     if (tm.dateTo) params.set("end_date", tm.dateTo);
     return params.toString();
@@ -185,21 +206,22 @@
   }
 
   function filterSummary(summary) {
-    const items = [["记录数",summary.record_count],["手数",summary.quantity],["手续费",summary.fee],["事实平仓盈亏",summary.fact_close_pnl],["保证金",summary.margin],["浮动盈亏","待计算"]];
+    const items = [["记录数",summary.record_count],["手数",summary.quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl],["保证金",summary.margin],["浮动盈亏","待计算"]];
     return `<div class="tm-filter-summary">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
   }
 
   const FACT_COLUMNS = {
-    positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["pending","浮动盈亏"]],
-    closes: [["close_date","平仓日"],["contract","合约"],["asset_type","资产类型"],["open_side","方向"],["quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","事实平仓盈亏"],["matched_fee","手续费"]],
-    trades: [["trade_date","成交日"],["contract","合约"],["asset_type","资产类型"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["fee","手续费"],["fact_close_pnl","事实平仓盈亏"]],
+    positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["assignment","业务类型 / 策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
+    closes: [["close_date","平仓日"],["contract","合约"],["asset_type","资产类型"],["open_side","方向"],["quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","平仓盈亏"],["matched_fee","手续费"],["assignment","业务类型 / 策略"]],
+    trades: [["trade_date","成交日"],["contract","合约"],["asset_type","资产类型"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["fee","手续费"],["fact_close_pnl","平仓盈亏"],["assignment","业务类型 / 策略"]],
   };
 
   function valueCell(row, key) {
     if (key === "pending") return pending();
+    if (key === "assignment") return row.assignment_status === "classified" && row.business_type ? `<span class="tm-tag blue">${esc(businessType(row.business_type))}${row.strategy ? ` / ${esc(row.strategy)}` : ""}</span>` : '<span class="tm-tag amber">待确认</span>';
     if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity"].includes(key)) return num(row[key]);
     if (key === "asset_type") return row[key] === "option" ? "期权" : "期货";
-    if (key === "business_type") return businessType(row[key]);
+    if (key === "business_type") return row.assignment_status === "classified" && row[key] ? `<span class="tm-tag blue">${esc(businessType(row[key]))}</span>` : '<span class="tm-tag amber">待确认</span>';
     return esc(row[key] ?? "—");
   }
 
@@ -210,7 +232,7 @@
   }
 
   function pagination(data, prefix = "tm") {
-    return `<div class="tm-pagination"><span>共 ${data.total_items} 条</span><label>每页<select id="${prefix}PageSize"><option>20</option><option>50</option><option>100</option></select></label><button id="${prefix}Prev" ${data.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${data.page} / ${data.total_pages} 页</span><button id="${prefix}Next" ${data.page >= data.total_pages ? "disabled" : ""}>下一页</button></div>`;
+    return `<div class="tm-pagination"><span>共 ${data.total_items} 条</span><label>每页<select id="${prefix}PageSize">${[20,50,100].map((size) => `<option value="${size}" ${Number(data.page_size) === size ? "selected" : ""}>${size}</option>`).join("")}</select>条</label><button id="${prefix}Prev" ${data.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${data.page} / ${data.total_pages} 页</span><button id="${prefix}Next" ${data.page >= data.total_pages ? "disabled" : ""}>下一页</button></div>`;
   }
 
   async function renderPositionsView() {
@@ -330,19 +352,45 @@
     return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>开平</th><th>手数</th><th>持仓均价</th><th>保证金</th><th>标的</th><th>看涨/看跌</th><th>行权价</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr></thead><tbody>${body || '<tr><td colspan="13" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
   }
 
+  function businessFilters(view) {
+    const dateValue = (value) => value ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : "";
+    return `<div class="tm-filters compact without-open-close"><input id="${view}Search" class="tm-filter-search" type="search" placeholder="搜索合约" value="${esc(tm.businessQuery[view])}"><button id="${view}SearchApply" class="tm-secondary-button">搜索</button><select id="${view}Side" class="tm-filter-select"><option value="">全部方向</option><option value="买" ${tm.businessSide[view] === "买" ? "selected" : ""}>买</option><option value="卖" ${tm.businessSide[view] === "卖" ? "selected" : ""}>卖</option></select><select id="${view}Classification" class="tm-filter-select"><option value="">全部归类状态</option><option value="unclassified" ${tm.businessClassification[view] === "unclassified" ? "selected" : ""}>待确认</option><option value="classified" ${tm.businessClassification[view] === "classified" ? "selected" : ""}>已归属</option></select><input id="${view}DateFrom" class="tm-filter-date" type="date" value="${dateValue(tm.dateFrom)}"><input id="${view}DateTo" class="tm-filter-date" type="date" value="${dateValue(tm.dateTo)}"></div>`;
+  }
+
+  function businessFilterSummary(summary, tab) {
+    const items = tab === "positions"
+      ? [["记录数",summary.record_count],["手数",summary.quantity],["业务归属盈亏",summary.business_pnl],["浮动盈亏","待计算"]]
+      : [["记录数",summary.record_count],[tab === "closes" ? "平仓手数" : "成交手数",summary.quantity],["业务归属盈亏",summary.business_pnl],["手续费",summary.fee]];
+    return `<div class="tm-filter-summary compact">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
+  }
+
   async function renderBusinessLedger(view) {
     const tabKey = view === "junneng" ? "junnengTab" : "optionsTab";
     const tab = tm[tabKey];
-    const data = await api(`/api/trading-management/business/${view}/${tab}?page_size=100`);
+    const pageKey = view === "junneng" ? "junnengPage" : "optionsPage";
+    const pageSizeKey = view === "junneng" ? "junnengPageSize" : "optionsPageSize";
+    const params = new URLSearchParams({page:tm[pageKey],page_size:tm[pageSizeKey]});
+    if (tm.businessQuery[view]) params.set("contract",tm.businessQuery[view]);
+    if (tm.businessSide[view]) params.set("direction",tm.businessSide[view]);
+    if (tm.businessClassification[view]) params.set("classification",tm.businessClassification[view]);
+    if (tm.dateFrom) params.set("start_date",tm.dateFrom);
+    if (tm.dateTo) params.set("end_date",tm.dateTo);
+    const data = await api(`/api/trading-management/business/${view}/${tab}?${params}`);
     const title = view === "junneng" ? "上海钧能台账" : "期权台账";
-    const notice = view === "junneng" ? `正式汇总仅包含已归属上海钧能的数据；RB/HC 待归属 ${data.candidates?.record_count || 0} 笔。` : "默认展示全部期权；Delta、Gamma、Theta、Vega 暂显示待计算。";
+    const notice = view === "junneng" ? `默认展示全部 RB/HC 候选；待确认 ${data.candidates?.record_count || 0} 笔，明确归属其他业务后移出。` : "默认展示全部期权；Delta、Gamma、Theta、Vega 暂显示待计算。";
     const primarySummary = [["记录数",data.summary.record_count],["手数",data.summary.quantity],["业务归属盈亏",data.summary.business_pnl],["浮动盈亏","待计算"]];
     const riskSummary = [["Delta","待计算"],["Gamma","待计算"],["Theta","待计算"],["Vega","待计算"]];
     const summaryRow = (items, className) => `<div class="tm-ledger-summary ${className}">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
     const ledgerTable = view === "options" && tab === "positions" ? optionPositionTable(data) : businessTable(data,tab,tm.permissions.canEdit);
-    const html = `<div class="tm-ledger-hero"><section class="tm-panel"><div class="tm-panel-header"><div><h2>${title}</h2><p class="tm-section-copy">${notice}</p></div><span class="tm-tag blue">${view === "junneng" ? "钢材套保业务" : "统一事实层 · 期权业务视图"}</span></div>${summaryRow(primarySummary,"tm-ledger-summary-primary")}${view === "options" ? summaryRow(riskSummary,"tm-ledger-summary-risk") : ""}</section></div><section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${filters(false)}${filterSummary(data.summary)}${view === "options" && tab === "positions" ? '<div class="tm-filter-summary compact"><div><span>标的</span><strong>按合约解析</strong></div><div><span>看涨/看跌</span><strong>按 C/P 解析</strong></div><div><span>行权价</span><strong>按合约解析</strong></div><div><span>风险指标</span><strong>待计算</strong></div></div>' : ""}${ledgerTable}</section>`;
+    const html = `<div class="tm-ledger-hero"><section class="tm-panel"><div class="tm-panel-header"><div><h2>${title}</h2><p class="tm-section-copy">${notice}</p></div><span class="tm-tag blue">${view === "junneng" ? "钢材套保业务" : "统一事实层 · 期权业务视图"}</span></div>${summaryRow(primarySummary,"tm-ledger-summary-primary")}${view === "options" ? summaryRow(riskSummary,"tm-ledger-summary-risk") : ""}</section></div><section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${businessFilters(view)}${businessFilterSummary(data.summary,tab)}${view === "options" && tab === "positions" ? '<div class="tm-filter-summary compact"><div><span>标的</span><strong>按合约解析</strong></div><div><span>看涨/看跌</span><strong>按 C/P 解析</strong></div><div><span>行权价</span><strong>按合约解析</strong></div><div><span>风险指标</span><strong>待计算</strong></div></div>' : ""}${ledgerTable}${pagination(data,view)}</section>`;
     $(view === "junneng" ? "#tmJunnengView" : "#tmOptionsView").innerHTML = html;
-    document.querySelectorAll(`[data-${view}-tab]`).forEach((button) => button.addEventListener("click", () => { tm[tabKey] = button.dataset[`${view}Tab`]; renderBusinessLedger(view).catch(showError); }));
+    document.querySelectorAll(`[data-${view}-tab]`).forEach((button) => button.addEventListener("click", () => { tm[tabKey] = button.dataset[`${view}Tab`]; tm[pageKey] = 1; renderBusinessLedger(view).catch(showError); }));
+    $(`#${view}SearchApply`).addEventListener("click",()=>{tm.businessQuery[view]=$(`#${view}Search`).value.trim();tm[pageKey]=1;renderBusinessLedger(view).catch(showError);});
+    [["Side",tm.businessSide],["Classification",tm.businessClassification]].forEach(([suffix,state])=>$(`#${view}${suffix}`).addEventListener("change",(event)=>{state[view]=event.target.value;tm[pageKey]=1;renderBusinessLedger(view).catch(showError);}));
+    [["DateFrom","dateFrom"],["DateTo","dateTo"]].forEach(([suffix,key])=>$(`#${view}${suffix}`).addEventListener("change",(event)=>{tm[key]=event.target.value.replaceAll("-","");tm[pageKey]=1;renderBusinessLedger(view).catch(showError);}));
+    $(`#${view}PageSize`).addEventListener("change",(event)=>{tm[pageSizeKey]=Number(event.target.value);tm[pageKey]=1;renderBusinessLedger(view).catch(showError);});
+    $(`#${view}Prev`).addEventListener("click",()=>{tm[pageKey]-=1;renderBusinessLedger(view).catch(showError);});
+    $(`#${view}Next`).addEventListener("click",()=>{tm[pageKey]+=1;renderBusinessLedger(view).catch(showError);});
     document.querySelectorAll("[data-rematch-id]").forEach((button) => button.addEventListener("click", () => openRematch(Number(button.dataset.rematchId),Number(button.dataset.version))));
   }
 
@@ -367,7 +415,7 @@
   async function refresh() {
     $("#tmLoadingState").classList.remove("hidden"); $("#tmContent").classList.add("hidden");
     try {
-      if (tm.view === "overview") { tm.overview = await api("/api/trading-management/overview"); renderOverviewView(tm.overview); }
+      if (tm.view === "overview") await loadOverview();
       if (tm.view === "positions") await renderPositionsView();
       if (tm.view === "junneng" || tm.view === "options") await renderBusinessLedger(tm.view);
       if (tm.view === "export") renderExportView();

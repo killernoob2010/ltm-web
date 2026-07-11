@@ -798,10 +798,38 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 (snapshot_date,),
             ).fetchall() if snapshot_date else []
             items = [dict(row) for row in rows]
+            assignment_rows = db._exec(
+                cur,
+                """
+                SELECT tf.contract, tf.side AS direction, tf.asset_type,
+                       ba.business_type, st.name AS strategy,
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+                FROM trading_trade_facts tf
+                JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+                WHERE tf.open_close = '开仓'
+                """,
+            ).fetchall()
+            assignments: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+            for assignment in assignment_rows:
+                item = dict(assignment)
+                assignments.setdefault((item["contract"], item["direction"], item["asset_type"]), []).append(item)
+            for item in items:
+                related = assignments.get((item["contract"], item["direction"], item["asset_type"]), [])
+                classified = [row for row in related if row["assignment_status"] == "classified"]
+                item["assignment_status"] = "classified" if related and len(classified) == len(related) else "unclassified"
+                item["business_type"] = classified[0]["business_type"] if classified and len({row["business_type"] for row in classified}) == 1 else None
+                item["strategy"] = classified[0]["strategy"] if classified and len({row["strategy"] for row in classified}) == 1 else None
+                item["source_record_count"] = len(related)
             if filters.contract:
                 items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
             if filters.direction:
                 items = [row for row in items if row["direction"] == filters.direction]
+            if filters.classification == "classified":
+                items = [row for row in items if row["assignment_status"] == "classified"]
+            elif filters.classification == "unclassified":
+                items = [row for row in items if row["assignment_status"] == "unclassified"]
             summary = {
                 "record_count": len(items),
                 "quantity": sum(float(row["quantity"]) for row in items),
@@ -820,6 +848,26 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 """,
             ).fetchall()
             items = [dict(row) for row in rows]
+            allocation_rows = db._exec(
+                cur,
+                """
+                SELECT a.close_identity_id, ba.business_type, st.name AS strategy,
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+                FROM trading_business_close_allocations a
+                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+                """,
+            ).fetchall()
+            close_assignments: dict[int, list[dict[str, Any]]] = {}
+            for allocation in allocation_rows:
+                allocation = dict(allocation)
+                close_assignments.setdefault(allocation["close_identity_id"], []).append(allocation)
+            for item in items:
+                related = close_assignments.get(item["identity_id"], [])
+                classified = [row for row in related if row["assignment_status"] == "classified"]
+                item["assignment_status"] = "classified" if related and len(classified) == len(related) else "unclassified"
+                item["business_type"] = classified[0]["business_type"] if classified and len({row["business_type"] for row in classified}) == 1 else None
+                item["strategy"] = classified[0]["strategy"] if classified and len({row["strategy"] for row in classified}) == 1 else None
             if filters.contract:
                 items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
             if filters.direction:
@@ -830,6 +878,10 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 items = [row for row in items if row["close_date"] >= filters.start_date]
             if filters.end_date:
                 items = [row for row in items if row["close_date"] <= filters.end_date]
+            if filters.classification == "classified":
+                items = [row for row in items if row["assignment_status"] == "classified"]
+            elif filters.classification == "unclassified":
+                items = [row for row in items if row["assignment_status"] == "unclassified"]
             summary = {
                 "record_count": len(items),
                 "quantity": sum(float(row["quantity"]) for row in items),
@@ -1269,6 +1321,24 @@ def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
     return {"allocation_count": count}
 
 
+def _filter_business_items(items: list[dict[str, Any]], tab: str, filters: FactFilters) -> list[dict[str, Any]]:
+    if filters.contract:
+        items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+    direction_key = "direction" if tab == "positions" else "open_side" if tab == "closes" else "side"
+    date_key = "close_date" if tab == "closes" else "trade_date" if tab == "trades" else None
+    if filters.direction:
+        items = [row for row in items if row.get(direction_key) == filters.direction]
+    if filters.classification == "classified":
+        items = [row for row in items if row.get("assignment_status") == "classified"]
+    elif filters.classification == "unclassified":
+        items = [row for row in items if row.get("assignment_status") == "unclassified"]
+    if date_key and filters.start_date:
+        items = [row for row in items if row.get(date_key, "") >= filters.start_date]
+    if date_key and filters.end_date:
+        items = [row for row in items if row.get(date_key, "") <= filters.end_date]
+    return items
+
+
 def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, Any]:
     if view not in {"junneng", "options"} or tab not in {"positions", "closes", "trades"}:
         raise ValueError("未知业务视图")
@@ -1284,7 +1354,8 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                            FROM trading_business_close_allocations a
                            WHERE a.open_trade_identity_id = tf.identity_id
                        ), 0) AS remaining_quantity,
-                       s.name AS business_subject, ba.business_type, st.name AS strategy
+                       s.name AS business_subject, ba.business_type, st.name AS strategy,
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
                 FROM trading_trade_facts tf
                 JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
                 LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
@@ -1296,11 +1367,17 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             ).fetchall()
         all_items = [dict(row) for row in rows if float(row["remaining_quantity"] or 0) > 1e-9]
         if view == "junneng":
-            items = [row for row in all_items if row["business_subject"] == "上海钧能"]
+            items = []
+            for row in all_items:
+                if row["business_subject"] == "上海钧能":
+                    row["ledger_membership"] = "confirmed"
+                    items.append(row)
+                elif not row["business_subject"] and _product_code(row["contract"]) in {"rb", "hc"}:
+                    row["ledger_membership"] = "candidate"
+                    items.append(row)
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
-        if filters.contract:
-            items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+        items = _filter_business_items(items, tab, filters)
         for item in items:
             item["quantity"] = item.pop("remaining_quantity")
             item["floating_pnl"] = None
@@ -1312,7 +1389,11 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "floating_pnl": None,
             "floating_pnl_status": "pending_calculation",
         }
-        return _page_result(items, summary, filters)
+        result = _page_result(items, summary, filters)
+        if view == "junneng":
+            candidate_items = [row for row in items if row.get("ledger_membership") == "candidate"]
+            result["candidates"] = {"record_count": len(candidate_items), "quantity": sum(float(row["quantity"]) for row in candidate_items)}
+        return result
 
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1322,7 +1403,15 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 """
                 SELECT tf.*, s.name AS business_subject, ba.business_type,
                        st.name AS strategy, ba.instruction_text,
-                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status,
+                       (SELECT SUM(CASE WHEN a.source = 'fact_default'
+                                           THEN cf.fact_close_pnl * a.matched_quantity / NULLIF(cf.quantity, 0)
+                                           ELSE a.business_pnl END)
+                        FROM trading_close_trade_links l
+                        JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
+                        JOIN trading_import_batches cb ON cb.id = cf.batch_id AND cb.status = 'active'
+                        LEFT JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
+                        WHERE l.close_trade_identity_id = tf.identity_id) AS business_pnl
                 FROM trading_trade_facts tf
                 JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
                 LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
@@ -1347,12 +1436,12 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                         items.append(row)
             else:
                 items = [row for row in all_items if row["asset_type"] == "option"]
-            if filters.contract:
-                items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+            items = _filter_business_items(items, tab, filters)
             summary = {
                 "record_count": len(items),
                 "quantity": sum(float(row["quantity"]) for row in items),
                 "fee": sum(float(row["fee"] or 0) for row in items),
+                "business_pnl": sum(float(row["business_pnl"] or 0) for row in items),
             }
             result = _page_result(items, summary, filters)
             result["candidates"] = {
@@ -1364,10 +1453,15 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             rows = db._exec(
                 cur,
                 """
-                SELECT cf.*, a.business_pnl, COALESCE(a.matched_quantity, cf.quantity) AS matched_quantity,
+                SELECT cf.*,
+                       CASE WHEN a.source IS NULL OR a.source = 'fact_default'
+                            THEN cf.fact_close_pnl * COALESCE(a.matched_quantity, cf.quantity) / NULLIF(cf.quantity, 0)
+                            ELSE a.business_pnl END AS business_pnl,
+                       COALESCE(a.matched_quantity, cf.quantity) AS matched_quantity,
                        COALESCE(a.allocation_version, 1) AS allocation_version,
                        a.source AS allocation_source, s.name AS business_subject,
-                       ba.business_type, st.name AS strategy
+                       ba.business_type, st.name AS strategy,
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
                 FROM trading_close_facts cf
                 JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
                 LEFT JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
@@ -1382,11 +1476,18 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             rows = db._exec(
                 cur,
                 """
-                SELECT cf.*, a.business_pnl, a.matched_quantity, a.allocation_version, a.source AS allocation_source,
-                       s.name AS business_subject, ba.business_type, st.name AS strategy
-                FROM trading_business_close_allocations a
-                JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
+                SELECT cf.*,
+                       CASE WHEN a.source IS NULL OR a.source = 'fact_default'
+                            THEN cf.fact_close_pnl * COALESCE(a.matched_quantity, cf.quantity) / NULLIF(cf.quantity, 0)
+                            ELSE a.business_pnl END AS business_pnl,
+                       COALESCE(a.matched_quantity, cf.quantity) AS matched_quantity,
+                       COALESCE(a.allocation_version, 1) AS allocation_version,
+                       a.source AS allocation_source,
+                       s.name AS business_subject, ba.business_type, st.name AS strategy,
+                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+                FROM trading_close_facts cf
                 JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+                LEFT JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
                 LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
                 LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
                 LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
@@ -1395,11 +1496,17 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             ).fetchall()
         all_items = [dict(row) for row in rows]
         if view == "junneng":
-            items = [row for row in all_items if row["business_subject"] == "上海钧能"]
+            items = []
+            for row in all_items:
+                if row["business_subject"] == "上海钧能":
+                    row["ledger_membership"] = "confirmed"
+                    items.append(row)
+                elif not row["business_subject"] and _product_code(row["contract"]) in {"rb", "hc"}:
+                    row["ledger_membership"] = "candidate"
+                    items.append(row)
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
-        if filters.contract:
-            items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+        items = _filter_business_items(items, tab, filters)
         summary = {
             "record_count": len(items),
             "quantity": sum(float(row["matched_quantity"]) for row in items),
@@ -1407,7 +1514,11 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
             "fee": sum(float(row["matched_fee"] or 0) for row in items),
         }
-        return _page_result(items, summary, filters)
+        result = _page_result(items, summary, filters)
+        if view == "junneng":
+            candidate_items = [row for row in items if row.get("ledger_membership") == "candidate"]
+            result["candidates"] = {"record_count": len(candidate_items), "quantity": sum(float(row["matched_quantity"]) for row in candidate_items)}
+        return result
 
 
 def _current_allocation_version(cur, close_identity_id: int) -> int:

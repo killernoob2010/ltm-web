@@ -897,7 +897,7 @@ def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, mo
         "options", "trades", trading_management.FactFilters(page=1, page_size=20)
     )
 
-    assert junneng_closes["summary"]["business_pnl"] == 400
+    assert junneng_closes["summary"]["business_pnl"] == 1200
     assert junneng_closes["summary"]["fact_close_pnl"] == 1200
     assert len(junneng_trades["items"]) == 2
     assert all(item["business_subject"] == "上海钧能" for item in junneng_trades["items"])

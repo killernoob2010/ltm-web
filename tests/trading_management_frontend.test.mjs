@@ -104,3 +104,22 @@ test("overview chart renders real daily close pnl instead of a fixed placeholder
   assert.doesNotMatch(tradingJs, /52,125 190,125 328,125/);
   assert.match(tradingJs, /暂无平仓盈亏数据/);
 });
+
+test("prototype assignment status and business pagination are functional contracts", () => {
+  assert.match(tradingJs, /业务类型 \/ 策略/);
+  assert.match(tradingJs, /待确认/);
+  assert.match(tradingJs, /classification/);
+  assert.match(tradingJs, /junnengPageSize:\s*20/);
+  assert.match(tradingJs, /optionsPageSize:\s*20/);
+  assert.match(tradingJs, /pagination\(data,view\)/);
+  assert.doesNotMatch(tradingJs, /business\/\$\{view\}\/\$\{tab\}\?page_size=100/);
+  assert.match(tradingJs, /业务归属盈亏/);
+});
+
+test("overview uses one compact row for the three secondary cards and real periods", () => {
+  assert.match(tradingJs + css, /tm-overview-mini-grid/);
+  assert.match(css, /grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+  assert.match(tradingJs, /data-overview-period/);
+  assert.match(tradingJs, /tmOverviewFrom/);
+  assert.match(tradingJs, /tmOverviewTo/);
+});
