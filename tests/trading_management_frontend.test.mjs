@@ -49,7 +49,7 @@ test("pending calculations and reserved export are visible in the first version"
 test("trading workspace ports the approved prototype components", () => {
   for (const token of [
     "tm-workspace-topbar", "tm-summary-band", "tm-content-grid", "tm-panel-header",
-    "tm-filter-summary", "tm-ledger-hero", "tm-drawer", "tm-toast",
+    "tm-filter-summary", "tm-drawer", "tm-toast",
   ]) assert.match(html + tradingJs + css, new RegExp(token));
 });
 
@@ -99,10 +99,12 @@ test("trading filters use compact one-row desktop sizing", () => {
   assert.match(css, /@media \(max-width:1209px\)/);
 });
 
-test("business ledgers replace the口径 card with approved summary rows", () => {
+test("business ledgers keep only the summary rows beside tabs and filters", () => {
   assert.doesNotMatch(tradingJs, /<h2>口径说明<\/h2>/);
-  assert.match(tradingJs, /tm-ledger-summary-primary/);
-  assert.match(tradingJs, /tm-ledger-summary-risk/);
+  assert.doesNotMatch(tradingJs, /tm-ledger-hero/);
+  assert.doesNotMatch(tradingJs, /tm-ledger-summary-primary/);
+  assert.doesNotMatch(tradingJs, /tm-ledger-summary-risk/);
+  assert.match(tradingJs, /businessFilterSummary\(data\.summary,tab\)/);
   assert.match(tradingJs, /\["浮动盈亏","待计算"\]/);
 });
 
