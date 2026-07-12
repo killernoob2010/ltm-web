@@ -162,8 +162,8 @@
     return `<div class="tm-tabs">${[["positions","当前持仓"],["closes","平仓记录"],["trades","全部交易"]].map(([key,label]) => `<button class="tm-tab-button ${tm.factsTab === key ? "active" : ""}" data-fact-tab="${key}">${label}</button>`).join("")}</div>`;
   }
 
-  function factQuery(page = tm.page) {
-    const params = new URLSearchParams({ page, page_size: tm.pageSize });
+  function factQuery(page = tm.page, pageSize = tm.pageSize) {
+    const params = new URLSearchParams({ page, page_size: pageSize });
     if (tm.query) params.set("contract", tm.query);
     if (tm.assetType) params.set("asset_type", tm.assetType);
     if (tm.side) params.set("direction", tm.side);
@@ -184,11 +184,11 @@
     factRequests.clear();
   }
 
-  async function loadFactData(tab, { page = tm.page, refresh = false } = {}) {
-    const key = factCacheKey(tab, page);
+  async function loadFactData(tab, { page = tm.page, pageSize = tm.pageSize, refresh = false } = {}) {
+    const key = JSON.stringify([factCacheKey(tab, page), pageSize]);
     if (!refresh && factCache.has(key)) return factCache.get(key);
     if (factRequests.has(key)) return factRequests.get(key);
-    const request = api(`/api/trading-management/facts/${tab}?${factQuery(page)}`)
+    const request = api(`/api/trading-management/facts/${tab}?${factQuery(page,pageSize)}`)
       .then((data) => { factCache.set(key, data); return data; })
       .finally(() => factRequests.delete(key));
     factRequests.set(key, request);
@@ -241,7 +241,7 @@
       $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><span class="tm-tag blue">统一事实层</span></div>${filters(tm.factsTab === "trades")}<div class="tm-table-loading"><span class="spinner"></span><span>正在读取${tm.factsTab === "positions" ? "持仓" : tm.factsTab === "closes" ? "平仓" : "交易"}记录…</span></div></section>`;
     }
     const data = cached || await loadFactData(tm.factsTab);
-    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>已选择 ${tm.selected.size} 条</span><button id="tmSelectPage">选择当前页</button><button id="tmClearSelection">清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size ? "" : "disabled"}>业务归属</button></div>` : "";
+    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>已选择 ${tm.selected.size} 条</span><button id="tmSelectPage">选择当前页</button><button id="tmSelectFiltered">选择全部筛选结果</button><button id="tmClearSelection">清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size ? "" : "disabled"}>业务归属</button></div>` : "";
     $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入三表</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
     prefetchFactTabs();
@@ -255,6 +255,15 @@
     $("#tmDateTo")?.addEventListener("change", (event) => { tm.dateTo = event.target.value.replaceAll("-",""); renderPositionsView().catch(showError); });
     document.querySelectorAll("[data-select-row]").forEach((box) => box.addEventListener("change", () => { const id = Number(box.dataset.selectRow); box.checked ? tm.selected.add(id) : tm.selected.delete(id); renderPositionsView().catch(showError); }));
     $("#tmSelectPage")?.addEventListener("click", () => { data.items.forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
+    $("#tmSelectFiltered")?.addEventListener("click", async () => {
+      const first = await loadFactData("trades",{page:1,pageSize:100});
+      first.items.forEach((row)=>tm.selected.add(row.identity_id));
+      for (let page=2; page<=first.total_pages; page+=1) {
+        const result = await loadFactData("trades",{page,pageSize:100});
+        result.items.forEach((row)=>tm.selected.add(row.identity_id));
+      }
+      renderPositionsView().catch(showError);
+    });
     $("#tmClearSelection")?.addEventListener("click", () => { tm.selected.clear(); renderPositionsView().catch(showError); });
     $("#tmClassify")?.addEventListener("click", openClassificationDrawer);
     $("#tmImportButton")?.addEventListener("click", openImportDrawer);

@@ -108,6 +108,7 @@ test("overview chart renders real daily close pnl instead of a fixed placeholder
 test("prototype assignment status and business pagination are functional contracts", () => {
   assert.match(tradingJs, /业务类型 \/ 策略/);
   assert.match(tradingJs, /待确认/);
+  assert.match(tradingJs, /tmSelectFiltered/);
   assert.match(tradingJs, /classification/);
   assert.match(tradingJs, /junnengPageSize:\s*20/);
   assert.match(tradingJs, /optionsPageSize:\s*20/);
