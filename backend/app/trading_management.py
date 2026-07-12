@@ -850,6 +850,7 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 items = [row for row in items if row["assignment_status"] == "unclassified"]
             summary = {
                 "record_count": len(items),
+                "source_record_count": sum(int(row.get("source_record_count") or 0) for row in items),
                 "quantity": sum(float(row["quantity"]) for row in items),
                 "margin": sum(float(row["margin"] or 0) for row in items),
             }
@@ -1010,6 +1011,8 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
         "closes": closes["summary"],
         "positions": {
             **positions["summary"],
+            "record_count": positions["summary"].get("source_record_count", positions["summary"]["record_count"]),
+            "group_count": positions["summary"]["record_count"],
             "snapshot_date": snapshot_date,
             "floating_pnl": None,
             "floating_pnl_status": "pending_calculation",
