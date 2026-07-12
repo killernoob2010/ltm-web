@@ -956,6 +956,40 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
         return _page_result(items, summary, filters)
 
 
+def query_trade_selection_identities(filters: FactFilters) -> dict[str, Any]:
+    """返回当前筛选口径下的全部成交标识，避免前端逐页拉取完整行数据。"""
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            """
+            SELECT tf.identity_id, tf.contract, tf.side, tf.asset_type,
+                   tf.open_close, tf.trade_date,
+                   CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            ORDER BY tf.trade_date DESC, tf.id DESC
+            """,
+        ).fetchall()
+    items = [dict(row) for row in rows]
+    if filters.contract:
+        items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
+    if filters.direction:
+        items = [row for row in items if row["side"] == filters.direction]
+    if filters.asset_type:
+        items = [row for row in items if row["asset_type"] == filters.asset_type]
+    if filters.open_close:
+        items = [row for row in items if row["open_close"] == filters.open_close]
+    if filters.start_date:
+        items = [row for row in items if row["trade_date"] >= filters.start_date]
+    if filters.end_date:
+        items = [row for row in items if row["trade_date"] <= filters.end_date]
+    if filters.classification in {"classified", "unclassified"}:
+        items = [row for row in items if row["assignment_status"] == filters.classification]
+    identity_ids = [int(row["identity_id"]) for row in items]
+    return {"identity_ids": identity_ids, "total_items": len(identity_ids)}
+
+
 def build_overview(filters: FactFilters) -> dict[str, Any]:
     trades = query_fact_rows("trades", FactFilters(
         contract=filters.contract,
@@ -1174,6 +1208,7 @@ def classify_trade_identities(
     if not identity_ids:
         raise ValueError("请选择需要归类的完整成交")
     strategy = get_or_create_strategy(strategy_name, actor)
+    identity_ids = list(dict.fromkeys(int(identity_id) for identity_id in identity_ids))
     with db.connect() as conn:
         cur = conn.cursor()
         subject = db._exec(
@@ -1183,20 +1218,25 @@ def classify_trade_identities(
         ).fetchone()
         if not subject:
             raise ValueError("业务归属不存在或已停用")
-        assigned = 0
-        for identity_id in identity_ids:
-            active_fact = db._exec(
+        active_ids: set[int] = set()
+        for start in range(0, len(identity_ids), 500):
+            chunk = identity_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            active_rows = db._exec(
                 cur,
-                """
+                f"""
                 SELECT tf.identity_id FROM trading_trade_facts tf
                 JOIN trading_import_batches b ON b.id = tf.batch_id
-                WHERE b.status = 'active' AND tf.identity_id = ?
-                LIMIT 1
+                WHERE b.status = 'active' AND tf.identity_id IN ({placeholders})
                 """,
-                (identity_id,),
-            ).fetchone()
-            if not active_fact:
-                raise ValueError(f"成交事实不存在或不是有效版本：{identity_id}")
+                tuple(chunk),
+            ).fetchall()
+            active_ids.update(int(row["identity_id"]) for row in active_rows)
+        missing_ids = [identity_id for identity_id in identity_ids if identity_id not in active_ids]
+        if missing_ids:
+            raise ValueError(f"成交事实不存在或不是有效版本：{missing_ids[0]}")
+        assigned = 0
+        for identity_id in identity_ids:
             before_row = db._exec(
                 cur,
                 "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
@@ -2130,6 +2170,15 @@ def get_trading_trades(
     user=Depends(trading_management_current_user),
 ):
     return _get_trading_facts("trades", filters, user)
+
+
+@router.get("/facts/trades/selection-identities")
+def get_trading_trade_selection_identities(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.facts", "view")
+    return query_trade_selection_identities(filters)
 
 
 @router.get("/imports")

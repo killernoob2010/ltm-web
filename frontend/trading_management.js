@@ -26,6 +26,7 @@
     overview: null,
     overviewMode: "month",
     selected: new Set(),
+    selectionBusy: false,
     importPreviewId: null,
     permissions: { canEdit: false, canSensitive: false },
   };
@@ -241,28 +242,28 @@
       $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><span class="tm-tag blue">统一事实层</span></div>${filters(tm.factsTab === "trades")}<div class="tm-table-loading"><span class="spinner"></span><span>正在读取${tm.factsTab === "positions" ? "持仓" : tm.factsTab === "closes" ? "平仓" : "交易"}记录…</span></div></section>`;
     }
     const data = cached || await loadFactData(tm.factsTab);
-    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>已选择 ${tm.selected.size} 条</span><button id="tmSelectPage">选择当前页</button><button id="tmSelectFiltered">选择全部筛选结果</button><button id="tmClearSelection">清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size ? "" : "disabled"}>业务归属</button></div>` : "";
+    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选结果</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
     $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入三表</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
     prefetchFactTabs();
   }
 
   function wireFactActions(data) {
+    const resetSelectionForFilter = () => { tm.selected.clear(); tm.page = 1; };
     document.querySelectorAll("[data-fact-tab]").forEach((button) => button.addEventListener("click", () => { tm.factsTab = button.dataset.factTab; tm.page = 1; renderPositionsView().catch(showError); }));
-    $("#tmSearchApply")?.addEventListener("click", () => { tm.query = $("#tmSearch").value.trim(); tm.page = 1; renderPositionsView().catch(showError); });
-    [["#tmAssetType","assetType"],["#tmSide","side"],["#tmOpenClose","openClose"],["#tmClassification","classification"]].forEach(([selector,key]) => $(selector)?.addEventListener("change", (event) => { tm[key] = event.target.value; tm.page = 1; renderPositionsView().catch(showError); }));
-    $("#tmDateFrom")?.addEventListener("change", (event) => { tm.dateFrom = event.target.value.replaceAll("-",""); renderPositionsView().catch(showError); });
-    $("#tmDateTo")?.addEventListener("change", (event) => { tm.dateTo = event.target.value.replaceAll("-",""); renderPositionsView().catch(showError); });
+    $("#tmSearchApply")?.addEventListener("click", () => { tm.query = $("#tmSearch").value.trim(); resetSelectionForFilter(); renderPositionsView().catch(showError); });
+    [["#tmAssetType","assetType"],["#tmSide","side"],["#tmOpenClose","openClose"],["#tmClassification","classification"]].forEach(([selector,key]) => $(selector)?.addEventListener("change", (event) => { tm[key] = event.target.value; resetSelectionForFilter(); renderPositionsView().catch(showError); }));
+    $("#tmDateFrom")?.addEventListener("change", (event) => { tm.dateFrom = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
+    $("#tmDateTo")?.addEventListener("change", (event) => { tm.dateTo = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
     document.querySelectorAll("[data-select-row]").forEach((box) => box.addEventListener("change", () => { const id = Number(box.dataset.selectRow); box.checked ? tm.selected.add(id) : tm.selected.delete(id); renderPositionsView().catch(showError); }));
-    $("#tmSelectPage")?.addEventListener("click", () => { data.items.forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
+    $("#tmSelectPage")?.addEventListener("click", () => { tm.selected.clear(); data.items.forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
     $("#tmSelectFiltered")?.addEventListener("click", async () => {
-      const first = await loadFactData("trades",{page:1,pageSize:100});
-      first.items.forEach((row)=>tm.selected.add(row.identity_id));
-      for (let page=2; page<=first.total_pages; page+=1) {
-        const result = await loadFactData("trades",{page,pageSize:100});
-        result.items.forEach((row)=>tm.selected.add(row.identity_id));
-      }
-      renderPositionsView().catch(showError);
+      tm.selectionBusy = true; await renderPositionsView();
+      try {
+        const result = await api(`/api/trading-management/facts/trades/selection-identities?${factQuery(1,100)}`);
+        tm.selected = new Set(result.identity_ids);
+      } catch (error) { showError(error); }
+      finally { tm.selectionBusy = false; await renderPositionsView(); }
     });
     $("#tmClearSelection")?.addEventListener("click", () => { tm.selected.clear(); renderPositionsView().catch(showError); });
     $("#tmClassify")?.addEventListener("click", openClassificationDrawer);
@@ -275,8 +276,23 @@
 
   async function openClassificationDrawer() {
     await ensureConfig();
-    openDrawer("业务归属", `${tm.selected.size} 条已选择`, `<p class="tm-section-copy">一笔成交按完整手数归属，不允许拆分。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>业务归属</span><select id="tmBusinessSubject">${tm.config.subjects.map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>业务类型</span><select id="tmBusinessType"><option value="basic_hedging">基础套保</option><option value="strategic_hedging">战略套保</option></select></label><label class="tm-upload-box"><span>策略</span><input id="tmStrategy" list="tmStrategyList"><datalist id="tmStrategyList">${tm.config.strategies.map((item) => `<option value="${esc(item.name)}"></option>`).join("")}</datalist></label><label class="tm-upload-box"><span>指令/备注</span><textarea id="tmInstruction"></textarea></label><button id="tmSaveClassification" class="tm-primary-button">确认整笔归属</button></div>`);
-    $("#tmSaveClassification").addEventListener("click", async () => { try { await api("/api/trading-management/business-assignments/batch-confirm", {method:"POST",body:JSON.stringify({identity_ids:[...tm.selected],business_subject_id:Number($("#tmBusinessSubject").value),business_type:$("#tmBusinessType").value,strategy_name:$("#tmStrategy").value.trim(),instruction_text:$("#tmInstruction").value.trim()})}); invalidateFactCache(); tm.selected.clear(); closeDrawer(); showToast("业务归属已保存"); await renderPositionsView(); } catch (error) { showError(error); } });
+    openDrawer("业务归属", `${tm.selected.size} 条已选择`, `<p class="tm-section-copy">一笔成交按完整手数归属，不允许拆分。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>业务归属</span><select id="tmBusinessSubject">${tm.config.subjects.map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>业务类型</span><select id="tmBusinessType"><option value="basic_hedging">基础套保</option><option value="strategic_hedging">战略套保</option></select></label><label class="tm-upload-box"><span>策略</span><input id="tmStrategy" list="tmStrategyList"><datalist id="tmStrategyList">${tm.config.strategies.map((item) => `<option value="${esc(item.name)}"></option>`).join("")}</datalist></label><label class="tm-upload-box"><span>指令/备注</span><textarea id="tmInstruction"></textarea></label><div id="tmClassificationProgress" class="tm-import-progress">已选择 ${tm.selected.size} 条，确认后批量保存。</div><button id="tmSaveClassification" class="tm-primary-button">确认整笔归属</button></div>`);
+    $("#tmSaveClassification").addEventListener("click", async () => {
+      const count = tm.selected.size;
+      setClassificationBusy(true, `正在保存 ${count} 条业务归属…`);
+      try {
+        const result = await api("/api/trading-management/business-assignments/batch-confirm", {method:"POST",body:JSON.stringify({identity_ids:[...tm.selected],business_subject_id:Number($("#tmBusinessSubject").value),business_type:$("#tmBusinessType").value,strategy_name:$("#tmStrategy").value.trim(),instruction_text:$("#tmInstruction").value.trim()})});
+        invalidateFactCache(); tm.selected.clear(); closeDrawer(); showToast(`业务归属已保存 ${result.assigned_count} 条`); await renderPositionsView();
+      } catch (error) { setClassificationBusy(false, error.message || "保存失败", true); }
+    });
+  }
+
+  function setClassificationBusy(busy, message, isError = false) {
+    ["#tmBusinessSubject","#tmBusinessType","#tmStrategy","#tmInstruction","#tmSaveClassification"].forEach((selector) => { const element = $(selector); if (element) element.disabled = busy; });
+    const progress = $("#tmClassificationProgress");
+    if (!progress) return;
+    progress.className = `tm-import-progress${isError ? " tm-import-error" : ""}`;
+    progress.innerHTML = busy ? `<span class="spinner"></span><span>${esc(message)}</span>` : esc(message);
   }
 
   async function fileBase64(file) {

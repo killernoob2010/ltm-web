@@ -744,9 +744,36 @@ def test_fact_api_routes_are_registered():
         "/facts/positions",
         "/facts/closes",
         "/facts/trades",
+        "/facts/trades/selection-identities",
         "/imports",
         "/imports/{batch_id}/validation",
     } <= paths
+
+
+def test_batch_classification_validates_active_facts_once(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        identity_ids = [row["identity_id"] for row in db._exec(
+            conn.cursor(), "SELECT identity_id FROM trading_trade_facts ORDER BY identity_id"
+        ).fetchall()]
+    original_exec = db._exec
+    validation_queries = 0
+
+    def counted_exec(cur, query, params=()):
+        nonlocal validation_queries
+        if "SELECT tf.identity_id FROM trading_trade_facts tf" in query:
+            validation_queries += 1
+        return original_exec(cur, query, params)
+
+    monkeypatch.setattr(db, "_exec", counted_exec)
+    result = trading_management.classify_trade_identities(
+        identity_ids, subject["id"], "basic_hedging", "内部公司套保", "", "tester"
+    )
+
+    assert result["assigned_count"] == len(identity_ids)
+    assert validation_queries == 1
 
 
 def test_business_config_supports_controlled_subjects_and_reusable_strategies(tmp_path, monkeypatch):
@@ -936,6 +963,16 @@ def test_fact_trade_classification_filter_returns_assignment_metadata(tmp_path, 
     assert all(row["business_type"] == "basic_hedging" for row in assigned["items"])
     assert pending["items"]
     assert all(row["assignment_status"] == "unclassified" for row in pending["items"])
+
+
+def test_trade_selection_identities_return_all_filtered_rows(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    result = trading_management.query_trade_selection_identities(
+        trading_management.FactFilters(asset_type="option", classification="unclassified")
+    )
+    assert result["total_items"] == len(result["identity_ids"])
+    assert result["total_items"] == 1
 
 
 def test_fact_positions_aggregate_snapshot_rows_by_contract_direction_and_asset(tmp_path, monkeypatch):
