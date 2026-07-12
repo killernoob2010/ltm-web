@@ -823,6 +823,25 @@ def test_positions_asset_type_filter_is_applied(tmp_path, monkeypatch):
     assert futures["total_items"] + options["total_items"] >= 1
 
 
+def test_trade_and_close_fact_lists_page_in_database(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    original_exec = db._exec
+    queries = []
+
+    def captured_exec(cur, query, params=()):
+        queries.append(" ".join(query.split()))
+        return original_exec(cur, query, params)
+
+    monkeypatch.setattr(db, "_exec", captured_exec)
+    trading_management.query_fact_rows("trades", trading_management.FactFilters(page=1, page_size=20))
+    trading_management.query_fact_rows("closes", trading_management.FactFilters(page=1, page_size=20))
+
+    paged_queries = [query for query in queries if "LIMIT ? OFFSET ?" in query]
+    assert any("FROM trading_trade_facts tf" in query for query in paged_queries)
+    assert any("FROM trading_close_facts cf" in query for query in paged_queries)
+
+
 def test_business_config_supports_controlled_subjects_and_reusable_strategies(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
 

@@ -771,9 +771,194 @@ def _page_result(items: list[dict[str, Any]], summary: dict[str, Any], filters: 
     }
 
 
+def _fact_page_meta(total: int, filters: FactFilters) -> tuple[int, int, int]:
+    total_pages = max(1, (total + filters.page_size - 1) // filters.page_size)
+    page = min(filters.page, total_pages)
+    return page, total_pages, (page - 1) * filters.page_size
+
+
+def _query_trade_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
+    where = ["b.status = 'active'"]
+    params: list[Any] = []
+    if filters.contract:
+        where.append("LOWER(tf.contract) LIKE ?")
+        params.append(f"%{filters.contract.lower()}%")
+    if filters.direction:
+        where.append("tf.side = ?")
+        params.append(filters.direction)
+    if filters.asset_type:
+        where.append("tf.asset_type = ?")
+        params.append(filters.asset_type)
+    if filters.open_close:
+        where.append("tf.open_close = ?")
+        params.append(filters.open_close)
+    if filters.start_date:
+        where.append("tf.trade_date >= ?")
+        params.append(filters.start_date)
+    if filters.end_date:
+        where.append("tf.trade_date <= ?")
+        params.append(filters.end_date)
+    if filters.classification == "classified":
+        where.append("ba.id IS NOT NULL")
+    elif filters.classification == "unclassified":
+        where.append("ba.id IS NULL")
+    where_sql = " AND ".join(where)
+    close_pnl_cte = """
+        WITH close_pnl AS (
+            SELECT l.close_trade_identity_id,
+                   SUM(cf.fact_close_pnl * l.matched_quantity / cf.quantity) AS fact_close_pnl
+            FROM trading_close_trade_links l
+            JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
+            JOIN trading_import_batches cb ON cb.id = cf.batch_id AND cb.status = 'active'
+            GROUP BY l.close_trade_identity_id
+        )
+    """
+    summary_row = db._exec(
+        cur,
+        close_pnl_cte + f"""
+        SELECT COUNT(*) AS record_count,
+               COALESCE(SUM(tf.quantity), 0) AS quantity,
+               COALESCE(SUM(tf.fee), 0) AS fee,
+               COALESCE(SUM(cp.fact_close_pnl), 0) AS fact_close_pnl
+        FROM trading_trade_facts tf
+        JOIN trading_import_batches b ON b.id = tf.batch_id
+        LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+        LEFT JOIN close_pnl cp ON cp.close_trade_identity_id = tf.identity_id
+        WHERE {where_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    total = int(summary_row["record_count"] or 0)
+    page, total_pages, offset = _fact_page_meta(total, filters)
+    rows = db._exec(
+        cur,
+        close_pnl_cte + f"""
+        SELECT tf.*, s.name AS business_subject, ba.business_type,
+               st.name AS strategy,
+               CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status,
+               cp.fact_close_pnl
+        FROM trading_trade_facts tf
+        JOIN trading_import_batches b ON b.id = tf.batch_id
+        LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+        LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+        LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+        LEFT JOIN close_pnl cp ON cp.close_trade_identity_id = tf.identity_id
+        WHERE {where_sql}
+        ORDER BY tf.trade_date DESC, tf.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        tuple(params + [filters.page_size, offset]),
+    ).fetchall()
+    return {
+        "items": [dict(row) for row in rows],
+        "summary": {
+            "record_count": total,
+            "quantity": float(summary_row["quantity"] or 0),
+            "fee": float(summary_row["fee"] or 0),
+            "fact_close_pnl": float(summary_row["fact_close_pnl"] or 0),
+        },
+        "page": page, "page_size": filters.page_size,
+        "total_items": total, "total_pages": total_pages, "data_status": "imported",
+    }
+
+
+def _query_close_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
+    where = ["b.status = 'active'"]
+    params: list[Any] = []
+    if filters.contract:
+        where.append("LOWER(cf.contract) LIKE ?")
+        params.append(f"%{filters.contract.lower()}%")
+    if filters.direction:
+        where.append("cf.open_side = ?")
+        params.append(filters.direction)
+    if filters.asset_type:
+        where.append("cf.asset_type = ?")
+        params.append(filters.asset_type)
+    if filters.start_date:
+        where.append("cf.close_date >= ?")
+        params.append(filters.start_date)
+    if filters.end_date:
+        where.append("cf.close_date <= ?")
+        params.append(filters.end_date)
+    has_allocations = "EXISTS (SELECT 1 FROM trading_business_close_allocations a WHERE a.close_identity_id = cf.identity_id)"
+    has_unclassified = "EXISTS (SELECT 1 FROM trading_business_close_allocations a LEFT JOIN trading_business_assignments xba ON xba.trade_identity_id = a.open_trade_identity_id WHERE a.close_identity_id = cf.identity_id AND xba.id IS NULL)"
+    if filters.classification == "classified":
+        where.extend([has_allocations, f"NOT {has_unclassified}"])
+    elif filters.classification == "unclassified":
+        where.append(f"(NOT {has_allocations} OR {has_unclassified})")
+    where_sql = " AND ".join(where)
+    summary_row = db._exec(
+        cur,
+        f"""
+        SELECT COUNT(*) AS record_count,
+               COALESCE(SUM(cf.quantity), 0) AS quantity,
+               COALESCE(SUM(cf.fact_close_pnl), 0) AS fact_close_pnl,
+               COALESCE(SUM(cf.matched_fee), 0) AS fee
+        FROM trading_close_facts cf
+        JOIN trading_import_batches b ON b.id = cf.batch_id
+        WHERE {where_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    total = int(summary_row["record_count"] or 0)
+    page, total_pages, offset = _fact_page_meta(total, filters)
+    rows = db._exec(
+        cur,
+        f"""
+        SELECT cf.* FROM trading_close_facts cf
+        JOIN trading_import_batches b ON b.id = cf.batch_id
+        WHERE {where_sql}
+        ORDER BY cf.close_date DESC, cf.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        tuple(params + [filters.page_size, offset]),
+    ).fetchall()
+    items = [dict(row) for row in rows]
+    close_ids = [int(item["identity_id"]) for item in items]
+    if close_ids:
+        placeholders = ",".join("?" for _ in close_ids)
+        assignment_rows = db._exec(
+            cur,
+            f"""
+            SELECT a.close_identity_id, ba.business_type, st.name AS strategy,
+                   CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
+            FROM trading_business_close_allocations a
+            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+            WHERE a.close_identity_id IN ({placeholders})
+            """,
+            tuple(close_ids),
+        ).fetchall()
+        assignments: dict[int, list[dict[str, Any]]] = {}
+        for row in assignment_rows:
+            item = dict(row)
+            assignments.setdefault(int(item["close_identity_id"]), []).append(item)
+        for item in items:
+            related = assignments.get(int(item["identity_id"]), [])
+            classified = [row for row in related if row["assignment_status"] == "classified"]
+            item["assignment_status"] = "classified" if related and len(classified) == len(related) else "unclassified"
+            item["business_type"] = classified[0]["business_type"] if classified and len({row["business_type"] for row in classified}) == 1 else None
+            item["strategy"] = classified[0]["strategy"] if classified and len({row["strategy"] for row in classified}) == 1 else None
+    return {
+        "items": items,
+        "summary": {
+            "record_count": total,
+            "quantity": float(summary_row["quantity"] or 0),
+            "fact_close_pnl": float(summary_row["fact_close_pnl"] or 0),
+            "fee": float(summary_row["fee"] or 0),
+        },
+        "page": page, "page_size": filters.page_size,
+        "total_items": total, "total_pages": total_pages, "data_status": "imported",
+    }
+
+
 def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
+        if view == "trades":
+            return _query_trade_rows_paged(cur, filters)
+        if view == "closes":
+            return _query_close_rows_paged(cur, filters)
         if view == "positions":
             snapshot_date = filters.end_date
             if not snapshot_date:
