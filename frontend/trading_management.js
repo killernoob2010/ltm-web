@@ -196,14 +196,10 @@
     return request;
   }
 
-  function prefetchFactTabs() {
-    ["positions", "closes", "trades"].filter((tab) => tab !== tm.factsTab).forEach((tab) => {
-      loadFactData(tab, { page: 1 }).catch(() => {});
-    });
-  }
+  function factDateValue(value) { return value ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}` : ""; }
 
   function filters(includeOpenClose = true) {
-    return `<div class="tm-filters compact ${includeOpenClose ? "with-open-close" : "without-open-close"}"><input id="tmSearch" class="tm-filter-search" type="search" placeholder="搜索合约" value="${esc(tm.query)}"><button id="tmSearchApply" class="tm-secondary-button">搜索</button><select id="tmAssetType" class="tm-filter-select"><option value="">全部资产</option><option value="future">期货</option><option value="option">期权</option></select><select id="tmSide" class="tm-filter-select"><option value="">全部方向</option><option value="买">买</option><option value="卖">卖</option></select>${includeOpenClose ? '<select id="tmOpenClose" class="tm-filter-select"><option value="">全部开平</option><option value="开仓">开仓</option><option value="平仓">平仓</option></select>' : ""}<select id="tmClassification" class="tm-filter-select"><option value="">全部归类状态</option><option value="classified">已归类</option><option value="unclassified">未归类</option></select><input id="tmDateFrom" class="tm-filter-date" type="date"><input id="tmDateTo" class="tm-filter-date" type="date"></div>`;
+    return `<div class="tm-filters compact ${includeOpenClose ? "with-open-close" : "without-open-close"}"><input id="tmSearch" class="tm-filter-search" type="search" placeholder="搜索合约" value="${esc(tm.query)}"><button id="tmSearchApply" class="tm-secondary-button">搜索</button><select id="tmAssetType" class="tm-filter-select" value="${esc(tm.assetType)}"><option value="" ${tm.assetType === "" ? "selected" : ""}>全部资产</option><option value="future" ${tm.assetType === "future" ? "selected" : ""}>期货</option><option value="option" ${tm.assetType === "option" ? "selected" : ""}>期权</option></select><select id="tmSide" class="tm-filter-select" value="${esc(tm.side)}"><option value="" ${tm.side === "" ? "selected" : ""}>全部方向</option><option value="买" ${tm.side === "买" ? "selected" : ""}>买</option><option value="卖" ${tm.side === "卖" ? "selected" : ""}>卖</option></select>${includeOpenClose ? `<select id="tmOpenClose" class="tm-filter-select" value="${esc(tm.openClose)}"><option value="" ${tm.openClose === "" ? "selected" : ""}>全部开平</option><option value="开仓" ${tm.openClose === "开仓" ? "selected" : ""}>开仓</option><option value="平仓" ${tm.openClose === "平仓" ? "selected" : ""}>平仓</option></select>` : ""}<select id="tmClassification" class="tm-filter-select" value="${esc(tm.classification)}"><option value="" ${tm.classification === "" ? "selected" : ""}>全部归类状态</option><option value="classified" ${tm.classification === "classified" ? "selected" : ""}>已归类</option><option value="unclassified" ${tm.classification === "unclassified" ? "selected" : ""}>未归类</option></select><input id="tmDateFrom" class="tm-filter-date" type="date" value="${factDateValue(tm.dateFrom)}"><input id="tmDateTo" class="tm-filter-date" type="date" value="${factDateValue(tm.dateTo)}"></div>`;
   }
 
   function filterSummary(summary) {
@@ -245,7 +241,6 @@
     const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选结果</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
     $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入三表</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
-    prefetchFactTabs();
   }
 
   function wireFactActions(data) {

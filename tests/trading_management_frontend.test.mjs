@@ -73,12 +73,21 @@ test("option positions preserve the prototype anatomy and risk columns", () => {
   }
 });
 
-test("fact tabs cache by filters and prefetch sibling tabs", () => {
+test("fact tabs cache by filters without prefetching sibling tabs", () => {
   assert.match(tradingJs, /function factCacheKey/);
   assert.match(tradingJs, /function loadFactData/);
-  assert.match(tradingJs, /function prefetchFactTabs/);
+  assert.doesNotMatch(tradingJs, /function prefetchFactTabs/);
   assert.match(tradingJs, /function invalidateFactCache/);
   assert.match(tradingJs + css, /tm-table-loading/);
+});
+
+test("fact filters preserve their visible values after rerender", () => {
+  assert.match(tradingJs, /value="\$\{esc\(tm\.assetType\)\}"/);
+  assert.match(tradingJs, /value="\$\{esc\(tm\.side\)\}"/);
+  assert.match(tradingJs, /value="\$\{esc\(tm\.openClose\)\}"/);
+  assert.match(tradingJs, /value="\$\{esc\(tm\.classification\)\}"/);
+  assert.match(tradingJs, /value="\$\{factDateValue\(tm\.dateFrom\)\}"/);
+  assert.match(tradingJs, /value="\$\{factDateValue\(tm\.dateTo\)\}"/);
 });
 
 test("trading filters use compact one-row desktop sizing", () => {

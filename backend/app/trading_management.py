@@ -844,6 +844,8 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                 items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
             if filters.direction:
                 items = [row for row in items if row["direction"] == filters.direction]
+            if filters.asset_type:
+                items = [row for row in items if row["asset_type"] == filters.asset_type]
             if filters.classification == "classified":
                 items = [row for row in items if row["assignment_status"] == "classified"]
             elif filters.classification == "unclassified":
@@ -1235,53 +1237,106 @@ def classify_trade_identities(
         missing_ids = [identity_id for identity_id in identity_ids if identity_id not in active_ids]
         if missing_ids:
             raise ValueError(f"成交事实不存在或不是有效版本：{missing_ids[0]}")
-        assigned = 0
-        for identity_id in identity_ids:
-            before_row = db._exec(
-                cur,
-                "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
-                (identity_id,),
-            ).fetchone()
-            before = dict(before_row) if before_row else None
-            if before_row:
-                db._exec(
+        strategy_id = strategy["id"] if strategy else None
+
+        def fetch_assignments(ids: list[int]) -> dict[int, dict[str, Any]]:
+            result: dict[int, dict[str, Any]] = {}
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                if not chunk:
+                    continue
+                placeholders = ",".join("?" for _ in chunk)
+                rows = db._exec(
                     cur,
-                    """
-                    UPDATE trading_business_assignments
-                    SET business_subject_id = ?, business_type = ?, strategy_id = ?, instruction_text = ?,
-                        updated_by = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE trade_identity_id = ?
-                    """,
-                    (business_subject_id, business_type, strategy["id"] if strategy else None, instruction_text or None, actor, identity_id),
-                )
-            else:
-                db._exec(
-                    cur,
-                    """
-                    INSERT INTO trading_business_assignments
-                        (trade_identity_id, business_subject_id, business_type, strategy_id,
-                         instruction_text, assigned_by, updated_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (identity_id, business_subject_id, business_type, strategy["id"] if strategy else None, instruction_text or None, actor, actor),
-                )
-            after_row = db._exec(
+                    f"SELECT * FROM trading_business_assignments WHERE trade_identity_id IN ({placeholders})",
+                    tuple(chunk),
+                ).fetchall()
+                result.update({int(row["trade_identity_id"]): dict(row) for row in rows})
+            return result
+
+        before = fetch_assignments(identity_ids)
+        linked_close_ids: set[int] = set()
+        for start in range(0, len(identity_ids), 500):
+            chunk = identity_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = db._exec(
                 cur,
-                "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
-                (identity_id,),
-            ).fetchone()
-            _write_assignment_audit(cur, identity_id, "业务归类", actor, before, dict(after_row))
-            linked_closes = db._exec(
-                cur,
-                "SELECT DISTINCT close_identity_id FROM trading_fact_close_allocations WHERE open_trade_identity_id = ?",
-                (identity_id,),
+                f"SELECT DISTINCT close_identity_id FROM trading_fact_close_allocations WHERE open_trade_identity_id IN ({placeholders})",
+                tuple(chunk),
             ).fetchall()
-            business_config = (business_subject_id, business_type, strategy["id"] if strategy else None)
-            for linked_close in linked_closes:
-                _inherit_close_trade_assignment(cur, linked_close["close_identity_id"], business_config, actor)
-            assigned += 1
+            linked_close_ids.update(int(row["close_identity_id"]) for row in rows)
+        inherited_ids: set[int] = set()
+        linked_close_list = sorted(linked_close_ids)
+        for start in range(0, len(linked_close_list), 500):
+            chunk = linked_close_list[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = db._exec(
+                cur,
+                f"SELECT DISTINCT close_trade_identity_id FROM trading_close_trade_links WHERE close_identity_id IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall()
+            inherited_ids.update(int(row["close_trade_identity_id"]) for row in rows)
+        inherited_ids.difference_update(identity_ids)
+        inherited_list = sorted(inherited_ids)
+        before.update(fetch_assignments(inherited_list))
+
+        db._executemany(
+            cur,
+            """
+            INSERT INTO trading_business_assignments
+                (trade_identity_id, business_subject_id, business_type, strategy_id,
+                 instruction_text, assigned_by, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_identity_id) DO UPDATE SET
+                business_subject_id = excluded.business_subject_id,
+                business_type = excluded.business_type,
+                strategy_id = excluded.strategy_id,
+                instruction_text = excluded.instruction_text,
+                updated_by = excluded.updated_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            [(identity_id, business_subject_id, business_type, strategy_id, instruction_text or None, actor, actor)
+             for identity_id in identity_ids],
+        )
+        if inherited_list:
+            db._executemany(
+                cur,
+                """
+                INSERT INTO trading_business_assignments
+                    (trade_identity_id, business_subject_id, business_type, strategy_id, assigned_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_identity_id) DO UPDATE SET
+                    business_subject_id = excluded.business_subject_id,
+                    business_type = excluded.business_type,
+                    strategy_id = excluded.strategy_id,
+                    updated_by = excluded.updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                [(identity_id, business_subject_id, business_type, strategy_id, actor, actor)
+                 for identity_id in inherited_list],
+            )
+        all_changed_ids = identity_ids + inherited_list
+        after = fetch_assignments(all_changed_ids)
+        audit_rows = []
+        explicitly_assigned_ids = set(identity_ids)
+        for identity_id in all_changed_ids:
+            operation_type = "业务归类" if identity_id in explicitly_assigned_ids else "业务平仓自动继承"
+            audit_rows.append((
+                identity_id, operation_type, f"{actor} {operation_type}",
+                json.dumps(before.get(identity_id), ensure_ascii=False) if before.get(identity_id) is not None else None,
+                json.dumps(after[identity_id], ensure_ascii=False),
+            ))
+        db._executemany(
+            cur,
+            """
+            INSERT INTO operation_logs
+                (module_code, entity_type, entity_id, operation_type, description, before_data, after_data)
+            VALUES ('trading_positions', 'trading_business_assignment', ?, ?, ?, ?, ?)
+            """,
+            audit_rows,
+        )
         conn.commit()
-    return {"assigned_count": assigned}
+    return {"assigned_count": len(identity_ids)}
 
 
 def remove_trade_assignment(identity_id: int, actor: str) -> dict[str, Any]:

@@ -776,6 +776,53 @@ def test_batch_classification_validates_active_facts_once(tmp_path, monkeypatch)
     assert validation_queries == 1
 
 
+def test_batch_classification_uses_bounded_database_round_trips(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        identity_ids = [row["identity_id"] for row in db._exec(
+            conn.cursor(), "SELECT identity_id FROM trading_trade_facts ORDER BY identity_id"
+        ).fetchall()]
+    original_exec = db._exec
+    original_executemany = db._executemany
+    calls = {"exec": 0, "executemany": 0}
+
+    def counted_exec(cur, query, params=()):
+        calls["exec"] += 1
+        return original_exec(cur, query, params)
+
+    def counted_executemany(cur, query, params):
+        calls["executemany"] += 1
+        return original_executemany(cur, query, params)
+
+    monkeypatch.setattr(db, "_exec", counted_exec)
+    monkeypatch.setattr(db, "_executemany", counted_executemany)
+    result = trading_management.classify_trade_identities(
+        identity_ids, subject["id"], "basic_hedging", "内部公司套保", "", "tester"
+    )
+
+    assert result["assigned_count"] == len(identity_ids)
+    assert calls["executemany"] >= 2
+    assert calls["exec"] <= 10
+
+
+def test_positions_asset_type_filter_is_applied(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+
+    futures = trading_management.query_fact_rows(
+        "positions", trading_management.FactFilters(asset_type="future")
+    )
+    options = trading_management.query_fact_rows(
+        "positions", trading_management.FactFilters(asset_type="option")
+    )
+
+    assert all(row["asset_type"] == "future" for row in futures["items"])
+    assert all(row["asset_type"] == "option" for row in options["items"])
+    assert futures["total_items"] + options["total_items"] >= 1
+
+
 def test_business_config_supports_controlled_subjects_and_reusable_strategies(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
 
