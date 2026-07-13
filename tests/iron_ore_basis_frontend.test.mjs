@@ -33,7 +33,23 @@ test("basis management is read-only and exposes the confirmed fields", () => {
     "品牌升贴水", "主力连续收盘价", "基差", "数据状态",
   ]) assert.match(section, new RegExp(label));
   assert.doesNotMatch(section, /导入 Excel|导出|编辑|删除/);
-  assert.match(section, /ironOreBasisManagementLoadMore/);
+  assert.match(section, /ironOreBasisManagementPagination/);
+  assert.doesNotMatch(section, /ironOreBasisManagementLoadMore/);
+});
+
+test("basis management uses the shared 20 50 100 server pagination", () => {
+  assert.match(basisJs, /managementPage:\s*1/);
+  assert.match(basisJs, /managementPageSize:\s*20/);
+  assert.match(basisJs, /\(basisState\.managementPage - 1\) \* basisState\.managementPageSize/);
+  assert.match(basisJs, /DataVisualizationComponents\.renderPagination\(managementPagination/);
+  assert.match(basisJs, /pageSizes:\s*\[20, 50, 100\]/);
+  assert.doesNotMatch(basisJs, /managementHasMore|managementLoadMore/);
+  assert.match(sharedComponentsJs, /function renderPagination\(container, options\)/);
+});
+
+test("basis display year filter aligns left and shares the taller chart viewport", () => {
+  assert.match(basisCss, /#ironOreBasisDisplayView \.iron-ore-basis-filter-row \.dv-year-panel\s*\{[\s\S]*grid-column:\s*1/);
+  assert.match(stylesCss, /\.chart-container \{[\s\S]*height:\s*max\(420px, calc\(100vh - 260px\)\)/);
 });
 
 test("spot and basis filters call the same shared checkbox component", () => {
@@ -113,8 +129,8 @@ test("basis chart requests only the active port and renders negative values with
 
 test("basis assets are loaded after the existing app controller", () => {
   assert.ok(indexHtml.indexOf("/static/app.js") < indexHtml.indexOf("/static/iron_ore_basis.js"));
-  assert.match(indexHtml, /app\.js\?v=iron-ore-basis-ui-20260713/);
-  assert.match(indexHtml, /iron_ore_basis\.css\?v=iron-ore-basis-ui-20260713/);
+  assert.match(indexHtml, /app\.js\?v=data-visualization-pagination-20260713/);
+  assert.match(indexHtml, /iron_ore_basis\.css\?v=data-visualization-pagination-20260713/);
 });
 
 test("mobile app shell grows beyond the sidebar so the workspace remains reachable", () => {

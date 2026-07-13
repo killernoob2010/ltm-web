@@ -50,6 +50,39 @@
     };
   }
 
+  function renderPagination(container, options) {
+    if (!container) return;
+    options = options || {};
+    var pageSizes = options.pageSizes || [20, 50, 100];
+    var pageSize = Number(options.pageSize) || pageSizes[0];
+    var total = Math.max(0, Number(options.total) || 0);
+    var totalPages = Math.max(1, Math.ceil(total / pageSize));
+    var page = Math.max(1, Math.min(Number(options.page) || 1, totalPages));
+    container.innerHTML = '<div class="tm-pagination" data-dv-component="server-pagination">' +
+      "<span>共 " + total + " 条</span>" +
+      '<label>每页<select data-page-size>' +
+      pageSizes.map(function(size) {
+        return '<option value="' + size + '"' + (size === pageSize ? " selected" : "") + ">" + size + "</option>";
+      }).join("") +
+      "</select>条</label>" +
+      '<button type="button" data-page-action="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
+      "<span>第 " + page + " / " + totalPages + " 页</span>" +
+      '<button type="button" data-page-action="next"' + (page >= totalPages ? " disabled" : "") + ">下一页</button>" +
+      "</div>";
+    var pageSizeSelect = container.querySelector("[data-page-size]");
+    var previousButton = container.querySelector('[data-page-action="prev"]');
+    var nextButton = container.querySelector('[data-page-action="next"]');
+    pageSizeSelect.onchange = function() {
+      if (options.onPageSizeChange) options.onPageSizeChange(Number(pageSizeSelect.value));
+    };
+    previousButton.onclick = function() {
+      if (page > 1 && options.onPageChange) options.onPageChange(page - 1);
+    };
+    nextButton.onclick = function() {
+      if (page < totalPages && options.onPageChange) options.onPageChange(page + 1);
+    };
+  }
+
   function buildYearColorMap(years) {
     var map = {};
     years.forEach(function(year, index) {
@@ -358,6 +391,7 @@
     bindCheckboxPanelActions: bindCheckboxPanelActions,
     calendarMonthTicks: calendarMonthTicks,
     renderCheckboxOptions: renderCheckboxOptions,
+    renderPagination: renderPagination,
     renderYearSmallMultiples: renderYearSmallMultiples,
     yearColors: YEAR_COLORS,
   };

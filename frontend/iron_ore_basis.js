@@ -1,12 +1,11 @@
 (function() {
   "use strict";
 
-  var PAGE_SIZE = 50;
   var basisState = {
     managementInitialized: false,
     displayInitialized: false,
-    managementOffset: 0,
-    managementHasMore: false,
+    managementPage: 1,
+    managementPageSize: 20,
     activePort: "日照港",
     lastChartSeries: {},
     highlightedYear: null,
@@ -27,8 +26,7 @@
   var managementPortAll = document.querySelector("#ironOreBasisManagementPortAll");
   var managementPortNone = document.querySelector("#ironOreBasisManagementPortNone");
   var managementBody = document.querySelector("#ironOreBasisManagementBody");
-  var managementLoadMore = document.querySelector("#ironOreBasisManagementLoadMore");
-  var managementInfo = document.querySelector("#ironOreBasisManagementInfo");
+  var managementPagination = document.querySelector("#ironOreBasisManagementPagination");
   var displayYears = document.querySelector("#ironOreBasisDisplayYears");
   var displayProducts = document.querySelector("#ironOreBasisDisplayProducts");
   var displayYearAll = document.querySelector("#ironOreBasisDisplayYearAll");
@@ -99,14 +97,15 @@
     );
   }
 
-  async function loadManagementRows(append) {
-    if (!append) basisState.managementOffset = 0;
-    var url = "/api/iron-ore-basis/management/rows?limit=" + PAGE_SIZE +
-      "&offset=" + basisState.managementOffset;
+  async function loadManagementRows(preservePage) {
+    if (!preservePage) basisState.managementPage = 1;
+    var offset = (basisState.managementPage - 1) * basisState.managementPageSize;
+    var url = "/api/iron-ore-basis/management/rows?limit=" + basisState.managementPageSize +
+      "&offset=" + offset;
     url = appendFilter(url, "years", managementYears);
     url = appendFilter(url, "products", managementProducts);
     url = appendFilter(url, "ports", managementPorts);
-    if (!append) managementBody.innerHTML = '<tr><td colspan="11" class="empty-cell">正在加载</td></tr>';
+    managementBody.innerHTML = '<tr><td colspan="11" class="empty-cell">正在加载</td></tr>';
     try {
       var result = await request(url);
       var rows = result.data || [];
@@ -124,19 +123,26 @@
           '<td class="iron-ore-basis-value">' + formatNumber(row.basis) + "</td>" +
           "<td>" + escapeHtml(row.data_status) + "</td></tr>";
       }).join("");
-      if (append) managementBody.insertAdjacentHTML("beforeend", html);
-      else managementBody.innerHTML = html || '<tr><td colspan="11" class="empty-cell">暂无符合条件的数据</td></tr>';
+      managementBody.innerHTML = html || '<tr><td colspan="11" class="empty-cell">暂无符合条件的数据</td></tr>';
       var pagination = result.pagination || {};
-      basisState.managementOffset = (pagination.offset || 0) + rows.length;
-      basisState.managementHasMore = Boolean(pagination.has_more);
-      managementLoadMore.classList.toggle("hidden", !basisState.managementHasMore);
-      managementInfo.textContent = pagination.total
-        ? "已显示 " + basisState.managementOffset + " / " + pagination.total + " 条"
-        : "";
+      DataVisualizationComponents.renderPagination(managementPagination, {
+        page: basisState.managementPage,
+        pageSize: basisState.managementPageSize,
+        total: pagination.total || 0,
+        pageSizes: [20, 50, 100],
+        onPageChange: function(page) {
+          basisState.managementPage = page;
+          loadManagementRows(true);
+        },
+        onPageSizeChange: function(pageSize) {
+          basisState.managementPageSize = pageSize;
+          basisState.managementPage = 1;
+          loadManagementRows(true);
+        },
+      });
     } catch (error) {
       managementBody.innerHTML = '<tr><td colspan="11" class="error-cell">加载失败: ' + escapeHtml(error.message) + "</td></tr>";
-      managementLoadMore.classList.add("hidden");
-      managementInfo.textContent = "";
+      managementPagination.innerHTML = "";
     }
   }
 
@@ -273,7 +279,6 @@
     }
   }
 
-  managementLoadMore.addEventListener("click", function() { loadManagementRows(true); });
   portTabs.addEventListener("click", function(event) {
     var button = event.target.closest("[data-basis-port]");
     if (!button) return;

@@ -19,7 +19,7 @@ test("login page exposes real guest login without prefilled admin credentials", 
 });
 
 test("user management exposes account lifecycle permission levels and password self-service", () => {
-  assert.match(html, /src="\/static\/app\.js\?v=iron-ore-basis-ui-20260713c"/);
+  assert.match(html, /src="\/static\/app\.js\?v=data-visualization-pagination-20260713"/);
   for (const id of [
     "resetUserPasswordBtn", "toggleUserStatusBtn", "changePasswordBtn",
     "passwordChangeNotice", "changePasswordDialog", "currentPassword",

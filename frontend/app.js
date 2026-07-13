@@ -186,8 +186,7 @@ const dvDataPage = document.querySelector("#dvDataPage");
 const dvChartPage = document.querySelector("#dvChartPage");
 const dvDataTabs = document.querySelector("#dvDataTabs");
 const dvDataTbody = document.querySelector("#dvDataTbody");
-const dvDataLoadMoreBtn = document.querySelector("#dvDataLoadMoreBtn");
-const dvDataPageInfo = document.querySelector("#dvDataPageInfo");
+const dvDataPagination = document.querySelector("#dvDataPagination");
 const dvChartTabs = document.querySelector("#dvChartTabs");
 const dvChartCanvas = document.querySelector("#dvChartCanvas");
 const dvChartStatus = document.querySelector("#dvChartStatus");
@@ -2922,12 +2921,11 @@ let dvState = {
   lastChartData: null,
   chartFilters: null,
   dataFilters: null,
-  dataOffset: 0,
-  dataHasMore: false,
+  dataPage: 1,
+  dataPageSize: 20,
   highlightedLineKey: null,
 };
 
-const DV_PAGE_SIZE = 50;
 const DV_YEAR_COLORS = [
   "#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2",
   "#db2777", "#65a30d", "#f97316", "#0f766e", "#9333ea", "#b91c1c",
@@ -3205,9 +3203,9 @@ dvChartTabs.addEventListener("click", function(e) {
 });
 
 // ── Table loading ─────────────────────────────────────────────────────
-async function loadDVTable(metric, append = false) {
+async function loadDVTable(metric, preservePage = false) {
   try {
-    if (!append) dvState.dataOffset = 0;
+    if (!preservePage) dvState.dataPage = 1;
     var yearsArr = getCheckedValues(dvDataYearCheckboxes);
     var productsArr = getCheckedValues(dvDataProductCheckboxes);
     var categoriesArr = getCheckedValues(dvDataCategoryCheckboxes);
@@ -3234,37 +3232,44 @@ async function loadDVTable(metric, append = false) {
     if (shouldApplyDVMainstreamFilter(productPool)) {
       url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     }
-    url += "&limit=" + encodeURIComponent(DV_PAGE_SIZE) + "&offset=" + encodeURIComponent(dvState.dataOffset);
+    var offset = (dvState.dataPage - 1) * dvState.dataPageSize;
+    url += "&limit=" + encodeURIComponent(dvState.dataPageSize) + "&offset=" + encodeURIComponent(offset);
     var result = await api(url);
-    renderDVTable(result, append);
+    renderDVTable(result);
     var pagination = result.pagination || {};
-    dvState.dataOffset = (pagination.offset || 0) + ((result.data || []).length);
-    dvState.dataHasMore = Boolean(pagination.has_more);
-    if (dvDataLoadMoreBtn) dvDataLoadMoreBtn.classList.toggle("hidden", !dvState.dataHasMore);
-    if (dvDataPageInfo) {
-      var shown = dvState.dataOffset;
-      var total = pagination.total || shown;
-      dvDataPageInfo.textContent = total ? `已显示 ${shown} / ${total} 周` : "";
-    }
+    DataVisualizationComponents.renderPagination(dvDataPagination, {
+      page: dvState.dataPage,
+      pageSize: dvState.dataPageSize,
+      total: pagination.total || 0,
+      pageSizes: [20, 50, 100],
+      onPageChange: function(page) {
+        dvState.dataPage = page;
+        loadDVTable(metric, true);
+      },
+      onPageSizeChange: function(pageSize) {
+        dvState.dataPageSize = pageSize;
+        dvState.dataPage = 1;
+        loadDVTable(metric, true);
+      },
+    });
   } catch (err) {
     dvDataTbody.innerHTML = '<tr><td colspan="14" class="error-cell">加载失败: ' + err.message + '</td></tr>';
+    if (dvDataPagination) dvDataPagination.innerHTML = "";
   }
 }
 
-function renderDVTable(result, append = false) {
+function renderDVTable(result) {
   var data = result.data || [];
   var products = result.products || [];
   var productCount = products.length;
 
-  if (!append && !data.length) {
+  if (!data.length) {
     dvDataTbody.innerHTML = '<tr><td colspan="' + (2 + productCount) + '" class="empty-cell">暂无数据，请先导入</td></tr>';
-    if (dvDataLoadMoreBtn) dvDataLoadMoreBtn.classList.add("hidden");
-    if (dvDataPageInfo) dvDataPageInfo.textContent = "";
     return;
   }
 
   var thead = document.querySelector('#dvDataTable thead');
-  if (thead && !append) {
+  if (thead) {
     thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
       products.map(function(p) {
         return '<th title="' + escapeHtml(p) + '"><span class="dv-product-header">' + formatDVProductHeaderLabel(p) + '</span></th>';
@@ -3289,18 +3294,8 @@ function renderDVTable(result, append = false) {
       return '<tr><td>' + formatDateOnly(row.date) + '</td><td>' + row.week + '</td>' + cells + '</tr>';
     })
     .join('');
-  if (append) {
-    dvDataTbody.insertAdjacentHTML("beforeend", rowsHtml);
-  } else {
-    dvDataTbody.innerHTML = rowsHtml;
-  }
+  dvDataTbody.innerHTML = rowsHtml;
 
-}
-
-if (dvDataLoadMoreBtn) {
-  dvDataLoadMoreBtn.addEventListener("click", function() {
-    loadDVTable(dvState.currentMetric, true);
-  });
 }
 
 function escapeHtml(value) {

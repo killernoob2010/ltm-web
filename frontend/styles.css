@@ -1097,7 +1097,7 @@ dialog::backdrop {
   border-radius: 6px;
   background: var(--surface);
   padding: 12px;
-  height: min(62vh, 620px);
+  height: max(420px, calc(100vh - 260px));
   min-height: 420px;
   overflow: auto;
 }

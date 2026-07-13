@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=iron-ore-basis-ui-20260713b" />
+    <link rel="stylesheet" href="/static/styles.css?v=data-visualization-pagination-20260713" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
-    <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-ui-20260713b" />
+    <link rel="stylesheet" href="/static/iron_ore_basis.css?v=data-visualization-pagination-20260713" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -669,10 +669,7 @@
              <tbody id="dvDataTbody"></tbody>
            </table>
         </div>
-        <div class="toolbar">
-          <button id="dvDataLoadMoreBtn" type="button" class="secondary hidden">加载更多</button>
-          <span id="dvDataPageInfo" class="toolbar-status"></span>
-        </div>
+        <div id="dvDataPagination"></div>
         </div>
         <section id="ironOreBasisManagementView" class="hidden">
           <div class="dv-chart-controls-row">
@@ -715,10 +712,7 @@
               <tbody id="ironOreBasisManagementBody"></tbody>
             </table>
           </div>
-          <div class="toolbar iron-ore-basis-pagination">
-            <button id="ironOreBasisManagementLoadMore" type="button" class="secondary hidden">加载更多</button>
-            <span id="ironOreBasisManagementInfo" class="toolbar-status"></span>
-          </div>
+          <div id="ironOreBasisManagementPagination" class="iron-ore-basis-pagination"></div>
         </section>
       </section>
 
@@ -1307,8 +1301,8 @@
     <div id="tmToast" class="tm-toast hidden" role="status"></div>
 
     <script src="/static/trading_management.js?v=20260712h"></script>
-    <script src="/static/data_visualization_components.js?v=iron-ore-basis-ui-20260713c"></script>
-    <script src="/static/app.js?v=iron-ore-basis-ui-20260713c"></script>
-    <script src="/static/iron_ore_basis.js?v=iron-ore-basis-ui-20260713c"></script>
+    <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
+    <script src="/static/app.js?v=data-visualization-pagination-20260713"></script>
+    <script src="/static/iron_ore_basis.js?v=data-visualization-pagination-20260713"></script>
   </body>
 </html>

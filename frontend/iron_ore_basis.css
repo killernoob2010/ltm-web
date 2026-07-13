@@ -2,6 +2,10 @@
   align-items: flex-start;
 }
 
+#ironOreBasisDisplayView .iron-ore-basis-filter-row .dv-year-panel {
+  grid-column: 1;
+}
+
 .iron-ore-basis-filter-row .dv-product-panel {
   flex: 1 1 540px;
 }
