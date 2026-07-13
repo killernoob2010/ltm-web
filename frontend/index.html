@@ -4,8 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=operation-log-retention-20260710" />
+    <link rel="stylesheet" href="/static/styles.css?v=iron-ore-basis-20260713" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
+    <link rel="stylesheet" href="/static/iron_ore_basis.css?v=20260713a" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -596,8 +597,13 @@
           </section>
         </section>
 
-       <!-- 数据可视化管理 - 图表数据管理 -->
+      <!-- 数据可视化管理 - 图表数据管理 -->
       <section id="dvDataPage" class="page hidden">
+        <div class="dv-tabs iron-ore-basis-view-tabs" id="dvDataViewTabs">
+          <button type="button" class="dv-tab active" data-basis-management-view="spot">现货数据管理</button>
+          <button type="button" class="dv-tab" data-basis-management-view="basis">期现数据管理</button>
+        </div>
+        <div id="dvSpotDataView">
         <div class="toolbar">
           <button type="button" id="dvImportBtn">📥 导入 Excel</button>
         </div>
@@ -671,10 +677,50 @@
           <button id="dvDataLoadMoreBtn" type="button" class="secondary hidden">加载更多</button>
           <span id="dvDataPageInfo" class="toolbar-status"></span>
         </div>
+        </div>
+        <section id="ironOreBasisManagementView" class="hidden">
+          <div class="dv-chart-controls-row">
+            <div class="dv-chart-controls iron-ore-basis-filter-row">
+              <div class="dv-checkbox-panel dv-year-panel">
+                <div class="dv-checkbox-panel-header"><span>年份</span></div>
+                <div class="dv-checkbox-group" id="ironOreBasisManagementYears"></div>
+              </div>
+              <div class="dv-checkbox-panel dv-product-panel">
+                <div class="dv-checkbox-panel-header"><span>品种</span></div>
+                <div class="dv-checkbox-group" id="ironOreBasisManagementProducts"></div>
+              </div>
+              <div class="dv-checkbox-panel iron-ore-basis-port-filter">
+                <div class="dv-checkbox-panel-header"><span>港口</span></div>
+                <div class="dv-checkbox-group" id="ironOreBasisManagementPorts"></div>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap iron-ore-basis-table-wrap">
+            <table id="ironOreBasisManagementTable">
+              <thead>
+                <tr>
+                  <th>日期</th><th>周次</th><th>年份</th><th>港口</th><th>品种</th>
+                  <th>湿吨现货价</th><th>质量升贴水</th><th>品牌升贴水</th>
+                  <th>主力连续收盘价</th><th>基差</th><th>数据状态</th>
+                </tr>
+              </thead>
+              <tbody id="ironOreBasisManagementBody"></tbody>
+            </table>
+          </div>
+          <div class="toolbar iron-ore-basis-pagination">
+            <button id="ironOreBasisManagementLoadMore" type="button" class="secondary hidden">加载更多</button>
+            <span id="ironOreBasisManagementInfo" class="toolbar-status"></span>
+          </div>
+        </section>
       </section>
 
         <!-- 数据可视化管理 - 数据展示 -->
         <section id="dvChartPage" class="page hidden">
+         <div class="dv-tabs iron-ore-basis-view-tabs" id="dvDisplayViewTabs">
+           <button type="button" class="dv-tab active" data-basis-display-view="spot">现货数据展示</button>
+           <button type="button" class="dv-tab" data-basis-display-view="basis">期现数据展示</button>
+         </div>
+         <div id="dvSpotChartView">
          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
               <label class="dv-control-field dv-view-mode-field">
@@ -747,6 +793,44 @@
             <div id="dvChartStatus" class="dv-chart-status"></div>
             <canvas id="dvChartCanvas"></canvas>
           </div>
+         </div>
+         <section id="ironOreBasisDisplayView" class="hidden">
+           <section class="panel iron-ore-basis-optimal-panel">
+             <div class="panel-head">
+               <h2>最优仓单测算</h2>
+               <span id="ironOreBasisOptimalDate" class="toolbar-status"></span>
+             </div>
+             <div id="ironOreBasisOptimalWarrant" class="iron-ore-basis-optimal-grid">
+               <div class="toolbar-status">正在加载最新有效数据</div>
+             </div>
+           </section>
+           <div class="dv-chart-controls-row">
+             <div class="dv-chart-controls iron-ore-basis-filter-row">
+               <div class="dv-checkbox-panel dv-year-panel">
+                 <div class="dv-checkbox-panel-header"><span>年份</span></div>
+                 <div class="dv-checkbox-group" id="ironOreBasisDisplayYears"></div>
+               </div>
+               <div class="dv-checkbox-panel dv-product-panel">
+                 <div class="dv-checkbox-panel-header"><span>品种</span></div>
+                 <div class="dv-checkbox-group" id="ironOreBasisDisplayProducts"></div>
+               </div>
+             </div>
+           </div>
+           <div class="dv-tabs iron-ore-basis-port-tabs" id="ironOreBasisPortTabs">
+             <button type="button" class="dv-tab active" data-basis-port="日照港">日照港</button>
+             <button type="button" class="dv-tab" data-basis-port="青岛港">青岛港</button>
+             <button type="button" class="dv-tab" data-basis-port="岚山港">岚山港</button>
+             <button type="button" class="dv-tab" data-basis-port="连云港">连云港</button>
+             <button type="button" class="dv-tab" data-basis-port="江阴港">江阴港</button>
+             <button type="button" class="dv-tab" data-basis-port="太仓港">太仓港</button>
+             <button type="button" class="dv-tab" data-basis-port="京唐港">京唐港</button>
+             <button type="button" class="dv-tab" data-basis-port="曹妃甸港">曹妃甸港</button>
+           </div>
+           <div class="chart-container iron-ore-basis-chart-container">
+             <div id="ironOreBasisChartStatus" class="dv-chart-status"></div>
+             <canvas id="ironOreBasisChartCanvas" aria-label="铁矿石港口基差日度图表"></canvas>
+           </div>
+         </section>
         </section>
 
 
@@ -1208,5 +1292,6 @@
 
     <script src="/static/trading_management.js?v=20260712h"></script>
     <script src="/static/app.js?v=trading-management-20260712e"></script>
+    <script src="/static/iron_ore_basis.js?v=20260713a"></script>
   </body>
 </html>

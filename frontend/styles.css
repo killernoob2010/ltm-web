@@ -790,6 +790,8 @@ dialog::backdrop {
 
 @media (max-width: 900px) {
   .app-shell {
+    height: auto;
+    min-height: 100vh;
     grid-template-columns: 1fr;
   }
 

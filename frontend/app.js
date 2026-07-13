@@ -408,6 +408,21 @@ function showOnly(page) {
   page.classList.remove("hidden");
 }
 
+async function activateDVSpotData() {
+  await initDVData();
+}
+
+async function activateDVSpotChart() {
+  if (!dvState.dvChartControlsInitialized) {
+    await initDVChartControls();
+    dvState.dvChartControlsInitialized = true;
+  }
+  await loadDVChart();
+}
+
+window.activateDVSpotData = activateDVSpotData;
+window.activateDVSpotChart = activateDVSpotChart;
+
 async function activateModule(code, subName) {
   state.activeModule = code;
   const tradingModuleCodes = ["trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export"];
@@ -469,16 +484,20 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization_data") {
     showOnly(dvDataPage);
-    await initDVData();
+    if (window.IronOreBasis) await window.IronOreBasis.activateManagement();
+    else await initDVData();
     return;
   }
   if (code === "data_visualization_chart") {
     showOnly(dvChartPage);
-    if (!dvState.dvChartControlsInitialized) {
-      await initDVChartControls();
-      dvState.dvChartControlsInitialized = true;
+    if (window.IronOreBasis) await window.IronOreBasis.activateDisplay();
+    else {
+      if (!dvState.dvChartControlsInitialized) {
+        await initDVChartControls();
+        dvState.dvChartControlsInitialized = true;
+      }
+      await loadDVChart();
     }
-    await loadDVChart();
     return;
   }
   if (tradingModuleCodes.includes(code)) {

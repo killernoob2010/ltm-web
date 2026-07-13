@@ -1,0 +1,142 @@
+.iron-ore-basis-view-tabs {
+  margin-bottom: 16px;
+}
+
+.iron-ore-basis-filter-row {
+  align-items: flex-start;
+}
+
+.iron-ore-basis-filter-row .dv-product-panel {
+  flex: 1 1 540px;
+}
+
+.iron-ore-basis-port-filter {
+  flex: 1 1 420px;
+}
+
+.iron-ore-basis-table-wrap table {
+  min-width: 1320px;
+}
+
+.iron-ore-basis-table-wrap th,
+.iron-ore-basis-table-wrap td {
+  white-space: nowrap;
+  text-align: center;
+}
+
+.iron-ore-basis-table-wrap th:first-child,
+.iron-ore-basis-table-wrap td:first-child,
+.iron-ore-basis-table-wrap th:nth-child(5),
+.iron-ore-basis-table-wrap td:nth-child(5) {
+  text-align: left;
+}
+
+.iron-ore-basis-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.iron-ore-basis-pagination {
+  justify-content: flex-start;
+}
+
+.iron-ore-basis-optimal-panel {
+  margin-bottom: 16px;
+}
+
+.iron-ore-basis-optimal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.iron-ore-basis-optimal-item {
+  min-width: 0;
+  padding: 14px 16px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.iron-ore-basis-optimal-item:nth-child(4n) {
+  border-right: 0;
+}
+
+.iron-ore-basis-optimal-item span {
+  display: block;
+  margin-bottom: 5px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.iron-ore-basis-optimal-item strong {
+  display: block;
+  overflow: hidden;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iron-ore-basis-optimal-item.emphasis strong {
+  color: #b91c1c;
+  font-size: 18px;
+}
+
+.iron-ore-basis-port-tabs {
+  margin: 4px 0 14px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.iron-ore-basis-port-tabs .dv-tab {
+  flex: 0 0 auto;
+}
+
+.iron-ore-basis-chart-container {
+  min-height: 420px;
+}
+
+.iron-ore-basis-chart-container canvas {
+  display: block;
+  max-width: 100%;
+}
+
+@media (max-width: 980px) {
+  .iron-ore-basis-optimal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .iron-ore-basis-optimal-item:nth-child(4n) {
+    border-right: 1px solid #e5e7eb;
+  }
+
+  .iron-ore-basis-optimal-item:nth-child(2n) {
+    border-right: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .iron-ore-basis-view-tabs,
+  .iron-ore-basis-port-tabs {
+    width: 100%;
+  }
+
+  .iron-ore-basis-optimal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .iron-ore-basis-optimal-item,
+  .iron-ore-basis-optimal-item:nth-child(2n),
+  .iron-ore-basis-optimal-item:nth-child(4n) {
+    border-right: 0;
+  }
+
+  .iron-ore-basis-filter-row .dv-checkbox-panel {
+    flex-basis: 100%;
+    width: 100%;
+  }
+}

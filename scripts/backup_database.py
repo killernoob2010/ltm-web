@@ -26,6 +26,8 @@ CORE_TABLES = [
     "daily_prices",
     "dv_integration_batches",
     "dv_integrated_points",
+    "iron_ore_basis_results",
+    "iron_ore_basis_details",
     "order_finance_progress",
     "sh_junneng_positions",
     "sh_junneng_close_trades",
