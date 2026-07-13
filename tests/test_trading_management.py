@@ -53,6 +53,30 @@ def test_trading_management_schema_contains_isolated_tables(tmp_path, monkeypatc
     assert not any(name.startswith("sh_junneng") for name in TRADING_TABLES)
 
 
+def test_postgres_trading_tables_are_hidden_from_data_api_roles():
+    class RecordingCursor:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement):
+            self.statements.append(statement)
+
+    cur = RecordingCursor()
+    db._secure_postgres_tables(cur, db.TRADING_MANAGEMENT_TABLES)
+
+    alter_statements = [statement for statement in cur.statements if statement.startswith("ALTER TABLE")]
+    assert len(alter_statements) == len(TRADING_TABLES)
+    assert {statement.split()[2] for statement in alter_statements} == TRADING_TABLES
+    assert any(
+        statement.startswith("REVOKE ALL ON TABLE") and statement.endswith("FROM anon, authenticated")
+        for statement in cur.statements
+    )
+    assert any(
+        statement.startswith("REVOKE ALL ON SEQUENCE") and statement.endswith("FROM anon, authenticated")
+        for statement in cur.statements
+    )
+
+
 def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
 

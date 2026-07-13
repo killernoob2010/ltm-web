@@ -15,6 +15,24 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "app.db"
 
+TRADING_MANAGEMENT_TABLES = (
+    "trading_accounts",
+    "trading_import_batches",
+    "trading_source_rows",
+    "trading_fact_identities",
+    "trading_trade_facts",
+    "trading_close_facts",
+    "trading_position_snapshots",
+    "trading_contract_specs",
+    "trading_fact_close_allocations",
+    "trading_close_trade_links",
+    "trading_business_subjects",
+    "trading_strategies",
+    "trading_business_assignments",
+    "trading_business_close_allocations",
+    "trading_business_allocation_audit",
+)
+
 MODULES = [
     ("台账管理", "sh_junneng", "上海钧能台账"),
     ("台账管理", "steel_export", "钢材出口套保台账"),
@@ -200,6 +218,14 @@ def _executemany(cur, sql, seq):
         psycopg2.extras.execute_batch(cur, sql, seq, page_size=1000)
         return
     cur.executemany(sql, seq)
+
+
+def _secure_postgres_tables(cur, tables) -> None:
+    for table in tables:
+        cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+    cur.execute(f"REVOKE ALL ON TABLE {', '.join(tables)} FROM anon, authenticated")
+    sequences = ", ".join(f"{table}_id_seq" for table in tables)
+    cur.execute(f"REVOKE ALL ON SEQUENCE {sequences} FROM anon, authenticated")
 
 
 def _last_insert_id(cur, sql, params) -> int:
@@ -1458,6 +1484,7 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
             """
         )
+        _secure_postgres_tables(cur, TRADING_MANAGEMENT_TABLES)
     else:
         conn.executescript(
             """
