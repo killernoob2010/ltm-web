@@ -6,6 +6,7 @@ import { test } from "node:test";
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const basisJs = readFileSync(new URL("../frontend/iron_ore_basis.js", import.meta.url), "utf8");
 const basisCss = readFileSync(new URL("../frontend/iron_ore_basis.css", import.meta.url), "utf8");
+const sharedComponentsJs = readFileSync(new URL("../frontend/data_visualization_components.js", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
 
@@ -35,7 +36,7 @@ test("basis management is read-only and exposes the confirmed fields", () => {
   assert.match(section, /ironOreBasisManagementLoadMore/);
 });
 
-test("basis filters reuse the spot checkbox panel and all-none controls", () => {
+test("spot and basis filters call the same shared checkbox component", () => {
   for (const id of [
     "ironOreBasisManagementYearAll", "ironOreBasisManagementYearNone",
     "ironOreBasisManagementProductAll", "ironOreBasisManagementProductNone",
@@ -47,9 +48,15 @@ test("basis filters reuse the spot checkbox panel and all-none controls", () => 
   }
   assert.match(indexHtml, /class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementYearAll"/);
   assert.match(indexHtml, /class="dv-filter-btn dv-filter-none" id="ironOreBasisDisplayProductNone"/);
-  assert.match(basisJs, /function bindFilterActions\(container, allButton, noneButton, onChange\)/);
-  assert.match(basisJs, /bindFilterActions\(managementYears, managementYearAll, managementYearNone/);
-  assert.match(basisJs, /bindFilterActions\(displayProducts, displayProductAll, displayProductNone/);
+  assert.match(indexHtml, /\/static\/data_visualization_components\.js/);
+  assert.ok(indexHtml.indexOf("/static/data_visualization_components.js") < indexHtml.indexOf("/static/app.js"));
+  assert.match(appJs, /DataVisualizationComponents\.renderCheckboxOptions/);
+  assert.match(appJs, /DataVisualizationComponents\.bindCheckboxPanelActions/);
+  assert.match(basisJs, /DataVisualizationComponents\.renderCheckboxOptions/);
+  assert.match(basisJs, /DataVisualizationComponents\.bindCheckboxPanelActions/);
+  assert.doesNotMatch(basisJs, /function buildFilter\(/);
+  assert.doesNotMatch(basisJs, /function bindFilterActions\(/);
+  assert.doesNotMatch(basisJs, /dv-checkbox-item/);
 });
 
 test("basis display keeps optimal warrant independent from chart controls", () => {
@@ -77,26 +84,30 @@ test("basis display filters only year and product and defaults to Rizhao port", 
   assert.match(basisJs, /activePort:\s*"日照港"/);
 });
 
-test("basis chart has all months, one shared legend, selection and a real-point tooltip", () => {
+test("spot and basis charts call the same shared small-multiples component", () => {
   assert.match(indexHtml, /id="ironOreBasisYearLegend" class="dv-year-legend"/);
   assert.match(indexHtml, /id="ironOreBasisTooltip" class="iron-ore-basis-tooltip hidden"/);
-  assert.match(basisJs, /var BASIS_MONTHS = \[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12\];/);
-  assert.match(basisJs, /function updateBasisYearLegend\(years\)/);
-  assert.doesNotMatch(basisJs, /var legendX =/);
-  assert.match(basisJs, /highlightedYear:\s*null/);
-  assert.match(basisJs, /chartHitSegments:\s*\[\]/);
-  assert.match(basisJs, /function findNearestBasisLine\(x, y/);
-  assert.match(basisJs, /chartCanvas\.addEventListener\("click"/);
-  assert.match(basisJs, /basisState\.highlightedYear = basisState\.highlightedYear === hit\.year \? null : hit\.year/);
+  assert.match(appJs, /DataVisualizationComponents\.renderYearSmallMultiples/);
+  assert.match(basisJs, /DataVisualizationComponents\.renderYearSmallMultiples/);
+  assert.match(basisJs, /calendarMonthTicks/);
+  assert.match(basisJs, /includeZero:\s*true/);
+  assert.match(basisJs, /tooltipElement:\s*chartTooltip/);
+  assert.doesNotMatch(basisJs, /var YEAR_COLORS/);
+  assert.doesNotMatch(basisJs, /var BASIS_MONTHS/);
+  assert.doesNotMatch(basisJs, /function updateBasisYearLegend/);
+  assert.doesNotMatch(basisJs, /function findNearestBasisLine/);
+  assert.doesNotMatch(basisJs, /function segmentDistance/);
   for (const field of ["日期", "年份", "品种", "港口", "基差"]) assert.match(basisJs, new RegExp(field));
   assert.match(basisCss, /\.iron-ore-basis-tooltip/);
 });
 
 test("basis chart requests only the active port and renders negative values with a zero axis", () => {
   assert.match(basisJs, /display\/chart\?port=" \+ encodeURIComponent\(basisState\.activePort\)/);
-  assert.match(basisJs, /Math\.min\(0,/);
-  assert.match(basisJs, /Math\.max\(0,/);
-  assert.match(basisJs, /drawBasisZeroAxis/);
+  assert.match(basisJs, /includeZero:\s*true/);
+  assert.match(basisJs, /drawZeroAxis:\s*true/);
+  assert.match(sharedComponentsJs, /yMin = Math\.min\(0, yMin\)/);
+  assert.match(sharedComponentsJs, /yMax = Math\.max\(0, yMax\)/);
+  assert.match(sharedComponentsJs, /if \(options\.drawZeroAxis/);
   assert.match(basisCss, /iron-ore-basis-chart-container/);
 });
 

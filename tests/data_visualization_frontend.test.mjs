@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
+const sharedComponentsJs = readFileSync(new URL("../frontend/data_visualization_components.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
 const dbPy = readFileSync(new URL("../backend/app/db.py", import.meta.url), "utf8");
@@ -184,10 +185,11 @@ test("data visualization year colors support long history without dark duplicate
 
 test("data visualization atlas highlights all charts for the selected year", () => {
   assert.match(appJs, /highlightedYear/);
-  assert.match(appJs, /closest = \{ lineKey: lineKey, year: year \}/);
-  assert.match(appJs, /dist < closestDist && dist < 30/);
-  assert.match(appJs, /dvState\.highlightedYear === closest\.year/);
-  assert.match(appJs, /var isHighlightedYear = highlightedYear === year;/);
+  assert.match(appJs, /DataVisualizationComponents\.renderYearSmallMultiples/);
+  assert.match(sharedComponentsJs, /closestLine\(hitSegments/);
+  assert.match(sharedComponentsJs, /state\.highlightedYear === hit\.year/);
+  assert.match(sharedComponentsJs, /var selected = state\.highlightedYear === year/);
+  assert.match(sharedComponentsJs, /ctx\.globalAlpha = dimmed \? 0\.14 : 1/);
 });
 
 test("data visualization chart x axis uses month labels", () => {

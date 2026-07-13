@@ -2,8 +2,6 @@
   "use strict";
 
   var PAGE_SIZE = 50;
-  var YEAR_COLORS = ["#2563eb", "#f97316", "#16a34a", "#9333ea", "#0891b2"];
-  var BASIS_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   var basisState = {
     managementInitialized: false,
     displayInitialized: false,
@@ -11,9 +9,8 @@
     managementHasMore: false,
     activePort: "日照港",
     lastChartSeries: {},
-    chartHitPoints: [],
-    chartHitSegments: [],
     highlightedYear: null,
+    highlightedLineKey: null,
   };
 
   var spotManagementView = document.querySelector("#dvSpotDataView");
@@ -80,35 +77,26 @@
     return url + "&" + name + "=" + encodeURIComponent(values.join(","));
   }
 
-  function buildFilter(container, items, onChange) {
-    container.innerHTML = items.map(function(item) {
-      return '<label class="dv-checkbox-item"><input type="checkbox" value="' +
-        escapeHtml(item) + '" checked><span>' + escapeHtml(item) + "</span></label>";
-    }).join("");
-    container.querySelectorAll('input[type="checkbox"]').forEach(function(input) {
-      input.addEventListener("change", onChange);
-    });
-  }
-
-  function bindFilterActions(container, allButton, noneButton, onChange) {
-    allButton.addEventListener("click", function() {
-      container.querySelectorAll('input[type="checkbox"]').forEach(function(input) { input.checked = true; });
-      onChange();
-    });
-    noneButton.addEventListener("click", function() {
-      container.querySelectorAll('input[type="checkbox"]').forEach(function(input) { input.checked = false; });
-      onChange();
-    });
-  }
-
   async function loadManagementFilters() {
     var filters = await request("/api/iron-ore-basis/management/filters");
-    buildFilter(managementYears, filters.years || [], function() { loadManagementRows(false); });
-    buildFilter(managementProducts, filters.products || [], function() { loadManagementRows(false); });
-    buildFilter(managementPorts, filters.ports || [], function() { loadManagementRows(false); });
-    bindFilterActions(managementYears, managementYearAll, managementYearNone, function() { loadManagementRows(false); });
-    bindFilterActions(managementProducts, managementProductAll, managementProductNone, function() { loadManagementRows(false); });
-    bindFilterActions(managementPorts, managementPortAll, managementPortNone, function() { loadManagementRows(false); });
+    DataVisualizationComponents.renderCheckboxOptions(
+      managementYears, filters.years || [], function() { loadManagementRows(false); }, true
+    );
+    DataVisualizationComponents.renderCheckboxOptions(
+      managementProducts, filters.products || [], function() { loadManagementRows(false); }, true
+    );
+    DataVisualizationComponents.renderCheckboxOptions(
+      managementPorts, filters.ports || [], function() { loadManagementRows(false); }, true
+    );
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      managementYears, managementYearAll, managementYearNone, function() { loadManagementRows(false); }
+    );
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      managementProducts, managementProductAll, managementProductNone, function() { loadManagementRows(false); }
+    );
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      managementPorts, managementPortAll, managementPortNone, function() { loadManagementRows(false); }
+    );
   }
 
   async function loadManagementRows(append) {
@@ -162,10 +150,14 @@
 
   async function loadDisplayFilters() {
     var filters = await request("/api/iron-ore-basis/display/filters");
-    buildFilter(displayYears, filters.years || [], loadBasisChart);
-    buildFilter(displayProducts, filters.products || [], loadBasisChart);
-    bindFilterActions(displayYears, displayYearAll, displayYearNone, loadBasisChart);
-    bindFilterActions(displayProducts, displayProductAll, displayProductNone, loadBasisChart);
+    DataVisualizationComponents.renderCheckboxOptions(displayYears, filters.years || [], loadBasisChart, true);
+    DataVisualizationComponents.renderCheckboxOptions(displayProducts, filters.products || [], loadBasisChart, true);
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      displayYears, displayYearAll, displayYearNone, loadBasisChart
+    );
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      displayProducts, displayProductAll, displayProductNone, loadBasisChart
+    );
   }
 
   function optimalItem(label, value, emphasis) {
@@ -221,229 +213,39 @@
     return Math.floor((reference - Date.UTC(2000, 0, 1)) / 86400000) + 1;
   }
 
-  function drawBasisZeroAxis(ctx, x1, x2, y) {
-    ctx.save();
-    ctx.strokeStyle = "#64748b";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x1, y);
-    ctx.lineTo(x2, y);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function collectYears(series) {
-    var years = new Set();
-    Object.keys(series).forEach(function(product) {
-      Object.keys(series[product] || {}).forEach(function(year) { years.add(year); });
-    });
-    return Array.from(years).sort();
-  }
-
-  function updateBasisYearLegend(years) {
-    yearLegend.innerHTML = years.map(function(year, index) {
-      var stateClass = basisState.highlightedYear
-        ? (basisState.highlightedYear === year ? " selected" : " dimmed")
-        : "";
-      return '<span class="dv-year-legend-item' + stateClass + '"><span class="dv-year-legend-swatch" style="background:' +
-        YEAR_COLORS[index % YEAR_COLORS.length] + '"></span>' + escapeHtml(year) + "</span>";
-    }).join("");
-  }
-
   function hideBasisTooltip() {
     chartTooltip.classList.add("hidden");
   }
 
   function renderBasisChart(series) {
-    var products = Object.keys(series);
-    var yearsForLegend = collectYears(series);
-    if (basisState.highlightedYear && !yearsForLegend.includes(basisState.highlightedYear)) {
-      basisState.highlightedYear = null;
-    }
-    updateBasisYearLegend(yearsForLegend);
-    hideBasisTooltip();
-
-    var container = chartCanvas.parentElement;
-    var width = Math.max(320, container.clientWidth);
-    var columns = width >= 1100 ? 3 : (width >= 720 ? 2 : 1);
-    var gap = 24;
-    var panelHeight = 230;
-    var rows = Math.max(1, Math.ceil(products.length / columns));
-    var height = Math.max(420, rows * panelHeight + (rows - 1) * gap);
-    var dpr = window.devicePixelRatio || 1;
-    chartCanvas.width = width * dpr;
-    chartCanvas.height = height * dpr;
-    chartCanvas.style.width = width + "px";
-    chartCanvas.style.height = height + "px";
-    var ctx = chartCanvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
-    basisState.chartHitPoints = [];
-    basisState.chartHitSegments = [];
-    if (!products.length) {
-      ctx.fillStyle = "#9ca3af";
-      ctx.font = "14px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("当前港口或筛选条件下暂无基差数据", width / 2, 190);
-      return;
-    }
-
-    var panelWidth = (width - gap * (columns - 1)) / columns;
-    products.forEach(function(product, productIndex) {
-      var col = productIndex % columns;
-      var row = Math.floor(productIndex / columns);
-      var originX = col * (panelWidth + gap);
-      var originY = row * (panelHeight + gap);
-      var pad = { top: 30, right: 18, bottom: 30, left: 48 };
-      var chartWidth = panelWidth - pad.left - pad.right;
-      var chartHeight = panelHeight - pad.top - pad.bottom;
-      var yearsMap = series[product] || {};
-      var years = Object.keys(yearsMap).sort();
-      var values = [];
-      years.forEach(function(year) {
-        (yearsMap[year] || []).forEach(function(point) {
-          if (Number.isFinite(Number(point.value))) values.push(Number(point.value));
-        });
-      });
-      if (!values.length) return;
-      var rawMin = Math.min.apply(null, values);
-      var rawMax = Math.max.apply(null, values);
-      var yMin = Math.min(0, rawMin);
-      var yMax = Math.max(0, rawMax);
-      var yPadding = (yMax - yMin) * 0.1 || 10;
-      yMin -= yPadding;
-      yMax += yPadding;
-      function xScale(dateString) {
-        return originX + pad.left + ((monthDayIndex(dateString) - 1) / 365) * chartWidth;
-      }
-      function yScale(value) {
-        return originY + pad.top + chartHeight - ((value - yMin) / (yMax - yMin)) * chartHeight;
-      }
-
-      ctx.fillStyle = "#111827";
-      ctx.font = "600 13px sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText(product, originX + pad.left, originY + 16);
-
-      ctx.strokeStyle = "#e5e7eb";
-      ctx.lineWidth = 1;
-      for (var grid = 0; grid <= 4; grid += 1) {
-        var gridY = originY + pad.top + (grid / 4) * chartHeight;
-        ctx.beginPath();
-        ctx.moveTo(originX + pad.left, gridY);
-        ctx.lineTo(originX + pad.left + chartWidth, gridY);
-        ctx.stroke();
-      }
-      drawBasisZeroAxis(ctx, originX + pad.left, originX + pad.left + chartWidth, yScale(0));
-      ctx.fillStyle = "#64748b";
-      ctx.font = "10px sans-serif";
-      ctx.textAlign = "right";
-      ctx.fillText(Math.round(yMax).toString(), originX + pad.left - 6, originY + pad.top + 4);
-      ctx.fillText("0", originX + pad.left - 6, yScale(0) + 4);
-      ctx.fillText(Math.round(yMin).toString(), originX + pad.left - 6, originY + pad.top + chartHeight);
-
-      ctx.textAlign = "center";
-      BASIS_MONTHS.forEach(function(month) {
-        var tickDate = "2000-" + String(month).padStart(2, "0") + "-01";
-        ctx.fillText(month + "月", xScale(tickDate), originY + pad.top + chartHeight + 18);
-      });
-
-      years.forEach(function(year) {
-        var points = yearsMap[year] || [];
-        var colorIndex = yearsForLegend.indexOf(year);
-        var color = YEAR_COLORS[Math.max(0, colorIndex) % YEAR_COLORS.length];
-        var dimmed = basisState.highlightedYear && basisState.highlightedYear !== year;
-        var selected = basisState.highlightedYear === year;
-        ctx.save();
-        ctx.globalAlpha = dimmed ? 0.18 : 1;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = selected ? 2.8 : 1.6;
-        ctx.beginPath();
-        var previous = null;
-        points.forEach(function(point, pointIndex) {
-          var value = Number(point.value);
-          var x = xScale(point.date);
-          var y = yScale(value);
-          if (pointIndex === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-          basisState.chartHitPoints.push({ x: x, y: y, product: product, year: year, point: point });
-          if (previous) {
-            basisState.chartHitSegments.push({
-              x1: previous.x, y1: previous.y, x2: x, y2: y, product: product, year: year,
-            });
-          }
-          previous = { x: x, y: y };
-        });
-        ctx.stroke();
-        ctx.fillStyle = color;
-        points.forEach(function(point) {
-          ctx.beginPath();
-          ctx.arc(xScale(point.date), yScale(Number(point.value)), selected ? 1.8 : 1.25, 0, Math.PI * 2);
-          ctx.fill();
-        });
-        ctx.restore();
-      });
+    DataVisualizationComponents.renderYearSmallMultiples({
+      canvas: chartCanvas,
+      legendElement: yearLegend,
+      tooltipElement: chartTooltip,
+      series: series,
+      state: basisState,
+      pointX: function(point) { return monthDayIndex(point.date); },
+      pointValue: function(point) { return Number(point.value); },
+      isMissing: function(point) {
+        return !point || point.value === null || point.value === undefined || point.value === "" ||
+          !Number.isFinite(Number(point.value));
+      },
+      xMin: 1,
+      xMax: 366,
+      axisTicks: DataVisualizationComponents.calendarMonthTicks,
+      includeZero: true,
+      drawZeroAxis: true,
+      emptyMessage: "当前港口或筛选条件下暂无基差数据",
+      tooltipHtml: function(hit) {
+        return "<strong>" + escapeHtml(hit.product) + "</strong>" +
+          "<span>日期：" + escapeHtml(hit.point.date) + "</span>" +
+          "<span>年份：" + escapeHtml(hit.year) + "</span>" +
+          "<span>品种：" + escapeHtml(hit.product) + "</span>" +
+          "<span>港口：" + escapeHtml(basisState.activePort) + "</span>" +
+          "<span>基差：" + formatNumber(hit.point.value) + " 元/吨</span>";
+      },
+      onHighlight: function() { renderBasisChart(basisState.lastChartSeries); },
     });
-  }
-
-  function segmentDistance(x, y, segment) {
-    var dx = segment.x2 - segment.x1;
-    var dy = segment.y2 - segment.y1;
-    var lengthSquared = dx * dx + dy * dy;
-    if (!lengthSquared) return Math.hypot(x - segment.x1, y - segment.y1);
-    var t = Math.max(0, Math.min(1, ((x - segment.x1) * dx + (y - segment.y1) * dy) / lengthSquared));
-    return Math.hypot(x - (segment.x1 + t * dx), y - (segment.y1 + t * dy));
-  }
-
-  function findNearestBasisLine(x, y, maxDistance) {
-    var closest = null;
-    var closestDistance = maxDistance;
-    basisState.chartHitSegments.forEach(function(segment) {
-      var distance = segmentDistance(x, y, segment);
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closest = segment;
-      }
-    });
-    return closest;
-  }
-
-  function findNearestBasisPoint(x, y, maxDistance) {
-    var closest = null;
-    var closestDistance = maxDistance;
-    basisState.chartHitPoints.forEach(function(hit) {
-      var distance = Math.hypot(x - hit.x, y - hit.y);
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closest = hit;
-      }
-    });
-    return closest;
-  }
-
-  function canvasCoordinates(event) {
-    var rect = chartCanvas.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) * (chartCanvas.clientWidth / rect.width),
-      y: (event.clientY - rect.top) * (chartCanvas.clientHeight / rect.height),
-    };
-  }
-
-  function showBasisTooltip(hit, event) {
-    chartTooltip.innerHTML = "<strong>" + escapeHtml(hit.product) + "</strong>" +
-      "<span>日期：" + escapeHtml(hit.point.date) + "</span>" +
-      "<span>年份：" + escapeHtml(hit.year) + "</span>" +
-      "<span>品种：" + escapeHtml(hit.product) + "</span>" +
-      "<span>港口：" + escapeHtml(basisState.activePort) + "</span>" +
-      "<span>基差：" + formatNumber(hit.point.value) + " 元/吨</span>";
-    chartTooltip.classList.remove("hidden");
-    var containerRect = chartCanvas.parentElement.getBoundingClientRect();
-    var left = event.clientX - containerRect.left + 14;
-    var top = event.clientY - containerRect.top + 14;
-    left = Math.min(left, containerRect.width - chartTooltip.offsetWidth - 8);
-    top = Math.min(top, containerRect.height - chartTooltip.offsetHeight - 8);
-    chartTooltip.style.left = Math.max(8, left) + "px";
-    chartTooltip.style.top = Math.max(8, top) + "px";
   }
 
   async function initDisplay() {
@@ -481,20 +283,6 @@
       item.classList.toggle("active", item === button);
     });
     loadBasisChart();
-  });
-  chartCanvas.addEventListener("mousemove", function(event) {
-    var point = canvasCoordinates(event);
-    var hit = findNearestBasisPoint(point.x, point.y, 16);
-    if (hit) showBasisTooltip(hit, event);
-    else hideBasisTooltip();
-  });
-  chartCanvas.addEventListener("mouseleave", hideBasisTooltip);
-  chartCanvas.addEventListener("click", function(event) {
-    var point = canvasCoordinates(event);
-    var hit = findNearestBasisLine(point.x, point.y, 8) || findNearestBasisPoint(point.x, point.y, 12);
-    if (!hit) return;
-    basisState.highlightedYear = basisState.highlightedYear === hit.year ? null : hit.year;
-    renderBasisChart(basisState.lastChartSeries);
   });
   window.addEventListener("resize", function() {
     if (!basisDisplayView.classList.contains("hidden")) renderBasisChart(basisState.lastChartSeries);
