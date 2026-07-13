@@ -94,7 +94,7 @@
 
 - [ ] Write failing source-contract tests for the four third-level labels, no basis upload/export controls, management fields, independent optimal-warrant block, year/product-only display filters, exact port-tab order and default `日照港`.
 - [ ] Run `node --test tests/iron_ore_basis_frontend.test.mjs`; expect failure.
-- [ ] Wrap current data and chart bodies as spot subviews; add sibling basis subviews and local third-level tabs without changing sidebar permissions.
+- [ ] Wrap current data and chart bodies as spot/basis subviews; render real nested third-level sidebar items under the existing data/chart parents without changing backend permission codes.
 - [ ] Implement default-all checkbox filters, 50-row management pagination, current-port-only chart requests and independent optimal-warrant request.
 - [ ] Render product small multiples in Canvas2D: daily points, month ticks, year colors, negative values, explicit zero axis, date/basis tooltip and responsive 3/2/1-column layout.
 - [ ] Add focused CSS using existing colors, typography, density, radii and responsive breakpoints; no separate concept or invented navigation.

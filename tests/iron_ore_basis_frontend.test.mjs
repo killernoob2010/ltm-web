@@ -10,13 +10,16 @@ const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8
 const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
 
 
-test("data pages expose spot and spot-futures third-level views", () => {
-  assert.match(indexHtml, /现货数据管理/);
-  assert.match(indexHtml, /期现数据管理/);
-  assert.match(indexHtml, /现货数据展示/);
-  assert.match(indexHtml, /期现数据展示/);
-  assert.match(appJs, /IronOreBasis\.activateManagement/);
-  assert.match(appJs, /IronOreBasis\.activateDisplay/);
+test("spot and spot-futures are real nested sidebar children, not page tabs", () => {
+  assert.doesNotMatch(indexHtml, /id="dvDataViewTabs"|id="dvDisplayViewTabs"/);
+  assert.doesNotMatch(indexHtml, /data-basis-management-view|data-basis-display-view/);
+  assert.match(appJs, /const DATA_VISUALIZATION_SUBMENUS = \{/);
+  assert.match(appJs, /data_visualization_data:\s*\[[\s\S]*?现货数据管理[\s\S]*?期现数据管理/);
+  assert.match(appJs, /data_visualization_chart:\s*\[[\s\S]*?现货数据展示[\s\S]*?期现数据展示/);
+  assert.match(appJs, /className = "menu-subitems"/);
+  assert.match(appJs, /className = `menu-subitem/);
+  assert.match(appJs, /activateModule\(item\.code, child\.name, child\.view\)/);
+  assert.match(appJs, /pageSubtitle\.textContent = `\$\{label\.group\} \/ \$\{label\.name\} \/ \$\{subName\}`/);
 });
 
 test("basis management is read-only and exposes the confirmed fields", () => {
@@ -30,6 +33,23 @@ test("basis management is read-only and exposes the confirmed fields", () => {
   ]) assert.match(section, new RegExp(label));
   assert.doesNotMatch(section, /导入 Excel|导出|编辑|删除/);
   assert.match(section, /ironOreBasisManagementLoadMore/);
+});
+
+test("basis filters reuse the spot checkbox panel and all-none controls", () => {
+  for (const id of [
+    "ironOreBasisManagementYearAll", "ironOreBasisManagementYearNone",
+    "ironOreBasisManagementProductAll", "ironOreBasisManagementProductNone",
+    "ironOreBasisManagementPortAll", "ironOreBasisManagementPortNone",
+    "ironOreBasisDisplayYearAll", "ironOreBasisDisplayYearNone",
+    "ironOreBasisDisplayProductAll", "ironOreBasisDisplayProductNone",
+  ]) {
+    assert.match(indexHtml, new RegExp(`id="${id}"`));
+  }
+  assert.match(indexHtml, /class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementYearAll"/);
+  assert.match(indexHtml, /class="dv-filter-btn dv-filter-none" id="ironOreBasisDisplayProductNone"/);
+  assert.match(basisJs, /function bindFilterActions\(container, allButton, noneButton, onChange\)/);
+  assert.match(basisJs, /bindFilterActions\(managementYears, managementYearAll, managementYearNone/);
+  assert.match(basisJs, /bindFilterActions\(displayProducts, displayProductAll, displayProductNone/);
 });
 
 test("basis display keeps optimal warrant independent from chart controls", () => {
@@ -57,19 +77,33 @@ test("basis display filters only year and product and defaults to Rizhao port", 
   assert.match(basisJs, /activePort:\s*"日照港"/);
 });
 
+test("basis chart has all months, one shared legend, selection and a real-point tooltip", () => {
+  assert.match(indexHtml, /id="ironOreBasisYearLegend" class="dv-year-legend"/);
+  assert.match(indexHtml, /id="ironOreBasisTooltip" class="iron-ore-basis-tooltip hidden"/);
+  assert.match(basisJs, /var BASIS_MONTHS = \[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12\];/);
+  assert.match(basisJs, /function updateBasisYearLegend\(years\)/);
+  assert.doesNotMatch(basisJs, /var legendX =/);
+  assert.match(basisJs, /highlightedYear:\s*null/);
+  assert.match(basisJs, /chartHitSegments:\s*\[\]/);
+  assert.match(basisJs, /function findNearestBasisLine\(x, y/);
+  assert.match(basisJs, /chartCanvas\.addEventListener\("click"/);
+  assert.match(basisJs, /basisState\.highlightedYear = basisState\.highlightedYear === hit\.year \? null : hit\.year/);
+  for (const field of ["日期", "年份", "品种", "港口", "基差"]) assert.match(basisJs, new RegExp(field));
+  assert.match(basisCss, /\.iron-ore-basis-tooltip/);
+});
+
 test("basis chart requests only the active port and renders negative values with a zero axis", () => {
   assert.match(basisJs, /display\/chart\?port=" \+ encodeURIComponent\(basisState\.activePort\)/);
   assert.match(basisJs, /Math\.min\(0,/);
   assert.match(basisJs, /Math\.max\(0,/);
   assert.match(basisJs, /drawBasisZeroAxis/);
-  assert.match(basisJs, /basisMonthLabel/);
   assert.match(basisCss, /iron-ore-basis-chart-container/);
 });
 
 test("basis assets are loaded after the existing app controller", () => {
   assert.ok(indexHtml.indexOf("/static/app.js") < indexHtml.indexOf("/static/iron_ore_basis.js"));
-  assert.match(indexHtml, /app\.js\?v=iron-ore-basis-20260713/);
-  assert.match(indexHtml, /iron_ore_basis\.css\?v=/);
+  assert.match(indexHtml, /app\.js\?v=iron-ore-basis-ui-20260713/);
+  assert.match(indexHtml, /iron_ore_basis\.css\?v=iron-ore-basis-ui-20260713/);
 });
 
 test("mobile app shell grows beyond the sidebar so the workspace remains reachable", () => {

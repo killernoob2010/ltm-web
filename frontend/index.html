@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=iron-ore-basis-20260713" />
+    <link rel="stylesheet" href="/static/styles.css?v=iron-ore-basis-ui-20260713b" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
-    <link rel="stylesheet" href="/static/iron_ore_basis.css?v=20260713a" />
+    <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-ui-20260713b" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -599,10 +599,6 @@
 
       <!-- 数据可视化管理 - 图表数据管理 -->
       <section id="dvDataPage" class="page hidden">
-        <div class="dv-tabs iron-ore-basis-view-tabs" id="dvDataViewTabs">
-          <button type="button" class="dv-tab active" data-basis-management-view="spot">现货数据管理</button>
-          <button type="button" class="dv-tab" data-basis-management-view="basis">期现数据管理</button>
-        </div>
         <div id="dvSpotDataView">
         <div class="toolbar">
           <button type="button" id="dvImportBtn">📥 导入 Excel</button>
@@ -682,15 +678,27 @@
           <div class="dv-chart-controls-row">
             <div class="dv-chart-controls iron-ore-basis-filter-row">
               <div class="dv-checkbox-panel dv-year-panel">
-                <div class="dv-checkbox-panel-header"><span>年份</span></div>
+                <div class="dv-checkbox-panel-header">
+                  <span>年份</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementYearAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisManagementYearNone">全不选</button>
+                </div>
                 <div class="dv-checkbox-group" id="ironOreBasisManagementYears"></div>
               </div>
               <div class="dv-checkbox-panel dv-product-panel">
-                <div class="dv-checkbox-panel-header"><span>品种</span></div>
+                <div class="dv-checkbox-panel-header">
+                  <span>品种</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementProductAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisManagementProductNone">全不选</button>
+                </div>
                 <div class="dv-checkbox-group" id="ironOreBasisManagementProducts"></div>
               </div>
               <div class="dv-checkbox-panel iron-ore-basis-port-filter">
-                <div class="dv-checkbox-panel-header"><span>港口</span></div>
+                <div class="dv-checkbox-panel-header">
+                  <span>港口</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementPortAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisManagementPortNone">全不选</button>
+                </div>
                 <div class="dv-checkbox-group" id="ironOreBasisManagementPorts"></div>
               </div>
             </div>
@@ -716,10 +724,6 @@
 
         <!-- 数据可视化管理 - 数据展示 -->
         <section id="dvChartPage" class="page hidden">
-         <div class="dv-tabs iron-ore-basis-view-tabs" id="dvDisplayViewTabs">
-           <button type="button" class="dv-tab active" data-basis-display-view="spot">现货数据展示</button>
-           <button type="button" class="dv-tab" data-basis-display-view="basis">期现数据展示</button>
-         </div>
          <div id="dvSpotChartView">
          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
@@ -807,28 +811,40 @@
            <div class="dv-chart-controls-row">
              <div class="dv-chart-controls iron-ore-basis-filter-row">
                <div class="dv-checkbox-panel dv-year-panel">
-                 <div class="dv-checkbox-panel-header"><span>年份</span></div>
+                 <div class="dv-checkbox-panel-header">
+                   <span>年份</span>
+                   <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisDisplayYearAll">全选</button>
+                   <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisDisplayYearNone">全不选</button>
+                 </div>
                  <div class="dv-checkbox-group" id="ironOreBasisDisplayYears"></div>
                </div>
                <div class="dv-checkbox-panel dv-product-panel">
-                 <div class="dv-checkbox-panel-header"><span>品种</span></div>
+                 <div class="dv-checkbox-panel-header">
+                   <span>品种</span>
+                   <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisDisplayProductAll">全选</button>
+                   <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisDisplayProductNone">全不选</button>
+                 </div>
                  <div class="dv-checkbox-group" id="ironOreBasisDisplayProducts"></div>
                </div>
              </div>
            </div>
-           <div class="dv-tabs iron-ore-basis-port-tabs" id="ironOreBasisPortTabs">
-             <button type="button" class="dv-tab active" data-basis-port="日照港">日照港</button>
-             <button type="button" class="dv-tab" data-basis-port="青岛港">青岛港</button>
-             <button type="button" class="dv-tab" data-basis-port="岚山港">岚山港</button>
-             <button type="button" class="dv-tab" data-basis-port="连云港">连云港</button>
-             <button type="button" class="dv-tab" data-basis-port="江阴港">江阴港</button>
-             <button type="button" class="dv-tab" data-basis-port="太仓港">太仓港</button>
-             <button type="button" class="dv-tab" data-basis-port="京唐港">京唐港</button>
-             <button type="button" class="dv-tab" data-basis-port="曹妃甸港">曹妃甸港</button>
+           <div class="dv-chart-tabs-row iron-ore-basis-chart-tabs-row">
+             <div class="dv-tabs iron-ore-basis-port-tabs" id="ironOreBasisPortTabs">
+               <button type="button" class="dv-tab active" data-basis-port="日照港">日照港</button>
+               <button type="button" class="dv-tab" data-basis-port="青岛港">青岛港</button>
+               <button type="button" class="dv-tab" data-basis-port="岚山港">岚山港</button>
+               <button type="button" class="dv-tab" data-basis-port="连云港">连云港</button>
+               <button type="button" class="dv-tab" data-basis-port="江阴港">江阴港</button>
+               <button type="button" class="dv-tab" data-basis-port="太仓港">太仓港</button>
+               <button type="button" class="dv-tab" data-basis-port="京唐港">京唐港</button>
+               <button type="button" class="dv-tab" data-basis-port="曹妃甸港">曹妃甸港</button>
+             </div>
+             <div id="ironOreBasisYearLegend" class="dv-year-legend"></div>
            </div>
            <div class="chart-container iron-ore-basis-chart-container">
              <div id="ironOreBasisChartStatus" class="dv-chart-status"></div>
              <canvas id="ironOreBasisChartCanvas" aria-label="铁矿石港口基差日度图表"></canvas>
+             <div id="ironOreBasisTooltip" class="iron-ore-basis-tooltip hidden" role="status"></div>
            </div>
          </section>
         </section>
@@ -1291,7 +1307,7 @@
     <div id="tmToast" class="tm-toast hidden" role="status"></div>
 
     <script src="/static/trading_management.js?v=20260712h"></script>
-    <script src="/static/app.js?v=iron-ore-basis-20260713"></script>
-    <script src="/static/iron_ore_basis.js?v=20260713a"></script>
+    <script src="/static/app.js?v=iron-ore-basis-ui-20260713b"></script>
+    <script src="/static/iron_ore_basis.js?v=iron-ore-basis-ui-20260713b"></script>
   </body>
 </html>

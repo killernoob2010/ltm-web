@@ -32,9 +32,22 @@ const state = {
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
+  expandedMenuItems: new Set(["data_visualization_data", "data_visualization_chart"]),
+  activeSubmodule: "",
   operationLogs: [],
   operationLogCursor: null,
   operationLogsHasMore: false,
+};
+
+const DATA_VISUALIZATION_SUBMENUS = {
+  data_visualization_data: [
+    { name: "现货数据管理", view: "spot" },
+    { name: "期现数据管理", view: "basis" },
+  ],
+  data_visualization_chart: [
+    { name: "现货数据展示", view: "spot" },
+    { name: "期现数据展示", view: "basis" },
+  ],
 };
 
 const loginView = document.querySelector("#loginView");
@@ -392,6 +405,38 @@ function renderMenu() {
     const itemsWrap = document.createElement("div");
     itemsWrap.className = "menu-group-items";
     for (const item of group.items) {
+      const children = DATA_VISUALIZATION_SUBMENUS[item.code];
+      if (children) {
+        const parentButton = document.createElement("button");
+        const isExpanded = state.expandedMenuItems.has(item.code);
+        parentButton.type = "button";
+        parentButton.className = "menu-item menu-item-parent";
+        parentButton.setAttribute("aria-expanded", String(isExpanded));
+        parentButton.innerHTML = `<span>${item.name}</span><span class="menu-item-toggle">${isExpanded ? "−" : "+"}</span>`;
+        parentButton.addEventListener("click", function() {
+          if (state.expandedMenuItems.has(item.code)) state.expandedMenuItems.delete(item.code);
+          else state.expandedMenuItems.add(item.code);
+          renderMenu();
+        });
+        itemsWrap.appendChild(parentButton);
+
+        const subitems = document.createElement("div");
+        subitems.className = "menu-subitems";
+        subitems.classList.toggle("hidden", !isExpanded);
+        children.forEach(function(child) {
+          const childButton = document.createElement("button");
+          const isActive = item.code === state.activeModule && child.view === state.activeSubmodule;
+          childButton.type = "button";
+          childButton.className = `menu-subitem ${isActive ? "active" : ""}`;
+          childButton.textContent = child.name;
+          childButton.addEventListener("click", function() {
+            activateModule(item.code, child.name, child.view);
+          });
+          subitems.appendChild(childButton);
+        });
+        itemsWrap.appendChild(subitems);
+        continue;
+      }
       const button = document.createElement("button");
       button.className = `menu-item ${item.code === state.activeModule ? "active" : ""}`;
       button.textContent = item.name;
@@ -423,8 +468,9 @@ async function activateDVSpotChart() {
 window.activateDVSpotData = activateDVSpotData;
 window.activateDVSpotChart = activateDVSpotChart;
 
-async function activateModule(code, subName) {
+async function activateModule(code, subName, subView = "") {
   state.activeModule = code;
+  state.activeSubmodule = DATA_VISUALIZATION_SUBMENUS[code] ? (subView || "spot") : "";
   const tradingModuleCodes = ["trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export"];
   const isTradingModule = tradingModuleCodes.includes(code);
   globalTopbar.classList.toggle("hidden", isTradingModule);
@@ -433,9 +479,14 @@ async function activateModule(code, subName) {
   stopInfoSummaryAutoRefresh();
   const label = moduleLabel(code);
   if (label.group) state.collapsedMenuGroups.delete(label.group);
+  if (DATA_VISUALIZATION_SUBMENUS[code]) state.expandedMenuItems.add(code);
   renderMenu();
-  pageTitle.textContent = label.name;
-  pageSubtitle.textContent = `${label.group} / ${label.name}`;
+  pageTitle.textContent = subName || label.name;
+  if (DATA_VISUALIZATION_SUBMENUS[code] && subName) {
+    pageSubtitle.textContent = `${label.group} / ${label.name} / ${subName}`;
+  } else {
+    pageSubtitle.textContent = `${label.group} / ${label.name}`;
+  }
 
   if (code === "info_summary") {
     showOnly(infoSummaryPage);
@@ -484,13 +535,13 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization_data") {
     showOnly(dvDataPage);
-    if (window.IronOreBasis) await window.IronOreBasis.activateManagement();
+    if (window.IronOreBasis) await window.IronOreBasis.activateManagement(state.activeSubmodule);
     else await initDVData();
     return;
   }
   if (code === "data_visualization_chart") {
     showOnly(dvChartPage);
-    if (window.IronOreBasis) await window.IronOreBasis.activateDisplay();
+    if (window.IronOreBasis) await window.IronOreBasis.activateDisplay(state.activeSubmodule);
     else {
       if (!dvState.dvChartControlsInitialized) {
         await initDVChartControls();

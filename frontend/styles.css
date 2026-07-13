@@ -247,6 +247,43 @@ textarea {
   background: #314050;
 }
 
+.menu-item-parent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.menu-item-toggle {
+  color: #9fb0c0;
+  font-size: 12px;
+}
+
+.menu-subitems {
+  margin: 2px 0 8px 12px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.menu-subitem {
+  width: 100%;
+  display: block;
+  margin: 2px 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #cbd7e2;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.menu-subitem:hover,
+.menu-subitem.active {
+  background: #314050;
+  color: #fff;
+}
+
 .workspace {
   overflow: hidden;
   min-width: 0;
