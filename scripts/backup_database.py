@@ -28,6 +28,8 @@ CORE_TABLES = [
     "dv_integrated_points",
     "iron_ore_basis_results",
     "iron_ore_basis_details",
+    "iron_ore_basis_sync_runs",
+    "iron_ore_basis_source_points",
     "order_finance_progress",
     "sh_junneng_positions",
     "sh_junneng_close_trades",

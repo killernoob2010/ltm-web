@@ -1164,17 +1164,62 @@ def migrate_iron_ore_basis_schema(conn) -> None:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS iron_ore_basis_sync_runs (
+                id SERIAL PRIMARY KEY,
+                slot_key TEXT NOT NULL UNIQUE,
+                trigger_type TEXT NOT NULL,
+                target_start_date TEXT NOT NULL,
+                target_end_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_points_seen INTEGER NOT NULL DEFAULT 0,
+                source_points_inserted INTEGER NOT NULL DEFAULT 0,
+                source_differences INTEGER NOT NULL DEFAULT 0,
+                combinations_written INTEGER NOT NULL DEFAULT 0,
+                combinations_skipped INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                error_summary TEXT,
+                started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                finished_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS iron_ore_basis_source_points (
+                id SERIAL PRIMARY KEY,
+                source_name TEXT NOT NULL,
+                indicator_key TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                canonical_value DOUBLE PRECISION NOT NULL,
+                canonical_payload_sha256 TEXT NOT NULL,
+                first_run_id INTEGER REFERENCES iron_ore_basis_sync_runs(id) ON DELETE SET NULL,
+                last_observed_value DOUBLE PRECISION NOT NULL,
+                last_observed_payload_sha256 TEXT NOT NULL,
+                difference_detected INTEGER NOT NULL DEFAULT 0,
+                difference_count INTEGER NOT NULL DEFAULT 0,
+                first_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_name, indicator_key, business_date)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_results_query
             ON iron_ore_basis_results(business_year, port, product, business_date);
             CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_results_optimal
             ON iron_ore_basis_results(business_year, data_status, business_date, basis);
             CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_details_result
             ON iron_ore_basis_details(result_id);
+            CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_sync_runs_window
+            ON iron_ore_basis_sync_runs(target_start_date, target_end_date, status);
+            CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_source_points_date
+            ON iron_ore_basis_source_points(business_date, source_name, indicator_key);
 
             ALTER TABLE iron_ore_basis_results ENABLE ROW LEVEL SECURITY;
             ALTER TABLE iron_ore_basis_details ENABLE ROW LEVEL SECURITY;
-            REVOKE ALL ON TABLE iron_ore_basis_results, iron_ore_basis_details FROM anon, authenticated;
-            REVOKE ALL ON SEQUENCE iron_ore_basis_results_id_seq, iron_ore_basis_details_id_seq FROM anon, authenticated;
+            ALTER TABLE iron_ore_basis_sync_runs ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE iron_ore_basis_source_points ENABLE ROW LEVEL SECURITY;
+            REVOKE ALL ON TABLE iron_ore_basis_results, iron_ore_basis_details,
+                iron_ore_basis_sync_runs, iron_ore_basis_source_points FROM anon, authenticated;
+            REVOKE ALL ON SEQUENCE iron_ore_basis_results_id_seq, iron_ore_basis_details_id_seq,
+                iron_ore_basis_sync_runs_id_seq, iron_ore_basis_source_points_id_seq FROM anon, authenticated;
             """
         )
         return
@@ -1257,12 +1302,54 @@ def migrate_iron_ore_basis_schema(conn) -> None:
             FOREIGN KEY (result_id) REFERENCES iron_ore_basis_results(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS iron_ore_basis_sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_key TEXT NOT NULL UNIQUE,
+            trigger_type TEXT NOT NULL,
+            target_start_date TEXT NOT NULL,
+            target_end_date TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_points_seen INTEGER NOT NULL DEFAULT 0,
+            source_points_inserted INTEGER NOT NULL DEFAULT 0,
+            source_differences INTEGER NOT NULL DEFAULT 0,
+            combinations_written INTEGER NOT NULL DEFAULT 0,
+            combinations_skipped INTEGER NOT NULL DEFAULT 0,
+            error_code TEXT,
+            error_summary TEXT,
+            started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS iron_ore_basis_source_points (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_name TEXT NOT NULL,
+            indicator_key TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            canonical_value REAL NOT NULL,
+            canonical_payload_sha256 TEXT NOT NULL,
+            first_run_id INTEGER,
+            last_observed_value REAL NOT NULL,
+            last_observed_payload_sha256 TEXT NOT NULL,
+            difference_detected INTEGER NOT NULL DEFAULT 0,
+            difference_count INTEGER NOT NULL DEFAULT 0,
+            first_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_name, indicator_key, business_date),
+            FOREIGN KEY (first_run_id) REFERENCES iron_ore_basis_sync_runs(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_results_query
         ON iron_ore_basis_results(business_year, port, product, business_date);
         CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_results_optimal
         ON iron_ore_basis_results(business_year, data_status, business_date, basis);
         CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_details_result
         ON iron_ore_basis_details(result_id);
+        CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_sync_runs_window
+        ON iron_ore_basis_sync_runs(target_start_date, target_end_date, status);
+        CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_source_points_date
+        ON iron_ore_basis_source_points(business_date, source_name, indicator_key);
         """
     )
 

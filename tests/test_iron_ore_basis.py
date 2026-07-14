@@ -73,20 +73,60 @@ def test_iron_ore_basis_schema_is_idempotent_and_indexed(tmp_path, monkeypatch):
 
     assert "iron_ore_basis_results" in tables
     assert "iron_ore_basis_details" in tables
+    assert "iron_ore_basis_sync_runs" in tables
+    assert "iron_ore_basis_source_points" in tables
     assert "idx_iron_ore_basis_results_query" in indexes
     assert "idx_iron_ore_basis_results_optimal" in indexes
     assert "idx_iron_ore_basis_details_result" in indexes
+    assert "idx_iron_ore_basis_sync_runs_window" in indexes
+    assert "idx_iron_ore_basis_source_points_date" in indexes
     assert any(
         row["table"] == "iron_ore_basis_results" and row["from"] == "result_id"
         for row in detail_foreign_keys
     )
 
 
-def test_database_backup_includes_both_basis_tables():
+def test_database_backup_includes_all_basis_tables():
     from scripts.backup_database import CORE_TABLES
 
     assert "iron_ore_basis_results" in CORE_TABLES
     assert "iron_ore_basis_details" in CORE_TABLES
+    assert "iron_ore_basis_sync_runs" in CORE_TABLES
+    assert "iron_ore_basis_source_points" in CORE_TABLES
+
+
+def test_basis_source_points_have_stable_unique_business_key(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """INSERT INTO iron_ore_basis_sync_runs
+               (slot_key, trigger_type, target_start_date, target_end_date, status)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("manual:2026-07-13", "manual", "2026-07-13", "2026-07-13", "running"),
+        )
+        run_id = cur.lastrowid
+        db._exec(
+            cur,
+            """INSERT INTO iron_ore_basis_source_points
+               (source_name, indicator_key, business_date, canonical_value,
+                canonical_payload_sha256, first_run_id, last_observed_value,
+                last_observed_payload_sha256)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("EBC", "ID-PB", "2026-07-13", 700, "a" * 64, run_id, 700, "a" * 64),
+        )
+
+        with pytest.raises(Exception, match="UNIQUE"):
+            db._exec(
+                cur,
+                """INSERT INTO iron_ore_basis_source_points
+                   (source_name, indicator_key, business_date, canonical_value,
+                    canonical_payload_sha256, first_run_id, last_observed_value,
+                    last_observed_payload_sha256)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("EBC", "ID-PB", "2026-07-13", 701, "b" * 64, run_id, 701, "b" * 64),
+            )
 
 
 def test_management_filters_rows_and_pagination_default_to_all(tmp_path, monkeypatch):
