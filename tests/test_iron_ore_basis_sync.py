@@ -17,6 +17,7 @@ from app.iron_ore_basis_sync import (  # noqa: E402
     auto_sync_enabled,
     due_sync_slots,
     startup_sync_window,
+    startup_target_date,
     sync_basis_range,
 )
 from scripts.sync_iron_ore_basis import build_parser  # noqa: E402
@@ -220,6 +221,28 @@ def test_changed_source_value_is_recorded_without_overwriting_canonical_or_resul
     assert current_basis == original_basis
 
 
+def test_changed_source_update_uses_postgres_boolean_case_condition(monkeypatch):
+    class ExistingPoint:
+        @staticmethod
+        def fetchone():
+            return {"canonical_value": 780}
+
+    executed_sql = []
+
+    def postgres_validating_exec(_cur, sql, _params=()):
+        executed_sql.append(sql)
+        if sql.lstrip().startswith("SELECT"):
+            return ExistingPoint()
+        if "CASE WHEN ? THEN" in sql:
+            raise RuntimeError("PostgreSQL CASE/WHEN condition must be boolean")
+        return None
+
+    monkeypatch.setattr(db, "_exec", postgres_validating_exec)
+
+    assert sync_module._observe_point(None, ebc_point(value=790), 1) == (0, 1)
+    assert any("CASE WHEN ? <> 0 THEN" in sql for sql in executed_sql)
+
+
 def test_manual_cli_defaults_to_dry_run():
     args = build_parser().parse_args(["--start-date", "2026-07-13", "--end-date", "2026-07-14"])
 
@@ -325,6 +348,14 @@ def test_startup_window_looks_back_ten_days_without_crossing_api_start():
         date(2026, 7, 22),
         date(2026, 8, 5),
     )
+
+
+def test_startup_target_date_does_not_freeze_intraday_values():
+    timezone = ZoneInfo("Asia/Shanghai")
+
+    assert startup_target_date(datetime(2026, 7, 14, 14, 30, tzinfo=timezone)) == date(2026, 7, 13)
+    assert startup_target_date(datetime(2026, 7, 14, 21, 29, tzinfo=timezone)) == date(2026, 7, 13)
+    assert startup_target_date(datetime(2026, 7, 14, 21, 30, tzinfo=timezone)) == date(2026, 7, 14)
 
 
 def test_auto_sync_is_disabled_unless_explicitly_enabled(monkeypatch):

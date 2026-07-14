@@ -59,6 +59,17 @@ def startup_sync_window(latest_result_date: date | None, today: date) -> tuple[d
     return max(API_START_DATE, lookback_start), today
 
 
+def startup_target_date(current: datetime) -> date:
+    shanghai_now = (
+        current.replace(tzinfo=SHANGHAI_TZ)
+        if current.tzinfo is None
+        else current.astimezone(SHANGHAI_TZ)
+    )
+    if shanghai_now.time() >= datetime_time(21, 30):
+        return shanghai_now.date()
+    return shanghai_now.date() - timedelta(days=1)
+
+
 def due_sync_slots(now: datetime) -> list[SyncSlot]:
     current = now.replace(tzinfo=SHANGHAI_TZ) if now.tzinfo is None else now.astimezone(SHANGHAI_TZ)
     today = current.date()
@@ -277,8 +288,8 @@ def _observe_point(cur, point: SourcePoint, run_id: int) -> tuple[int, int]:
         cur,
         """UPDATE iron_ore_basis_source_points
            SET last_observed_value = ?, last_observed_payload_sha256 = ?,
-               difference_detected = CASE WHEN ? THEN 1 ELSE difference_detected END,
-               difference_count = difference_count + CASE WHEN ? THEN 1 ELSE 0 END,
+               difference_detected = CASE WHEN ? <> 0 THEN 1 ELSE difference_detected END,
+               difference_count = difference_count + CASE WHEN ? <> 0 THEN 1 ELSE 0 END,
                last_observed_at = CURRENT_TIMESTAMP
            WHERE source_name = ? AND indicator_key = ? AND business_date = ?""",
         (
@@ -446,7 +457,7 @@ def _latest_result_date() -> date | None:
 def run_startup_basis_sync(now: datetime | None = None) -> SyncSummary:
     current = now or datetime.now(SHANGHAI_TZ)
     current = current.replace(tzinfo=SHANGHAI_TZ) if current.tzinfo is None else current.astimezone(SHANGHAI_TZ)
-    start_date, end_date = startup_sync_window(_latest_result_date(), current.date())
+    start_date, end_date = startup_sync_window(_latest_result_date(), startup_target_date(current))
     return sync_basis_range(
         start_date,
         end_date,
