@@ -37,6 +37,14 @@ test("basis management is read-only and exposes the confirmed fields", () => {
   assert.doesNotMatch(section, /ironOreBasisManagementLoadMore/);
 });
 
+test("basis pages show only the latest stored data date as update status", () => {
+  assert.match(indexHtml, /id="ironOreBasisManagementLatestDate"[^>]*>最新数据日期：正在加载/);
+  assert.match(indexHtml, /id="ironOreBasisDisplayLatestDate"[^>]*>最新数据日期：正在加载/);
+  assert.match(basisJs, /managementLatestDate\.textContent = "最新数据日期：" \+ \(filters\.latest_data_date \|\| "暂无数据"\)/);
+  assert.match(basisJs, /displayLatestDate\.textContent = "最新数据日期：" \+ \(filters\.latest_data_date \|\| "暂无数据"\)/);
+  assert.doesNotMatch(indexHtml, /异常数据|同步异常|失败次数/);
+});
+
 test("basis management uses the shared 20 50 100 server pagination", () => {
   assert.match(basisJs, /managementPage:\s*1/);
   assert.match(basisJs, /managementPageSize:\s*20/);

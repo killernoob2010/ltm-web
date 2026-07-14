@@ -16,6 +16,8 @@
   var basisManagementView = document.querySelector("#ironOreBasisManagementView");
   var spotDisplayView = document.querySelector("#dvSpotChartView");
   var basisDisplayView = document.querySelector("#ironOreBasisDisplayView");
+  var managementLatestDate = document.querySelector("#ironOreBasisManagementLatestDate");
+  var displayLatestDate = document.querySelector("#ironOreBasisDisplayLatestDate");
   var managementYears = document.querySelector("#ironOreBasisManagementYears");
   var managementProducts = document.querySelector("#ironOreBasisManagementProducts");
   var managementPorts = document.querySelector("#ironOreBasisManagementPorts");
@@ -77,6 +79,7 @@
 
   async function loadManagementFilters() {
     var filters = await request("/api/iron-ore-basis/management/filters");
+    managementLatestDate.textContent = "最新数据日期：" + (filters.latest_data_date || "暂无数据");
     DataVisualizationComponents.renderCheckboxOptions(
       managementYears, filters.years || [], function() { loadManagementRows(false); }, true
     );
@@ -156,6 +159,7 @@
 
   async function loadDisplayFilters() {
     var filters = await request("/api/iron-ore-basis/display/filters");
+    displayLatestDate.textContent = "最新数据日期：" + (filters.latest_data_date || "暂无数据");
     DataVisualizationComponents.renderCheckboxOptions(displayYears, filters.years || [], loadBasisChart, true);
     DataVisualizationComponents.renderCheckboxOptions(displayProducts, filters.products || [], loadBasisChart, true);
     DataVisualizationComponents.bindCheckboxPanelActions(

@@ -130,7 +130,7 @@ def test_basis_source_points_have_stable_unique_business_key(tmp_path, monkeypat
 
 
 def test_management_filters_rows_and_pagination_default_to_all(tmp_path, monkeypatch):
-    from app.iron_ore_basis import management_filters, management_rows
+    from app.iron_ore_basis import display_filters, management_filters, management_rows
 
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:
@@ -149,13 +149,26 @@ def test_management_filters_rows_and_pagination_default_to_all(tmp_path, monkeyp
     admin = {"id": 1, "name": "admin", "role": "管理员"}
 
     filters = asyncio.run(management_filters(user=admin))
+    display = asyncio.run(display_filters(user=admin))
     page = asyncio.run(management_rows(years="", products="", ports="", limit=1, offset=1, user=admin))
 
     assert filters["years"] == [2025, 2026]
+    assert filters["latest_data_date"] == "2026-07-10"
+    assert display["latest_data_date"] == "2026-07-10"
     assert filters["ports"][0] == "日照港"
     assert "昆巴粉" in filters["products"]
     assert page["pagination"] == {"total": 2, "limit": 1, "offset": 1, "has_more": False}
     assert page["data"][0]["business_date"] == "2025-07-10"
+
+
+def test_basis_filters_report_no_latest_date_when_table_is_empty(tmp_path, monkeypatch):
+    from app.iron_ore_basis import display_filters, management_filters
+
+    use_temp_db(tmp_path, monkeypatch)
+    admin = {"id": 1, "name": "admin", "role": "管理员"}
+
+    assert asyncio.run(management_filters(user=admin))["latest_data_date"] is None
+    assert asyncio.run(display_filters(user=admin))["latest_data_date"] is None
 
 
 def test_management_requires_data_view_permission(tmp_path, monkeypatch):

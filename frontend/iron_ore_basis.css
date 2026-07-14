@@ -183,3 +183,8 @@
     width: 100%;
   }
 }
+.iron-ore-basis-latest-date {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+}

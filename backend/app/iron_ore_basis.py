@@ -35,7 +35,7 @@ def _ordered(values: list[Any], preferred: list[Any]) -> list[Any]:
     return output
 
 
-def _filters_for_permission(resource: str, user: dict) -> dict[str, list[Any]]:
+def _filters_for_permission(resource: str, user: dict) -> dict[str, Any]:
     dv_require_view(resource, user)
     with db.connect() as conn:
         cur = conn.cursor()
@@ -60,10 +60,15 @@ def _filters_for_permission(resource: str, user: dict) -> dict[str, list[Any]]:
                 "SELECT DISTINCT port FROM iron_ore_basis_results",
             ).fetchall()
         ]
+        latest_row = db._exec(
+            cur,
+            "SELECT MAX(business_date) AS latest_data_date FROM iron_ore_basis_results",
+        ).fetchone()
     return {
         "years": years,
         "products": _ordered(products, PRODUCT_ORDER),
         "ports": _ordered(ports, PORT_ORDER),
+        "latest_data_date": latest_row["latest_data_date"],
     }
 
 
@@ -75,7 +80,12 @@ async def management_filters(user=Depends(dv_current_user)):
 @router.get("/iron-ore-basis/display/filters")
 async def display_filters(user=Depends(dv_current_user)):
     filters = _filters_for_permission("data_visualization.display", user)
-    return {"years": filters["years"], "products": filters["products"], "ports": filters["ports"]}
+    return {
+        "years": filters["years"],
+        "products": filters["products"],
+        "ports": filters["ports"],
+        "latest_data_date": filters["latest_data_date"],
+    }
 
 
 def _where_filters(
