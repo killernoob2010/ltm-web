@@ -24,7 +24,7 @@
 - 新表 `iron_ore_basis_source_points` 与 `iron_ore_basis_sync_runs` 在 PostgreSQL 中必须启用 RLS，不为 `anon`/`authenticated` 创建策略，并撤销表和序列权限。
 - Staging 的 `IRON_ORE_BASIS_AUTO_SYNC_ENABLED` 保持关闭；只通过受控命令手动执行 dry-run 与 `--apply`。Production 只有 Gate B 后才设置为开启。
 - 保持外科式修改：不重构其他行情、风险、交易或数据可视化模块；不改现有导航和权限模型；不处理工作区已有的无关未提交文件。
-- AI SDLC 评估：D3（期现模块内的数据源、计算、存储、调度、API、UI 联动）；T4（需要从真实来源到页面的端到端验证）；R3（生产数据库、密钥与自动任务有高影响门槛）；C2（多模块长链路，由一个主执行者完成，除非用户另行要求，不启用子代理）。
+- AI SDLC 评估：D2（现有期现功能的数据接入方式优化）；T1（完整验证 API 自动更新这一项功能）；R2（增量、可关闭、可定位且可恢复的数据变更）；C2（单主 Agent 分阶段完成外部接口、计算、存储和调度验证，不启用子代理）。
 
 ---
 
