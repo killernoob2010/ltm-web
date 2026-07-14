@@ -97,6 +97,32 @@ class StaticHistoryProvider:
         return {dt: v for dt, v in raw.items() if date.fromisoformat(dt) >= since}
 
 
+def parse_sina_history_text(
+    text: str,
+    *,
+    since_date: str = "1980-01-01",
+    end_date: str | None = None,
+) -> dict[str, float]:
+    """Parse Sina daily-history JSONP without swallowing transport errors."""
+    since = date.fromisoformat(since_date)
+    until = date.fromisoformat(end_date) if end_date else None
+    match = re.search(r"=\((\[.*\])\)", text, flags=re.S)
+    if not match:
+        raise ValueError("Sina JSONP payload missing")
+    rows = json.loads(match.group(1))
+    result = {}
+    for row in rows:
+        calc_date = row.get("d")
+        close_price = row.get("c")
+        if not calc_date or close_price in [None, ""]:
+            continue
+        parsed_date = date.fromisoformat(calc_date)
+        if parsed_date < since or (until and parsed_date > until):
+            continue
+        result[calc_date] = float(close_price)
+    return result
+
+
 class SinaHistoryProvider:
     def history(self, contract_code: str, since_date: str = "1980-01-01") -> dict[str, float]:
         if contract_code.upper().startswith("FE"):
@@ -104,8 +130,6 @@ class SinaHistoryProvider:
         return self._fetch_history(contract_code, since_date)
 
     def _fetch_history(self, contract_code: str, since_date: str = "1980-01-01") -> dict[str, float]:
-        since = date.fromisoformat(since_date)
-
         symbol = contract_code.lower()
         url = (
             "https://stock2.finance.sina.com.cn/futures/api/jsonp.php"
@@ -117,25 +141,10 @@ class SinaHistoryProvider:
         except Exception:
             return {}
 
-        match = re.search(r"=\((\[.*\])\)", response.text, flags=re.S)
-        if not match:
-            return {}
-
         try:
-            rows = json.loads(match.group(1))
-        except json.JSONDecodeError:
+            return parse_sina_history_text(response.text, since_date=since_date)
+        except (ValueError, json.JSONDecodeError):
             return {}
-
-        result = {}
-        for row in rows:
-            calc_date = row.get("d")
-            close_price = row.get("c")
-            if not calc_date or close_price in [None, ""]:
-                continue
-            if date.fromisoformat(calc_date) < since:
-                continue
-            result[calc_date] = float(close_price)
-        return result
 
 
 def build_backfill_jobs(request: BackfillRequest) -> list[BackfillJob]:
