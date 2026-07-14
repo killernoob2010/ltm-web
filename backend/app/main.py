@@ -54,6 +54,7 @@ from .info_summary_backfill import (
     run_all_info_summary_backfills,
     start_daily_close_cache_scheduler,
 )
+from .iron_ore_basis_sync import start_iron_ore_basis_sync_scheduler
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import data_visualization, iron_ore_basis, operation_log_archive, order_finance, trading_management
@@ -1260,6 +1261,7 @@ def startup() -> None:
         try:
             db.init_db()
             data_visualization.seed_dv_data()
+            start_iron_ore_basis_sync_scheduler()
         except Exception as exc:
             print(f"[startup] database initialization skipped: {exc}")
 

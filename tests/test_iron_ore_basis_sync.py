@@ -1,6 +1,7 @@
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,7 +12,13 @@ from app import db  # noqa: E402
 from app import iron_ore_basis_sync as sync_module  # noqa: E402
 from app.iron_ore_basis_rules import BasisRulePack, IndicatorMapping, ProductRule  # noqa: E402
 from app.iron_ore_basis_sources import BasisSourceError, SourcePoint  # noqa: E402
-from app.iron_ore_basis_sync import BasisSources, sync_basis_range  # noqa: E402
+from app.iron_ore_basis_sync import (  # noqa: E402
+    BasisSources,
+    auto_sync_enabled,
+    due_sync_slots,
+    startup_sync_window,
+    sync_basis_range,
+)
 from scripts.sync_iron_ore_basis import build_parser  # noqa: E402
 
 
@@ -287,3 +294,41 @@ def test_sync_records_source_failure_without_partial_data(tmp_path, monkeypatch)
     assert run["status"] == "failed"
     assert run["error_code"] == "http_error"
     assert table_count("iron_ore_basis_source_points") == 0
+
+
+def test_due_slots_use_shanghai_schedule_and_stable_targets():
+    timezone = ZoneInfo("Asia/Shanghai")
+
+    assert due_sync_slots(datetime(2026, 7, 14, 9, 29, tzinfo=timezone)) == []
+    morning = due_sync_slots(datetime(2026, 7, 14, 9, 30, tzinfo=timezone))
+    second_retry = due_sync_slots(datetime(2026, 7, 14, 10, 30, tzinfo=timezone))
+    evening = due_sync_slots(datetime(2026, 7, 14, 21, 30, tzinfo=timezone))
+
+    assert [slot.slot_key for slot in morning] == ["scheduled:2026-07-14:0930"]
+    assert [slot.slot_key for slot in second_retry] == [
+        "scheduled:2026-07-14:0930",
+        "scheduled:2026-07-14:1030",
+    ]
+    assert evening[-1].slot_key == "scheduled:2026-07-14:2130"
+    assert morning[0].target_start_date == date(2026, 7, 13)
+    assert morning[0].target_end_date == date(2026, 7, 13)
+    assert evening[-1].target_start_date == date(2026, 7, 14)
+    assert evening[-1].target_end_date == date(2026, 7, 14)
+
+
+def test_startup_window_looks_back_ten_days_without_crossing_api_start():
+    assert startup_sync_window(date(2026, 7, 10), date(2026, 7, 14)) == (
+        date(2026, 7, 13),
+        date(2026, 7, 14),
+    )
+    assert startup_sync_window(date(2026, 8, 1), date(2026, 8, 5)) == (
+        date(2026, 7, 22),
+        date(2026, 8, 5),
+    )
+
+
+def test_auto_sync_is_disabled_unless_explicitly_enabled(monkeypatch):
+    monkeypatch.delenv("IRON_ORE_BASIS_AUTO_SYNC_ENABLED", raising=False)
+    assert auto_sync_enabled() is False
+    monkeypatch.setenv("IRON_ORE_BASIS_AUTO_SYNC_ENABLED", "true")
+    assert auto_sync_enabled() is True

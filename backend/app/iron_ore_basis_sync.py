@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time as datetime_time, timedelta
 import hashlib
 import json
+import os
 import threading
+import time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import db
 from .iron_ore_basis_calculation import BasisCalculationInput, calculate_basis_row
@@ -16,6 +19,9 @@ from .iron_ore_basis_sources import EbcBasisSource, SinaI0Source, SourcePoint
 
 
 _SYNC_LOCK = threading.Lock()
+_SCHEDULER_STARTED = False
+API_START_DATE = date(2026, 7, 13)
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,54 @@ class SyncSummary:
     source_differences: int = 0
     combinations_written: int = 0
     combinations_skipped: int = 0
+
+
+@dataclass(frozen=True)
+class SyncSlot:
+    slot_key: str
+    trigger_type: str
+    target_start_date: date
+    target_end_date: date
+
+
+def auto_sync_enabled() -> bool:
+    return os.getenv("IRON_ORE_BASIS_AUTO_SYNC_ENABLED", "").strip().lower() == "true"
+
+
+def startup_sync_window(latest_result_date: date | None, today: date) -> tuple[date, date]:
+    lookback_start = (latest_result_date - timedelta(days=10)) if latest_result_date else API_START_DATE
+    return max(API_START_DATE, lookback_start), today
+
+
+def due_sync_slots(now: datetime) -> list[SyncSlot]:
+    current = now.replace(tzinfo=SHANGHAI_TZ) if now.tzinfo is None else now.astimezone(SHANGHAI_TZ)
+    today = current.date()
+    slots: list[SyncSlot] = []
+    morning_start = max(API_START_DATE, today - timedelta(days=10))
+    morning_end = today - timedelta(days=1)
+    for scheduled_time, label in (
+        (datetime_time(9, 30), "0930"),
+        (datetime_time(10, 30), "1030"),
+    ):
+        if current.time() >= scheduled_time and morning_start <= morning_end:
+            slots.append(
+                SyncSlot(
+                    slot_key=f"scheduled:{today.isoformat()}:{label}",
+                    trigger_type=f"scheduled_{label}",
+                    target_start_date=morning_start,
+                    target_end_date=morning_end,
+                )
+            )
+    if current.time() >= datetime_time(21, 30) and today >= API_START_DATE:
+        slots.append(
+            SyncSlot(
+                slot_key=f"scheduled:{today.isoformat()}:2130",
+                trigger_type="scheduled_2130",
+                target_start_date=today,
+                target_end_date=today,
+            )
+        )
+    return slots
 
 
 def _source_hash(source_name: str, indicator_key: str, business_date: date, value: float) -> str:
@@ -378,3 +432,69 @@ def sync_basis_range(
         raise
     finally:
         _SYNC_LOCK.release()
+
+
+def _latest_result_date() -> date | None:
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            "SELECT MAX(business_date) AS latest_date FROM iron_ore_basis_results",
+        ).fetchone()
+    return date.fromisoformat(row["latest_date"]) if row and row["latest_date"] else None
+
+
+def run_startup_basis_sync(now: datetime | None = None) -> SyncSummary:
+    current = now or datetime.now(SHANGHAI_TZ)
+    current = current.replace(tzinfo=SHANGHAI_TZ) if current.tzinfo is None else current.astimezone(SHANGHAI_TZ)
+    start_date, end_date = startup_sync_window(_latest_result_date(), current.date())
+    return sync_basis_range(
+        start_date,
+        end_date,
+        trigger_type="startup",
+        slot_key=f"startup:{current.date().isoformat()}",
+        apply=True,
+    )
+
+
+def run_due_basis_syncs(now: datetime | None = None) -> list[SyncSummary]:
+    current = now or datetime.now(SHANGHAI_TZ)
+    summaries = []
+    for slot in due_sync_slots(current):
+        try:
+            summaries.append(
+                sync_basis_range(
+                    slot.target_start_date,
+                    slot.target_end_date,
+                    trigger_type=slot.trigger_type,
+                    slot_key=slot.slot_key,
+                    apply=True,
+                )
+            )
+        except Exception:
+            continue
+    return summaries
+
+
+def _basis_sync_scheduler_loop(interval_seconds: int) -> None:
+    try:
+        run_startup_basis_sync()
+    except Exception:
+        pass
+    while True:
+        run_due_basis_syncs()
+        time.sleep(interval_seconds)
+
+
+def start_iron_ore_basis_sync_scheduler(interval_seconds: int = 300) -> bool:
+    global _SCHEDULER_STARTED
+    if not auto_sync_enabled() or _SCHEDULER_STARTED:
+        return False
+    _SCHEDULER_STARTED = True
+    thread = threading.Thread(
+        target=_basis_sync_scheduler_loop,
+        args=(interval_seconds,),
+        daemon=True,
+        name="iron-ore-basis-sync",
+    )
+    thread.start()
+    return True
