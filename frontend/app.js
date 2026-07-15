@@ -518,6 +518,9 @@ async function activateModule(code, subName, subView = "") {
     return;
   }
   if (code === "order_finance_progress") {
+    state.orderFinanceFilter = "focusRisk";
+    orderFinanceKeywordFilter.value = "";
+    orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("active", item.dataset.filter === "focusRisk"));
     showOnly(orderFinancePage);
     await loadOrderFinanceProgress();
     return;
@@ -2329,7 +2332,7 @@ function orderFinanceDaysTo(value) {
 function orderFinanceDueText(value) {
   const days = orderFinanceDaysTo(value);
   if (days === null) return "-";
-  if (days < 0) return `逾期 ${Math.abs(days)} 天`;
+  if (days < 0) return `逾期 ${Math.abs(days)} 天未回款`;
   if (days === 0) return "今日到期";
   return `${days} 天后到期`;
 }
@@ -2453,13 +2456,15 @@ function orderFinancePaymentDueText(item) {
   const financing = (item.financings || []).find((row) => row.due_date === dueDate);
   const extensionDays = Number(financing?.extension_days || 0);
   const extension = extensionDays ? `含展期 ${extensionDays} 天` : "无展期";
-  return `${dueDate}（${extension}） / ${orderFinanceDueText(dueDate)}`;
+  const financings = item.financings || [];
+  const allPaid = financings.length > 0 && financings.every((row) => row.payment_state === "已回款");
+  const timing = allPaid && item.repayment_timing ? item.repayment_timing : orderFinanceDueText(dueDate);
+  return `${dueDate}（${extension}） / ${timing}`;
 }
 
 function orderFinancePaymentText(item) {
   const parts = [item.payment_progress || "待回款"];
   if (item.repay_date) parts.push(`最近 ${item.repay_date}`);
-  if (item.repayment_timing) parts.push(item.repayment_timing);
   return parts.join(" / ");
 }
 
