@@ -2,17 +2,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, time as day_time
+import hashlib
+import json
+import logging
 import os
 from pathlib import Path
+import tempfile
+import threading
 import time
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import requests
+
+from .order_finance import (
+    apply_order_finance_snapshot,
+    claim_order_finance_sync_slot,
+    get_order_finance_sync_status,
+    parse_order_finance_directory,
+    record_unchanged_order_finance_sync,
+)
 
 
 WPS_API_BASE = "https://openapi.wps.cn"
 TOKEN_URL = f"{WPS_API_BASE}/oauth2/token"
 REQUEST_TIMEOUT = (10, 60)
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+SYNC_TIMES = (day_time(9, 0), day_time(17, 0))
+logger = logging.getLogger(__name__)
+_scheduler_start_lock = threading.Lock()
+_scheduler_started = False
 
 
 class OrderFinanceWpsSyncError(RuntimeError):
@@ -156,3 +176,130 @@ class WpsOrderFinanceClient:
             file_name=str(metadata.get("name") or target.name),
             source_version=source_version,
         )
+
+
+def due_order_finance_sync_slots(
+    now: datetime,
+    last_attempt_slot: Optional[str],
+) -> list[str]:
+    current = now.astimezone(SHANGHAI_TZ) if now.tzinfo else now.replace(tzinfo=SHANGHAI_TZ)
+    due = [
+        datetime.combine(current.date(), slot_time, SHANGHAI_TZ)
+        for slot_time in SYNC_TIMES
+        if datetime.combine(current.date(), slot_time, SHANGHAI_TZ) <= current
+    ]
+    if not due:
+        return []
+    latest_slot = due[-1].isoformat(timespec="minutes")
+    if last_attempt_slot == latest_slot:
+        return []
+    return [latest_slot]
+
+
+def _set_remote_source_name(records: list[dict], file_name: str) -> None:
+    for record in records:
+        record["source_file"] = file_name
+        raw_source = record.get("source_json")
+        try:
+            source = json.loads(raw_source) if isinstance(raw_source, str) else dict(raw_source or {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            source = {}
+        source["remote_file_name"] = file_name
+        record["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
+
+
+def run_order_finance_wps_sync(
+    slot_key: str,
+    now: Optional[datetime] = None,
+    client: Optional[WpsOrderFinanceClient] = None,
+) -> dict:
+    if not claim_order_finance_sync_slot(slot_key):
+        return {"status": "skipped", "reason": "slot_already_attempted"}
+    current = now or datetime.now(SHANGHAI_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=SHANGHAI_TZ)
+    active_client = client or WpsOrderFinanceClient(WpsOrderFinanceConfig.from_env())
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as temp_file:
+            temp_path = Path(temp_file.name)
+        download = active_client.download_workbook(temp_path)
+        source_version = download.source_version
+        if not source_version:
+            source_version = hashlib.sha256(temp_path.read_bytes()).hexdigest()
+        success_at = current.astimezone(SHANGHAI_TZ).isoformat(timespec="seconds")
+        previous_status = get_order_finance_sync_status()
+        if source_version and previous_status.get("source_version") == source_version:
+            record_unchanged_order_finance_sync(success_at, source_version, slot_key)
+            return {
+                "status": "success", "inserted": 0, "updated": 0,
+                "archived": 0, "changed_count": 0,
+            }
+        parsed = parse_order_finance_directory(temp_path)
+        records = parsed["records"]
+        _set_remote_source_name(records, download.file_name)
+        changes = apply_order_finance_snapshot(
+            records,
+            imported_by="WPS自动同步",
+            sync_success_at=success_at,
+            source_version=source_version,
+            attempt_slot=slot_key,
+        )
+        return {"status": "success", **changes}
+    except OrderFinanceWpsSyncError:
+        raise
+    except Exception as exc:
+        raise OrderFinanceWpsSyncError("workbook_import") from exc
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
+
+
+def _scheduler_loop(interval_seconds: int, client: WpsOrderFinanceClient) -> None:
+    while True:
+        try:
+            current = datetime.now(SHANGHAI_TZ)
+            status = get_order_finance_sync_status()
+            for slot_key in due_order_finance_sync_slots(current, status.get("last_attempt_slot")):
+                try:
+                    run_order_finance_wps_sync(slot_key, now=current, client=client)
+                except Exception as exc:
+                    logger.error(
+                        "order_finance_wps_sync_failed",
+                        extra={
+                            "sync_stage": getattr(exc, "stage", "unknown"),
+                            "error_class": type(exc).__name__,
+                        },
+                    )
+        except Exception as exc:
+            logger.error(
+                "order_finance_wps_scheduler_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+        time.sleep(interval_seconds)
+
+
+def start_order_finance_wps_sync_scheduler(interval_seconds: int = 300) -> bool:
+    global _scheduler_started
+    if (os.getenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED") or "").strip().lower() != "true":
+        return False
+    try:
+        config = WpsOrderFinanceConfig.from_env()
+    except OrderFinanceWpsSyncError as exc:
+        logger.error(
+            "order_finance_wps_scheduler_not_started",
+            extra={"sync_stage": exc.stage, "error_class": type(exc).__name__},
+        )
+        return False
+    with _scheduler_start_lock:
+        if _scheduler_started:
+            return False
+        thread = threading.Thread(
+            target=_scheduler_loop,
+            args=(interval_seconds, WpsOrderFinanceClient(config)),
+            name="order-finance-wps-sync",
+            daemon=True,
+        )
+        thread.start()
+        _scheduler_started = True
+    return True
