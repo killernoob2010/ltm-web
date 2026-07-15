@@ -260,6 +260,7 @@ def test_order_finance_schema_adds_singleton_sync_status(tmp_path, monkeypatch):
 
     assert {
         "id", "last_success_at", "changed_count", "source_version", "last_attempt_slot",
+        "wps_refresh_token_ciphertext",
     }.issubset(columns)
 
 
