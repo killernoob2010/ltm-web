@@ -114,6 +114,7 @@ def test_wps_client_refreshes_user_token_and_downloads_source_xlsx(tmp_path):
         "refresh_token": "refresh-token",
     }
     assert http.calls[1]["headers"]["Authorization"] == "Bearer short-lived"
+    assert http.calls[3]["headers"]["Authorization"] == "Bearer short-lived"
 
 
 def test_wps_client_reuses_cached_access_token(tmp_path):

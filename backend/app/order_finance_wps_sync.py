@@ -149,6 +149,7 @@ class WpsOrderFinanceClient:
             response = self.http.request(
                 "GET",
                 download_url,
+                headers=self._authorization_headers(),
                 timeout=REQUEST_TIMEOUT,
                 stream=True,
             )
