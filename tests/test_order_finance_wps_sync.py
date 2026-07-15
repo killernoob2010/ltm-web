@@ -135,6 +135,48 @@ def test_wps_client_reuses_cached_access_token(tmp_path):
     assert len([call for call in http.calls if call["method"] == "POST"]) == 1
 
 
+def test_wps_client_persists_rotated_refresh_token_encrypted(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    first_http = FakeHttp([
+        FakeResponse(payload={
+            "access_token": "short-lived",
+            "expires_in": 7200,
+            "refresh_token": "rotated-refresh-token",
+        }),
+        FakeResponse(payload={"data": {"name": "台账.xlsx", "version": 8}}),
+        FakeResponse(payload={"data": {"url": "https://download.invalid/source"}}),
+        FakeResponse(content=b"PK\x03\x04xlsx"),
+    ])
+
+    WpsOrderFinanceClient(
+        config=fake_config(),
+        http=first_http,
+        persist_rotated_token=True,
+    ).download_workbook(
+        tmp_path / "source.xlsx"
+    )
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT wps_refresh_token_ciphertext FROM order_finance_sync_status WHERE id = 1"
+        ).fetchone()
+    ciphertext = row["wps_refresh_token_ciphertext"]
+    assert ciphertext
+    assert "rotated-refresh-token" not in ciphertext
+
+    second_http = FakeHttp([
+        FakeResponse(payload={"access_token": "second-access", "expires_in": 7200}),
+    ])
+    second_client = WpsOrderFinanceClient(
+        config=fake_config(),
+        http=second_http,
+        persist_rotated_token=True,
+    )
+
+    assert second_client._user_access_token() == "second-access"
+    assert second_http.calls[0]["data"]["refresh_token"] == "rotated-refresh-token"
+
+
 def test_wps_client_redacts_credentials_tokens_and_download_url(tmp_path):
     http = FakeHttp([
         FakeResponse(payload={"access_token": "short-lived", "expires_in": 7200}),

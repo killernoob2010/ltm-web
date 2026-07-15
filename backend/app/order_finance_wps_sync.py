@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time as day_time
+import base64
 import hashlib
 import json
 import logging
@@ -15,7 +16,9 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 
+from . import db
 from .order_finance import (
     apply_order_finance_snapshot,
     claim_order_finance_sync_slot,
@@ -73,12 +76,22 @@ class WpsDownloadResult:
 
 
 class WpsOrderFinanceClient:
-    def __init__(self, config: WpsOrderFinanceConfig, http: Any = requests):
+    def __init__(
+        self,
+        config: WpsOrderFinanceConfig,
+        http: Any = requests,
+        persist_rotated_token: bool = False,
+    ):
         self.config = config
         self.http = http
         self._access_token = ""
         self._access_token_expires_at = 0.0
-        self._refresh_token = config.refresh_token
+        self._persist_rotated_token = persist_rotated_token
+        self._refresh_token = (
+            _load_persisted_refresh_token(config.app_secret)
+            if persist_rotated_token
+            else ""
+        ) or config.refresh_token
 
     def _json_request(self, stage: str, method: str, url: str, **kwargs) -> dict:
         try:
@@ -118,7 +131,13 @@ class WpsOrderFinanceClient:
         self._access_token = access_token
         self._access_token_expires_at = now + expires_in - 60
         if payload.get("refresh_token"):
-            self._refresh_token = str(payload["refresh_token"])
+            rotated_refresh_token = str(payload["refresh_token"])
+            if self._persist_rotated_token:
+                _store_persisted_refresh_token(
+                    self.config.app_secret,
+                    rotated_refresh_token,
+                )
+            self._refresh_token = rotated_refresh_token
         return access_token
 
     def _authorization_headers(self) -> dict:
@@ -179,6 +198,41 @@ class WpsOrderFinanceClient:
         )
 
 
+def _refresh_token_cipher(app_secret: str) -> Fernet:
+    key = base64.urlsafe_b64encode(hashlib.sha256(app_secret.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def _load_persisted_refresh_token(app_secret: str) -> str:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(
+            cur,
+            "SELECT wps_refresh_token_ciphertext "
+            "FROM order_finance_sync_status WHERE id = 1",
+        ).fetchone()
+    ciphertext = (dict(row).get("wps_refresh_token_ciphertext") if row else "") or ""
+    if not ciphertext:
+        return ""
+    try:
+        return _refresh_token_cipher(app_secret).decrypt(ciphertext.encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeError, ValueError):
+        return ""
+
+
+def _store_persisted_refresh_token(app_secret: str, refresh_token: str) -> None:
+    ciphertext = _refresh_token_cipher(app_secret).encrypt(refresh_token.encode("utf-8")).decode("ascii")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            "UPDATE order_finance_sync_status "
+            "SET wps_refresh_token_ciphertext = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = 1",
+            (ciphertext,),
+        )
+
+
 def due_order_finance_sync_slots(
     now: datetime,
     last_attempt_slot: Optional[str],
@@ -219,7 +273,10 @@ def run_order_finance_wps_sync(
     current = now or datetime.now(SHANGHAI_TZ)
     if current.tzinfo is None:
         current = current.replace(tzinfo=SHANGHAI_TZ)
-    active_client = client or WpsOrderFinanceClient(WpsOrderFinanceConfig.from_env())
+    active_client = client or WpsOrderFinanceClient(
+        WpsOrderFinanceConfig.from_env(),
+        persist_rotated_token=True,
+    )
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as temp_file:
@@ -297,7 +354,10 @@ def start_order_finance_wps_sync_scheduler(interval_seconds: int = 300) -> bool:
             return False
         thread = threading.Thread(
             target=_scheduler_loop,
-            args=(interval_seconds, WpsOrderFinanceClient(config)),
+            args=(
+                interval_seconds,
+                WpsOrderFinanceClient(config, persist_rotated_token=True),
+            ),
             name="order-finance-wps-sync",
             daemon=True,
         )

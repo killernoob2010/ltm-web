@@ -2069,6 +2069,7 @@ def migrate_order_finance_schema(conn) -> None:
             changed_count INTEGER NOT NULL DEFAULT 0,
             source_version TEXT,
             last_attempt_slot TEXT,
+            wps_refresh_token_ciphertext TEXT,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             CHECK (id = 1)
         )
@@ -2081,6 +2082,10 @@ def migrate_order_finance_schema(conn) -> None:
     if _is_pg():
         cur = conn.cursor()
         cur.execute(sync_status_sql)
+        cur.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN IF NOT EXISTS wps_refresh_token_ciphertext TEXT"
+        )
         cur.execute("ALTER TABLE order_finance_sync_status ENABLE ROW LEVEL SECURITY")
         cur.execute("REVOKE ALL ON TABLE order_finance_sync_status FROM anon, authenticated")
         for name, col_type in columns.items():
@@ -2092,6 +2097,15 @@ def migrate_order_finance_schema(conn) -> None:
         conn.commit()
         return
     conn.execute(sync_status_sql)
+    sync_status_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(order_finance_sync_status)").fetchall()
+    }
+    if "wps_refresh_token_ciphertext" not in sync_status_columns:
+        conn.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN wps_refresh_token_ciphertext TEXT"
+        )
     conn.execute(
         "INSERT OR IGNORE INTO order_finance_sync_status (id, changed_count) VALUES (1, 0)"
     )
