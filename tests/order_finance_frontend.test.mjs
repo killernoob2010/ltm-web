@@ -175,6 +175,6 @@ test("order finance shows compact automatic sync status and new payment terminol
   assert.match(appJs, /7天内融资到期|30天内融资到期/);
   assert.match(appJs, /融资到期日/);
   assert.match(indexHtml, /融资到期日/);
-  assert.match(indexHtml, /app\.js\?v=order-finance-status-refinement-20260715/);
-  assert.match(indexHtml, /styles\.css\?v=order-finance-status-refinement-20260715/);
+  assert.match(indexHtml, /app\.js\?v=order-finance-status-refinement-nowrap-20260715/);
+  assert.match(indexHtml, /styles\.css\?v=order-finance-status-refinement-nowrap-20260715/);
 });
