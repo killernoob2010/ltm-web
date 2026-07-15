@@ -137,7 +137,7 @@ test("basis chart requests only the active port and renders negative values with
 
 test("basis assets are loaded after the existing app controller", () => {
   assert.ok(indexHtml.indexOf("/static/app.js") < indexHtml.indexOf("/static/iron_ore_basis.js"));
-  assert.match(indexHtml, /app\.js\?v=data-visualization-pagination-20260713/);
+  assert.match(indexHtml, /app\.js\?v=order-finance-wps-sync-20260715/);
   assert.match(indexHtml, /iron_ore_basis\.css\?v=iron-ore-basis-auto-sync-20260714/);
   assert.match(indexHtml, /iron_ore_basis\.js\?v=iron-ore-basis-auto-sync-20260714/);
 });
