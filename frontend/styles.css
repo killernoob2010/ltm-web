@@ -1349,11 +1349,23 @@ dialog::backdrop {
 }
 
 .order-finance-field {
-  min-height: 58px;
+  box-sizing: border-box;
+  height: 58px;
   border: 1px solid #e1e7ee;
   border-radius: 6px;
   background: #f8fafc;
   padding: 9px 10px;
+}
+
+.order-finance-field.wide {
+  grid-column: span 2;
+}
+
+.order-finance-field.wide strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-finance-field span,
@@ -1708,6 +1720,10 @@ dialog::backdrop {
   }
 
   .order-finance-manual-grid .wide-field {
+    grid-column: auto;
+  }
+
+  .order-finance-field.wide {
     grid-column: auto;
   }
 }
