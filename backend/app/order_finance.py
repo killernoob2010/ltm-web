@@ -877,8 +877,9 @@ def _order_sheet_record(
     repay_date = _normalize_xlsx_date(_row_alias(row, "还款日", "还款日期"))
     original_due = _normalize_xlsx_date(_row_alias(row, "原到期日"))
     extension_days = _to_int(_row_alias(row, "展期天数")) or 0
+    new_due = _normalize_xlsx_date(_row_alias(row, "新到期日", "融资到期日", "到期日"))
     finance_due = _effective_finance_due(
-        _row_alias(row, "新到期日", "融资到期日", "到期日"),
+        new_due,
         original_due,
         extension_days,
     )
@@ -892,6 +893,7 @@ def _order_sheet_record(
         "row": list(values),
         "finance_rate": _xlsx_float(_row_alias(row, "利率")),
         "original_due_date": original_due,
+        "new_due_date": new_due,
         "extension_days": extension_days,
         "order_status": status,
         "alerts": alerts_by_item.get(item_no, []),
@@ -1914,6 +1916,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "amount": _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")),
                 "borrow_date": row.get("finance_drawdown_date") or "",
                 "original_due_date": _json_loads(row.get("source_json"), {}).get("original_due_date") or "",
+                "new_due_date": _json_loads(row.get("source_json"), {}).get("new_due_date") or "",
                 "extension_days": _json_loads(row.get("source_json"), {}).get("extension_days") or 0,
                 "due_date": row.get("finance_due_date") or "",
                 "rate": _json_loads(row.get("source_json"), {}).get("finance_rate"),
@@ -1922,6 +1925,9 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "repay_date": row.get("tail_payment_date") or "",
                 "status": row.get("finance_status") or row.get("business_status") or "",
                 "next_action": row.get("next_action") or "",
+                "source_file": row.get("source_file") or "",
+                "source_sheet": row.get("source_sheet") or "",
+                "source_row_start": row.get("source_row_start") or 0,
             }
             for row in rows
         ],
@@ -1929,6 +1935,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    use_persisted_records = records is None
     records = records if records is not None else list_order_finance_records()
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for row in records:
@@ -1954,7 +1961,15 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
         "data_issues": sum(item["data_issue_count"] for item in open_contracts),
         "total_contracts": len(contracts),
     }
-    return {"summary": summary, "contracts": contracts}
+    sync_status = get_order_finance_sync_status() if use_persisted_records else {}
+    return {
+        "summary": summary,
+        "contracts": contracts,
+        "sync_status": {
+            "last_success_at": sync_status.get("last_success_at"),
+            "changed_count": int(sync_status.get("changed_count") or 0),
+        },
+    }
 
 
 def _sum_by(records: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:

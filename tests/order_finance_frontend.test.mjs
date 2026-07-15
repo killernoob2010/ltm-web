@@ -50,7 +50,7 @@ test("order finance capital monitor follows the approved prototype structure", (
   assert.match(stylesCss, /\.bank-row:hover,\s*\.bank-row\.selected/);
 });
 
-test("order finance progress keeps approved layout while showing latest shipment and repayment dates", () => {
+test("order finance progress shows the decision fields without duplicate confirmation or extension cards", () => {
   const contractStart = appJs.indexOf("function renderOrderFinanceContract");
   assert.notEqual(contractStart, -1);
   const contractEnd = appJs.indexOf("function renderOrderFinanceContracts", contractStart);
@@ -58,26 +58,43 @@ test("order finance progress keeps approved layout while showing latest shipment
   const contractRenderer = appJs.slice(contractStart, contractEnd);
 
   assert.match(contractRenderer, /class="order-finance-field-strip"/);
-  assert.match(contractRenderer, /orderFinanceField\("最迟装船日"/);
-  assert.match(contractRenderer, /orderFinanceField\("展期状态"/);
-  assert.match(contractRenderer, /orderFinanceField\("还款日"/);
+  assert.match(contractRenderer, /orderFinanceField\("贷款行\/融资金额"/);
+  assert.match(contractRenderer, /orderFinanceField\("装船状态"/);
+  assert.match(contractRenderer, /orderFinanceField\("交单状态"/);
+  assert.match(contractRenderer, /orderFinanceField\("回款到期日"/);
+  assert.match(contractRenderer, /orderFinanceField\("回款日"/);
+  assert.doesNotMatch(contractRenderer, /orderFinanceField\("展期状态"/);
+  assert.doesNotMatch(contractRenderer, /orderFinanceField\("确认状态"/);
   assert.doesNotMatch(contractRenderer, /orderFinanceField\("提单日"/);
   assert.doesNotMatch(contractRenderer, /orderFinanceField\("船名\/航次"/);
   assert.match(appJs, /function orderFinanceShipmentText\(/);
+  assert.match(appJs, /item\.shipment_basis === "document"/);
+  assert.match(appJs, /已根据交单日认定装船/);
+  assert.match(appJs, /function orderFinanceDocumentText\(/);
+  assert.match(appJs, /function orderFinancePaymentDueText\(/);
+  assert.match(appJs, /function orderFinancePaymentText\(/);
   assert.match(appJs, /function orderFinanceShipmentTone\(/);
   assert.match(appJs, /item\.repayment_timing/);
 });
 
-test("order finance detail omits unavailable bill date and keeps document and repayment", () => {
+test("order finance detail is compact for one financing and complete per row for multiple financings", () => {
   assert.doesNotMatch(appJs, /<th>提单日<\/th>/);
-  assert.match(appJs, /<th>交单日<\/th>/);
-  assert.match(appJs, /<th>还款日<\/th>/);
+  assert.doesNotMatch(appJs, /<th>交单日<\/th>/);
+  assert.match(appJs, /item\.financing_count === 1/);
+  assert.match(appJs, /<th>利率<\/th>/);
+  assert.match(appJs, /<th>原到期日<\/th>/);
+  assert.match(appJs, /<th>新到期日<\/th>/);
+  assert.match(appJs, /<th>展期天数<\/th>/);
+  assert.match(appJs, /<th>来源<\/th>/);
+  assert.match(appJs, /<th>有效回款到期日<\/th>/);
+  assert.match(appJs, /<th>回款日<\/th>/);
   assert.doesNotMatch(appJs, /<th>收汇日<\/th>/);
+  assert.match(indexHtml, />待放款<\/button>/);
+  assert.match(indexHtml, />已装船待交单<\/button>/);
   assert.match(indexHtml, />已交单待回款<\/button>/);
-  assert.match(indexHtml, />已还款待结案<\/button>/);
-  assert.match(appJs, /\["缺最迟装船\/交单\/还款"/);
+  assert.match(indexHtml, />已回款待结案<\/button>/);
+  assert.doesNotMatch(appJs, /\["缺最迟装船\/交单\/还款"/);
   assert.doesNotMatch(appJs, /row\.bill_date \|\| "-"/);
-  assert.match(appJs, /if \(item\.stage === "已完成"\) return "已结案"/);
   assert.match(appJs, /bank\.difference/);
   assert.match(appJs, /订单计算/);
 });
@@ -113,9 +130,8 @@ test("order finance colors only the indicator fields that cause risk", () => {
   assert.match(appJs, /item\.indicator_risks\?\.\[key\]/);
   assert.match(appJs, /level === "高" \? "danger" : level === "中" \? "warning" : ""/);
   assert.match(appJs, /indicatorRiskTone\(item, "shipment"\)/);
-  assert.match(appJs, /indicatorRiskTone\(item, "finance_due"\)/);
-  assert.match(appJs, /indicatorRiskTone\(item, "repayment"\)/);
-  assert.match(appJs, /indicatorRiskTone\(item, "confirmation"\)/);
+  assert.match(appJs, /indicatorRiskTone\(item, "document"\)/);
+  assert.match(appJs, /indicatorRiskTone\(item, "payment"\)/);
   assert.match(appJs, /const riskClass = item\.risk === "高"/);
 });
 
@@ -126,10 +142,22 @@ test("order finance supports shipment confirmation and removes import report", (
   assert.match(appJs, /order-finance-shipment-undo-btn/);
   assert.match(appJs, /\/shipment-confirmation/);
   assert.match(appJs, /shipment_confirmed_date/);
-  assert.match(appJs, /if \(item\.shipment_confirmed_date\) return "待确认交单"/);
+  assert.match(appJs, /!item\.document_date && !item\.shipment_completed/);
   assert.match(appJs, /\/api\/order-finance\/progress\?ts=\$\{Date\.now\(\)\}/);
   assert.doesNotMatch(indexHtml, /id="orderFinanceImportReport"/);
   assert.doesNotMatch(indexHtml, />导入报告</);
   assert.doesNotMatch(appJs, /orderFinanceImportReport/);
   assert.match(appJs, /导入完成：\$\{summary\.record_count \|\| 0\} 条，异常 \$\{summary\.warning_count \|\| 0\} 条/);
+});
+
+test("order finance shows compact automatic sync status and new payment terminology", () => {
+  assert.match(appJs, /function renderOrderFinanceSyncStatus\(/);
+  assert.match(appJs, /上次同步：\$\{orderFinanceSyncTime\(syncStatus\.last_success_at\)\}/);
+  assert.match(appJs, /更新 \$\{Number\(syncStatus\.changed_count \|\| 0\)\} 条/);
+  assert.match(appJs, /renderOrderFinanceSyncStatus\(result\.sync_status\)/);
+  assert.doesNotMatch(appJs, /已装船待回款/);
+  assert.doesNotMatch(appJs, /已还款待结案/);
+  assert.doesNotMatch(indexHtml, /融资到期日/);
+  assert.match(indexHtml, /回款到期日/);
+  assert.match(indexHtml, /app\.js\?v=order-finance-wps-sync-20260715/);
 });
