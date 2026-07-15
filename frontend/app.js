@@ -2558,7 +2558,7 @@ function renderOrderFinanceContract(item) {
       </div>
       <div class="order-finance-field-strip">
         ${orderFinanceField("数量", item.quantity ? `${money(item.quantity)}吨` : "-")}
-        ${orderFinanceField("贷款行/融资金额", orderFinanceBankAmountText(item))}
+        ${orderFinanceField("贷款行/融资金额", orderFinanceBankAmountText(item), "", "single-line")}
         ${orderFinanceField("装船状态", orderFinanceShipmentText(item), orderFinanceShipmentTone(item))}
         ${orderFinanceField("交单状态", orderFinanceDocumentText(item), indicatorRiskTone(item, "document"))}
         ${orderFinanceField("融资到期日", orderFinancePaymentDueText(item), indicatorRiskTone(item, "payment"), "wide")}

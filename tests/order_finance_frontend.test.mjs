@@ -58,7 +58,7 @@ test("order finance progress shows the decision fields without duplicate confirm
   const contractRenderer = appJs.slice(contractStart, contractEnd);
 
   assert.match(contractRenderer, /class="order-finance-field-strip"/);
-  assert.match(contractRenderer, /orderFinanceField\("贷款行\/融资金额"/);
+  assert.match(contractRenderer, /orderFinanceField\("贷款行\/融资金额", orderFinanceBankAmountText\(item\), "", "single-line"\)/);
   assert.match(contractRenderer, /orderFinanceField\("装船状态"/);
   assert.match(contractRenderer, /orderFinanceField\("交单状态"/);
   assert.match(contractRenderer, /orderFinanceField\("融资到期日"[^\n]+"wide"\)/);
@@ -83,6 +83,7 @@ test("order finance progress shows the decision fields without duplicate confirm
   assert.doesNotMatch(appJs, /截止日未提供|待交单 \/ 截止/);
   assert.match(stylesCss, /\.order-finance-field\.wide\s*\{[\s\S]*grid-column:\s*span 2/);
   assert.match(stylesCss, /\.order-finance-field\.wide strong\s*\{[\s\S]*white-space:\s*nowrap/);
+  assert.match(stylesCss, /\.order-finance-field\.single-line strong\s*\{[\s\S]*white-space:\s*nowrap/);
   assert.match(stylesCss, /\.order-finance-field\s*\{[\s\S]*height:\s*58px/);
 });
 
