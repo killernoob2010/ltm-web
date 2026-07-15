@@ -401,10 +401,11 @@
             <div class="order-finance-stage-filters" id="orderFinanceStageFilters">
               <button class="filter-button active" data-filter="all" type="button">全部</button>
               <button class="filter-button" data-filter="focusRisk" type="button">本周重点</button>
+              <button class="filter-button" data-filter="pendingDrawdown" type="button">待放款</button>
               <button class="filter-button" data-filter="financedUnshipped" type="button">已放款待装船</button>
-              <button class="filter-button" data-filter="shippedUnpaid" type="button">已装船待回款</button>
-              <button class="filter-button" data-filter="collectedUnrepaid" type="button">已交单待回款</button>
-              <button class="filter-button" data-filter="repaidUnsettled" type="button">已还款待结案</button>
+              <button class="filter-button" data-filter="shippedUndocumented" type="button">已装船待交单</button>
+              <button class="filter-button" data-filter="documentedUnpaid" type="button">已交单待回款</button>
+              <button class="filter-button" data-filter="paidUnclosed" type="button">已回款待结案</button>
               <button class="filter-button" data-filter="closed" type="button">已完成</button>
               <button class="filter-button" data-filter="multi" type="button">多笔融资</button>
             </div>
@@ -511,7 +512,7 @@
                 <input id="ofManualPlannedDrawdownDate" type="date" />
               </label>
               <label>
-                融资到期日
+                回款到期日
                 <input id="ofManualFinanceDueDate" type="date" />
               </label>
               <label>
@@ -1304,7 +1305,7 @@
 
     <script src="/static/trading_management.js?v=20260712h"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/app.js?v=data-visualization-pagination-20260713"></script>
+    <script src="/static/app.js?v=order-finance-wps-sync-20260715"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-auto-sync-20260714"></script>
   </body>
 </html>

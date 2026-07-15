@@ -190,6 +190,23 @@ def test_parser_uses_original_due_plus_extension_when_new_due_is_empty(tmp_path)
     assert record["finance_due_date"] == "2026-07-11"
 
 
+def test_progress_financing_exposes_original_new_and_effective_due_dates(tmp_path):
+    workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
+    records = parse_order_finance_directory(workbook)["records"]
+
+    item = next(
+        contract
+        for contract in build_order_finance_progress_view(records)["contracts"]
+        if contract["item_no"] == "Y-2026-1"
+    )
+    financing = item["financings"][0]
+
+    assert financing["original_due_date"] == "2026-08-01"
+    assert financing["new_due_date"] == "2026-08-06"
+    assert financing["due_date"] == "2026-08-06"
+    assert financing["extension_days"] == 5
+
+
 def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_path):
     workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
     records = parse_order_finance_directory(workbook)["records"]
@@ -803,6 +820,23 @@ def test_record_summary_excludes_explicit_closed_orders_from_active_count():
 
     assert summary["total_count"] == 2
     assert summary["active_count"] == 1
+
+
+def test_progress_view_exposes_only_successful_sync_time_and_count(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [],
+        sync_success_at="2026-07-15T09:02:00+08:00",
+        source_version="v2",
+        attempt_slot="2026-07-15T09:00+08:00",
+    )
+
+    view = build_order_finance_progress_view()
+
+    assert view["sync_status"] == {
+        "last_success_at": "2026-07-15T09:02:00+08:00",
+        "changed_count": 0,
+    }
 
 
 def test_current_workbook_order_amount_unit_reconciles_to_quota_usage():
