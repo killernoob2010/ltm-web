@@ -1214,6 +1214,13 @@ def apply_order_finance_snapshot(
                    WHERE id = 1""",
                 (sync_success_at, changed_count, source_version, attempt_slot),
             )
+        else:
+            db._exec(
+                cur,
+                """UPDATE order_finance_sync_status
+                   SET source_version = NULL, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = 1""",
+            )
 
     return {
         "inserted": inserted,
@@ -1251,6 +1258,23 @@ def claim_order_finance_sync_slot(slot_key: str) -> bool:
             (slot_key, slot_key),
         )
         return int(getattr(result, "rowcount", 0) or 0) == 1
+
+
+def record_unchanged_order_finance_sync(
+    sync_success_at: str,
+    source_version: str,
+    attempt_slot: str,
+) -> None:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """UPDATE order_finance_sync_status
+               SET last_success_at = ?, changed_count = 0, source_version = ?,
+                   last_attempt_slot = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = 1""",
+            (sync_success_at, source_version, attempt_slot),
+        )
 
 
 def archive_existing_excel_order_finance_records() -> int:

@@ -298,6 +298,26 @@ def test_sync_status_and_slot_claim_are_minimal_and_deduplicated(tmp_path, monke
     }
 
 
+def test_manual_snapshot_invalidates_source_version_but_keeps_last_auto_success(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    online = progress_record("AUTHORITATIVE", "存续")
+    order_finance.apply_order_finance_snapshot(
+        [online],
+        sync_success_at="2026-07-15T09:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-15T09:00+08:00",
+    )
+
+    order_finance.apply_order_finance_snapshot([
+        dict(online, finance_amount_actual=12_000_000),
+    ])
+    status = order_finance.get_order_finance_sync_status()
+
+    assert status["last_success_at"] == "2026-07-15T09:02:00+08:00"
+    assert status["changed_count"] == 1
+    assert status["source_version"] is None
+
+
 def test_snapshot_failure_rolls_back_rows_and_success_status(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     original_exec = db._exec

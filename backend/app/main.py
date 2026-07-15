@@ -55,6 +55,7 @@ from .info_summary_backfill import (
     start_daily_close_cache_scheduler,
 )
 from .monitoring import get_monitoring_status, start_monitoring_loop
+from .order_finance_wps_sync import start_order_finance_wps_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import data_visualization, iron_ore_basis, operation_log_archive, order_finance, trading_management
 
@@ -1260,6 +1261,7 @@ def startup() -> None:
         try:
             db.init_db()
             data_visualization.seed_dv_data()
+            start_order_finance_wps_sync_scheduler()
         except Exception as exc:
             print(f"[startup] database initialization skipped: {exc}")
 
