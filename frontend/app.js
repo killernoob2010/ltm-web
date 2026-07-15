@@ -2329,7 +2329,7 @@ function orderFinanceDueText(value) {
 function orderFinanceShipmentText(item) {
   const value = item.latest_shipment_date;
   if (item.stage === "已完成") return value || "未提供";
-  if (item.shipment_basis === "document") return `已根据交单日认定装船：${item.document_date}`;
+  if (item.shipment_basis === "document") return "已根据交单日认定装船";
   if (item.shipment_confirmed_date) return `已确认装船：${item.shipment_confirmed_date}`;
   if (item.shipment_completed) return value ? `${value} / 已完成装船` : "已完成装船";
   if (!value) return "待 Excel 补充";
@@ -2435,7 +2435,7 @@ function orderFinanceField(label, value, tone = "", extraClass = "") {
 }
 
 function orderFinanceDocumentText(item) {
-  if (item.document_date) return "已交单";
+  if (item.document_date) return `已交单 / ${item.document_date}`;
   return "待交单";
 }
 
@@ -2458,7 +2458,7 @@ function orderFinancePaymentText(item) {
 function orderFinanceBankAmountText(item) {
   const banks = [...new Set((item.financings || []).map((row) => row.bank).filter(Boolean))];
   const amount = item.financing_count > 1
-    ? `${item.financing_count}笔 / ${orderFinanceWan(item.total_finance, 1)}`
+    ? `${orderFinanceWan(item.total_finance, 1)}（${item.financing_count}笔）`
     : orderFinanceWan(item.total_finance, 1);
   return `${banks.join("、") || "贷款行未填"} / ${amount}`;
 }

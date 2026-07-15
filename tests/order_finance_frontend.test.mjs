@@ -69,14 +69,17 @@ test("order finance progress shows the decision fields without duplicate confirm
   assert.doesNotMatch(contractRenderer, /orderFinanceField\("船名\/航次"/);
   assert.match(appJs, /function orderFinanceShipmentText\(/);
   assert.match(appJs, /item\.shipment_basis === "document"/);
-  assert.match(appJs, /已根据交单日认定装船/);
+  assert.match(appJs, /return "已根据交单日认定装船"/);
+  assert.doesNotMatch(appJs, /已根据交单日认定装船：/);
   assert.match(appJs, /function orderFinanceDocumentText\(/);
   assert.match(appJs, /function orderFinancePaymentDueText\(/);
   assert.match(appJs, /function orderFinancePaymentText\(/);
   assert.match(appJs, /function orderFinanceShipmentTone\(/);
   assert.match(appJs, /item\.repayment_timing/);
-  assert.match(appJs, /if \(item\.document_date\) return "已交单"/);
+  assert.match(appJs, /if \(item\.document_date\) return `已交单 \/ \$\{item\.document_date\}`/);
   assert.match(appJs, /return "待交单"/);
+  assert.match(appJs, /`\$\{orderFinanceWan\(item\.total_finance, 1\)\}（\$\{item\.financing_count\}笔）`/);
+  assert.doesNotMatch(appJs, /`\$\{item\.financing_count\}笔 \/ \$\{orderFinanceWan\(item\.total_finance, 1\)\}`/);
   assert.doesNotMatch(appJs, /截止日未提供|待交单 \/ 截止/);
   assert.match(stylesCss, /\.order-finance-field\.wide\s*\{[\s\S]*grid-column:\s*span 2/);
   assert.match(stylesCss, /\.order-finance-field\.wide strong\s*\{[\s\S]*white-space:\s*nowrap/);
@@ -171,6 +174,6 @@ test("order finance shows compact automatic sync status and new payment terminol
   assert.match(appJs, /7天内融资到期|30天内融资到期/);
   assert.match(appJs, /融资到期日/);
   assert.match(indexHtml, /融资到期日/);
-  assert.match(indexHtml, /app\.js\?v=order-finance-display-rework-20260715/);
-  assert.match(indexHtml, /styles\.css\?v=order-finance-display-rework-20260715/);
+  assert.match(indexHtml, /app\.js\?v=order-finance-status-refinement-20260715/);
+  assert.match(indexHtml, /styles\.css\?v=order-finance-status-refinement-20260715/);
 });
