@@ -232,6 +232,130 @@ def test_order_finance_schema_adds_manual_shipment_confirmation_columns(tmp_path
     assert {"shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at"}.issubset(columns)
 
 
+def test_order_finance_schema_adds_singleton_sync_status(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(order_finance_sync_status)").fetchall()
+        }
+
+    assert {
+        "id", "last_success_at", "changed_count", "source_version", "last_attempt_slot",
+    }.issubset(columns)
+
+
+def test_identical_snapshot_changes_zero_and_preserves_management(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    records = [progress_record("SNAPSHOT", "存续")]
+
+    first = order_finance.apply_order_finance_snapshot(records, imported_by="pytest")
+    saved = list_order_finance_records()[0]
+    update_management_fields(
+        saved["id"],
+        {"manager_note": "保留", "next_follow_up_date": "2026-07-20"},
+    )
+    second = order_finance.apply_order_finance_snapshot(records, imported_by="pytest")
+    preserved = list_order_finance_records()[0]
+
+    assert first == {"inserted": 1, "updated": 0, "archived": 0, "changed_count": 1}
+    assert second == {"inserted": 0, "updated": 0, "archived": 0, "changed_count": 0}
+    assert preserved["manager_note"] == "保留"
+    assert preserved["next_follow_up_date"] == "2026-07-20"
+
+
+def test_snapshot_counts_fact_update_and_archive(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    first = progress_record("A", "存续")
+    second = progress_record("B", "存续", id=2, business_key="ITEM|B|1")
+
+    assert order_finance.apply_order_finance_snapshot([first, second])["changed_count"] == 2
+    changed = dict(first, finance_amount_actual=12_000_000)
+    result = order_finance.apply_order_finance_snapshot([changed])
+
+    assert result == {"inserted": 0, "updated": 1, "archived": 1, "changed_count": 2}
+    assert [row["business_key"] for row in list_order_finance_records()] == ["ITEM|A|1"]
+
+
+def test_sync_status_and_slot_claim_are_minimal_and_deduplicated(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    assert order_finance.claim_order_finance_sync_slot("2026-07-15T09:00+08:00") is True
+    assert order_finance.claim_order_finance_sync_slot("2026-07-15T09:00+08:00") is False
+    order_finance.apply_order_finance_snapshot(
+        [progress_record("SYNC", "存续")],
+        sync_success_at="2026-07-15T09:02:00+08:00",
+        source_version="v2",
+        attempt_slot="2026-07-15T09:00+08:00",
+    )
+
+    assert order_finance.get_order_finance_sync_status() == {
+        "last_success_at": "2026-07-15T09:02:00+08:00",
+        "changed_count": 1,
+        "source_version": "v2",
+        "last_attempt_slot": "2026-07-15T09:00+08:00",
+    }
+
+
+def test_snapshot_failure_rolls_back_rows_and_success_status(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    original_exec = db._exec
+
+    def fail_status_update(cur, sql, params=None):
+        if "UPDATE order_finance_sync_status" in sql:
+            raise RuntimeError("forced status failure")
+        return original_exec(cur, sql, params)
+
+    monkeypatch.setattr(db, "_exec", fail_status_update)
+    with pytest.raises(RuntimeError, match="forced status failure"):
+        order_finance.apply_order_finance_snapshot(
+            [progress_record("ROLLBACK", "存续")],
+            sync_success_at="2026-07-15T09:02:00+08:00",
+            source_version="v3",
+            attempt_slot="2026-07-15T09:00+08:00",
+        )
+
+    assert list_order_finance_records() == []
+    assert order_finance.get_order_finance_sync_status()["last_success_at"] is None
+
+
+def test_directory_import_uses_real_changed_count(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    workbook = build_three_sheet_workbook(tmp_path / "snapshot.xlsx")
+
+    first = import_order_finance_directory(workbook, imported_by="pytest")
+    second = import_order_finance_directory(workbook, imported_by="pytest")
+
+    assert first["summary"]["changed_count"] == first["summary"]["record_count"]
+    assert second["summary"]["changed_count"] == 0
+
+
+def test_snapshot_logs_key_date_deletion_without_row_payload(tmp_path, monkeypatch, caplog):
+    use_temp_db(tmp_path, monkeypatch)
+    original = progress_record(
+        "DELETE-DATE",
+        "存续",
+        document_submission_date="2026-07-01",
+        tail_payment_date="2026-07-10",
+    )
+    order_finance.apply_order_finance_snapshot([original])
+
+    caplog.clear()
+    result = order_finance.apply_order_finance_snapshot([
+        dict(original, document_submission_date="", tail_payment_date=""),
+    ])
+
+    deleted_fields = {
+        record.key_date_field
+        for record in caplog.records
+        if record.getMessage() == "order_finance_key_date_cleared"
+    }
+    assert result["changed_count"] == 1
+    assert deleted_fields == {"document_submission_date", "tail_payment_date"}
+    assert all(not hasattr(record, "source_json") for record in caplog.records)
+
+
 def test_manual_shipment_confirmation_updates_group_and_survives_reimport(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")

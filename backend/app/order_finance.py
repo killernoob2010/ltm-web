@@ -5,6 +5,7 @@ Excel 台账解析、导入、查询和管理端计划字段维护。
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from .permissions import require_permission
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 SUBSIDIARIES = ["东钢", "北满", "承德", "抚顺", "西林", "阿城"]
 LOCAL_DEFAULT_LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
@@ -1114,6 +1116,143 @@ def upsert_order_finance_records(records: List[Dict[str, Any]], imported_by: str
     return {"inserted": inserted, "updated": updated}
 
 
+def _fact_values_equal(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    return all(existing.get(field) == incoming.get(field) for field in FACT_FIELDS)
+
+
+def apply_order_finance_snapshot(
+    records: List[Dict[str, Any]],
+    imported_by: str = "",
+    sync_success_at: Optional[str] = None,
+    source_version: Optional[str] = None,
+    attempt_slot: Optional[str] = None,
+) -> Dict[str, int]:
+    del imported_by
+    inserted = 0
+    updated = 0
+    archived = 0
+    serialized = [_serialize_record(record) for record in records]
+    incoming_keys = {record["business_key"] for record in serialized}
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        existing_rows = db._exec(cur, "SELECT * FROM order_finance_progress").fetchall()
+        existing_by_key = {
+            row["business_key"]: _row_to_dict(row)
+            for row in existing_rows
+        }
+
+        for record in serialized:
+            existing = existing_by_key.get(record["business_key"])
+            if existing:
+                if not _fact_values_equal(existing, record) or existing.get("is_archived"):
+                    for key_date_field in ("document_submission_date", "tail_payment_date"):
+                        if existing.get(key_date_field) and not record.get(key_date_field):
+                            logger.warning(
+                                "order_finance_key_date_cleared",
+                                extra={
+                                    "business_key": record["business_key"],
+                                    "key_date_field": key_date_field,
+                                },
+                            )
+                    assignments = ", ".join(f"{field} = ?" for field in FACT_FIELDS)
+                    params = [record.get(field) for field in FACT_FIELDS]
+                    params.append(existing["id"])
+                    db._exec(
+                        cur,
+                        f"UPDATE order_finance_progress SET {assignments}, "
+                        "is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        tuple(params),
+                    )
+                    updated += 1
+                continue
+
+            insert_fields = FACT_FIELDS + [
+                "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
+                "repayment_requirement", "repayment_requirement_status", "next_action",
+                "next_follow_up_date", "manager_note", "manual_override_fields",
+                "shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at",
+                "management_plan_json", "manual_change_log_json",
+            ]
+            values = [record.get(field) for field in FACT_FIELDS]
+            values.extend([
+                None, None, "", "", "", record.get("next_action", ""), "", "",
+                "[]", None, None, None, "{}", "[]",
+            ])
+            placeholders = ", ".join("?" for _ in insert_fields)
+            db._exec(
+                cur,
+                f"INSERT INTO order_finance_progress ({', '.join(insert_fields)}) "
+                f"VALUES ({placeholders})",
+                tuple(values),
+            )
+            inserted += 1
+
+        for existing in existing_by_key.values():
+            if (
+                not existing.get("is_archived")
+                and existing.get("source_file") != "手动新增"
+                and existing["business_key"] not in incoming_keys
+            ):
+                db._exec(
+                    cur,
+                    """UPDATE order_finance_progress
+                       SET is_archived = 1, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (existing["id"],),
+                )
+                archived += 1
+
+        changed_count = inserted + updated + archived
+        if sync_success_at is not None:
+            db._exec(
+                cur,
+                """UPDATE order_finance_sync_status
+                   SET last_success_at = ?, changed_count = ?, source_version = ?,
+                       last_attempt_slot = COALESCE(?, last_attempt_slot),
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = 1""",
+                (sync_success_at, changed_count, source_version, attempt_slot),
+            )
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "archived": archived,
+        "changed_count": changed_count,
+    }
+
+
+def get_order_finance_sync_status() -> Dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(
+            cur,
+            """SELECT last_success_at, changed_count, source_version, last_attempt_slot
+               FROM order_finance_sync_status WHERE id = 1""",
+        ).fetchone()
+    status = _row_to_dict(row)
+    return {
+        "last_success_at": status.get("last_success_at"),
+        "changed_count": int(status.get("changed_count") or 0),
+        "source_version": status.get("source_version"),
+        "last_attempt_slot": status.get("last_attempt_slot"),
+    }
+
+
+def claim_order_finance_sync_slot(slot_key: str) -> bool:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        result = db._exec(
+            cur,
+            """UPDATE order_finance_sync_status
+               SET last_attempt_slot = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = 1 AND COALESCE(last_attempt_slot, '') != ?""",
+            (slot_key, slot_key),
+        )
+        return int(getattr(result, "rowcount", 0) or 0) == 1
+
+
 def archive_existing_excel_order_finance_records() -> int:
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1130,10 +1269,8 @@ def archive_existing_excel_order_finance_records() -> int:
 
 def import_order_finance_directory(directory: Path | str, imported_by: str = "") -> Dict[str, Any]:
     parsed = parse_order_finance_directory(directory)
-    archived = archive_existing_excel_order_finance_records()
-    changes = upsert_order_finance_records(parsed["records"], imported_by=imported_by)
+    changes = apply_order_finance_snapshot(parsed["records"], imported_by=imported_by)
     parsed["summary"].update(changes)
-    parsed["summary"]["archived"] = archived
     return parsed
 
 
@@ -1158,10 +1295,8 @@ async def import_order_finance_upload(request: Request, file_name: str, imported
                 record["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
         for item in parsed.get("files", []):
             item["file"] = file_name
-        archived = archive_existing_excel_order_finance_records()
-        changes = upsert_order_finance_records(parsed["records"], imported_by=imported_by)
+        changes = apply_order_finance_snapshot(parsed["records"], imported_by=imported_by)
         parsed["summary"].update(changes)
-        parsed["summary"]["archived"] = archived
         return parsed
     finally:
         if tmp_path and tmp_path.exists():
