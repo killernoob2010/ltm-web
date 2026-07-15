@@ -2309,6 +2309,14 @@ function orderFinanceWan(value, digits = 1) {
   return Number.isFinite(number) ? `${money(number, digits)}万` : "-";
 }
 
+function orderFinanceBankDisplayName(value) {
+  const original = String(value || "").trim();
+  const normalized = original.replace(/\s+/g, "");
+  if (normalized === "918ING银行（香港）") return "ING（香港）";
+  if (normalized === "918ING银行（新加坡）") return "ING（新加坡）";
+  return original;
+}
+
 function orderFinanceDaysTo(value) {
   if (!value) return null;
   const target = new Date(`${value}T00:00:00`);
@@ -2456,7 +2464,7 @@ function orderFinancePaymentText(item) {
 }
 
 function orderFinanceBankAmountText(item) {
-  const banks = [...new Set((item.financings || []).map((row) => row.bank).filter(Boolean))];
+  const banks = [...new Set((item.financings || []).map((row) => orderFinanceBankDisplayName(row.bank)).filter(Boolean))];
   const amount = item.financing_count > 1
     ? `${orderFinanceWan(item.total_finance, 1)}（${item.financing_count}笔）`
     : orderFinanceWan(item.total_finance, 1);
@@ -2478,7 +2486,7 @@ function renderOrderFinanceFinancingRows(item) {
         <table>
           <thead><tr><th>贷款行</th><th>利率</th><th>原到期日</th><th>新到期日</th><th>展期天数</th></tr></thead>
           <tbody><tr>
-            <td>${escapeHtml(row.bank || "-")}</td>
+            <td>${escapeHtml(orderFinanceBankDisplayName(row.bank) || "-")}</td>
             <td>${escapeHtml(orderFinanceRateText(row.rate))}</td>
             <td>${escapeHtml(row.original_due_date || "-")}</td>
             <td>${escapeHtml(row.new_due_date || "-")}</td>
@@ -2505,7 +2513,7 @@ function renderOrderFinanceFinancingRows(item) {
         <tbody>
           ${(item.financings || []).map((row) => `
             <tr>
-              <td>${escapeHtml(row.bank || "-")}</td>
+              <td>${escapeHtml(orderFinanceBankDisplayName(row.bank) || "-")}</td>
               <td class="numeric">${escapeHtml(orderFinanceWan(row.amount || 0, 2))}</td>
               <td>${escapeHtml(row.borrow_date || "-")}</td>
               <td>${escapeHtml(row.original_due_date || "-")}</td>
@@ -2814,7 +2822,7 @@ function renderOrderFinanceSplitRows(rows) {
 
 function renderOrderFinanceSelectedBank() {
   const bank = state.selectedOrderFinanceBank;
-  orderFinanceSelectedBankTitle.textContent = bank ? `${bank} 明细` : "银行明细";
+  orderFinanceSelectedBankTitle.textContent = bank ? `${orderFinanceBankDisplayName(bank)} 明细` : "银行明细";
   const rows = (state.orderFinanceCapital.bank_details || []).filter((row) => row.bank === bank);
   orderFinanceSelectedBankTable.innerHTML = rows.length ? `
     <table>
@@ -2844,7 +2852,7 @@ function renderOrderFinanceCapital() {
     const tone = rate >= 90 ? "danger" : rate >= 70 ? "warning" : "";
     return `
       <button class="bank-row ${state.selectedOrderFinanceBank === bank.bank ? "selected" : ""}" type="button" data-bank="${escapeHtml(bank.bank)}">
-        <div class="bank-row-head"><strong>${escapeHtml(bank.bank)}</strong><span>${bank.usage_rate == null ? "-" : `${rate.toFixed(1)}%`}</span></div>
+        <div class="bank-row-head"><strong>${escapeHtml(orderFinanceBankDisplayName(bank.bank))}</strong><span>${bank.usage_rate == null ? "-" : `${rate.toFixed(1)}%`}</span></div>
         <div class="progress-bar ${tone}"><span style="width: ${Math.min(rate, 100).toFixed(1)}%"></span></div>
         <div class="bank-row-foot">
           <span>占用 ${escapeHtml(orderFinanceWan(bank.used || 0, 1))}</span>
