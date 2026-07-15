@@ -206,7 +206,7 @@ def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_pa
     by_item = {item["item_no"]: item for item in view["contracts"]}
 
     assert by_item["Y-2026-1"]["latest_shipment_date"] == "2026-07-15"
-    assert by_item["CLOSED"]["repayment_timing"] == "提前 2 天还款"
+    assert by_item["CLOSED"]["repayment_timing"] == "提前 2 天回款"
     assert view["summary"]["data_issues"] == sum(item["data_issue_count"] for item in view["contracts"] if item["stage"] != "已完成")
 
 
@@ -446,16 +446,121 @@ def test_indicator_risks_color_only_the_fields_that_cause_risk():
     view = build_order_finance_progress_view(records)
     items = {item["item_no"]: item for item in view["contracts"]}
 
-    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
+    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "document": "低", "payment": "低", "reminder": "低"}
     assert items["MISSING-SHIP"]["risk"] == "高"
     assert items["SHIP-SOON"]["indicator_risks"]["shipment"] == "中"
-    assert items["DUE-SOON"]["indicator_risks"]["finance_due"] == "中"
-    assert items["REPAID-ACTIVE"]["indicator_risks"]["repayment"] == "中"
+    assert items["DUE-SOON"]["indicator_risks"]["payment"] == "中"
+    assert items["DUE-SOON"]["indicator_risks"]["document"] == "中"
+    assert items["REPAID-ACTIVE"]["indicator_risks"]["payment"] == "低"
     assert items["MANUAL-SHIP"]["indicator_risks"]["shipment"] == "低"
-    assert items["MANUAL-SHIP"]["stage"] == "已装船待回款"
+    assert items["MANUAL-SHIP"]["stage"] == "已装船待交单"
     assert items["DOCUMENTED"]["indicator_risks"]["shipment"] == "低"
-    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
+    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "document": "低", "payment": "低", "reminder": "低"}
     assert items["DONE"]["risk"] == "已完成"
+
+
+def test_document_date_implies_shipped_and_documented():
+    row = progress_record(
+        "DOCUMENT-IMPLIES-SHIP",
+        "存续",
+        document_submission_date=date.today().isoformat(),
+    )
+
+    item = build_order_finance_progress_view([row])["contracts"][0]
+
+    assert item["shipment_completed"] is True
+    assert item["shipment_basis"] == "document"
+    assert item["stage"] == "已交单待回款"
+    assert item["indicator_risks"]["shipment"] == "低"
+    assert item["indicator_risks"]["document"] == "低"
+
+
+def test_manual_shipment_waits_for_document_and_deadline_is_medium():
+    today = date.today()
+    row = progress_record(
+        "SHIP-WAITS-DOCUMENT",
+        "存续",
+        shipment_confirmed_date=today.isoformat(),
+        finance_due_date=(today + timedelta(days=15)).isoformat(),
+    )
+
+    item = build_order_finance_progress_view([row])["contracts"][0]
+
+    assert item["stage"] == "已装船待交单"
+    assert item["document_deadline"] == today.isoformat()
+    assert item["indicator_risks"]["document"] == "中"
+    assert "document_follow_up" in item["weekly_focus_reasons"]
+
+
+def test_partial_and_complete_multi_financing_payment():
+    today = date.today().isoformat()
+    first = progress_record(
+        "MULTI-PAYMENT",
+        "存续",
+        document_submission_date=today,
+        tail_payment_date=today,
+    )
+    second = progress_record(
+        "MULTI-PAYMENT",
+        "存续",
+        id=2,
+        business_key="ITEM|MULTI-PAYMENT|2",
+        document_submission_date=today,
+    )
+
+    partial = build_order_finance_progress_view([first, second])["contracts"][0]
+    second["tail_payment_date"] = today
+    complete = build_order_finance_progress_view([first, second])["contracts"][0]
+
+    assert partial["stage"] == "已交单待回款"
+    assert partial["payment_progress"] == "部分回款 1/2笔"
+    assert complete["stage"] == "已回款待结案"
+    assert complete["payment_progress"] == "已回款 2/2笔"
+
+
+def test_payment_risk_uses_seven_and_thirty_day_boundaries():
+    today = date.today()
+    records = [
+        progress_record(
+            f"PAY-{days}",
+            "存续",
+            id=index,
+            business_key=f"ITEM|PAY-{days}|1",
+            finance_due_date=(today + timedelta(days=days)).isoformat(),
+            document_submission_date=today.isoformat(),
+        )
+        for index, days in enumerate((7, 8, 30, 31), start=1)
+    ]
+
+    items = {
+        item["item_no"]: item
+        for item in build_order_finance_progress_view(records)["contracts"]
+    }
+
+    assert items["PAY-7"]["indicator_risks"]["payment"] == "高"
+    assert items["PAY-8"]["indicator_risks"]["payment"] == "中"
+    assert items["PAY-30"]["indicator_risks"]["payment"] == "中"
+    assert items["PAY-31"]["indicator_risks"]["payment"] == "低"
+
+
+def test_wps_date_deletion_regresses_to_preserved_manual_shipment():
+    today = date.today().isoformat()
+    original = progress_record(
+        "REGRESS",
+        "存续",
+        shipment_confirmed_date=today,
+        document_submission_date=today,
+        tail_payment_date=today,
+    )
+    before = build_order_finance_progress_view([original])["contracts"][0]
+    after = build_order_finance_progress_view([
+        dict(original, document_submission_date="", tail_payment_date=""),
+    ])["contracts"][0]
+
+    assert before["stage"] == "已回款待结案"
+    assert after["stage"] == "已装船待交单"
+    assert after["shipment_confirmed_date"] == today
+    assert after["shipment_basis"] == "manual"
 
 
 def test_weekly_focus_uses_rolling_ten_day_actions():
@@ -514,13 +619,13 @@ def test_explicit_status_and_finance_milestones_drive_lifecycle():
     stages = {item["item_no"]: item["stage"] for item in view["contracts"]}
 
     assert stages == {
-        "Y-1": "已还款待结案",
+        "Y-1": "已回款待结案",
         "Y-2": "已完成",
         "Y-3": "已交单待回款",
-        "Y-4": "已装船待回款",
+        "Y-4": "已放款待装船",
     }
     assert view["summary"]["completed"] == 1
-    assert view["summary"]["collected_unrepaid"] == 1
+    assert view["summary"]["paid_unclosed"] == 1
 
 
 def test_capital_view_uses_quota_sheet_metadata_and_cross_checks_order_usage():
@@ -653,7 +758,9 @@ def test_progress_view_groups_contract_items_and_multi_financing():
     multi = [item for item in view["contracts"] if item["financing_count"] > 1]
     assert multi
     sample = multi[0]
-    assert sample["stage"] in {"已放款待装船", "已装船待回款", "已交单待回款", "已还款待结案", "已完成"}
+    assert sample["stage"] in {
+        "待放款", "已放款待装船", "已装船待交单", "已交单待回款", "已回款待结案", "已完成",
+    }
     assert len(sample["financings"]) == sample["financing_count"]
 
 
