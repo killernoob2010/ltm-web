@@ -2062,6 +2062,17 @@ def migrate_auth_schema(conn) -> None:
 
 
 def migrate_order_finance_schema(conn) -> None:
+    sync_status_sql = """
+        CREATE TABLE IF NOT EXISTS order_finance_sync_status (
+            id INTEGER PRIMARY KEY,
+            last_success_at TEXT,
+            changed_count INTEGER NOT NULL DEFAULT 0,
+            source_version TEXT,
+            last_attempt_slot TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            CHECK (id = 1)
+        )
+    """
     columns = {
         "shipment_confirmed_date": "TEXT",
         "shipment_confirmed_by": "TEXT",
@@ -2069,10 +2080,21 @@ def migrate_order_finance_schema(conn) -> None:
     }
     if _is_pg():
         cur = conn.cursor()
+        cur.execute(sync_status_sql)
+        cur.execute("ALTER TABLE order_finance_sync_status ENABLE ROW LEVEL SECURITY")
+        cur.execute("REVOKE ALL ON TABLE order_finance_sync_status FROM anon, authenticated")
         for name, col_type in columns.items():
             cur.execute(f"ALTER TABLE order_finance_progress ADD COLUMN IF NOT EXISTS {name} {col_type}")
+        cur.execute(
+            """INSERT INTO order_finance_sync_status (id, changed_count)
+               VALUES (1, 0) ON CONFLICT (id) DO NOTHING"""
+        )
         conn.commit()
         return
+    conn.execute(sync_status_sql)
+    conn.execute(
+        "INSERT OR IGNORE INTO order_finance_sync_status (id, changed_count) VALUES (1, 0)"
+    )
     existing = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(order_finance_progress)").fetchall()
