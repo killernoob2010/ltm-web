@@ -22,6 +22,7 @@ _SYNC_LOCK = threading.Lock()
 _SCHEDULER_STARTED = False
 API_START_DATE = date(2026, 7, 13)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+MAX_BATCH_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -196,16 +197,32 @@ def _try_database_lock(cur) -> bool:
 def _insert_run(cur, *, slot_key: str, trigger_type: str, start_date: date, end_date: date) -> int | None:
     existing = db._exec(
         cur,
-        "SELECT id FROM iron_ore_basis_sync_runs WHERE slot_key = ?",
+        "SELECT id, status, attempt_count FROM iron_ore_basis_sync_runs WHERE slot_key = ?",
         (slot_key,),
     ).fetchone()
     if existing:
-        return None
+        if existing["status"] != "failed" or int(existing["attempt_count"]) >= MAX_BATCH_ATTEMPTS:
+            return None
+        db._exec(
+            cur,
+            """UPDATE iron_ore_basis_sync_runs
+               SET status = 'running', attempt_count = attempt_count + 1,
+                   source_points_seen = 0, source_points_inserted = 0,
+                   source_differences = 0, combinations_written = 0,
+                   combinations_skipped = 0, error_code = NULL,
+                   error_summary = NULL, error_stage = NULL, http_status = NULL,
+                   finished_at = NULL, last_attempt_at = CURRENT_TIMESTAMP,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (existing["id"],),
+        )
+        return int(existing["id"])
     db._exec(
         cur,
         """INSERT INTO iron_ore_basis_sync_runs
-           (slot_key, trigger_type, target_start_date, target_end_date, status)
-           VALUES (?, ?, ?, ?, ?)""",
+           (slot_key, trigger_type, target_start_date, target_end_date, status,
+            attempt_count, last_attempt_at)
+           VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)""",
         (slot_key, trigger_type, start_date.isoformat(), end_date.isoformat(), "running"),
     )
     return db.last_insert_id(cur.connection)
@@ -218,13 +235,16 @@ def _record_failed_run(
     start_date: date,
     end_date: date,
     error: Exception,
+    error_stage: str,
 ) -> None:
     error_code = str(getattr(error, "code", type(error).__name__))[:100]
+    stage = str(getattr(error, "stage", None) or error_stage)[:100]
+    http_status = getattr(error, "http_status", None)
     with db.connect() as conn:
         cur = conn.cursor()
         existing = db._exec(
             cur,
-            "SELECT id FROM iron_ore_basis_sync_runs WHERE slot_key = ?",
+            "SELECT id, attempt_count FROM iron_ore_basis_sync_runs WHERE slot_key = ?",
             (slot_key,),
         ).fetchone()
         if existing:
@@ -232,17 +252,22 @@ def _record_failed_run(
                 cur,
                 """UPDATE iron_ore_basis_sync_runs
                    SET status = 'failed', error_code = ?, error_summary = ?,
+                       error_stage = ?, http_status = ?,
+                       attempt_count = attempt_count + 1,
+                       last_attempt_at = CURRENT_TIMESTAMP,
                        finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
-                (error_code, "同步执行失败", existing["id"]),
+                (error_code, "同步执行失败", stage, http_status, existing["id"]),
             )
             return
         db._exec(
             cur,
             """INSERT INTO iron_ore_basis_sync_runs
                (slot_key, trigger_type, target_start_date, target_end_date, status,
-                error_code, error_summary, finished_at)
-               VALUES (?, ?, ?, ?, 'failed', ?, ?, CURRENT_TIMESTAMP)""",
+                error_code, error_summary, error_stage, http_status, attempt_count,
+                last_attempt_at, finished_at)
+               VALUES (?, ?, ?, ?, 'failed', ?, ?, ?, ?, 1,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
             (
                 slot_key,
                 trigger_type,
@@ -250,6 +275,8 @@ def _record_failed_run(
                 end_date.isoformat(),
                 error_code,
                 "同步执行失败",
+                stage,
+                http_status,
             ),
         )
 
@@ -362,7 +389,7 @@ def sync_basis_range(
             _point_map(points), pack, start_date, end_date
         )
         return SyncSummary(
-            status="success" if calculations else "partial",
+            status="success" if skipped == 0 else "partial",
             target_start_date=start_date,
             target_end_date=end_date,
             source_points_seen=len(points),
@@ -373,6 +400,7 @@ def sync_basis_range(
     db.init_db()
     if not _SYNC_LOCK.acquire(blocking=False):
         return SyncSummary("skipped", start_date, end_date)
+    error_stage = "run_claim"
     try:
         with db.connect() as conn:
             cur = conn.cursor()
@@ -388,20 +416,24 @@ def sync_basis_range(
             if run_id is None:
                 return SyncSummary("skipped", start_date, end_date)
 
+            error_stage = "source_collect"
             points = _collect_points(active_sources, pack, start_date, end_date)
             inserted_points = 0
             differences = 0
+            error_stage = "source_observe"
             for point in points:
                 inserted, changed = _observe_point(cur, point, run_id)
                 inserted_points += inserted
                 differences += changed
 
+            error_stage = "calculate"
             calculations, skipped = _calculations_from_points(
                 _canonical_points(cur, start_date, end_date),
                 pack,
                 start_date,
                 end_date,
             )
+            error_stage = "database_write"
             written = sum(1 for calculation in calculations if _insert_calculation(cur, calculation))
             status = "success" if skipped == 0 else "partial"
             db._exec(
@@ -410,7 +442,8 @@ def sync_basis_range(
                    SET status = ?, source_points_seen = ?, source_points_inserted = ?,
                        source_differences = ?, combinations_written = ?,
                        combinations_skipped = ?, finished_at = CURRENT_TIMESTAMP,
-                       updated_at = CURRENT_TIMESTAMP
+                       error_code = NULL, error_summary = NULL, error_stage = NULL,
+                       http_status = NULL, updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
                 (
                     status,
@@ -439,6 +472,7 @@ def sync_basis_range(
             start_date=start_date,
             end_date=end_date,
             error=exc,
+            error_stage=error_stage,
         )
         raise
     finally:

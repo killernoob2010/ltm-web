@@ -1178,6 +1178,10 @@ def migrate_iron_ore_basis_schema(conn) -> None:
                 combinations_skipped INTEGER NOT NULL DEFAULT 0,
                 error_code TEXT,
                 error_summary TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 1,
+                error_stage TEXT,
+                http_status INTEGER,
+                last_attempt_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 finished_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1211,6 +1215,17 @@ def migrate_iron_ore_basis_schema(conn) -> None:
             ON iron_ore_basis_sync_runs(target_start_date, target_end_date, status);
             CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_source_points_date
             ON iron_ore_basis_source_points(business_date, source_name, indicator_key);
+
+            ALTER TABLE iron_ore_basis_sync_runs
+            ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE iron_ore_basis_sync_runs
+            ADD COLUMN IF NOT EXISTS error_stage TEXT;
+            ALTER TABLE iron_ore_basis_sync_runs
+            ADD COLUMN IF NOT EXISTS http_status INTEGER;
+            ALTER TABLE iron_ore_basis_sync_runs
+            ADD COLUMN IF NOT EXISTS last_attempt_at TEXT DEFAULT CURRENT_TIMESTAMP;
+            UPDATE iron_ore_basis_sync_runs
+            SET last_attempt_at = COALESCE(last_attempt_at, started_at, CURRENT_TIMESTAMP);
 
             ALTER TABLE iron_ore_basis_results ENABLE ROW LEVEL SECURITY;
             ALTER TABLE iron_ore_basis_details ENABLE ROW LEVEL SECURITY;
@@ -1316,6 +1331,10 @@ def migrate_iron_ore_basis_schema(conn) -> None:
             combinations_skipped INTEGER NOT NULL DEFAULT 0,
             error_code TEXT,
             error_summary TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 1,
+            error_stage TEXT,
+            http_status INTEGER,
+            last_attempt_at TEXT DEFAULT CURRENT_TIMESTAMP,
             started_at TEXT DEFAULT CURRENT_TIMESTAMP,
             finished_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1351,6 +1370,24 @@ def migrate_iron_ore_basis_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_source_points_date
         ON iron_ore_basis_source_points(business_date, source_name, indicator_key);
         """
+    )
+    sync_run_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(iron_ore_basis_sync_runs)").fetchall()
+    }
+    for column, definition in (
+        ("attempt_count", "INTEGER NOT NULL DEFAULT 1"),
+        ("error_stage", "TEXT"),
+        ("http_status", "INTEGER"),
+        ("last_attempt_at", "TEXT"),
+    ):
+        if column not in sync_run_columns:
+            conn.execute(
+                f"ALTER TABLE iron_ore_basis_sync_runs ADD COLUMN {column} {definition}"
+            )
+    conn.execute(
+        """UPDATE iron_ore_basis_sync_runs
+           SET last_attempt_at = COALESCE(last_attempt_at, started_at, CURRENT_TIMESTAMP)"""
     )
 
 

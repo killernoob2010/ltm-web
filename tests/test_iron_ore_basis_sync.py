@@ -43,7 +43,12 @@ class FakeSina:
 
 class FailingEbc:
     def fetch_points(self, codes, start_date, end_date):
-        raise BasisSourceError("http_error", "EBC 请求失败")
+        raise BasisSourceError(
+            "http_error",
+            "EBC 请求失败",
+            stage="ebc_query",
+            http_status=503,
+        )
 
 
 def use_temp_db(tmp_path, monkeypatch):
@@ -122,6 +127,41 @@ def test_sync_dry_run_calculates_without_any_database_write(tmp_path, monkeypatc
     assert table_count("iron_ore_basis_source_points") == 0
     assert table_count("iron_ore_basis_results") == 0
     assert table_count("iron_ore_basis_details") == 0
+
+
+def test_sync_dry_run_is_partial_when_any_combination_is_skipped(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    pack = rule_pack()
+    missing_mapping = IndicatorMapping(
+        indicator_code="ID-MISSING",
+        indicator_name="PB粉：61.5%Fe：青岛港",
+        port="青岛港",
+        product="PB粉",
+        ebc_price_fe=0.615,
+        price_proxy_indicator=None,
+        price_parameter_spec_diff=False,
+        ebc_original_port="青岛港",
+    )
+    pack_with_missing = BasisRulePack(
+        rule_version=pack.rule_version,
+        effective_from=pack.effective_from,
+        products=pack.products,
+        indicators={**pack.indicators, missing_mapping.indicator_code: missing_mapping},
+    )
+
+    summary = sync_basis_range(
+        date(2026, 7, 13),
+        date(2026, 7, 13),
+        trigger_type="manual",
+        slot_key="manual:dry-run-partial",
+        apply=False,
+        sources=sources(),
+        rule_pack=pack_with_missing,
+    )
+
+    assert summary.status == "partial"
+    assert summary.combinations_written == 1
+    assert summary.combinations_skipped == 1
 
 
 def test_sync_writes_complete_result_detail_and_source_points(tmp_path, monkeypatch):
@@ -313,10 +353,84 @@ def test_sync_records_source_failure_without_partial_data(tmp_path, monkeypatch)
         )
 
     with db.connect() as conn:
-        run = db._exec(conn.cursor(), "SELECT status, error_code FROM iron_ore_basis_sync_runs").fetchone()
+        run = db._exec(
+            conn.cursor(),
+            """SELECT status, error_code, error_stage, http_status, attempt_count,
+                      last_attempt_at
+               FROM iron_ore_basis_sync_runs""",
+        ).fetchone()
     assert run["status"] == "failed"
     assert run["error_code"] == "http_error"
+    assert run["error_stage"] == "ebc_query"
+    assert run["http_status"] == 503
+    assert run["attempt_count"] == 1
+    assert run["last_attempt_at"]
     assert table_count("iron_ore_basis_source_points") == 0
+
+
+def test_failed_slot_can_retry_and_clears_error_after_success(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    kwargs = {
+        "start_date": date(2026, 7, 13),
+        "end_date": date(2026, 7, 13),
+        "trigger_type": "scheduled_0930",
+        "slot_key": "scheduled:2026-07-14:0930",
+        "apply": True,
+        "rule_pack": rule_pack(),
+    }
+
+    with pytest.raises(BasisSourceError):
+        sync_basis_range(
+            sources=BasisSources(ebc=FailingEbc(), sina=FakeSina({})),
+            **kwargs,
+        )
+    summary = sync_basis_range(sources=sources(), **kwargs)
+
+    assert summary.status == "success"
+    with db.connect() as conn:
+        run = db._exec(
+            conn.cursor(),
+            """SELECT status, attempt_count, error_code, error_stage, http_status
+               FROM iron_ore_basis_sync_runs""",
+        ).fetchone()
+    assert dict(run) == {
+        "status": "success",
+        "attempt_count": 2,
+        "error_code": None,
+        "error_stage": None,
+        "http_status": None,
+    }
+    assert table_count("iron_ore_basis_results") == 1
+
+
+def test_failed_slot_stops_after_three_batch_attempts(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    kwargs = {
+        "start_date": date(2026, 7, 13),
+        "end_date": date(2026, 7, 13),
+        "trigger_type": "scheduled_0930",
+        "slot_key": "scheduled:2026-07-14:0930",
+        "apply": True,
+        "rule_pack": rule_pack(),
+    }
+
+    for _ in range(3):
+        with pytest.raises(BasisSourceError):
+            sync_basis_range(
+                sources=BasisSources(ebc=FailingEbc(), sina=FakeSina({})),
+                **kwargs,
+            )
+    active_sources = sources()
+    summary = sync_basis_range(sources=active_sources, **kwargs)
+
+    assert summary.status == "skipped"
+    assert active_sources.ebc.calls == []
+    with db.connect() as conn:
+        run = db._exec(
+            conn.cursor(),
+            "SELECT status, attempt_count FROM iron_ore_basis_sync_runs",
+        ).fetchone()
+    assert dict(run) == {"status": "failed", "attempt_count": 3}
 
 
 def test_due_slots_use_shanghai_schedule_and_stable_targets():

@@ -6,6 +6,7 @@ from datetime import date
 import hashlib
 import json
 import os
+import time
 from typing import Callable, Mapping, Sequence
 
 import requests
@@ -20,14 +21,24 @@ SINA_I0_URL = (
     "https://stock2.finance.sina.com.cn/futures/api/jsonp.php"
     "/var%20_i0=/InnerFuturesNewService.getDailyKLine?symbol=i0"
 )
+RETRY_DELAYS = (3, 8)
 
 
 class BasisSourceError(RuntimeError):
     """A source failure safe to persist without credentials or response bodies."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        stage: str | None = None,
+        http_status: int | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.stage = stage
+        self.http_status = http_status
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,42 @@ def _point_hash(source_name: str, indicator_key: str, business_date: date, value
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _http_status(error: requests.RequestException) -> int | None:
+    response = getattr(error, "response", None)
+    return int(response.status_code) if response is not None and response.status_code is not None else None
+
+
+def _is_retryable_request_error(error: requests.RequestException) -> bool:
+    status = _http_status(error)
+    if status is not None:
+        return status == 429 or status >= 500
+    return isinstance(error, (requests.ConnectionError, requests.Timeout))
+
+
+def _request_with_retry(
+    request: Callable[[], requests.Response],
+    *,
+    stage: str,
+    message: str,
+    sleep_func: Callable[[float], None],
+):
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            response = request()
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            if attempt >= len(RETRY_DELAYS) or not _is_retryable_request_error(exc):
+                raise BasisSourceError(
+                    "http_error",
+                    message,
+                    stage=stage,
+                    http_status=_http_status(exc),
+                ) from exc
+            sleep_func(RETRY_DELAYS[attempt])
+    raise RuntimeError("unreachable")
+
+
 class EbcBasisSource:
     def __init__(
         self,
@@ -61,11 +108,13 @@ class EbcBasisSource:
         environ: Mapping[str, str] | None = None,
         base_url: str = EBC_BASE_URL,
         timeout: int = 15,
+        sleep_func: Callable[[float], None] = time.sleep,
     ):
         self.session = session or requests.Session()
         self.environ = environ if environ is not None else os.environ
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.sleep_func = sleep_func
         self._token: str | None = None
 
     @property
@@ -75,22 +124,23 @@ class EbcBasisSource:
             "User-Agent": "Mozilla/5.0 (compatible; LTM-IronOreBasisSync/1.0)",
         }
 
-    def _post_json(self, path: str, **kwargs) -> dict:
-        try:
-            response = self.session.post(
+    def _post_json(self, path: str, *, stage: str, **kwargs) -> dict:
+        response = _request_with_retry(
+            lambda: self.session.post(
                 f"{self.base_url}{path}",
                 timeout=self.timeout,
                 **kwargs,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise BasisSourceError("http_error", "EBC 请求失败") from exc
+            ),
+            stage=stage,
+            message="EBC 请求失败",
+            sleep_func=self.sleep_func,
+        )
         try:
             payload = response.json()
         except (ValueError, json.JSONDecodeError) as exc:
-            raise BasisSourceError("invalid_response", "EBC 返回格式无效") from exc
+            raise BasisSourceError("invalid_response", "EBC 返回格式无效", stage=stage) from exc
         if not isinstance(payload, dict):
-            raise BasisSourceError("invalid_response", "EBC 返回格式无效")
+            raise BasisSourceError("invalid_response", "EBC 返回格式无效", stage=stage)
         return payload
 
     def login(self) -> str:
@@ -100,6 +150,7 @@ class EbcBasisSource:
             raise BasisSourceError("missing_credentials", "EBC 凭据未配置")
         payload = self._post_json(
             EBC_LOGIN_PATH,
+            stage="ebc_login",
             json={
                 "account": account,
                 "password": password,
@@ -142,6 +193,7 @@ class EbcBasisSource:
         }
         response = self._post_json(
             EBC_QUERY_PATH,
+            stage="ebc_query",
             json=query,
             headers={**self._browser_headers, "accessToken": token},
         )
@@ -181,16 +233,19 @@ class SinaI0Source:
         *,
         http_get: Callable = requests.get,
         timeout: int = 8,
+        sleep_func: Callable[[float], None] = time.sleep,
     ):
         self.http_get = http_get
         self.timeout = timeout
+        self.sleep_func = sleep_func
 
     def fetch_closes(self, start_date: date, end_date: date) -> dict[date, float]:
-        try:
-            response = self.http_get(SINA_I0_URL, timeout=self.timeout)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise BasisSourceError("http_error", "新浪 I0 请求失败") from exc
+        response = _request_with_retry(
+            lambda: self.http_get(SINA_I0_URL, timeout=self.timeout),
+            stage="i0_query",
+            message="新浪 I0 请求失败",
+            sleep_func=self.sleep_func,
+        )
         try:
             parsed = parse_sina_history_text(
                 response.text,
@@ -198,5 +253,9 @@ class SinaI0Source:
                 end_date=end_date.isoformat(),
             )
         except (ValueError, json.JSONDecodeError) as exc:
-            raise BasisSourceError("invalid_response", "新浪 I0 返回格式无效") from exc
+            raise BasisSourceError(
+                "invalid_response",
+                "新浪 I0 返回格式无效",
+                stage="i0_query",
+            ) from exc
         return {date.fromisoformat(day): value for day, value in parsed.items()}

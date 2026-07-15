@@ -70,6 +70,10 @@ def test_iron_ore_basis_schema_is_idempotent_and_indexed(tmp_path, monkeypatch):
         detail_foreign_keys = cur.execute(
             "PRAGMA foreign_key_list(iron_ore_basis_details)"
         ).fetchall()
+        sync_run_columns = {
+            row["name"]
+            for row in cur.execute("PRAGMA table_info(iron_ore_basis_sync_runs)").fetchall()
+        }
 
     assert "iron_ore_basis_results" in tables
     assert "iron_ore_basis_details" in tables
@@ -80,10 +84,59 @@ def test_iron_ore_basis_schema_is_idempotent_and_indexed(tmp_path, monkeypatch):
     assert "idx_iron_ore_basis_details_result" in indexes
     assert "idx_iron_ore_basis_sync_runs_window" in indexes
     assert "idx_iron_ore_basis_source_points_date" in indexes
+    assert {"attempt_count", "error_stage", "http_status", "last_attempt_at"} <= sync_run_columns
     assert any(
         row["table"] == "iron_ore_basis_results" and row["from"] == "result_id"
         for row in detail_foreign_keys
     )
+
+
+def test_iron_ore_basis_schema_adds_retry_columns_to_existing_sync_table(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "existing-basis.db")
+    with db.connect() as conn:
+        conn.execute(
+            """CREATE TABLE iron_ore_basis_sync_runs (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   slot_key TEXT NOT NULL UNIQUE,
+                   trigger_type TEXT NOT NULL,
+                   target_start_date TEXT NOT NULL,
+                   target_end_date TEXT NOT NULL,
+                   status TEXT NOT NULL,
+                   source_points_seen INTEGER NOT NULL DEFAULT 0,
+                   source_points_inserted INTEGER NOT NULL DEFAULT 0,
+                   source_differences INTEGER NOT NULL DEFAULT 0,
+                   combinations_written INTEGER NOT NULL DEFAULT 0,
+                   combinations_skipped INTEGER NOT NULL DEFAULT 0,
+                   error_code TEXT,
+                   error_summary TEXT,
+                   started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   finished_at TEXT,
+                   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO iron_ore_basis_sync_runs
+               (slot_key, trigger_type, target_start_date, target_end_date, status)
+               VALUES ('scheduled:old', 'scheduled_0930', '2026-07-14', '2026-07-14', 'failed')"""
+        )
+    db.init_db()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(iron_ore_basis_sync_runs)").fetchall()
+        }
+        run = conn.execute(
+            """SELECT attempt_count, error_stage, http_status, last_attempt_at
+               FROM iron_ore_basis_sync_runs WHERE slot_key = 'scheduled:old'"""
+        ).fetchone()
+
+    assert {"attempt_count", "error_stage", "http_status", "last_attempt_at"} <= columns
+    assert run["attempt_count"] == 1
+    assert run["last_attempt_at"]
 
 
 def test_database_backup_includes_all_basis_tables():
