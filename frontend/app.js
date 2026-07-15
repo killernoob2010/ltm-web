@@ -2414,8 +2414,8 @@ function renderOrderFinanceSummary() {
   const items = [
     ["未结算业务", summary.open_contracts || 0],
     ["存续融资金额", orderFinanceWan(summary.active_finance || 0)],
-    ["7天内回款到期", summary.due_7d || 0],
-    ["30天内回款到期", summary.due_30d || 0],
+    ["7天内融资到期", summary.due_7d || 0],
+    ["30天内融资到期", summary.due_30d || 0],
     ["本周重点", summary.focus_risk || 0],
     ["待放款", summary.pending_drawdown || 0],
     ["已放款待装船", summary.financed_unshipped || 0],
@@ -2430,14 +2430,13 @@ function renderOrderFinanceSummary() {
   )).join("");
 }
 
-function orderFinanceField(label, value, tone = "") {
-  return `<div class="order-finance-field ${tone}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "-")}</strong></div>`;
+function orderFinanceField(label, value, tone = "", extraClass = "") {
+  return `<div class="order-finance-field ${tone} ${extraClass}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "-")}</strong></div>`;
 }
 
 function orderFinanceDocumentText(item) {
-  if (item.document_date) return `已交单：${item.document_date}`;
-  if (!item.document_deadline) return "待交单 / 截止日未提供";
-  return `待交单 / 截止 ${item.document_deadline}`;
+  if (item.document_date) return "已交单";
+  return "待交单";
 }
 
 function orderFinancePaymentDueText(item) {
@@ -2474,18 +2473,16 @@ function orderFinanceRateText(value) {
 function renderOrderFinanceFinancingRows(item) {
   if (item.financing_count === 1) {
     const row = (item.financings || [])[0] || {};
-    const source = [row.source_file, row.source_sheet, row.source_row_start ? `第${row.source_row_start}行` : ""].filter(Boolean).join(" / ");
     return `
       <div class="order-finance-detail-table">
         <table>
-          <thead><tr><th>贷款行</th><th>利率</th><th>原到期日</th><th>新到期日</th><th>展期天数</th><th>来源</th></tr></thead>
+          <thead><tr><th>贷款行</th><th>利率</th><th>原到期日</th><th>新到期日</th><th>展期天数</th></tr></thead>
           <tbody><tr>
             <td>${escapeHtml(row.bank || "-")}</td>
             <td>${escapeHtml(orderFinanceRateText(row.rate))}</td>
             <td>${escapeHtml(row.original_due_date || "-")}</td>
             <td>${escapeHtml(row.new_due_date || "-")}</td>
             <td>${escapeHtml(row.extension_days ? `${row.extension_days} 天` : "0 天")}</td>
-            <td>${escapeHtml(source || "-")}</td>
           </tr></tbody>
         </table>
       </div>
@@ -2500,7 +2497,7 @@ function renderOrderFinanceFinancingRows(item) {
             <th>融资金额</th>
             <th>借款日</th>
             <th>原到期日</th>
-            <th>有效回款到期日</th>
+            <th>融资到期日</th>
             <th>回款日</th>
             <th>状态</th>
           </tr>
@@ -2564,8 +2561,8 @@ function renderOrderFinanceContract(item) {
         ${orderFinanceField("贷款行/融资金额", orderFinanceBankAmountText(item))}
         ${orderFinanceField("装船状态", orderFinanceShipmentText(item), orderFinanceShipmentTone(item))}
         ${orderFinanceField("交单状态", orderFinanceDocumentText(item), indicatorRiskTone(item, "document"))}
-        ${orderFinanceField("回款到期日", orderFinancePaymentDueText(item), indicatorRiskTone(item, "payment"))}
-        ${orderFinanceField("回款日", orderFinancePaymentText(item), indicatorRiskTone(item, "payment"))}
+        ${orderFinanceField("融资到期日", orderFinancePaymentDueText(item), indicatorRiskTone(item, "payment"), "wide")}
+        ${orderFinanceField("回款状态", orderFinancePaymentText(item), indicatorRiskTone(item, "payment"), "wide")}
       </div>
       <div class="order-finance-next-action ${item.risk === "高" ? "danger" : ""}">
         <span>下一步</span>
@@ -2821,7 +2818,7 @@ function renderOrderFinanceSelectedBank() {
   const rows = (state.orderFinanceCapital.bank_details || []).filter((row) => row.bank === bank);
   orderFinanceSelectedBankTable.innerHTML = rows.length ? `
     <table>
-      <thead><tr><th>项次</th><th>合同</th><th>金额</th><th>回款到期日</th><th>状态</th></tr></thead>
+      <thead><tr><th>项次</th><th>合同</th><th>金额</th><th>融资到期日</th><th>状态</th></tr></thead>
       <tbody>
         ${rows.map((row) => `
           <tr>
