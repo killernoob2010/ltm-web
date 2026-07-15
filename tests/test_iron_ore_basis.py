@@ -139,6 +139,25 @@ def test_iron_ore_basis_schema_adds_retry_columns_to_existing_sync_table(tmp_pat
     assert run["last_attempt_at"]
 
 
+def test_postgres_retry_timestamp_backfill_keeps_coalesce_types_compatible(monkeypatch):
+    statements = []
+
+    class FakeCursor:
+        def execute(self, sql):
+            statements.append(sql)
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(db, "_is_pg", lambda: True)
+
+    db.migrate_iron_ore_basis_schema(FakeConnection())
+
+    migration_sql = "\n".join(statements)
+    assert "COALESCE(last_attempt_at, started_at, CURRENT_TIMESTAMP::text)" in migration_sql
+
+
 def test_database_backup_includes_all_basis_tables():
     from scripts.backup_database import CORE_TABLES
 

@@ -1225,7 +1225,7 @@ def migrate_iron_ore_basis_schema(conn) -> None:
             ALTER TABLE iron_ore_basis_sync_runs
             ADD COLUMN IF NOT EXISTS last_attempt_at TEXT DEFAULT CURRENT_TIMESTAMP;
             UPDATE iron_ore_basis_sync_runs
-            SET last_attempt_at = COALESCE(last_attempt_at, started_at, CURRENT_TIMESTAMP);
+            SET last_attempt_at = COALESCE(last_attempt_at, started_at, CURRENT_TIMESTAMP::text);
 
             ALTER TABLE iron_ore_basis_results ENABLE ROW LEVEL SECURITY;
             ALTER TABLE iron_ore_basis_details ENABLE ROW LEVEL SECURITY;
