@@ -398,6 +398,19 @@ def _build_warnings(record: Dict[str, Any]) -> List[Dict[str, str]]:
     return warnings
 
 
+def _is_data_quality_warning(warning: Dict[str, Any]) -> bool:
+    return _normalize_text(warning.get("field")) != "excel_alert"
+
+
+def _data_quality_warning_count(records: List[Dict[str, Any]]) -> int:
+    return sum(
+        1
+        for record in records
+        for warning in _json_loads(record.get("import_warnings_json"), [])
+        if _is_data_quality_warning(warning)
+    )
+
+
 def derive_business_status(record: Dict[str, Any]) -> Dict[str, str]:
     remark = _normalize_text(record.get("remark"))
     drawdown = _normalize_date(record.get("finance_drawdown_date"))
@@ -579,7 +592,7 @@ def parse_order_finance_workbook(path: Path) -> Dict[str, Any]:
         "file": path.name,
         "sheet": sheet.name,
         "records": records,
-        "summary": {"record_count": len(records), "warning_count": sum(len(json.loads(r["import_warnings_json"])) for r in records)},
+        "summary": {"record_count": len(records), "warning_count": _data_quality_warning_count(records)},
     }
 
 
@@ -1006,7 +1019,7 @@ def parse_order_finance_xlsx_workbook(path: Path) -> Dict[str, Any]:
         "sheets": sheets,
         "capital": capital,
         "records": records,
-        "summary": {"record_count": len(records), "warning_count": sum(len(json.loads(r["import_warnings_json"])) for r in records)},
+        "summary": {"record_count": len(records), "warning_count": _data_quality_warning_count(records)},
     }
 
 
@@ -1904,7 +1917,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "next_action": _group_next_action(rows, stage, risk),
         "total_finance": finance_total,
         "financing_count": len(rows),
-        "data_issue_count": len(warnings),
+        "data_issue_count": len([warning for warning in warnings if _is_data_quality_warning(warning)]),
         "source_file": first.get("source_file") or "",
         "source_sheet": first.get("source_sheet") or "",
         "source_row_start": min((row.get("source_row_start") or 0 for row in rows), default=0),

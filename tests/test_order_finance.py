@@ -175,6 +175,7 @@ def test_three_sheet_parser_keeps_multiple_financings_without_duplicate_warning(
     warnings = [warning for record in y1_rows for warning in json.loads(record["import_warnings_json"])]
     assert not any("重复项次" in warning["message"] for warning in warnings)
     assert any("银行交单后待回款预警" in warning["message"] for warning in warnings)
+    assert result["files"][0]["warning_count"] == 0
     capital = next(json.loads(record["source_json"]).get("workbook_capital") for record in result["records"] if json.loads(record["source_json"]).get("workbook_capital"))
     assert capital["total_credit"] == 536_000_000
     assert capital["used_credit"] == 31_000_000
@@ -225,6 +226,43 @@ def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_pa
     assert by_item["Y-2026-1"]["latest_shipment_date"] == "2026-07-15"
     assert by_item["CLOSED"]["repayment_timing"] == "提前 2 天还款"
     assert view["summary"]["data_issues"] == sum(item["data_issue_count"] for item in view["contracts"] if item["stage"] != "已完成")
+
+
+def test_progress_data_issues_exclude_excel_alerts_but_keep_quality_warnings():
+    due = (date.today() + timedelta(days=45)).isoformat()
+    shipment = (date.today() + timedelta(days=40)).isoformat()
+    records = [
+        progress_record(
+            "ALERT-ONLY",
+            "存续",
+            id=1,
+            finance_due_date=due,
+            latest_shipment_date=shipment,
+            import_warnings_json=json.dumps(
+                [{"field": "excel_alert", "level": "高", "message": "最迟装船预警"}],
+                ensure_ascii=False,
+            ),
+        ),
+        progress_record(
+            "QUALITY",
+            "存续",
+            id=2,
+            finance_due_date=due,
+            latest_shipment_date=shipment,
+            import_warnings_json=json.dumps(
+                [{"field": "finance_due_date", "level": "高", "message": "融资到期日早于放款日期"}],
+                ensure_ascii=False,
+            ),
+        ),
+    ]
+
+    view = build_order_finance_progress_view(records)
+    items = {item["item_no"]: item for item in view["contracts"]}
+
+    assert items["ALERT-ONLY"]["risk"] == "高"
+    assert items["ALERT-ONLY"]["data_issue_count"] == 0
+    assert items["QUALITY"]["data_issue_count"] == 1
+    assert view["summary"]["data_issues"] == 1
 
 
 def test_multiple_financing_and_active_stage_do_not_raise_risk():
