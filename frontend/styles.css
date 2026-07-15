@@ -1368,6 +1368,13 @@ dialog::backdrop {
   white-space: nowrap;
 }
 
+.order-finance-field.single-line strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .order-finance-field span,
 .order-finance-next-action span {
   display: block;
