@@ -177,6 +177,46 @@ def test_wps_client_persists_rotated_refresh_token_encrypted(tmp_path, monkeypat
     assert second_http.calls[0]["data"]["refresh_token"] == "rotated-refresh-token"
 
 
+def test_wps_client_recovers_from_stale_persisted_token_with_new_config_token(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    sync._store_persisted_refresh_token("app-secret", "stale-persisted-token")
+    http = FakeHttp([
+        FakeResponse(status_code=401),
+        FakeResponse(payload={"access_token": "recovered-access", "expires_in": 7200}),
+    ])
+
+    client = WpsOrderFinanceClient(
+        config=fake_config(),
+        http=http,
+        persist_rotated_token=True,
+    )
+
+    assert client._user_access_token() == "recovered-access"
+    assert [call["data"]["refresh_token"] for call in http.calls] == [
+        "stale-persisted-token",
+        "refresh-token",
+    ]
+    assert sync._load_persisted_refresh_token("app-secret") == "refresh-token"
+
+
+def test_wps_client_does_not_fallback_on_non_auth_refresh_failure(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    sync._store_persisted_refresh_token("app-secret", "persisted-token")
+    http = FakeHttp([FakeResponse(status_code=503)])
+    client = WpsOrderFinanceClient(
+        config=fake_config(),
+        http=http,
+        persist_rotated_token=True,
+    )
+
+    with pytest.raises(OrderFinanceWpsSyncError, match="token_refresh status=503"):
+        client._user_access_token()
+
+    assert len(http.calls) == 1
+
+
 def test_wps_client_redacts_credentials_tokens_and_download_url(tmp_path):
     http = FakeHttp([
         FakeResponse(payload={"access_token": "short-lived", "expires_in": 7200}),

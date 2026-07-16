@@ -90,11 +90,12 @@ class WpsOrderFinanceClient:
         self._access_token = ""
         self._access_token_expires_at = 0.0
         self._persist_rotated_token = persist_rotated_token
-        self._refresh_token = (
+        persisted_refresh_token = (
             _load_persisted_refresh_token(config.app_secret)
             if persist_rotated_token
             else ""
-        ) or config.refresh_token
+        )
+        self._refresh_token = persisted_refresh_token or config.refresh_token
 
     def _json_request(self, stage: str, method: str, url: str, **kwargs) -> dict:
         try:
@@ -115,18 +116,19 @@ class WpsOrderFinanceClient:
         now = time.time()
         if self._access_token and now < self._access_token_expires_at:
             return self._access_token
-        payload = self._json_request(
-            "token_refresh",
-            "POST",
-            TOKEN_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "refresh_token",
-                "client_id": self.config.app_id,
-                "client_secret": self.config.app_secret,
-                "refresh_token": self._refresh_token,
-            },
-        )
+        recovered_from_config = False
+        try:
+            payload = self._refresh_access_token(self._refresh_token)
+        except OrderFinanceWpsSyncError as exc:
+            if (
+                exc.stage != "token_refresh"
+                or exc.status_code != 401
+                or self._refresh_token == self.config.refresh_token
+            ):
+                raise
+            self._refresh_token = self.config.refresh_token
+            payload = self._refresh_access_token(self._refresh_token)
+            recovered_from_config = True
         access_token = str(payload.get("access_token") or "").strip()
         if not access_token:
             raise OrderFinanceWpsSyncError("token_refresh")
@@ -141,7 +143,26 @@ class WpsOrderFinanceClient:
                     rotated_refresh_token,
                 )
             self._refresh_token = rotated_refresh_token
+        elif recovered_from_config and self._persist_rotated_token:
+            _store_persisted_refresh_token(
+                self.config.app_secret,
+                self._refresh_token,
+            )
         return access_token
+
+    def _refresh_access_token(self, refresh_token: str) -> dict:
+        return self._json_request(
+            "token_refresh",
+            "POST",
+            TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": self.config.app_id,
+                "client_secret": self.config.app_secret,
+                "refresh_token": refresh_token,
+            },
+        )
 
     def _authorization_headers(self) -> dict:
         return {"Authorization": f"Bearer {self._user_access_token()}"}
