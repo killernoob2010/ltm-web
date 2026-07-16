@@ -227,6 +227,19 @@ class SuccessfulDownloadClient:
         return WpsDownloadResult(file_name="线上台账.xlsx", source_version="v10")
 
 
+class VersionedDownloadClient(SuccessfulDownloadClient):
+    def __init__(self, source_version):
+        super().__init__()
+        self.source_version = source_version
+
+    def download_workbook(self, target):
+        result = super().download_workbook(target)
+        return WpsDownloadResult(
+            file_name=result.file_name,
+            source_version=self.source_version,
+        )
+
+
 class FailingDownloadClient:
     def download_workbook(self, target):
         del target
@@ -239,7 +252,11 @@ def test_successful_sync_updates_rows_status_and_removes_temp_file(tmp_path, mon
     monkeypatch.setattr(
         sync,
         "parse_order_finance_directory",
-        lambda path: {"records": [snapshot_record("LIVE")], "summary": {"record_count": 1}},
+        lambda path: {
+            "records": [snapshot_record("LIVE")],
+            "files": [{"sheets": {"订单": True, "额度": True, "预警": True}}],
+            "summary": {"record_count": 1},
+        },
     )
 
     result = run_order_finance_wps_sync(
@@ -314,6 +331,113 @@ def test_failed_sync_preserves_rows_and_last_success(tmp_path, monkeypatch):
     status = order_finance.get_order_finance_sync_status()
     assert status["last_success_at"] == "2026-07-14T17:00:00+08:00"
     assert status["changed_count"] == 1
+
+
+@pytest.mark.parametrize("parsed", [
+    {"records": [], "files": [{"sheets": {"订单": True, "额度": True, "预警": True}}]},
+    {
+        "records": [snapshot_record("A")],
+        "files": [{"sheets": {"订单": True, "额度": False, "预警": True}}],
+    },
+    {
+        "records": [dict(snapshot_record("A"), business_key="")],
+        "files": [{"sheets": {"订单": True, "额度": True, "预警": True}}],
+    },
+])
+def test_invalid_parsed_workbook_preserves_data(tmp_path, monkeypatch, parsed):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [snapshot_record("OLD")],
+        sync_success_at="2026-07-15T17:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-15T17:00+08:00",
+    )
+    monkeypatch.setattr(sync, "parse_order_finance_directory", lambda path: parsed)
+
+    with pytest.raises(OrderFinanceWpsSyncError, match="workbook_validation"):
+        run_order_finance_wps_sync(
+            "2026-07-16T09:00+08:00",
+            now=datetime.fromisoformat("2026-07-16T09:02:00+08:00"),
+            client=VersionedDownloadClient("v11"),
+        )
+
+    assert [
+        row["business_key"] for row in order_finance.list_order_finance_records()
+    ] == ["ITEM|OLD|1"]
+
+
+def test_source_shrink_requires_same_candidate_twice(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [snapshot_record("A"), snapshot_record("B")],
+        sync_success_at="2026-07-15T17:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-15T17:00+08:00",
+    )
+    parsed = {
+        "records": [snapshot_record("A")],
+        "files": [{"sheets": {"订单": True, "额度": True, "预警": True}}],
+    }
+    monkeypatch.setattr(sync, "parse_order_finance_directory", lambda path: parsed)
+
+    first = run_order_finance_wps_sync(
+        "2026-07-16T09:00+08:00",
+        now=datetime.fromisoformat("2026-07-16T09:02:00+08:00"),
+        client=VersionedDownloadClient("v11"),
+    )
+
+    assert first == {
+        "status": "deferred",
+        "reason": "source_shrink_confirmation",
+        "changed_count": 0,
+    }
+    assert {
+        row["business_key"] for row in order_finance.list_order_finance_records()
+    } == {"ITEM|A|1", "ITEM|B|1"}
+
+    second = run_order_finance_wps_sync(
+        "2026-07-16T17:00+08:00",
+        now=datetime.fromisoformat("2026-07-16T17:02:00+08:00"),
+        client=VersionedDownloadClient("v11"),
+    )
+
+    assert second["status"] == "success"
+    assert second["archived"] == 1
+    assert [
+        row["business_key"] for row in order_finance.list_order_finance_records()
+    ] == ["ITEM|A|1"]
+
+
+def test_changed_shrink_candidate_defers_again(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [snapshot_record("A"), snapshot_record("B")],
+        sync_success_at="2026-07-15T17:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-15T17:00+08:00",
+    )
+    parsed = {
+        "records": [snapshot_record("A")],
+        "files": [{"sheets": {"订单": True, "额度": True, "预警": True}}],
+    }
+    monkeypatch.setattr(sync, "parse_order_finance_directory", lambda path: parsed)
+
+    run_order_finance_wps_sync(
+        "2026-07-16T09:00+08:00",
+        now=datetime.fromisoformat("2026-07-16T09:02:00+08:00"),
+        client=VersionedDownloadClient("v11"),
+    )
+    changed = run_order_finance_wps_sync(
+        "2026-07-16T17:00+08:00",
+        now=datetime.fromisoformat("2026-07-16T17:02:00+08:00"),
+        client=VersionedDownloadClient("v12"),
+    )
+
+    assert changed["status"] == "deferred"
+    assert order_finance.get_order_finance_sync_status()["pending_source_version"] == "v12"
+    assert {
+        row["business_key"] for row in order_finance.list_order_finance_records()
+    } == {"ITEM|A|1", "ITEM|B|1"}
 
 
 def test_disabled_scheduler_does_not_start(monkeypatch):
