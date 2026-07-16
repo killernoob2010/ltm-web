@@ -22,9 +22,12 @@ from . import db
 from .order_finance import (
     apply_order_finance_snapshot,
     claim_order_finance_sync_slot,
+    get_active_synced_business_keys,
     get_order_finance_sync_status,
     parse_order_finance_directory,
+    record_pending_order_finance_shrink,
     record_unchanged_order_finance_sync,
+    snapshot_business_keys_hash,
 )
 
 
@@ -263,6 +266,24 @@ def _set_remote_source_name(records: list[dict], file_name: str) -> None:
         record["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
 
 
+def _validate_parsed_workbook(parsed: dict) -> list[dict]:
+    files = parsed.get("files") or []
+    records = parsed.get("records") or []
+    required = {"订单", "额度", "预警"}
+    if not files or any(
+        not required.issubset({
+            name
+            for name, present in (item.get("sheets") or {}).items()
+            if present
+        })
+        for item in files
+    ):
+        raise OrderFinanceWpsSyncError("workbook_validation")
+    if not records or any(not str(row.get("business_key") or "").strip() for row in records):
+        raise OrderFinanceWpsSyncError("workbook_validation")
+    return records
+
+
 def run_order_finance_wps_sync(
     slot_key: str,
     now: Optional[datetime] = None,
@@ -294,8 +315,26 @@ def run_order_finance_wps_sync(
                 "archived": 0, "changed_count": 0,
             }
         parsed = parse_order_finance_directory(temp_path)
-        records = parsed["records"]
+        records = _validate_parsed_workbook(parsed)
         _set_remote_source_name(records, download.file_name)
+        incoming_keys = {str(record["business_key"]).strip() for record in records}
+        active_keys = get_active_synced_business_keys()
+        business_keys_hash = snapshot_business_keys_hash(records)
+        if active_keys - incoming_keys and not (
+            previous_status.get("pending_source_version") == source_version
+            and previous_status.get("pending_business_keys_hash") == business_keys_hash
+        ):
+            record_pending_order_finance_shrink(
+                source_version,
+                business_keys_hash,
+                len(records),
+                slot_key,
+            )
+            return {
+                "status": "deferred",
+                "reason": "source_shrink_confirmation",
+                "changed_count": 0,
+            }
         changes = apply_order_finance_snapshot(
             records,
             imported_by="WPS自动同步",
