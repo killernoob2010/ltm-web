@@ -36,7 +36,6 @@
   var displayProductAll = document.querySelector("#ironOreBasisDisplayProductAll");
   var displayProductNone = document.querySelector("#ironOreBasisDisplayProductNone");
   var portTabs = document.querySelector("#ironOreBasisPortTabs");
-  var optimalDate = document.querySelector("#ironOreBasisOptimalDate");
   var optimalWarrant = document.querySelector("#ironOreBasisOptimalWarrant");
   var chartCanvas = document.querySelector("#ironOreBasisChartCanvas");
   var chartStatus = document.querySelector("#ironOreBasisChartStatus");
@@ -77,9 +76,13 @@
     return url + "&" + name + "=" + encodeURIComponent(values.join(","));
   }
 
-  async function loadManagementFilters() {
+  async function loadManagementStatus() {
     var filters = await request("/api/iron-ore-basis/management/filters");
     managementLatestDate.textContent = "最新数据日期：" + (filters.latest_data_date || "暂无数据");
+    return filters;
+  }
+
+  function initializeManagementFilters(filters) {
     DataVisualizationComponents.renderCheckboxOptions(
       managementYears, filters.years || [], function() { loadManagementRows(false); }, true
     );
@@ -150,16 +153,21 @@
   }
 
   async function initManagement() {
+    var filters = await loadManagementStatus();
     if (!basisState.managementInitialized) {
-      await loadManagementFilters();
+      initializeManagementFilters(filters);
       basisState.managementInitialized = true;
     }
     await loadManagementRows(false);
   }
 
-  async function loadDisplayFilters() {
+  async function loadDisplayStatus() {
     var filters = await request("/api/iron-ore-basis/display/filters");
     displayLatestDate.textContent = "最新数据日期：" + (filters.latest_data_date || "暂无数据");
+    return filters;
+  }
+
+  function initializeDisplayFilters(filters) {
     DataVisualizationComponents.renderCheckboxOptions(displayYears, filters.years || [], loadBasisChart, true);
     DataVisualizationComponents.renderCheckboxOptions(displayProducts, filters.products || [], loadBasisChart, true);
     DataVisualizationComponents.bindCheckboxPanelActions(
@@ -176,7 +184,6 @@
   }
 
   async function loadOptimalWarrant() {
-    optimalDate.textContent = "";
     optimalWarrant.innerHTML = '<div class="toolbar-status">正在加载最新有效数据</div>';
     try {
       var row = await request("/api/iron-ore-basis/display/optimal-warrant");
@@ -184,7 +191,6 @@
         optimalWarrant.innerHTML = '<div class="empty-cell">本年度暂无有效基差数据</div>';
         return;
       }
-      optimalDate.textContent = "数据截至 " + row.data_as_of;
       optimalWarrant.innerHTML = [
         optimalItem("品种", row.product),
         optimalItem("港口", row.port),
@@ -259,8 +265,9 @@
   }
 
   async function initDisplay() {
+    var filters = await loadDisplayStatus();
     if (!basisState.displayInitialized) {
-      await loadDisplayFilters();
+      initializeDisplayFilters(filters);
       basisState.displayInitialized = true;
     }
     await Promise.all([loadOptimalWarrant(), loadBasisChart()]);

@@ -37,11 +37,17 @@ test("basis management is read-only and exposes the confirmed fields", () => {
   assert.doesNotMatch(section, /ironOreBasisManagementLoadMore/);
 });
 
-test("basis pages show only the latest stored data date as update status", () => {
+test("basis pages refresh the latest stored data date on every activation", () => {
   assert.match(indexHtml, /id="ironOreBasisManagementLatestDate"[^>]*>最新数据日期：正在加载/);
   assert.match(indexHtml, /id="ironOreBasisDisplayLatestDate"[^>]*>最新数据日期：正在加载/);
+  assert.match(basisJs, /async function loadManagementStatus\(\)/);
+  assert.match(basisJs, /async function loadDisplayStatus\(\)/);
+  assert.match(basisJs, /async function initManagement\(\) \{[\s\S]*await loadManagementStatus\(\)/);
+  assert.match(basisJs, /async function initDisplay\(\) \{[\s\S]*await loadDisplayStatus\(\)/);
   assert.match(basisJs, /managementLatestDate\.textContent = "最新数据日期：" \+ \(filters\.latest_data_date \|\| "暂无数据"\)/);
   assert.match(basisJs, /displayLatestDate\.textContent = "最新数据日期：" \+ \(filters\.latest_data_date \|\| "暂无数据"\)/);
+  assert.doesNotMatch(basisJs, /optimalDate\.textContent = "数据截至 "/);
+  assert.doesNotMatch(indexHtml, /id="ironOreBasisOptimalDate"/);
   assert.doesNotMatch(indexHtml, /异常数据|同步异常|失败次数/);
 });
 
@@ -139,7 +145,7 @@ test("basis assets are loaded after the existing app controller", () => {
   assert.ok(indexHtml.indexOf("/static/app.js") < indexHtml.indexOf("/static/iron_ore_basis.js"));
   assert.match(indexHtml, /app\.js\?v=order-finance-wps-sync-20260715/);
   assert.match(indexHtml, /iron_ore_basis\.css\?v=iron-ore-basis-auto-sync-20260714/);
-  assert.match(indexHtml, /iron_ore_basis\.js\?v=iron-ore-basis-auto-sync-20260714/);
+  assert.match(indexHtml, /iron_ore_basis\.js\?v=iron-ore-basis-date-refresh-20260716/);
 });
 
 test("mobile app shell grows beyond the sidebar so the workspace remains reachable", () => {
