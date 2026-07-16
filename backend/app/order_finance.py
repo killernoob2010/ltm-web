@@ -1188,7 +1188,7 @@ def record_pending_order_finance_shrink(
     source_version: str,
     business_keys_hash: str,
     record_count: int,
-    attempt_slot: str,
+    attempt_slot: Optional[str],
 ) -> None:
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1196,7 +1196,8 @@ def record_pending_order_finance_shrink(
             cur,
             """UPDATE order_finance_sync_status
                SET pending_source_version = ?, pending_business_keys_hash = ?,
-                   pending_record_count = ?, last_attempt_slot = ?,
+                   pending_record_count = ?,
+                   last_attempt_slot = COALESCE(?, last_attempt_slot),
                    updated_at = CURRENT_TIMESTAMP WHERE id = 1""",
             (source_version, business_keys_hash, record_count, attempt_slot),
         )
