@@ -91,6 +91,38 @@ env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路
 
 导入时只读取 `订单`、`额度`、`预警` 三个页签：`订单`是唯一订单事实来源，`额度`提供银行授信与占用，`预警`按项次关联风险提示。工作簿中的其他页签全部忽略，不参与字段补全或状态判断。网页仍保持“订单融资进度”和“融资资金监控”两个页面。
 
+### 订单融资 WPS 自动同步
+
+订单融资通过已经审批的企业 WPS 应用和单一用户授权只读同步同一份源格式 Excel。Production 是唯一 WPS 源端；Staging 通过受保护的事实快照跟随，不再单独刷新同一枚可轮换 refresh token。实际值不得进入仓库、日志、接口响应或版本记录。
+
+两个环境均配置：
+
+```text
+ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED
+ORDER_FINANCE_SYNC_MODE
+ORDER_FINANCE_SNAPSHOT_SHARED_SECRET
+```
+
+Production 使用 `ORDER_FINANCE_SYNC_MODE=wps_source`，并继续配置现有 WPS 读取变量：
+
+```text
+WPS_APP_ID
+WPS_APP_SECRET
+WPS_USER_REFRESH_TOKEN
+ORDER_FINANCE_WPS_DRIVE_ID
+ORDER_FINANCE_WPS_FILE_ID
+```
+
+Staging 使用 `ORDER_FINANCE_SYNC_MODE=snapshot_follower`，并配置：
+
+```text
+ORDER_FINANCE_SNAPSHOT_UPSTREAM_URL
+```
+
+跟随模式不会构造 WPS 客户端，也不会读取或刷新 WPS token。它只通过 HTTPS 和服务端 Bearer Secret 读取源端 `/api/internal/order-finance/snapshot`；快照仅包含当前有效 WPS 事实字段，不包含数据库 ID、用户、权限、日志或下一步、备注、人工装船确认等环境本地管理字段。Production 不配置 Staging 的数据库连接，Staging 也不配置 Production 的数据库连接。
+
+仅当 `ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED=true` 且当前模式所需配置完整时启动后台任务。两个模式都以每天北京时间 09:00 和 17:00 为业务时点，包括周末和节假日；源端只调用用户 token 刷新、文件元数据和源文件下载接口，不调用上传、修改、分享或删除接口。跟随端在源端尚未完成当前时点时每 5 分钟重试，成功后按源版本和事实哈希幂等写入自己的数据库。页面只显示最近一次成功自动同步时间和该次实际变化条数；失败保留上次成功状态并写入脱敏服务端日志。
+
 ## 测试版验证
 
 - 测试版地址：`https://ltm-web-staging.onrender.com`
