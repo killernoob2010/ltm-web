@@ -5,6 +5,7 @@ Excel 台账解析、导入、查询和管理端计划字段维护。
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import tempfile
 from datetime import date, datetime, timedelta
@@ -1135,6 +1136,40 @@ def _fact_values_equal(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bo
     return all(existing.get(field) == incoming.get(field) for field in FACT_FIELDS)
 
 
+def snapshot_business_keys_hash(records: List[Dict[str, Any]]) -> str:
+    keys = sorted({_normalize_text(row.get("business_key")) for row in records})
+    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+
+
+def get_active_synced_business_keys() -> set[str]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            """SELECT business_key FROM order_finance_progress
+               WHERE is_archived = 0 AND source_file != '手动新增'""",
+        ).fetchall()
+    return {_normalize_text(dict(row).get("business_key")) for row in rows}
+
+
+def record_pending_order_finance_shrink(
+    source_version: str,
+    business_keys_hash: str,
+    record_count: int,
+    attempt_slot: str,
+) -> None:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """UPDATE order_finance_sync_status
+               SET pending_source_version = ?, pending_business_keys_hash = ?,
+                   pending_record_count = ?, last_attempt_slot = ?,
+                   updated_at = CURRENT_TIMESTAMP WHERE id = 1""",
+            (source_version, business_keys_hash, record_count, attempt_slot),
+        )
+
+
 def apply_order_finance_snapshot(
     records: List[Dict[str, Any]],
     imported_by: str = "",
@@ -1225,6 +1260,9 @@ def apply_order_finance_snapshot(
                 """UPDATE order_finance_sync_status
                    SET last_success_at = ?, changed_count = ?, source_version = ?,
                        last_attempt_slot = COALESCE(?, last_attempt_slot),
+                       pending_source_version = NULL,
+                       pending_business_keys_hash = NULL,
+                       pending_record_count = 0,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = 1""",
                 (sync_success_at, changed_count, source_version, attempt_slot),
@@ -1233,7 +1271,9 @@ def apply_order_finance_snapshot(
             db._exec(
                 cur,
                 """UPDATE order_finance_sync_status
-                   SET source_version = NULL, updated_at = CURRENT_TIMESTAMP
+                   SET source_version = NULL, pending_source_version = NULL,
+                       pending_business_keys_hash = NULL, pending_record_count = 0,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE id = 1""",
             )
 
@@ -1250,7 +1290,8 @@ def get_order_finance_sync_status() -> Dict[str, Any]:
         cur = conn.cursor()
         row = db._exec(
             cur,
-            """SELECT last_success_at, changed_count, source_version, last_attempt_slot
+            """SELECT last_success_at, changed_count, source_version, last_attempt_slot,
+                      pending_source_version, pending_business_keys_hash, pending_record_count
                FROM order_finance_sync_status WHERE id = 1""",
         ).fetchone()
     status = _row_to_dict(row)
@@ -1259,6 +1300,9 @@ def get_order_finance_sync_status() -> Dict[str, Any]:
         "changed_count": int(status.get("changed_count") or 0),
         "source_version": status.get("source_version"),
         "last_attempt_slot": status.get("last_attempt_slot"),
+        "pending_source_version": status.get("pending_source_version"),
+        "pending_business_keys_hash": status.get("pending_business_keys_hash"),
+        "pending_record_count": int(status.get("pending_record_count") or 0),
     }
 
 
@@ -1286,7 +1330,9 @@ def record_unchanged_order_finance_sync(
             cur,
             """UPDATE order_finance_sync_status
                SET last_success_at = ?, changed_count = 0, source_version = ?,
-                   last_attempt_slot = ?, updated_at = CURRENT_TIMESTAMP
+                   last_attempt_slot = ?, pending_source_version = NULL,
+                   pending_business_keys_hash = NULL, pending_record_count = 0,
+                   updated_at = CURRENT_TIMESTAMP
                WHERE id = 1""",
             (sync_success_at, source_version, attempt_slot),
         )

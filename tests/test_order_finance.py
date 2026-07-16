@@ -298,7 +298,8 @@ def test_order_finance_schema_adds_singleton_sync_status(tmp_path, monkeypatch):
 
     assert {
         "id", "last_success_at", "changed_count", "source_version", "last_attempt_slot",
-        "wps_refresh_token_ciphertext",
+        "wps_refresh_token_ciphertext", "pending_source_version",
+        "pending_business_keys_hash", "pending_record_count",
     }.issubset(columns)
 
 
@@ -351,7 +352,53 @@ def test_sync_status_and_slot_claim_are_minimal_and_deduplicated(tmp_path, monke
         "changed_count": 1,
         "source_version": "v2",
         "last_attempt_slot": "2026-07-15T09:00+08:00",
+        "pending_source_version": None,
+        "pending_business_keys_hash": None,
+        "pending_record_count": 0,
     }
+
+
+def test_pending_shrink_preserves_last_success(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [
+            progress_record("A", "存续"),
+            progress_record("B", "存续", id=2, business_key="ITEM|B|1"),
+        ],
+        sync_success_at="2026-07-16T09:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-16T09:00+08:00",
+    )
+    order_finance.record_pending_order_finance_shrink(
+        "v11", "hash-a", 1, "2026-07-16T17:00+08:00",
+    )
+
+    status = order_finance.get_order_finance_sync_status()
+
+    assert status["last_success_at"] == "2026-07-16T09:02:00+08:00"
+    assert status["source_version"] == "v10"
+    assert status["pending_source_version"] == "v11"
+    assert status["pending_business_keys_hash"] == "hash-a"
+    assert status["pending_record_count"] == 1
+
+
+def test_successful_snapshot_clears_pending_shrink(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.record_pending_order_finance_shrink(
+        "v11", "hash-a", 1, "2026-07-16T09:00+08:00",
+    )
+    order_finance.apply_order_finance_snapshot(
+        [progress_record("A", "存续")],
+        sync_success_at="2026-07-16T17:02:00+08:00",
+        source_version="v11",
+        attempt_slot="2026-07-16T17:00+08:00",
+    )
+
+    status = order_finance.get_order_finance_sync_status()
+
+    assert status["pending_source_version"] is None
+    assert status["pending_business_keys_hash"] is None
+    assert status["pending_record_count"] == 0
 
 
 def test_manual_snapshot_invalidates_source_version_but_keeps_last_auto_success(tmp_path, monkeypatch):

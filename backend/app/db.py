@@ -1983,6 +1983,9 @@ def migrate_order_finance_schema(conn) -> None:
             source_version TEXT,
             last_attempt_slot TEXT,
             wps_refresh_token_ciphertext TEXT,
+            pending_source_version TEXT,
+            pending_business_keys_hash TEXT,
+            pending_record_count INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             CHECK (id = 1)
         )
@@ -1998,6 +2001,18 @@ def migrate_order_finance_schema(conn) -> None:
         cur.execute(
             "ALTER TABLE order_finance_sync_status "
             "ADD COLUMN IF NOT EXISTS wps_refresh_token_ciphertext TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN IF NOT EXISTS pending_source_version TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN IF NOT EXISTS pending_business_keys_hash TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN IF NOT EXISTS pending_record_count INTEGER NOT NULL DEFAULT 0"
         )
         cur.execute("ALTER TABLE order_finance_sync_status ENABLE ROW LEVEL SECURITY")
         cur.execute("REVOKE ALL ON TABLE order_finance_sync_status FROM anon, authenticated")
@@ -2018,6 +2033,21 @@ def migrate_order_finance_schema(conn) -> None:
         conn.execute(
             "ALTER TABLE order_finance_sync_status "
             "ADD COLUMN wps_refresh_token_ciphertext TEXT"
+        )
+    if "pending_source_version" not in sync_status_columns:
+        conn.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN pending_source_version TEXT"
+        )
+    if "pending_business_keys_hash" not in sync_status_columns:
+        conn.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN pending_business_keys_hash TEXT"
+        )
+    if "pending_record_count" not in sync_status_columns:
+        conn.execute(
+            "ALTER TABLE order_finance_sync_status "
+            "ADD COLUMN pending_record_count INTEGER NOT NULL DEFAULT 0"
         )
     conn.execute(
         "INSERT OR IGNORE INTO order_finance_sync_status (id, changed_count) VALUES (1, 0)"
