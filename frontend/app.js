@@ -2452,6 +2452,7 @@ function orderFinanceDocumentText(item) {
 
 function orderFinancePaymentDueText(item) {
   const dueDate = item.payment_due_date || item.latest_due_date;
+  if (item.stage === "已交单待回款" && !dueDate) return "融资到期日缺失";
   if (!dueDate) return "未提供";
   const financing = (item.financings || []).find((row) => row.due_date === dueDate);
   const extensionDays = Number(financing?.extension_days || 0);

@@ -1846,6 +1846,19 @@ def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, 
     risks = {"shipment": "低", "document": "低", "payment": "低", "reminder": "低"}
     if stage == "已完成":
         return risks
+    if stage == "已回款待结案":
+        return risks
+    if stage == "已交单待回款":
+        unpaid_rows = [row for row in rows if not _row_is_paid(row)]
+        due_days = [
+            _days_to(row.get("finance_due_date"))
+            for row in unpaid_rows
+            if row.get("finance_due_date")
+        ]
+        risks["payment"] = (
+            "高" if any(days is not None and days <= 0 for days in due_days) else "中"
+        )
+        return risks
     shipment_completed = _group_shipment_completed(rows)
     warnings = [
         warning
@@ -1901,6 +1914,10 @@ def _group_risk(indicator_risks: Dict[str, str], stage: str) -> str:
 def _group_weekly_focus_reasons(rows: List[Dict[str, Any]], stage: str, risk: str) -> List[str]:
     if stage == "已完成":
         return []
+    if stage == "已回款待结案":
+        return []
+    if stage == "已交单待回款":
+        return ["high_risk"] if risk == "高" else []
     reasons = []
     if risk == "高":
         reasons.append("high_risk")
@@ -1969,6 +1986,11 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     finance_total = sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows)
     due_dates = sorted([row.get("finance_due_date") for row in rows if row.get("finance_due_date")])
     unpaid_rows = [row for row in rows if not _row_is_paid(row)]
+    missing_due_count = (
+        sum(1 for row in unpaid_rows if not _normalize_text(row.get("finance_due_date")))
+        if stage == "已交单待回款"
+        else 0
+    )
     unpaid_due_dates = sorted([row.get("finance_due_date") for row in unpaid_rows if row.get("finance_due_date")])
     document_deadlines = sorted([
         deadline for row in unpaid_rows if (deadline := _row_document_deadline(row))
@@ -2034,7 +2056,10 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "next_action": _group_next_action(rows, stage, risk),
         "total_finance": finance_total,
         "financing_count": len(rows),
-        "data_issue_count": len([warning for warning in warnings if _is_data_quality_warning(warning)]),
+        "data_issue_count": (
+            len([warning for warning in warnings if _is_data_quality_warning(warning)])
+            + missing_due_count
+        ),
         "source_file": first.get("source_file") or "",
         "source_sheet": first.get("source_sheet") or "",
         "source_row_start": min((row.get("source_row_start") or 0 for row in rows), default=0),

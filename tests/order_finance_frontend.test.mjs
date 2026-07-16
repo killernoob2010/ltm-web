@@ -175,6 +175,14 @@ test("order finance shows compact automatic sync status and new payment terminol
   assert.match(appJs, /7天内融资到期|30天内融资到期/);
   assert.match(appJs, /融资到期日/);
   assert.match(indexHtml, /融资到期日/);
-  assert.match(indexHtml, /app\.js\?v=order-finance-due-timing-focus-20260715/);
+  assert.match(indexHtml, /app\.js\?v=order-finance-repayment-risk-20260716/);
   assert.match(indexHtml, /styles\.css\?v=order-finance-status-refinement-nowrap-20260715/);
+});
+
+test("documented unpaid orders show a missing financing due-date anomaly", () => {
+  assert.match(
+    appJs,
+    /if \(item\.stage === "已交单待回款" && !dueDate\) return "融资到期日缺失"/,
+  );
+  assert.match(indexHtml, /app\.js\?v=order-finance-repayment-risk-20260716/);
 });

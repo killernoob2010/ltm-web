@@ -650,7 +650,7 @@ def test_payment_risk_uses_seven_and_thirty_day_boundaries():
             id=index,
             business_key=f"ITEM|PAY-{days}|1",
             finance_due_date=(today + timedelta(days=days)).isoformat(),
-            document_submission_date=today.isoformat(),
+            shipment_confirmed_date=today.isoformat(),
         )
         for index, days in enumerate((7, 8, 30, 31), start=1)
     ]
@@ -664,6 +664,66 @@ def test_payment_risk_uses_seven_and_thirty_day_boundaries():
     assert items["PAY-8"]["indicator_risks"]["payment"] == "中"
     assert items["PAY-30"]["indicator_risks"]["payment"] == "中"
     assert items["PAY-31"]["indicator_risks"]["payment"] == "低"
+
+
+def test_documented_unpaid_risk_uses_due_day_boundary_only():
+    today = date.today()
+    records = [
+        progress_record(
+            f"DOC-{days}",
+            "存续",
+            id=index,
+            business_key=f"ITEM|DOC-{days}|1",
+            document_submission_date=today.isoformat(),
+            finance_due_date=(today + timedelta(days=days)).isoformat(),
+            import_warnings_json=json.dumps(
+                [{"field": "excel_alert", "level": "高", "message": "交单旧预警"}],
+                ensure_ascii=False,
+            ),
+            next_follow_up_date=today.isoformat(),
+        )
+        for index, days in enumerate((-1, 0, 1, 31), start=1)
+    ]
+
+    items = {
+        item["item_no"]: item
+        for item in build_order_finance_progress_view(records)["contracts"]
+    }
+
+    assert items["DOC--1"]["risk"] == "高"
+    assert items["DOC-0"]["risk"] == "高"
+    assert items["DOC-1"]["risk"] == "中"
+    assert items["DOC-31"]["risk"] == "中"
+    assert items["DOC-1"]["indicator_risks"] == {
+        "shipment": "低",
+        "document": "低",
+        "payment": "中",
+        "reminder": "低",
+    }
+    assert items["DOC-1"]["weekly_focus_reasons"] == []
+    assert items["DOC-0"]["weekly_focus_reasons"] == ["high_risk"]
+
+
+def test_documented_missing_due_is_medium_data_issue():
+    item = build_order_finance_progress_view([
+        progress_record(
+            "DOC-MISSING-DUE",
+            "存续",
+            document_submission_date=date.today().isoformat(),
+            finance_due_date="",
+        ),
+    ])["contracts"][0]
+
+    assert item["stage"] == "已交单待回款"
+    assert item["risk"] == "中"
+    assert item["indicator_risks"] == {
+        "shipment": "低",
+        "document": "低",
+        "payment": "中",
+        "reminder": "低",
+    }
+    assert item["data_issue_count"] == 1
+    assert item["weekly_focus_reasons"] == []
 
 
 def test_wps_date_deletion_regresses_to_preserved_manual_shipment():
