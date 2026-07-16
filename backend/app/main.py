@@ -58,7 +58,14 @@ from .iron_ore_basis_sync import start_iron_ore_basis_sync_scheduler
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .order_finance_wps_sync import start_order_finance_wps_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
-from . import data_visualization, iron_ore_basis, operation_log_archive, order_finance, trading_management
+from . import (
+    data_visualization,
+    iron_ore_basis,
+    operation_log_archive,
+    order_finance,
+    order_finance_snapshot_sync,
+    trading_management,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -120,6 +127,7 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
 app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
+app.include_router(order_finance_snapshot_sync.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
 
 
