@@ -1,5 +1,9 @@
 # Order Finance Post-Document Risk and Dual-Database WPS Sync Implementation Plan
 
+> **SUPERSEDED:** Do not execute this combined plan. The user approved splitting it into two independently assessed plans:
+> - `2026-07-16-order-finance-post-document-risk.md` — D2/T2/R1/C1, execute first.
+> - `2026-07-16-order-finance-dual-db-wps-sync-guard.md` — D3/T3/R2/C1, execute separately after the first task.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make documented orders depend only on unpaid-financing due dates for risk, and make Staging and Production independently consume the same WPS facts with identical guarded synchronization.
