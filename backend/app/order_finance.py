@@ -1141,6 +1141,38 @@ def snapshot_business_keys_hash(records: List[Dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
 
 
+def list_order_finance_fact_snapshot_records() -> List[Dict[str, Any]]:
+    field_sql = ", ".join(FACT_FIELDS)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            f"""SELECT {field_sql}
+                FROM order_finance_progress
+                WHERE is_archived = 0 AND source_file != '手动新增'
+                ORDER BY business_key""",
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def order_finance_facts_hash(records: List[Dict[str, Any]]) -> str:
+    normalized = [
+        {field: row.get(field) for field in FACT_FIELDS}
+        for row in sorted(
+            records,
+            key=lambda item: str(item.get("business_key") or ""),
+        )
+    ]
+    payload = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def get_active_synced_business_keys() -> set[str]:
     with db.connect() as conn:
         cur = conn.cursor()
