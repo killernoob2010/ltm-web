@@ -284,3 +284,59 @@ def test_follower_source_shrink_requires_same_candidate_twice(
     assert second["status"] == "success"
     assert second["archived"] == 1
     assert active_business_keys() == {"ITEM|A|1"}
+
+
+def test_wps_source_mode_starts_only_wps(monkeypatch):
+    monkeypatch.setenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FINANCE_SYNC_MODE", "wps_source")
+    started = []
+    monkeypatch.setattr(
+        snapshot_sync,
+        "start_order_finance_wps_sync_scheduler",
+        lambda interval_seconds=300: started.append(("wps", interval_seconds)) or True,
+    )
+    monkeypatch.setattr(
+        snapshot_sync,
+        "_start_snapshot_follower_scheduler",
+        lambda interval_seconds=300: started.append(("follower", interval_seconds)) or True,
+    )
+
+    assert snapshot_sync.start_order_finance_sync_scheduler(123) is True
+    assert started == [("wps", 123)]
+
+
+def test_snapshot_follower_mode_starts_only_follower(monkeypatch):
+    monkeypatch.setenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FINANCE_SYNC_MODE", "snapshot_follower")
+    started = []
+    monkeypatch.setattr(
+        snapshot_sync,
+        "start_order_finance_wps_sync_scheduler",
+        lambda interval_seconds=300: started.append(("wps", interval_seconds)) or True,
+    )
+    monkeypatch.setattr(
+        snapshot_sync,
+        "_start_snapshot_follower_scheduler",
+        lambda interval_seconds=300: started.append(("follower", interval_seconds)) or True,
+    )
+
+    assert snapshot_sync.start_order_finance_sync_scheduler(123) is True
+    assert started == [("follower", 123)]
+
+
+@pytest.mark.parametrize("mode", ["", "unknown"])
+def test_invalid_or_missing_mode_does_not_start(monkeypatch, mode):
+    monkeypatch.setenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED", "true")
+    if mode:
+        monkeypatch.setenv("ORDER_FINANCE_SYNC_MODE", mode)
+    else:
+        monkeypatch.delenv("ORDER_FINANCE_SYNC_MODE", raising=False)
+
+    assert snapshot_sync.start_order_finance_sync_scheduler() is False
+
+
+def test_disabled_unified_scheduler_does_not_start(monkeypatch):
+    monkeypatch.setenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED", "false")
+    monkeypatch.setenv("ORDER_FINANCE_SYNC_MODE", "snapshot_follower")
+
+    assert snapshot_sync.start_order_finance_sync_scheduler() is False

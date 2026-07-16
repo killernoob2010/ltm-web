@@ -451,5 +451,5 @@ def test_fastapi_startup_starts_order_finance_scheduler():
         Path(__file__).resolve().parents[1] / "backend" / "app" / "main.py"
     ).read_text(encoding="utf-8")
 
-    assert "from .order_finance_wps_sync import start_order_finance_wps_sync_scheduler" in main_source
-    assert "start_order_finance_wps_sync_scheduler()" in main_source
+    assert "from .order_finance_snapshot_sync import start_order_finance_sync_scheduler" in main_source
+    assert "start_order_finance_sync_scheduler()" in main_source

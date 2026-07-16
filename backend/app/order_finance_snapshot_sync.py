@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -21,12 +24,20 @@ from .order_finance import (
     record_unchanged_order_finance_sync,
     snapshot_business_keys_hash,
 )
+from .order_finance_wps_sync import (
+    SHANGHAI_TZ,
+    due_order_finance_sync_slots,
+    start_order_finance_wps_sync_scheduler,
+)
 
 
 router = APIRouter()
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_PATH = "/api/internal/order-finance/snapshot"
 REQUEST_TIMEOUT = (10, 60)
+logger = logging.getLogger(__name__)
+_follower_scheduler_start_lock = threading.Lock()
+_follower_scheduler_started = False
 
 
 class OrderFinanceSnapshotSyncError(RuntimeError):
@@ -241,3 +252,84 @@ def run_order_finance_snapshot_follow(
         attempt_slot=slot_key,
     )
     return {"status": "success", **changes}
+
+
+def _snapshot_follower_loop(
+    interval_seconds: int,
+    client: OrderFinanceSnapshotClient,
+) -> None:
+    while True:
+        try:
+            current = datetime.now(SHANGHAI_TZ)
+            status = get_order_finance_sync_status()
+            slots = due_order_finance_sync_slots(
+                current,
+                status.get("last_attempt_slot"),
+            )
+            for slot_key in slots:
+                try:
+                    run_order_finance_snapshot_follow(
+                        slot_key,
+                        now=current,
+                        client=client,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "order_finance_snapshot_follow_failed",
+                        extra={
+                            "sync_stage": getattr(exc, "stage", "unknown"),
+                            "http_status": getattr(exc, "status_code", None),
+                            "error_class": type(exc).__name__,
+                        },
+                    )
+        except Exception as exc:
+            logger.error(
+                "order_finance_snapshot_scheduler_failed",
+                extra={"error_class": type(exc).__name__},
+            )
+        time.sleep(interval_seconds)
+
+
+def _start_snapshot_follower_scheduler(interval_seconds: int = 300) -> bool:
+    global _follower_scheduler_started
+    try:
+        config = SnapshotFollowerConfig.from_env()
+    except OrderFinanceSnapshotSyncError as exc:
+        logger.error(
+            "order_finance_snapshot_scheduler_not_started",
+            extra={
+                "sync_stage": exc.stage,
+                "error_class": type(exc).__name__,
+            },
+        )
+        return False
+    with _follower_scheduler_start_lock:
+        if _follower_scheduler_started:
+            return False
+        thread = threading.Thread(
+            target=_snapshot_follower_loop,
+            args=(interval_seconds, OrderFinanceSnapshotClient(config)),
+            name="order-finance-snapshot-follower",
+            daemon=True,
+        )
+        thread.start()
+        _follower_scheduler_started = True
+    return True
+
+
+def start_order_finance_sync_scheduler(interval_seconds: int = 300) -> bool:
+    enabled = (
+        os.getenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED") or ""
+    ).strip().lower()
+    if enabled != "true":
+        return False
+    mode = (os.getenv("ORDER_FINANCE_SYNC_MODE") or "").strip().lower()
+    if mode == "wps_source":
+        return start_order_finance_wps_sync_scheduler(interval_seconds)
+    if mode == "snapshot_follower":
+        return _start_snapshot_follower_scheduler(interval_seconds)
+    logger.error(
+        "order_finance_sync_scheduler_not_started",
+        extra={"sync_stage": "sync_mode"},
+    )
+    return False
