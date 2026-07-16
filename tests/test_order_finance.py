@@ -925,6 +925,35 @@ def test_progress_view_exposes_only_successful_sync_time_and_count(tmp_path, mon
     }
 
 
+def test_fact_snapshot_excludes_manual_records_and_management_fields(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot([progress_record("A", "存续")])
+    synced = order_finance.list_order_finance_records()[0]
+    order_finance.update_management_fields(
+        synced["id"], {"manager_note": "staging-only"}, updated_by="pytest"
+    )
+    manual = order_finance.create_manual_order_finance_record(
+        {"subsidiary": "北满", "purchase_contract_no": "MANUAL-1"},
+        created_by="pytest",
+    )
+
+    records = order_finance.list_order_finance_fact_snapshot_records()
+
+    assert [row["business_key"] for row in records] == ["ITEM|A|1"]
+    assert set(records[0]) == set(order_finance.FACT_FIELDS)
+    assert "manager_note" not in records[0]
+    assert manual["business_key"] not in {row["business_key"] for row in records}
+
+
+def test_fact_hash_is_stable_for_record_order():
+    first = [progress_record("B", "存续"), progress_record("A", "存续")]
+    second = list(reversed(first))
+
+    assert order_finance.order_finance_facts_hash(first) == (
+        order_finance.order_finance_facts_hash(second)
+    )
+
+
 def test_current_workbook_order_amount_unit_reconciles_to_quota_usage():
     records = parse_order_finance_directory(NEW_LEDGER_WORKBOOK)["records"]
 
