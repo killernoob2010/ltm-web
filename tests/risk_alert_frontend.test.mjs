@@ -44,13 +44,36 @@ test("risk alert history groups by rule with server pagination and lazy details"
   assert.match(appJs, /删除.*全部 \$\{item\.alert_count\} 条预警历史/);
 });
 
-test("risk alert history static assets use the grouped-history version", () => {
+test("risk alert history static assets use the current versions", () => {
   assert.match(
     html,
-    /styles\.css\?v=risk-alert-history-grouping-20260717/,
+    /styles\.css\?v=risk-alert-summary-layout-20260717/,
   );
   assert.match(
     html,
     /app\.js\?v=risk-alert-history-grouping-20260717/,
+  );
+});
+
+test("risk alert summary keeps compact checkboxes and horizontally readable actions", () => {
+  assert.match(
+    css,
+    /#selectAllAlerts,\s*\.alert-select\s*\{[\s\S]*width:\s*12px;[\s\S]*height:\s*12px;/,
+  );
+  assert.match(
+    css,
+    /\.alert-history-summary-main\s*\{[\s\S]*grid-template-columns:[\s\S]*minmax\(112px,\s*auto\);[\s\S]*gap:\s*8px;/,
+  );
+  assert.match(
+    css,
+    /\.alert-history-summary-main\s*>\s*\.row-actions\s*\{[\s\S]*flex-direction:\s*column;/,
+  );
+  assert.match(
+    css,
+    /\.alert-history-summary-main\s*>\s*\.row-actions\s+button\s*\{[\s\S]*white-space:\s*nowrap;[\s\S]*writing-mode:\s*horizontal-tb;/,
+  );
+  assert.match(
+    html,
+    /styles\.css\?v=risk-alert-summary-layout-20260717/,
   );
 });

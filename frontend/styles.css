@@ -431,6 +431,17 @@ textarea {
   gap: 16px;
 }
 
+#selectAllAlerts,
+.alert-select {
+  width: 12px;
+  height: 12px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
 .alert-history-filters {
   display: flex;
   justify-content: flex-end;
@@ -464,10 +475,11 @@ textarea {
 
 .alert-history-summary-main {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) repeat(6, minmax(100px, 1fr)) auto;
-  gap: 12px;
+  grid-template-columns: minmax(180px, 1.25fr) repeat(4, minmax(72px, 0.65fr))
+    minmax(86px, 0.72fr) minmax(134px, 0.9fr) minmax(112px, auto);
+  gap: 8px;
   align-items: center;
-  padding: 12px;
+  padding: 10px 10px 10px 8px;
 }
 
 .alert-history-summary-main > div:not(.alert-history-rule):not(.row-actions) {
@@ -492,6 +504,18 @@ textarea {
 
 .alert-history-rule > span {
   min-height: 24px;
+}
+
+.alert-history-summary-main > .row-actions {
+  min-width: 112px;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.alert-history-summary-main > .row-actions button {
+  width: 100%;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
 }
 
 .alert-history-details {
