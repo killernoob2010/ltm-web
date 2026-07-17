@@ -175,8 +175,8 @@ test("order finance shows compact automatic sync status and new payment terminol
   assert.match(appJs, /7天内融资到期|30天内融资到期/);
   assert.match(appJs, /融资到期日/);
   assert.match(indexHtml, /融资到期日/);
-  assert.match(indexHtml, /app\.js\?v=risk-alert-owner-notification-20260717/);
-  assert.match(indexHtml, /styles\.css\?v=risk-alert-owner-notification-20260717/);
+  assert.match(indexHtml, /app\.js\?v=risk-alert-history-grouping-20260717/);
+  assert.match(indexHtml, /styles\.css\?v=risk-alert-history-grouping-20260717/);
 });
 
 test("documented unpaid orders show a missing financing due-date anomaly", () => {
@@ -184,5 +184,5 @@ test("documented unpaid orders show a missing financing due-date anomaly", () =>
     appJs,
     /if \(item\.stage === "已交单待回款" && !dueDate\) return "融资到期日缺失"/,
   );
-  assert.match(indexHtml, /app\.js\?v=risk-alert-owner-notification-20260717/);
+  assert.match(indexHtml, /app\.js\?v=risk-alert-history-grouping-20260717/);
 });

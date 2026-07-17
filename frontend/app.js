@@ -12,7 +12,12 @@ const state = {
   midEventRefreshInFlight: false,
   infoSummaryRefreshInFlight: false,
   alertSettings: [],
-  alertHistory: [],
+  alertHistoryPage: 1,
+  alertHistoryPageSize: 10,
+  alertHistoryTotal: 0,
+  alertHistorySummary: [],
+  riskAlertOwnerFilter: "",
+  expandedAlertHistory: new Map(),
   alertNotificationTimer: null,
   alertNotificationInFlight: false,
   lastNotificationIds: new Set(),
@@ -84,6 +89,10 @@ function canModuleSensitive(code) {
   return Boolean(modulePermission(code)?.can_sensitive || state.user?.role === "管理员");
 }
 
+function canUseRiskAlertWorkspace() {
+  return !isGuest() && Boolean(modulePermission("risk_alert")?.can_view);
+}
+
 function setHidden(selector, hidden) {
   const el = document.querySelector(selector);
   if (el) el.classList.toggle("hidden", hidden);
@@ -91,15 +100,15 @@ function setHidden(selector, hidden) {
 
 function applyUiPermissions() {
   const guest = isGuest();
+  const canUseRiskAlerts = canUseRiskAlertWorkspace();
   setHidden("#notificationBtn", guest);
   setHidden("#changePasswordBtn", guest);
   ["#calculateAllInfoBtn", "#refreshInfoCacheBtn"].forEach((selector) => setHidden(selector, guest || !canModuleEdit("info_summary")));
   setHidden("#importCacheBtn", guest || !canModuleSensitive("info_summary"));
-  ["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn"].forEach((selector) =>
-    setHidden(selector, guest || !canModuleEdit("risk_alert")));
-  setHidden("#batchDeleteAlertsBtn", guest || !canModuleSensitive("risk_alert"));
-  setHidden("#selectAllAlerts", guest || (!canModuleEdit("risk_alert") && !canModuleSensitive("risk_alert")));
-  setHidden("#markAllNotificationsBtn", guest || !canModuleEdit("risk_alert"));
+  ["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn", "#batchDeleteAlertsBtn"].forEach((selector) =>
+    setHidden(selector, !canUseRiskAlerts));
+  setHidden("#selectAllAlerts", !canUseRiskAlerts);
+  setHidden("#markAllNotificationsBtn", !canUseRiskAlerts);
   ["#addGroupBtn", "#addPositionBtn", "#refreshPricesBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleEdit("mid_event_monitor")));
   [
@@ -243,7 +252,10 @@ const cancelConfirmBtn = document.querySelector("#cancelConfirmBtn");
 const okConfirmBtn = document.querySelector("#okConfirmBtn");
 
 const alertsTable = document.querySelector("#alertsTable");
-const historyTable = document.querySelector("#historyTable");
+const historySummaryList = document.querySelector("#historySummaryList");
+const alertHistoryPagination = document.querySelector("#alertHistoryPagination");
+const riskAlertAdminFilters = document.querySelector("#riskAlertAdminFilters");
+const riskAlertOwnerFilter = document.querySelector("#riskAlertOwnerFilter");
 const alertCount = document.querySelector("#alertCount");
 const historyCount = document.querySelector("#historyCount");
 const riskAlertStatus = document.querySelector("#riskAlertStatus");
@@ -1400,7 +1412,7 @@ async function loadNotifications(showNewToast = true) {
   try {
     const payload = await api("/api/risk-alert/notifications");
     const items = payload.items || [];
-    const canAcknowledgeRiskAlerts = canModuleEdit("risk_alert");
+    const canAcknowledgeRiskAlerts = canUseRiskAlertWorkspace();
     notificationBadge.textContent = String(payload.count || 0);
     notificationBadge.classList.toggle("hidden", !payload.count);
     notificationList.innerHTML = items.length
@@ -1411,7 +1423,7 @@ async function loadNotifications(showNewToast = true) {
         <${notificationTag} class="notification-item"${notificationId}>
           <strong>${item.info_type || "-"}</strong>
           <span>${alertMessage(item)}</span>
-          <small>${item.alert_time || ""}</small>
+          <small>${formatAlertTime(item.alert_time)}</small>
         </${notificationTag}>
       `;
       }).join("")
@@ -1467,36 +1479,33 @@ function formatAlertTime(value) {
 }
 
 async function loadRiskAlert() {
-  const canEditRiskAlert = canModuleEdit("risk_alert");
-  const canSensitiveRiskAlert = canModuleSensitive("risk_alert");
-  const canSelectRiskAlert = canEditRiskAlert || canSensitiveRiskAlert;
-  const [settingsPayload, historyPayload] = await Promise.all([
-    api("/api/risk-alert/settings"),
-    api("/api/risk-alert/history"),
+  const canUseRiskAlerts = canUseRiskAlertWorkspace();
+  const ownerQuery = state.riskAlertOwnerFilter
+    ? `?creator_user_id=${encodeURIComponent(state.riskAlertOwnerFilter)}`
+    : "";
+  const [settingsPayload] = await Promise.all([
+    api(`/api/risk-alert/settings${ownerQuery}`),
+    loadAlertHistorySummary(),
   ]);
   const settings = Array.isArray(settingsPayload) ? settingsPayload : settingsPayload.items || [];
-  const history = Array.isArray(historyPayload) ? historyPayload : historyPayload.items || [];
   const settingsTotal = settingsPayload?.pagination?.total ?? settings.length;
-  const historyTotal = historyPayload?.pagination?.total ?? history.length;
   state.alertSettings = settings;
-  state.alertHistory = history;
   alertCount.textContent = `${settings.length}/${settingsTotal} 条`;
-  historyCount.textContent = `${history.length}/${historyTotal} 条`;
   alertsTable.innerHTML = settings.map((item) => `
     <tr>
-      <td>${canSelectRiskAlert ? `<input class="alert-select" type="checkbox" value="${item.id}" />` : ""}</td>
-      <td>${item.info_type}</td>
-      <td>${item.contract_year}-${item.contract_month}</td>
-      <td>${item.alert_value}</td>
+      <td>${canUseRiskAlerts ? `<input class="alert-select" type="checkbox" value="${item.id}" />` : ""}</td>
+      <td>${escapeHtml(item.info_type)}</td>
+      <td>${escapeHtml(`${item.contract_year}-${item.contract_month}`)}</td>
+      <td>${escapeHtml(item.alert_value)}</td>
       <td>${directionText(item.direction)}</td>
       <td>${statusBadge(item.status)}</td>
-      <td>${item.creator || "-"}</td>
+      <td>${escapeHtml(item.creator || "-")}</td>
       <td>
         <div class="row-actions">
-          ${canEditRiskAlert ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
-          ${canEditRiskAlert ? `<button class="link" data-action="toggle" data-id="${item.id}">${item.status === "enabled" ? "停用" : "启用"}</button>` : ""}
-          ${canEditRiskAlert ? `<button class="link" data-action="simulate" data-id="${item.id}">模拟</button>` : ""}
-          ${canSensitiveRiskAlert ? `<button class="link" data-action="delete" data-id="${item.id}">删除</button>` : ""}
+          ${canUseRiskAlerts ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
+          ${canUseRiskAlerts ? `<button class="link" data-action="toggle" data-id="${item.id}">${item.status === "enabled" ? "停用" : "启用"}</button>` : ""}
+          ${canUseRiskAlerts ? `<button class="link" data-action="simulate" data-id="${item.id}">模拟</button>` : ""}
+          ${canUseRiskAlerts ? `<button class="link" data-action="delete" data-id="${item.id}">删除</button>` : ""}
         </div>
       </td>
     </tr>
@@ -1504,26 +1513,226 @@ async function loadRiskAlert() {
   alertsTable.querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => handleAlertAction(button.dataset.action, Number(button.dataset.id)));
   });
-  historyTable.innerHTML = history.map((item) => `
-    <tr>
-      <td>${formatAlertTime(item.alert_time)}</td>
-      <td>${item.info_type || "-"}</td>
-      <td>${money(item.current_value)}</td>
-      <td>${money(item.alert_value)}</td>
-      <td>${alertDirectionText(item.direction)}</td>
-      <td>${item.status === "unread" ? "未读" : "已读"}</td>
-      <td>${item.status === "unread" && canEditRiskAlert && item.creator_user_id === state.user?.id ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
-    </tr>
-  `).join("");
-  historyTable.querySelectorAll("button").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api(`/api/risk-alert/history/${button.dataset.id}/read`, { method: "POST" });
-      await loadRiskAlert();
-      await loadNotifications(false);
-    });
-  });
   if (selectAllAlerts) selectAllAlerts.checked = false;
   updateRiskAlertStatus("页面已刷新");
+}
+
+async function loadAlertHistorySummary(resetPage = false) {
+  if (resetPage) state.alertHistoryPage = 1;
+  const offset = (state.alertHistoryPage - 1) * state.alertHistoryPageSize;
+  const ownerQuery = state.riskAlertOwnerFilter
+    ? `&creator_user_id=${encodeURIComponent(state.riskAlertOwnerFilter)}`
+    : "";
+  const payload = await api(
+    `/api/risk-alert/history/summary?limit=${state.alertHistoryPageSize}&offset=${offset}${ownerQuery}`,
+  );
+  state.alertHistorySummary = payload.items || [];
+  state.alertHistoryTotal = payload.pagination?.total || 0;
+  historyCount.textContent = `${state.alertHistorySummary.length}/${state.alertHistoryTotal} 条规则`;
+  renderAlertHistorySummary();
+  renderAlertHistoryPagination();
+  renderRiskAlertOwnerFilter(payload.owners || []);
+  return payload;
+}
+
+function renderRiskAlertOwnerFilter(owners) {
+  const isAdministrator = state.user?.role === "管理员";
+  riskAlertAdminFilters.classList.toggle("hidden", !isAdministrator);
+  if (!isAdministrator) return;
+  const selected = String(state.riskAlertOwnerFilter || "");
+  riskAlertOwnerFilter.innerHTML = [
+    `<option value="">全部设置人</option>`,
+    ...owners.map((owner) => (
+      `<option value="${owner.id}">${escapeHtml(owner.name || `用户 ${owner.id}`)}</option>`
+    )),
+  ].join("");
+  riskAlertOwnerFilter.value = selected;
+}
+
+function renderAlertHistoryDetails(alertId) {
+  const entry = state.expandedAlertHistory.get(alertId);
+  if (!entry) return "";
+  if (entry.loading && !entry.items.length) {
+    return `<div class="alert-history-details"><p class="toolbar-status">正在加载详情...</p></div>`;
+  }
+  const canUseRiskAlerts = canUseRiskAlertWorkspace();
+  const rows = entry.items.map((item) => `
+    <tr>
+      <td>${formatAlertTime(item.alert_time)}</td>
+      <td>${money(item.current_value)}</td>
+      <td>${money(item.alert_value)}</td>
+      <td>${escapeHtml(alertDirectionText(item.direction))}</td>
+      <td>${item.status === "unread" ? "未读" : "已读"}</td>
+      <td>${item.status === "unread" && canUseRiskAlerts ? `<button class="link" data-history-action="read" data-history-id="${item.id}" data-alert-id="${alertId}">标记已读</button>` : ""}</td>
+    </tr>
+  `).join("");
+  const hasMore = entry.items.length < entry.total;
+  return `
+    <div class="alert-history-details">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>当前值</th>
+              <th>预警值</th>
+              <th>方向</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${hasMore ? `<button class="secondary alert-history-load-more" data-history-action="more" data-alert-id="${alertId}" ${entry.loading ? "disabled" : ""}>${entry.loading ? "加载中..." : `加载更多（${entry.items.length}/${entry.total}）`}</button>` : ""}
+    </div>
+  `;
+}
+
+function renderAlertHistorySummary() {
+  if (!state.alertHistorySummary.length) {
+    historySummaryList.innerHTML = `<p class="empty-notification">暂无预警历史</p>`;
+    return;
+  }
+  historySummaryList.innerHTML = state.alertHistorySummary.map((item) => {
+    const expanded = state.expandedAlertHistory.has(item.alert_id);
+    const ruleLabel = `${item.info_type || "-"} ${item.contract_year || ""}-${item.contract_month || ""}`;
+    return `
+      <article class="alert-history-summary" data-alert-id="${item.alert_id}">
+        <div class="alert-history-summary-main">
+          <div class="alert-history-rule">
+            <strong>${escapeHtml(ruleLabel)}</strong>
+            <span>${item.archived_at ? `<span class="badge disabled">规则已删除</span>` : statusBadge(item.rule_status)}</span>
+            <small>设置人：${escapeHtml(item.creator || "-")}</small>
+          </div>
+          <div><span>当前值</span><strong>${money(item.latest_current_value)}</strong></div>
+          <div><span>预警值</span><strong>${money(item.latest_alert_value)}</strong></div>
+          <div><span>预警次数</span><strong>${item.alert_count}</strong></div>
+          <div><span>未读</span><strong>${item.unread_count}</strong></div>
+          <div><span>最近方向</span><strong>${escapeHtml(alertDirectionText(item.latest_direction))}</strong></div>
+          <div><span>最近预警</span><strong>${formatAlertTime(item.latest_alert_time)}</strong></div>
+          <div class="row-actions">
+            <button class="link" data-history-action="toggle" data-alert-id="${item.alert_id}">${expanded ? "收起" : "展开"}</button>
+            ${canUseRiskAlertWorkspace() ? `<button class="link danger-link" data-history-action="delete" data-alert-id="${item.alert_id}">删除历史记录</button>` : ""}
+          </div>
+        </div>
+        ${expanded ? renderAlertHistoryDetails(item.alert_id) : ""}
+      </article>
+    `;
+  }).join("");
+  historySummaryList.querySelectorAll("[data-history-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = button.dataset.historyAction;
+      const alertId = Number(button.dataset.alertId);
+      if (action === "toggle") await toggleAlertHistoryRule(alertId);
+      if (action === "more") await loadMoreAlertHistory(alertId);
+      if (action === "delete") await deleteAlertHistoryGroup(alertId);
+      if (action === "read") {
+        await markAlertHistoryDetailRead(
+          alertId,
+          Number(button.dataset.historyId),
+        );
+      }
+    });
+  });
+}
+
+function renderAlertHistoryPagination() {
+  const totalPages = Math.max(
+    1,
+    Math.ceil(state.alertHistoryTotal / state.alertHistoryPageSize),
+  );
+  const start = Math.max(1, state.alertHistoryPage - 2);
+  const end = Math.min(totalPages, state.alertHistoryPage + 2);
+  const pageButtons = [];
+  for (let page = start; page <= end; page += 1) {
+    pageButtons.push(
+      `<button class="${page === state.alertHistoryPage ? "" : "secondary"}" data-page="${page}" ${page === state.alertHistoryPage ? "disabled" : ""}>${page}</button>`,
+    );
+  }
+  alertHistoryPagination.innerHTML = `
+    <span>共 ${state.alertHistoryTotal} 条规则，第 ${state.alertHistoryPage}/${totalPages} 页</span>
+    <button class="secondary" data-page="${state.alertHistoryPage - 1}" ${state.alertHistoryPage <= 1 ? "disabled" : ""}>上一页</button>
+    ${pageButtons.join("")}
+    <button class="secondary" data-page="${state.alertHistoryPage + 1}" ${state.alertHistoryPage >= totalPages ? "disabled" : ""}>下一页</button>
+  `;
+  alertHistoryPagination.querySelectorAll("button[data-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const page = Number(button.dataset.page);
+      if (!page || page === state.alertHistoryPage) return;
+      state.expandedAlertHistory.clear();
+      state.alertHistoryPage = page;
+      await loadAlertHistorySummary();
+    });
+  });
+}
+
+async function toggleAlertHistoryRule(alertId) {
+  if (state.expandedAlertHistory.has(alertId)) {
+    state.expandedAlertHistory.delete(alertId);
+    renderAlertHistorySummary();
+    return;
+  }
+  state.expandedAlertHistory.set(alertId, {
+    items: [],
+    total: 0,
+    loading: true,
+  });
+  renderAlertHistorySummary();
+  const payload = await api(
+    `/api/risk-alert/history/rules/${alertId}?limit=20&offset=0`,
+  );
+  state.expandedAlertHistory.set(alertId, {
+    items: payload.items || [],
+    total: payload.pagination?.total || 0,
+    loading: false,
+  });
+  renderAlertHistorySummary();
+}
+
+async function loadMoreAlertHistory(alertId) {
+  const entry = state.expandedAlertHistory.get(alertId);
+  if (!entry || entry.loading || entry.items.length >= entry.total) return;
+  entry.loading = true;
+  renderAlertHistorySummary();
+  const payload = await api(
+    `/api/risk-alert/history/rules/${alertId}?limit=20&offset=${entry.items.length}`,
+  );
+  entry.items.push(...(payload.items || []));
+  entry.total = payload.pagination?.total || entry.total;
+  entry.loading = false;
+  renderAlertHistorySummary();
+}
+
+async function markAlertHistoryDetailRead(alertId, historyId) {
+  await api(`/api/risk-alert/history/${historyId}/read`, { method: "POST" });
+  const entry = state.expandedAlertHistory.get(alertId);
+  const item = entry?.items.find((detail) => detail.id === historyId);
+  if (item) item.status = "read";
+  await Promise.all([
+    loadAlertHistorySummary(),
+    loadNotifications(false),
+  ]);
+}
+
+async function deleteAlertHistoryGroup(alertId) {
+  const item = state.alertHistorySummary.find(
+    (summary) => summary.alert_id === alertId,
+  );
+  if (!item) return;
+  const ruleLabel = `${item.info_type || "-"} ${item.contract_year || ""}-${item.contract_month || ""}`;
+  const confirmed = await confirmAction(
+    "删除预警历史",
+    `确认删除“${ruleLabel}”的全部 ${item.alert_count} 条预警历史？此操作不可撤销。`,
+  );
+  if (!confirmed) return;
+  await api(`/api/risk-alert/history/rules/${alertId}`, { method: "DELETE" });
+  state.expandedAlertHistory.delete(alertId);
+  await loadRiskAlert();
+  if (!state.alertHistorySummary.length && state.alertHistoryPage > 1) {
+    state.alertHistoryPage -= 1;
+    await loadAlertHistorySummary();
+  }
 }
 
 function selectedAlertIds() {
@@ -1840,6 +2049,12 @@ markAllNotificationsBtn.addEventListener("click", async () => {
 });
 document.querySelector("#addAlertBtn").addEventListener("click", () => openAlertDialog());
 document.querySelector("#refreshAlertsBtn").addEventListener("click", loadRiskAlert);
+riskAlertOwnerFilter.addEventListener("change", async () => {
+  state.riskAlertOwnerFilter = riskAlertOwnerFilter.value;
+  state.alertHistoryPage = 1;
+  state.expandedAlertHistory.clear();
+  await loadRiskAlert();
+});
 document.querySelector("#scanAlertsBtn").addEventListener("click", async () => {
   const result = await api("/api/risk-alert/scan", { method: "POST" });
   await loadRiskAlert();

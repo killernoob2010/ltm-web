@@ -431,6 +431,98 @@ textarea {
   gap: 16px;
 }
 
+.alert-history-filters {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
+.alert-history-filters label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.alert-history-filters select {
+  min-width: 180px;
+}
+
+.alert-history-summary-list {
+  display: grid;
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.alert-history-summary {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.alert-history-summary-main {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(6, minmax(100px, 1fr)) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+}
+
+.alert-history-summary-main > div:not(.alert-history-rule):not(.row-actions) {
+  display: grid;
+  gap: 4px;
+}
+
+.alert-history-summary-main > div > span,
+.alert-history-rule small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.alert-history-summary-main > div > strong {
+  font-size: 14px;
+}
+
+.alert-history-rule {
+  display: grid;
+  gap: 5px;
+}
+
+.alert-history-rule > span {
+  min-height: 24px;
+}
+
+.alert-history-details {
+  border-top: 1px solid var(--line);
+  padding: 0 12px 12px;
+}
+
+.alert-history-load-more {
+  display: block;
+  margin: 10px auto 0;
+}
+
+.alert-history-pagination {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+.alert-history-pagination span {
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+button.danger-link {
+  color: var(--danger);
+}
+
 .mid-event-stack {
   display: grid;
   gap: 14px;
@@ -844,6 +936,18 @@ dialog::backdrop {
 
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .alert-history-summary-main {
+    grid-template-columns: 1fr;
+  }
+
+  .alert-history-summary-main .row-actions {
+    justify-content: flex-start;
+  }
+
+  .alert-history-pagination {
+    justify-content: flex-start;
   }
 
   .info-card-grid,

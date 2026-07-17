@@ -28,13 +28,29 @@ test("risk alert timestamps render only through seconds", () => {
     appJs,
     /text\.match\(\/\^\(\\d\{4\}-\\d\{2\}-\\d\{2\}\)\[ T\]\(\\d\{2\}:\\d\{2\}:\\d\{2\}\)\//,
   );
-  assert.match(appJs, /formatAlertTime\(item\.alert_time\)/);
+  assert.match(appJs, /formatAlertTime\(item\.latest_alert_time\)/);
   assert.doesNotMatch(appJs, /<td>\$\{item\.alert_time \|\| ""\}<\/td>/);
 });
 
-test("shared alert history only offers acknowledgement to its notification owner", () => {
+test("risk alert history groups by rule with server pagination and lazy details", () => {
+  assert.match(html, /id="riskAlertOwnerFilter"/);
+  assert.match(html, /id="historySummaryList"/);
+  assert.match(html, /id="alertHistoryPagination"/);
+  assert.doesNotMatch(html, /<tbody id="historyTable"><\/tbody>/);
+  assert.match(appJs, /\/api\/risk-alert\/history\/summary/);
+  assert.match(appJs, /\/api\/risk-alert\/history\/rules\/\$\{alertId\}/);
+  assert.match(appJs, /function renderAlertHistoryPagination/);
+  assert.match(appJs, /function loadMoreAlertHistory/);
+  assert.match(appJs, /删除.*全部 \$\{item\.alert_count\} 条预警历史/);
+});
+
+test("risk alert history static assets use the grouped-history version", () => {
   assert.match(
-    appJs,
-    /item\.status === "unread" && canEditRiskAlert && item\.creator_user_id === state\.user\?\.id/,
+    html,
+    /styles\.css\?v=risk-alert-history-grouping-20260717/,
+  );
+  assert.match(
+    html,
+    /app\.js\?v=risk-alert-history-grouping-20260717/,
   );
 });

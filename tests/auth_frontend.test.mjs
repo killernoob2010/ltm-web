@@ -19,7 +19,7 @@ test("login page exposes real guest login without prefilled admin credentials", 
 });
 
 test("user management exposes account lifecycle permission levels and password self-service", () => {
-  assert.match(html, /src="\/static\/app\.js\?v=risk-alert-owner-notification-20260717"/);
+  assert.match(html, /src="\/static\/app\.js\?v=risk-alert-history-grouping-20260717"/);
   for (const id of [
     "resetUserPasswordBtn", "toggleUserStatusBtn", "changePasswordBtn",
     "passwordChangeNotice", "changePasswordDialog", "currentPassword",
@@ -46,7 +46,7 @@ test("user management exposes account lifecycle permission levels and password s
     /\[\s*"#addShJunnengBtn", "#editShJunnengBtn", "#closeShJunnengBtn",\s*"#refreshShJunnengPricesBtn", "#manualShJunnengPricesBtn",\s*\]\.forEach\(\(selector\) => setHidden\(selector, guest \|\| !canModuleEdit\("sh_junneng"\)\)\)/,
   );
   assert.match(appJs, /setHidden\("#importCacheBtn", guest \|\| !canModuleSensitive\("info_summary"\)\)/);
-  assert.match(appJs, /setHidden\("#batchDeleteAlertsBtn", guest \|\| !canModuleSensitive\("risk_alert"\)\)/);
+  assert.match(appJs, /const canUseRiskAlerts = canUseRiskAlertWorkspace\(\);/);
 });
 
 test("view-only mid-event users only receive view actions", () => {
@@ -61,22 +61,19 @@ test("view-only mid-event users only receive view actions", () => {
   assert.match(appJs, /if \(canModuleEdit\("mid_event_monitor"\)\) startMidEventAutoRefresh\(\);/);
 });
 
-test("view-only risk-alert users do not receive mutation actions", () => {
+test("risk-alert daily operations follow module view access", () => {
   assert.match(
     appJs,
-    /\["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn"\][\s\S]*?canModuleEdit\("risk_alert"\)/,
+    /\["#addAlertBtn", "#scanAlertsBtn", "#batchEnableAlertsBtn", "#batchDisableAlertsBtn", "#batchDeleteAlertsBtn"\][\s\S]*?!canUseRiskAlerts/,
   );
-  assert.match(appJs, /setHidden\("#batchDeleteAlertsBtn", guest \|\| !canModuleSensitive\("risk_alert"\)\)/);
-  assert.match(appJs, /const canEditRiskAlert = canModuleEdit\("risk_alert"\);/);
-  assert.match(appJs, /const canSensitiveRiskAlert = canModuleSensitive\("risk_alert"\);/);
-  assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="edit"/);
-  assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="toggle"/);
-  assert.match(appJs, /canEditRiskAlert \? `<button class="link" data-action="simulate"/);
-  assert.match(appJs, /canSensitiveRiskAlert \? `<button class="link" data-action="delete"/);
-  assert.match(appJs, /setHidden\("#markAllNotificationsBtn", guest \|\| !canModuleEdit\("risk_alert"\)\)/);
-  assert.match(appJs, /const canAcknowledgeRiskAlerts = canModuleEdit\("risk_alert"\);/);
+  assert.match(appJs, /function canUseRiskAlertWorkspace\(\)/);
+  assert.match(appJs, /Boolean\(modulePermission\("risk_alert"\)\?\.can_view\)/);
+  assert.match(appJs, /const canUseRiskAlerts = canUseRiskAlertWorkspace\(\);/);
+  assert.match(appJs, /canUseRiskAlerts \? `<button class="link" data-action="edit"/);
+  assert.match(appJs, /canUseRiskAlerts \? `<button class="link" data-action="delete"/);
+  assert.match(appJs, /setHidden\("#markAllNotificationsBtn", !canUseRiskAlerts\)/);
+  assert.match(appJs, /const canAcknowledgeRiskAlerts = canUseRiskAlertWorkspace\(\);/);
   assert.match(appJs, /canAcknowledgeRiskAlerts \? "button" : "div"/);
-  assert.match(appJs, /item\.status === "unread" && canEditRiskAlert && item\.creator_user_id === state\.user\?\.id/);
 });
 
 test("data-visualization import and export controls follow sensitive permission", () => {

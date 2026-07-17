@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-owner-notification-20260717" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-history-grouping-20260717" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -264,6 +264,15 @@
             <span id="riskAlertStatus" class="toolbar-status">后台扫描：开启｜最后更新：--</span>
           </div>
 
+          <div id="riskAlertAdminFilters" class="alert-history-filters hidden">
+            <label>
+              设置人
+              <select id="riskAlertOwnerFilter">
+                <option value="">全部设置人</option>
+              </select>
+            </label>
+          </div>
+
           <div class="risk-alert-stack">
             <section class="panel">
               <div class="panel-head">
@@ -294,22 +303,8 @@
                 <h2>预警历史</h2>
                 <span id="historyCount"></span>
               </div>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>时间</th>
-                      <th>指标</th>
-                      <th>当前值</th>
-                      <th>预警值</th>
-                      <th>方向</th>
-                      <th>状态</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="historyTable"></tbody>
-                </table>
-              </div>
+              <div id="historySummaryList" class="alert-history-summary-list"></div>
+              <div id="alertHistoryPagination" class="alert-history-pagination"></div>
             </section>
           </div>
         </section>
@@ -1300,7 +1295,7 @@
 
     <script src="/static/trading_management.js?v=20260712h"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/app.js?v=risk-alert-owner-notification-20260717"></script>
+    <script src="/static/app.js?v=risk-alert-history-grouping-20260717"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>
