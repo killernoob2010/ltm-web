@@ -1616,7 +1616,8 @@ def list_alert_history(
         rows = db._exec(cur, 
             """
             SELECT h.id, h.alert_id, h.alert_time, h.current_value, h.alert_value,
-                   h.direction, h.status, s.info_type, s.contract_year, s.contract_month
+                   h.direction, h.status, s.info_type, s.contract_year,
+                   s.contract_month, s.creator_user_id
             FROM alert_history h
             LEFT JOIN alert_settings s ON s.id = h.alert_id
             ORDER BY h.alert_time DESC, h.id DESC

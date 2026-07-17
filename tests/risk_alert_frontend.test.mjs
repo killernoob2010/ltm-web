@@ -31,3 +31,10 @@ test("risk alert timestamps render only through seconds", () => {
   assert.match(appJs, /formatAlertTime\(item\.alert_time\)/);
   assert.doesNotMatch(appJs, /<td>\$\{item\.alert_time \|\| ""\}<\/td>/);
 });
+
+test("shared alert history only offers acknowledgement to its notification owner", () => {
+  assert.match(
+    appJs,
+    /item\.status === "unread" && canEditRiskAlert && item\.creator_user_id === state\.user\?\.id/,
+  );
+});

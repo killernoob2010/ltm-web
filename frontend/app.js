@@ -1512,7 +1512,7 @@ async function loadRiskAlert() {
       <td>${money(item.alert_value)}</td>
       <td>${alertDirectionText(item.direction)}</td>
       <td>${item.status === "unread" ? "未读" : "已读"}</td>
-      <td>${item.status === "unread" && canEditRiskAlert ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
+      <td>${item.status === "unread" && canEditRiskAlert && item.creator_user_id === state.user?.id ? `<button class="link" data-id="${item.id}">标记已读</button>` : ""}</td>
     </tr>
   `).join("");
   historyTable.querySelectorAll("button").forEach((button) => {

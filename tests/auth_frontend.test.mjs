@@ -76,7 +76,7 @@ test("view-only risk-alert users do not receive mutation actions", () => {
   assert.match(appJs, /setHidden\("#markAllNotificationsBtn", guest \|\| !canModuleEdit\("risk_alert"\)\)/);
   assert.match(appJs, /const canAcknowledgeRiskAlerts = canModuleEdit\("risk_alert"\);/);
   assert.match(appJs, /canAcknowledgeRiskAlerts \? "button" : "div"/);
-  assert.match(appJs, /item\.status === "unread" && canEditRiskAlert/);
+  assert.match(appJs, /item\.status === "unread" && canEditRiskAlert && item\.creator_user_id === state\.user\?\.id/);
 });
 
 test("data-visualization import and export controls follow sensitive permission", () => {
