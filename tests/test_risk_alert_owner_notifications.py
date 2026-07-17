@@ -1,6 +1,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db, main
@@ -33,6 +35,33 @@ def alert_payload():
         direction="above",
         status="enabled",
     )
+
+
+def create_futures_user(name, username, admin):
+    created = main.create_user(
+        main.UserIn(name=name, username=username, department="期货组", role="用户"),
+        user=admin,
+    )
+    with db.connect() as conn:
+        return dict(
+            db._exec(
+                conn.cursor(),
+                "SELECT * FROM users WHERE id = ?",
+                (created["id"],),
+            ).fetchone()
+        )
+
+
+def trigger_for_owner(owner):
+    alert_id = main.create_alert_setting(alert_payload(), user=owner)["id"]
+    main.simulate_alert_trigger(alert_id, current_value=11, user=owner)
+    with db.connect() as conn:
+        history_id = db._exec(
+            conn.cursor(),
+            "SELECT id FROM alert_history WHERE alert_id = ?",
+            (alert_id,),
+        ).fetchone()["id"]
+    return alert_id, history_id
 
 
 def test_create_alert_binds_authenticated_owner(tmp_path, monkeypatch):
@@ -101,3 +130,56 @@ def test_alert_migration_backfills_only_unique_creator_names(tmp_path, monkeypat
 
     assert unique_row["creator_user_id"] == unique_id
     assert duplicate_row["creator_user_id"] is None
+
+
+def test_notifications_are_visible_only_to_alert_owner(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    owner = admin_user()
+    other = create_futures_user("其他用户", "other-user", owner)
+    _, history_id = trigger_for_owner(owner)
+
+    assert [
+        item["id"] for item in main.list_alert_notifications(user=owner)["items"]
+    ] == [history_id]
+    assert main.list_alert_notifications(user=other) == {"count": 0, "items": []}
+
+
+def test_other_user_cannot_acknowledge_owner_notification(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    owner = admin_user()
+    other = create_futures_user("其他用户", "other-user", owner)
+    _, history_id = trigger_for_owner(owner)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.mark_alert_history_read(history_id, user=other)
+    assert exc.value.status_code == 404
+
+    main.mark_alert_history_read(history_id, user=owner)
+    with db.connect() as conn:
+        status = db._exec(
+            conn.cursor(),
+            "SELECT status FROM alert_history WHERE id = ?",
+            (history_id,),
+        ).fetchone()["status"]
+    assert status == "read"
+
+
+def test_mark_all_read_updates_only_current_owner(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    first = admin_user()
+    second = create_futures_user("第二用户", "second-user", first)
+    _, first_history = trigger_for_owner(first)
+    _, second_history = trigger_for_owner(second)
+
+    main.mark_all_alert_history_read(user=first)
+
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            "SELECT id, status FROM alert_history WHERE id IN (?, ?) ORDER BY id",
+            (first_history, second_history),
+        ).fetchall()
+    assert {row["id"]: row["status"] for row in rows} == {
+        first_history: "read",
+        second_history: "unread",
+    }
