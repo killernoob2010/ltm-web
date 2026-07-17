@@ -14,6 +14,13 @@ RESOURCE_MODULES = {
     "data_visualization.integrated_points": "data_visualization_integration",
     "order_finance.records": "order_finance_progress",
     "order_finance.capital": "order_finance_capital",
+    "trading.overview": "trading_overview",
+    "trading.facts": "trading_positions",
+    "trading.junneng": "trading_sh_junneng",
+    "trading.options": "trading_options",
+    "trading.export": "trading_export",
+    "trading.imports": "trading_positions",
+    "trading.config": "trading_positions",
     "sh_junneng.trades": "sh_junneng",
     "mid_event.monitor": "mid_event_monitor",
     "users": "user_management",
@@ -44,6 +51,11 @@ ACTIVE_BUSINESS_MODULES = {
     "data_visualization_chart",
     "order_finance_progress",
     "order_finance_capital",
+    "trading_overview",
+    "trading_positions",
+    "trading_sh_junneng",
+    "trading_options",
+    "trading_export",
 }
 DEPARTMENT_MODULES = {
     "贸易处": {
@@ -53,6 +65,7 @@ DEPARTMENT_MODULES = {
     "期货组": {
         "sh_junneng", "info_summary", "risk_alert", "mid_event_monitor",
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export",
     },
     "财企处": {
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",

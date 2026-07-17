@@ -54,9 +54,18 @@ from .info_summary_backfill import (
     run_all_info_summary_backfills,
     start_daily_close_cache_scheduler,
 )
+from .iron_ore_basis_sync import start_iron_ore_basis_sync_scheduler
 from .monitoring import get_monitoring_status, start_monitoring_loop
+from .order_finance_snapshot_sync import start_order_finance_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
-from . import data_visualization, operation_log_archive, order_finance
+from . import (
+    data_visualization,
+    iron_ore_basis,
+    operation_log_archive,
+    order_finance,
+    order_finance_snapshot_sync,
+    trading_management,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -116,7 +125,10 @@ USER_SESSION_TTL_HOURS = int(os.getenv("USER_SESSION_TTL_HOURS", str(24 * 7)))
 GUEST_SESSION_TTL_HOURS = int(os.getenv("GUEST_SESSION_TTL_HOURS", "8"))
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
+app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
+app.include_router(order_finance_snapshot_sync.router, prefix="/api")
+app.include_router(trading_management.router, prefix="/api/trading-management")
 
 
 class LoginRequest(BaseModel):
@@ -1258,6 +1270,8 @@ def startup() -> None:
         try:
             db.init_db()
             data_visualization.seed_dv_data()
+            start_iron_ore_basis_sync_scheduler()
+            start_order_finance_sync_scheduler()
         except Exception as exc:
             print(f"[startup] database initialization skipped: {exc}")
 

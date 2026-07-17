@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import date, timedelta
 
+import pytest
 from openpyxl import Workbook
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -174,6 +175,7 @@ def test_three_sheet_parser_keeps_multiple_financings_without_duplicate_warning(
     warnings = [warning for record in y1_rows for warning in json.loads(record["import_warnings_json"])]
     assert not any("重复项次" in warning["message"] for warning in warnings)
     assert any("银行交单后待回款预警" in warning["message"] for warning in warnings)
+    assert result["files"][0]["warning_count"] == 0
     capital = next(json.loads(record["source_json"]).get("workbook_capital") for record in result["records"] if json.loads(record["source_json"]).get("workbook_capital"))
     assert capital["total_credit"] == 536_000_000
     assert capital["used_credit"] == 31_000_000
@@ -187,6 +189,23 @@ def test_parser_uses_original_due_plus_extension_when_new_due_is_empty(tmp_path)
     record = next(record for record in result["records"] if json.loads(record["source_json"])["item_no"] == "Y-2026-3")
 
     assert record["finance_due_date"] == "2026-07-11"
+
+
+def test_progress_financing_exposes_original_new_and_effective_due_dates(tmp_path):
+    workbook = build_three_sheet_workbook(tmp_path / "three-sheet.xlsx")
+    records = parse_order_finance_directory(workbook)["records"]
+
+    item = next(
+        contract
+        for contract in build_order_finance_progress_view(records)["contracts"]
+        if contract["item_no"] == "Y-2026-1"
+    )
+    financing = item["financings"][0]
+
+    assert financing["original_due_date"] == "2026-08-01"
+    assert financing["new_due_date"] == "2026-08-06"
+    assert financing["due_date"] == "2026-08-06"
+    assert financing["extension_days"] == 5
 
 
 def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_path):
@@ -205,8 +224,45 @@ def test_progress_uses_earliest_latest_shipment_and_real_repayment_timing(tmp_pa
     by_item = {item["item_no"]: item for item in view["contracts"]}
 
     assert by_item["Y-2026-1"]["latest_shipment_date"] == "2026-07-15"
-    assert by_item["CLOSED"]["repayment_timing"] == "提前 2 天还款"
+    assert by_item["CLOSED"]["repayment_timing"] == "提前 2 天回款"
     assert view["summary"]["data_issues"] == sum(item["data_issue_count"] for item in view["contracts"] if item["stage"] != "已完成")
+
+
+def test_progress_data_issues_exclude_excel_alerts_but_keep_quality_warnings():
+    due = (date.today() + timedelta(days=45)).isoformat()
+    shipment = (date.today() + timedelta(days=40)).isoformat()
+    records = [
+        progress_record(
+            "ALERT-ONLY",
+            "存续",
+            id=1,
+            finance_due_date=due,
+            latest_shipment_date=shipment,
+            import_warnings_json=json.dumps(
+                [{"field": "excel_alert", "level": "高", "message": "最迟装船预警"}],
+                ensure_ascii=False,
+            ),
+        ),
+        progress_record(
+            "QUALITY",
+            "存续",
+            id=2,
+            finance_due_date=due,
+            latest_shipment_date=shipment,
+            import_warnings_json=json.dumps(
+                [{"field": "finance_due_date", "level": "高", "message": "融资到期日早于放款日期"}],
+                ensure_ascii=False,
+            ),
+        ),
+    ]
+
+    view = build_order_finance_progress_view(records)
+    items = {item["item_no"]: item for item in view["contracts"]}
+
+    assert items["ALERT-ONLY"]["risk"] == "高"
+    assert items["ALERT-ONLY"]["data_issue_count"] == 0
+    assert items["QUALITY"]["data_issue_count"] == 1
+    assert view["summary"]["data_issues"] == 1
 
 
 def test_multiple_financing_and_active_stage_do_not_raise_risk():
@@ -229,6 +285,198 @@ def test_order_finance_schema_adds_manual_shipment_confirmation_columns(tmp_path
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_finance_progress)").fetchall()}
 
     assert {"shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at"}.issubset(columns)
+
+
+def test_order_finance_schema_adds_singleton_sync_status(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(order_finance_sync_status)").fetchall()
+        }
+
+    assert {
+        "id", "last_success_at", "changed_count", "source_version", "last_attempt_slot",
+        "wps_refresh_token_ciphertext", "pending_source_version",
+        "pending_business_keys_hash", "pending_record_count",
+    }.issubset(columns)
+
+
+def test_identical_snapshot_changes_zero_and_preserves_management(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    records = [progress_record("SNAPSHOT", "存续")]
+
+    first = order_finance.apply_order_finance_snapshot(records, imported_by="pytest")
+    saved = list_order_finance_records()[0]
+    update_management_fields(
+        saved["id"],
+        {"manager_note": "保留", "next_follow_up_date": "2026-07-20"},
+    )
+    second = order_finance.apply_order_finance_snapshot(records, imported_by="pytest")
+    preserved = list_order_finance_records()[0]
+
+    assert first == {"inserted": 1, "updated": 0, "archived": 0, "changed_count": 1}
+    assert second == {"inserted": 0, "updated": 0, "archived": 0, "changed_count": 0}
+    assert preserved["manager_note"] == "保留"
+    assert preserved["next_follow_up_date"] == "2026-07-20"
+
+
+def test_snapshot_counts_fact_update_and_archive(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    first = progress_record("A", "存续")
+    second = progress_record("B", "存续", id=2, business_key="ITEM|B|1")
+
+    assert order_finance.apply_order_finance_snapshot([first, second])["changed_count"] == 2
+    changed = dict(first, finance_amount_actual=12_000_000)
+    result = order_finance.apply_order_finance_snapshot([changed])
+
+    assert result == {"inserted": 0, "updated": 1, "archived": 1, "changed_count": 2}
+    assert [row["business_key"] for row in list_order_finance_records()] == ["ITEM|A|1"]
+
+
+def test_sync_status_and_slot_claim_are_minimal_and_deduplicated(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    assert order_finance.claim_order_finance_sync_slot("2026-07-15T09:00+08:00") is True
+    assert order_finance.claim_order_finance_sync_slot("2026-07-15T09:00+08:00") is False
+    order_finance.apply_order_finance_snapshot(
+        [progress_record("SYNC", "存续")],
+        sync_success_at="2026-07-15T09:02:00+08:00",
+        source_version="v2",
+        attempt_slot="2026-07-15T09:00+08:00",
+    )
+
+    assert order_finance.get_order_finance_sync_status() == {
+        "last_success_at": "2026-07-15T09:02:00+08:00",
+        "changed_count": 1,
+        "source_version": "v2",
+        "last_attempt_slot": "2026-07-15T09:00+08:00",
+        "pending_source_version": None,
+        "pending_business_keys_hash": None,
+        "pending_record_count": 0,
+    }
+
+
+def test_pending_shrink_preserves_last_success(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [
+            progress_record("A", "存续"),
+            progress_record("B", "存续", id=2, business_key="ITEM|B|1"),
+        ],
+        sync_success_at="2026-07-16T09:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-16T09:00+08:00",
+    )
+    order_finance.record_pending_order_finance_shrink(
+        "v11", "hash-a", 1, "2026-07-16T17:00+08:00",
+    )
+
+    status = order_finance.get_order_finance_sync_status()
+
+    assert status["last_success_at"] == "2026-07-16T09:02:00+08:00"
+    assert status["source_version"] == "v10"
+    assert status["pending_source_version"] == "v11"
+    assert status["pending_business_keys_hash"] == "hash-a"
+    assert status["pending_record_count"] == 1
+
+
+def test_successful_snapshot_clears_pending_shrink(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.record_pending_order_finance_shrink(
+        "v11", "hash-a", 1, "2026-07-16T09:00+08:00",
+    )
+    order_finance.apply_order_finance_snapshot(
+        [progress_record("A", "存续")],
+        sync_success_at="2026-07-16T17:02:00+08:00",
+        source_version="v11",
+        attempt_slot="2026-07-16T17:00+08:00",
+    )
+
+    status = order_finance.get_order_finance_sync_status()
+
+    assert status["pending_source_version"] is None
+    assert status["pending_business_keys_hash"] is None
+    assert status["pending_record_count"] == 0
+
+
+def test_manual_snapshot_invalidates_source_version_but_keeps_last_auto_success(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    online = progress_record("AUTHORITATIVE", "存续")
+    order_finance.apply_order_finance_snapshot(
+        [online],
+        sync_success_at="2026-07-15T09:02:00+08:00",
+        source_version="v10",
+        attempt_slot="2026-07-15T09:00+08:00",
+    )
+
+    order_finance.apply_order_finance_snapshot([
+        dict(online, finance_amount_actual=12_000_000),
+    ])
+    status = order_finance.get_order_finance_sync_status()
+
+    assert status["last_success_at"] == "2026-07-15T09:02:00+08:00"
+    assert status["changed_count"] == 1
+    assert status["source_version"] is None
+
+
+def test_snapshot_failure_rolls_back_rows_and_success_status(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    original_exec = db._exec
+
+    def fail_status_update(cur, sql, params=None):
+        if "UPDATE order_finance_sync_status" in sql:
+            raise RuntimeError("forced status failure")
+        return original_exec(cur, sql, params)
+
+    monkeypatch.setattr(db, "_exec", fail_status_update)
+    with pytest.raises(RuntimeError, match="forced status failure"):
+        order_finance.apply_order_finance_snapshot(
+            [progress_record("ROLLBACK", "存续")],
+            sync_success_at="2026-07-15T09:02:00+08:00",
+            source_version="v3",
+            attempt_slot="2026-07-15T09:00+08:00",
+        )
+
+    assert list_order_finance_records() == []
+    assert order_finance.get_order_finance_sync_status()["last_success_at"] is None
+
+
+def test_directory_import_uses_real_changed_count(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    workbook = build_three_sheet_workbook(tmp_path / "snapshot.xlsx")
+
+    first = import_order_finance_directory(workbook, imported_by="pytest")
+    second = import_order_finance_directory(workbook, imported_by="pytest")
+
+    assert first["summary"]["changed_count"] == first["summary"]["record_count"]
+    assert second["summary"]["changed_count"] == 0
+
+
+def test_snapshot_logs_key_date_deletion_without_row_payload(tmp_path, monkeypatch, caplog):
+    use_temp_db(tmp_path, monkeypatch)
+    original = progress_record(
+        "DELETE-DATE",
+        "存续",
+        document_submission_date="2026-07-01",
+        tail_payment_date="2026-07-10",
+    )
+    order_finance.apply_order_finance_snapshot([original])
+
+    caplog.clear()
+    result = order_finance.apply_order_finance_snapshot([
+        dict(original, document_submission_date="", tail_payment_date=""),
+    ])
+
+    deleted_fields = {
+        record.key_date_field
+        for record in caplog.records
+        if record.getMessage() == "order_finance_key_date_cleared"
+    }
+    assert result["changed_count"] == 1
+    assert deleted_fields == {"document_submission_date", "tail_payment_date"}
+    assert all(not hasattr(record, "source_json") for record in caplog.records)
 
 
 def test_manual_shipment_confirmation_updates_group_and_survives_reimport(tmp_path, monkeypatch):
@@ -321,16 +569,181 @@ def test_indicator_risks_color_only_the_fields_that_cause_risk():
     view = build_order_finance_progress_view(records)
     items = {item["item_no"]: item for item in view["contracts"]}
 
-    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
+    assert items["MISSING-SHIP"]["indicator_risks"] == {"shipment": "高", "document": "低", "payment": "低", "reminder": "低"}
     assert items["MISSING-SHIP"]["risk"] == "高"
     assert items["SHIP-SOON"]["indicator_risks"]["shipment"] == "中"
-    assert items["DUE-SOON"]["indicator_risks"]["finance_due"] == "中"
-    assert items["REPAID-ACTIVE"]["indicator_risks"]["repayment"] == "中"
+    assert items["DUE-SOON"]["indicator_risks"]["payment"] == "中"
+    assert items["DUE-SOON"]["indicator_risks"]["document"] == "中"
+    assert items["REPAID-ACTIVE"]["indicator_risks"]["payment"] == "低"
     assert items["MANUAL-SHIP"]["indicator_risks"]["shipment"] == "低"
-    assert items["MANUAL-SHIP"]["stage"] == "已装船待回款"
+    assert items["MANUAL-SHIP"]["stage"] == "已装船待交单"
     assert items["DOCUMENTED"]["indicator_risks"]["shipment"] == "低"
-    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
+    assert items["DONE"]["indicator_risks"] == {"shipment": "低", "document": "低", "payment": "低", "reminder": "低"}
     assert items["DONE"]["risk"] == "已完成"
+
+
+def test_document_date_implies_shipped_and_documented():
+    row = progress_record(
+        "DOCUMENT-IMPLIES-SHIP",
+        "存续",
+        document_submission_date=date.today().isoformat(),
+    )
+
+    item = build_order_finance_progress_view([row])["contracts"][0]
+
+    assert item["shipment_completed"] is True
+    assert item["shipment_basis"] == "document"
+    assert item["stage"] == "已交单待回款"
+    assert item["indicator_risks"]["shipment"] == "低"
+    assert item["indicator_risks"]["document"] == "低"
+
+
+def test_manual_shipment_waits_for_document_and_deadline_is_medium():
+    today = date.today()
+    row = progress_record(
+        "SHIP-WAITS-DOCUMENT",
+        "存续",
+        shipment_confirmed_date=today.isoformat(),
+        finance_due_date=(today + timedelta(days=15)).isoformat(),
+    )
+
+    item = build_order_finance_progress_view([row])["contracts"][0]
+
+    assert item["stage"] == "已装船待交单"
+    assert item["document_deadline"] == today.isoformat()
+    assert item["indicator_risks"]["document"] == "中"
+    assert "document_follow_up" in item["weekly_focus_reasons"]
+
+
+def test_partial_and_complete_multi_financing_payment():
+    today = date.today().isoformat()
+    first = progress_record(
+        "MULTI-PAYMENT",
+        "存续",
+        document_submission_date=today,
+        tail_payment_date=today,
+    )
+    second = progress_record(
+        "MULTI-PAYMENT",
+        "存续",
+        id=2,
+        business_key="ITEM|MULTI-PAYMENT|2",
+        document_submission_date=today,
+    )
+
+    partial = build_order_finance_progress_view([first, second])["contracts"][0]
+    second["tail_payment_date"] = today
+    complete = build_order_finance_progress_view([first, second])["contracts"][0]
+
+    assert partial["stage"] == "已交单待回款"
+    assert partial["payment_progress"] == "部分回款 1/2笔"
+    assert complete["stage"] == "已回款待结案"
+    assert complete["payment_progress"] == "已回款 2/2笔"
+
+
+def test_payment_risk_uses_seven_and_thirty_day_boundaries():
+    today = date.today()
+    records = [
+        progress_record(
+            f"PAY-{days}",
+            "存续",
+            id=index,
+            business_key=f"ITEM|PAY-{days}|1",
+            finance_due_date=(today + timedelta(days=days)).isoformat(),
+            shipment_confirmed_date=today.isoformat(),
+        )
+        for index, days in enumerate((7, 8, 30, 31), start=1)
+    ]
+
+    items = {
+        item["item_no"]: item
+        for item in build_order_finance_progress_view(records)["contracts"]
+    }
+
+    assert items["PAY-7"]["indicator_risks"]["payment"] == "高"
+    assert items["PAY-8"]["indicator_risks"]["payment"] == "中"
+    assert items["PAY-30"]["indicator_risks"]["payment"] == "中"
+    assert items["PAY-31"]["indicator_risks"]["payment"] == "低"
+
+
+def test_documented_unpaid_risk_uses_due_day_boundary_only():
+    today = date.today()
+    records = [
+        progress_record(
+            f"DOC-{days}",
+            "存续",
+            id=index,
+            business_key=f"ITEM|DOC-{days}|1",
+            document_submission_date=today.isoformat(),
+            finance_due_date=(today + timedelta(days=days)).isoformat(),
+            import_warnings_json=json.dumps(
+                [{"field": "excel_alert", "level": "高", "message": "交单旧预警"}],
+                ensure_ascii=False,
+            ),
+            next_follow_up_date=today.isoformat(),
+        )
+        for index, days in enumerate((-1, 0, 1, 31), start=1)
+    ]
+
+    items = {
+        item["item_no"]: item
+        for item in build_order_finance_progress_view(records)["contracts"]
+    }
+
+    assert items["DOC--1"]["risk"] == "高"
+    assert items["DOC-0"]["risk"] == "高"
+    assert items["DOC-1"]["risk"] == "中"
+    assert items["DOC-31"]["risk"] == "中"
+    assert items["DOC-1"]["indicator_risks"] == {
+        "shipment": "低",
+        "document": "低",
+        "payment": "中",
+        "reminder": "低",
+    }
+    assert items["DOC-1"]["weekly_focus_reasons"] == []
+    assert items["DOC-0"]["weekly_focus_reasons"] == ["high_risk"]
+
+
+def test_documented_missing_due_is_medium_data_issue():
+    item = build_order_finance_progress_view([
+        progress_record(
+            "DOC-MISSING-DUE",
+            "存续",
+            document_submission_date=date.today().isoformat(),
+            finance_due_date="",
+        ),
+    ])["contracts"][0]
+
+    assert item["stage"] == "已交单待回款"
+    assert item["risk"] == "中"
+    assert item["indicator_risks"] == {
+        "shipment": "低",
+        "document": "低",
+        "payment": "中",
+        "reminder": "低",
+    }
+    assert item["data_issue_count"] == 1
+    assert item["weekly_focus_reasons"] == []
+
+
+def test_wps_date_deletion_regresses_to_preserved_manual_shipment():
+    today = date.today().isoformat()
+    original = progress_record(
+        "REGRESS",
+        "存续",
+        shipment_confirmed_date=today,
+        document_submission_date=today,
+        tail_payment_date=today,
+    )
+    before = build_order_finance_progress_view([original])["contracts"][0]
+    after = build_order_finance_progress_view([
+        dict(original, document_submission_date="", tail_payment_date=""),
+    ])["contracts"][0]
+
+    assert before["stage"] == "已回款待结案"
+    assert after["stage"] == "已装船待交单"
+    assert after["shipment_confirmed_date"] == today
+    assert after["shipment_basis"] == "manual"
 
 
 def test_weekly_focus_uses_rolling_ten_day_actions():
@@ -389,13 +802,13 @@ def test_explicit_status_and_finance_milestones_drive_lifecycle():
     stages = {item["item_no"]: item["stage"] for item in view["contracts"]}
 
     assert stages == {
-        "Y-1": "已还款待结案",
+        "Y-1": "已回款待结案",
         "Y-2": "已完成",
         "Y-3": "已交单待回款",
-        "Y-4": "已装船待回款",
+        "Y-4": "已放款待装船",
     }
     assert view["summary"]["completed"] == 1
-    assert view["summary"]["collected_unrepaid"] == 1
+    assert view["summary"]["paid_unclosed"] == 1
 
 
 def test_capital_view_uses_quota_sheet_metadata_and_cross_checks_order_usage():
@@ -509,14 +922,12 @@ def test_upload_import_preserves_original_file_name(tmp_path, monkeypatch):
     assert {record["source_file"] for record in records} == {uploaded_name}
 
 
-def test_parse_order_finance_default_path_falls_back_to_seed_when_file_is_missing(tmp_path, monkeypatch):
+def test_parse_order_finance_default_path_requires_real_workbook_when_file_is_missing(tmp_path, monkeypatch):
     missing_workbook = tmp_path / "YOLANDA和香港建龙出口钢材信用证台账.xlsx"
     monkeypatch.setattr(order_finance, "LOCAL_DEFAULT_LEDGER_WORKBOOK", missing_workbook)
 
-    result = parse_order_finance_directory(missing_workbook)
-
-    assert result["summary"]["files_read"] == 1
-    assert result["summary"]["record_count"] == 70
+    with pytest.raises(ValueError, match="目录不存在"):
+        parse_order_finance_directory(missing_workbook)
 
 
 def test_progress_view_groups_contract_items_and_multi_financing():
@@ -530,7 +941,9 @@ def test_progress_view_groups_contract_items_and_multi_financing():
     multi = [item for item in view["contracts"] if item["financing_count"] > 1]
     assert multi
     sample = multi[0]
-    assert sample["stage"] in {"已放款待装船", "已装船待回款", "已交单待回款", "已还款待结案", "已完成"}
+    assert sample["stage"] in {
+        "待放款", "已放款待装船", "已装船待交单", "已交单待回款", "已回款待结案", "已完成",
+    }
     assert len(sample["financings"]) == sample["financing_count"]
 
 
@@ -553,6 +966,52 @@ def test_record_summary_excludes_explicit_closed_orders_from_active_count():
 
     assert summary["total_count"] == 2
     assert summary["active_count"] == 1
+
+
+def test_progress_view_exposes_only_successful_sync_time_and_count(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [],
+        sync_success_at="2026-07-15T09:02:00+08:00",
+        source_version="v2",
+        attempt_slot="2026-07-15T09:00+08:00",
+    )
+
+    view = build_order_finance_progress_view()
+
+    assert view["sync_status"] == {
+        "last_success_at": "2026-07-15T09:02:00+08:00",
+        "changed_count": 0,
+    }
+
+
+def test_fact_snapshot_excludes_manual_records_and_management_fields(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot([progress_record("A", "存续")])
+    synced = order_finance.list_order_finance_records()[0]
+    order_finance.update_management_fields(
+        synced["id"], {"manager_note": "staging-only"}, updated_by="pytest"
+    )
+    manual = order_finance.create_manual_order_finance_record(
+        {"subsidiary": "北满", "purchase_contract_no": "MANUAL-1"},
+        created_by="pytest",
+    )
+
+    records = order_finance.list_order_finance_fact_snapshot_records()
+
+    assert [row["business_key"] for row in records] == ["ITEM|A|1"]
+    assert set(records[0]) == set(order_finance.FACT_FIELDS)
+    assert "manager_note" not in records[0]
+    assert manual["business_key"] not in {row["business_key"] for row in records}
+
+
+def test_fact_hash_is_stable_for_record_order():
+    first = [progress_record("B", "存续"), progress_record("A", "存续")]
+    second = list(reversed(first))
+
+    assert order_finance.order_finance_facts_hash(first) == (
+        order_finance.order_finance_facts_hash(second)
+    )
 
 
 def test_current_workbook_order_amount_unit_reconciles_to_quota_usage():

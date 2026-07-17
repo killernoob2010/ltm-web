@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=operation-log-retention-20260710" />
+    <link rel="stylesheet" href="/static/styles.css?v=order-finance-status-refinement-nowrap-20260715" />
+    <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
+    <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -40,7 +42,7 @@
       </aside>
 
       <section class="workspace">
-        <header class="topbar">
+        <header id="globalTopbar" class="topbar">
           <div>
             <h1 id="pageTitle">实时信息汇总</h1>
             <p id="pageSubtitle">信息预警管理 / 实时信息汇总</p>
@@ -349,6 +351,26 @@
           </section>
         </section>
 
+        <section id="tradingManagementPage" class="page hidden tm-page">
+          <header class="tm-workspace-topbar">
+            <div><h1 id="tmPageTitle">交易总览</h1><p id="tmPageSubtitle">全量文华交易的领导驾驶舱</p></div>
+            <div class="tm-top-actions">
+              <select id="tmAccountFilter" aria-label="账户"><option>全部账户</option></select>
+              <select id="tmDateFilter" aria-label="交易日期"><option value="latest">最新持仓日</option></select>
+              <button id="tmDataInfoButton" class="tm-ghost-button" type="button">数据说明</button>
+            </div>
+          </header>
+          <div id="tmLoadingState" class="tm-loading-state">正在读取交易数据…</div>
+          <div id="tmErrorState" class="tm-error-state hidden"></div>
+          <div id="tmContent" class="hidden">
+            <section id="tmOverviewView" class="tm-view"></section>
+            <section id="tmPositionsView" class="tm-view hidden"></section>
+            <section id="tmJunnengView" class="tm-view hidden"></section>
+            <section id="tmOptionsView" class="tm-view hidden"></section>
+            <section id="tmExportView" class="tm-view hidden"></section>
+          </div>
+        </section>
+
         <section id="placeholderPage" class="page hidden">
           <section class="panel empty-state">
             <h2 id="placeholderTitle"></h2>
@@ -379,10 +401,11 @@
             <div class="order-finance-stage-filters" id="orderFinanceStageFilters">
               <button class="filter-button active" data-filter="all" type="button">全部</button>
               <button class="filter-button" data-filter="focusRisk" type="button">本周重点</button>
+              <button class="filter-button" data-filter="pendingDrawdown" type="button">待放款</button>
               <button class="filter-button" data-filter="financedUnshipped" type="button">已放款待装船</button>
-              <button class="filter-button" data-filter="shippedUnpaid" type="button">已装船待回款</button>
-              <button class="filter-button" data-filter="collectedUnrepaid" type="button">已交单待回款</button>
-              <button class="filter-button" data-filter="repaidUnsettled" type="button">已还款待结案</button>
+              <button class="filter-button" data-filter="shippedUndocumented" type="button">已装船待交单</button>
+              <button class="filter-button" data-filter="documentedUnpaid" type="button">已交单待回款</button>
+              <button class="filter-button" data-filter="paidUnclosed" type="button">已回款待结案</button>
               <button class="filter-button" data-filter="closed" type="button">已完成</button>
               <button class="filter-button" data-filter="multi" type="button">多笔融资</button>
             </div>
@@ -575,8 +598,9 @@
           </section>
         </section>
 
-       <!-- 数据可视化管理 - 图表数据管理 -->
+      <!-- 数据可视化管理 - 图表数据管理 -->
       <section id="dvDataPage" class="page hidden">
+        <div id="dvSpotDataView">
         <div class="toolbar">
           <button type="button" id="dvImportBtn">📥 导入 Excel</button>
         </div>
@@ -646,14 +670,57 @@
              <tbody id="dvDataTbody"></tbody>
            </table>
         </div>
-        <div class="toolbar">
-          <button id="dvDataLoadMoreBtn" type="button" class="secondary hidden">加载更多</button>
-          <span id="dvDataPageInfo" class="toolbar-status"></span>
+        <div id="dvDataPagination"></div>
         </div>
+        <section id="ironOreBasisManagementView" class="hidden">
+          <div id="ironOreBasisManagementLatestDate" class="iron-ore-basis-latest-date">最新数据日期：正在加载</div>
+          <div class="dv-chart-controls-row">
+            <div class="dv-chart-controls iron-ore-basis-filter-row">
+              <div class="dv-checkbox-panel dv-year-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>年份</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementYearAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisManagementYearNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="ironOreBasisManagementYears"></div>
+              </div>
+              <div class="dv-checkbox-panel dv-product-panel">
+                <div class="dv-checkbox-panel-header">
+                  <span>品种</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementProductAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisManagementProductNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="ironOreBasisManagementProducts"></div>
+              </div>
+              <div class="dv-checkbox-panel iron-ore-basis-port-filter">
+                <div class="dv-checkbox-panel-header">
+                  <span>港口</span>
+                  <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisManagementPortAll">全选</button>
+                  <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisManagementPortNone">全不选</button>
+                </div>
+                <div class="dv-checkbox-group" id="ironOreBasisManagementPorts"></div>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap iron-ore-basis-table-wrap">
+            <table id="ironOreBasisManagementTable">
+              <thead>
+                <tr>
+                  <th>日期</th><th>周次</th><th>年份</th><th>港口</th><th>品种</th>
+                  <th>湿吨现货价</th><th>质量升贴水</th><th>品牌升贴水</th>
+                  <th>主力连续收盘价</th><th>基差</th><th>数据状态</th>
+                </tr>
+              </thead>
+              <tbody id="ironOreBasisManagementBody"></tbody>
+            </table>
+          </div>
+          <div id="ironOreBasisManagementPagination" class="iron-ore-basis-pagination"></div>
+        </section>
       </section>
 
         <!-- 数据可视化管理 - 数据展示 -->
         <section id="dvChartPage" class="page hidden">
+         <div id="dvSpotChartView">
          <div class="dv-chart-controls-row">
             <div class="dv-chart-controls">
               <label class="dv-control-field dv-view-mode-field">
@@ -726,6 +793,56 @@
             <div id="dvChartStatus" class="dv-chart-status"></div>
             <canvas id="dvChartCanvas"></canvas>
           </div>
+         </div>
+         <section id="ironOreBasisDisplayView" class="hidden">
+           <div id="ironOreBasisDisplayLatestDate" class="iron-ore-basis-latest-date">最新数据日期：正在加载</div>
+           <section class="panel iron-ore-basis-optimal-panel">
+             <div class="panel-head">
+               <h2>最优仓单测算</h2>
+             </div>
+             <div id="ironOreBasisOptimalWarrant" class="iron-ore-basis-optimal-grid">
+               <div class="toolbar-status">正在加载最新有效数据</div>
+             </div>
+           </section>
+           <div class="dv-chart-controls-row">
+             <div class="dv-chart-controls iron-ore-basis-filter-row">
+               <div class="dv-checkbox-panel dv-year-panel">
+                 <div class="dv-checkbox-panel-header">
+                   <span>年份</span>
+                   <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisDisplayYearAll">全选</button>
+                   <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisDisplayYearNone">全不选</button>
+                 </div>
+                 <div class="dv-checkbox-group" id="ironOreBasisDisplayYears"></div>
+               </div>
+               <div class="dv-checkbox-panel dv-product-panel">
+                 <div class="dv-checkbox-panel-header">
+                   <span>品种</span>
+                   <button type="button" class="dv-filter-btn dv-filter-all" id="ironOreBasisDisplayProductAll">全选</button>
+                   <button type="button" class="dv-filter-btn dv-filter-none" id="ironOreBasisDisplayProductNone">全不选</button>
+                 </div>
+                 <div class="dv-checkbox-group" id="ironOreBasisDisplayProducts"></div>
+               </div>
+             </div>
+           </div>
+           <div class="dv-chart-tabs-row iron-ore-basis-chart-tabs-row">
+             <div class="dv-tabs iron-ore-basis-port-tabs" id="ironOreBasisPortTabs">
+               <button type="button" class="dv-tab active" data-basis-port="日照港">日照港</button>
+               <button type="button" class="dv-tab" data-basis-port="青岛港">青岛港</button>
+               <button type="button" class="dv-tab" data-basis-port="岚山港">岚山港</button>
+               <button type="button" class="dv-tab" data-basis-port="连云港">连云港</button>
+               <button type="button" class="dv-tab" data-basis-port="江阴港">江阴港</button>
+               <button type="button" class="dv-tab" data-basis-port="太仓港">太仓港</button>
+               <button type="button" class="dv-tab" data-basis-port="京唐港">京唐港</button>
+               <button type="button" class="dv-tab" data-basis-port="曹妃甸港">曹妃甸港</button>
+             </div>
+             <div id="ironOreBasisYearLegend" class="dv-year-legend"></div>
+           </div>
+           <div class="chart-container iron-ore-basis-chart-container">
+             <div id="ironOreBasisChartStatus" class="dv-chart-status"></div>
+             <canvas id="ironOreBasisChartCanvas" aria-label="铁矿石港口基差日度图表"></canvas>
+             <div id="ironOreBasisTooltip" class="iron-ore-basis-tooltip hidden" role="status"></div>
+           </div>
+         </section>
         </section>
 
 
@@ -1175,6 +1292,19 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js?v=operation-log-retention-20260710"></script>
+    <div id="tmDrawerBackdrop" class="tm-drawer-backdrop hidden"></div>
+    <aside id="tmDrawer" class="tm-drawer" aria-hidden="true">
+      <div class="tm-drawer-header">
+        <div><small id="tmDrawerKicker">详细信息</small><h2 id="tmDrawerTitle">数据说明</h2></div>
+        <button id="tmCloseDrawer" type="button" aria-label="关闭">×</button>
+      </div>
+      <div id="tmDrawerBody" class="tm-drawer-body"></div>
+    </aside>
+    <div id="tmToast" class="tm-toast hidden" role="status"></div>
+
+    <script src="/static/trading_management.js?v=20260712h"></script>
+    <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
+    <script src="/static/app.js?v=order-finance-repayment-risk-20260716"></script>
+    <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

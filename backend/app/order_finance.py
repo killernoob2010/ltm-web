@@ -5,6 +5,8 @@ Excel 台账解析、导入、查询和管理端计划字段维护。
 from __future__ import annotations
 
 import json
+import hashlib
+import logging
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -22,11 +24,11 @@ from .permissions import require_permission
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 SUBSIDIARIES = ["东钢", "北满", "承德", "抚顺", "西林", "阿城"]
 LOCAL_DEFAULT_LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
 LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
-ORDER_FINANCE_SEED_PATH = Path(__file__).with_name("order_finance_seed.json")
 ORDER_FINANCE_MODULE = "order_finance_progress"
 ORDER_FINANCE_CAPITAL_MODULE = "order_finance_capital"
 TARGET_XLSX_SHEETS = ("订单", "额度", "预警")
@@ -397,6 +399,19 @@ def _build_warnings(record: Dict[str, Any]) -> List[Dict[str, str]]:
     return warnings
 
 
+def _is_data_quality_warning(warning: Dict[str, Any]) -> bool:
+    return _normalize_text(warning.get("field")) != "excel_alert"
+
+
+def _data_quality_warning_count(records: List[Dict[str, Any]]) -> int:
+    return sum(
+        1
+        for record in records
+        for warning in _json_loads(record.get("import_warnings_json"), [])
+        if _is_data_quality_warning(warning)
+    )
+
+
 def derive_business_status(record: Dict[str, Any]) -> Dict[str, str]:
     remark = _normalize_text(record.get("remark"))
     drawdown = _normalize_date(record.get("finance_drawdown_date"))
@@ -578,7 +593,7 @@ def parse_order_finance_workbook(path: Path) -> Dict[str, Any]:
         "file": path.name,
         "sheet": sheet.name,
         "records": records,
-        "summary": {"record_count": len(records), "warning_count": sum(len(json.loads(r["import_warnings_json"])) for r in records)},
+        "summary": {"record_count": len(records), "warning_count": _data_quality_warning_count(records)},
     }
 
 
@@ -876,8 +891,9 @@ def _order_sheet_record(
     repay_date = _normalize_xlsx_date(_row_alias(row, "还款日", "还款日期"))
     original_due = _normalize_xlsx_date(_row_alias(row, "原到期日"))
     extension_days = _to_int(_row_alias(row, "展期天数")) or 0
+    new_due = _normalize_xlsx_date(_row_alias(row, "新到期日", "融资到期日", "到期日"))
     finance_due = _effective_finance_due(
-        _row_alias(row, "新到期日", "融资到期日", "到期日"),
+        new_due,
         original_due,
         extension_days,
     )
@@ -891,6 +907,7 @@ def _order_sheet_record(
         "row": list(values),
         "finance_rate": _xlsx_float(_row_alias(row, "利率")),
         "original_due_date": original_due,
+        "new_due_date": new_due,
         "extension_days": extension_days,
         "order_status": status,
         "alerts": alerts_by_item.get(item_no, []),
@@ -1003,20 +1020,13 @@ def parse_order_finance_xlsx_workbook(path: Path) -> Dict[str, Any]:
         "sheets": sheets,
         "capital": capital,
         "records": records,
-        "summary": {"record_count": len(records), "warning_count": sum(len(json.loads(r["import_warnings_json"])) for r in records)},
+        "summary": {"record_count": len(records), "warning_count": _data_quality_warning_count(records)},
     }
-
-
-def parse_order_finance_seed() -> Dict[str, Any]:
-    with ORDER_FINANCE_SEED_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
 
 
 def parse_order_finance_directory(directory: Path | str) -> Dict[str, Any]:
     base = Path(directory)
     if not base.exists():
-        if base == LOCAL_DEFAULT_LEDGER_WORKBOOK and ORDER_FINANCE_SEED_PATH.exists():
-            return parse_order_finance_seed()
         raise ValueError(f"目录不存在：{base}")
     if base.is_file():
         files = [base]
@@ -1122,6 +1132,245 @@ def upsert_order_finance_records(records: List[Dict[str, Any]], imported_by: str
     return {"inserted": inserted, "updated": updated}
 
 
+def _fact_values_equal(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    return all(existing.get(field) == incoming.get(field) for field in FACT_FIELDS)
+
+
+def snapshot_business_keys_hash(records: List[Dict[str, Any]]) -> str:
+    keys = sorted({_normalize_text(row.get("business_key")) for row in records})
+    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+
+
+def list_order_finance_fact_snapshot_records() -> List[Dict[str, Any]]:
+    field_sql = ", ".join(FACT_FIELDS)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            f"""SELECT {field_sql}
+                FROM order_finance_progress
+                WHERE is_archived = 0 AND source_file != '手动新增'
+                ORDER BY business_key""",
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def order_finance_facts_hash(records: List[Dict[str, Any]]) -> str:
+    normalized = [
+        {field: row.get(field) for field in FACT_FIELDS}
+        for row in sorted(
+            records,
+            key=lambda item: str(item.get("business_key") or ""),
+        )
+    ]
+    payload = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_active_synced_business_keys() -> set[str]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            """SELECT business_key FROM order_finance_progress
+               WHERE is_archived = 0 AND source_file != '手动新增'""",
+        ).fetchall()
+    return {_normalize_text(dict(row).get("business_key")) for row in rows}
+
+
+def record_pending_order_finance_shrink(
+    source_version: str,
+    business_keys_hash: str,
+    record_count: int,
+    attempt_slot: Optional[str],
+) -> None:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """UPDATE order_finance_sync_status
+               SET pending_source_version = ?, pending_business_keys_hash = ?,
+                   pending_record_count = ?,
+                   last_attempt_slot = COALESCE(?, last_attempt_slot),
+                   updated_at = CURRENT_TIMESTAMP WHERE id = 1""",
+            (source_version, business_keys_hash, record_count, attempt_slot),
+        )
+
+
+def apply_order_finance_snapshot(
+    records: List[Dict[str, Any]],
+    imported_by: str = "",
+    sync_success_at: Optional[str] = None,
+    source_version: Optional[str] = None,
+    attempt_slot: Optional[str] = None,
+) -> Dict[str, int]:
+    del imported_by
+    inserted = 0
+    updated = 0
+    archived = 0
+    serialized = [_serialize_record(record) for record in records]
+    incoming_keys = {record["business_key"] for record in serialized}
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        existing_rows = db._exec(cur, "SELECT * FROM order_finance_progress").fetchall()
+        existing_by_key = {
+            row["business_key"]: _row_to_dict(row)
+            for row in existing_rows
+        }
+
+        for record in serialized:
+            existing = existing_by_key.get(record["business_key"])
+            if existing:
+                if not _fact_values_equal(existing, record) or existing.get("is_archived"):
+                    for key_date_field in ("document_submission_date", "tail_payment_date"):
+                        if existing.get(key_date_field) and not record.get(key_date_field):
+                            logger.warning(
+                                "order_finance_key_date_cleared",
+                                extra={
+                                    "business_key": record["business_key"],
+                                    "key_date_field": key_date_field,
+                                },
+                            )
+                    assignments = ", ".join(f"{field} = ?" for field in FACT_FIELDS)
+                    params = [record.get(field) for field in FACT_FIELDS]
+                    params.append(existing["id"])
+                    db._exec(
+                        cur,
+                        f"UPDATE order_finance_progress SET {assignments}, "
+                        "is_archived = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        tuple(params),
+                    )
+                    updated += 1
+                continue
+
+            insert_fields = FACT_FIELDS + [
+                "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
+                "repayment_requirement", "repayment_requirement_status", "next_action",
+                "next_follow_up_date", "manager_note", "manual_override_fields",
+                "shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at",
+                "management_plan_json", "manual_change_log_json",
+            ]
+            values = [record.get(field) for field in FACT_FIELDS]
+            values.extend([
+                None, None, "", "", "", record.get("next_action", ""), "", "",
+                "[]", None, None, None, "{}", "[]",
+            ])
+            placeholders = ", ".join("?" for _ in insert_fields)
+            db._exec(
+                cur,
+                f"INSERT INTO order_finance_progress ({', '.join(insert_fields)}) "
+                f"VALUES ({placeholders})",
+                tuple(values),
+            )
+            inserted += 1
+
+        for existing in existing_by_key.values():
+            if (
+                not existing.get("is_archived")
+                and existing.get("source_file") != "手动新增"
+                and existing["business_key"] not in incoming_keys
+            ):
+                db._exec(
+                    cur,
+                    """UPDATE order_finance_progress
+                       SET is_archived = 1, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (existing["id"],),
+                )
+                archived += 1
+
+        changed_count = inserted + updated + archived
+        if sync_success_at is not None:
+            db._exec(
+                cur,
+                """UPDATE order_finance_sync_status
+                   SET last_success_at = ?, changed_count = ?, source_version = ?,
+                       last_attempt_slot = COALESCE(?, last_attempt_slot),
+                       pending_source_version = NULL,
+                       pending_business_keys_hash = NULL,
+                       pending_record_count = 0,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = 1""",
+                (sync_success_at, changed_count, source_version, attempt_slot),
+            )
+        else:
+            db._exec(
+                cur,
+                """UPDATE order_finance_sync_status
+                   SET source_version = NULL, pending_source_version = NULL,
+                       pending_business_keys_hash = NULL, pending_record_count = 0,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = 1""",
+            )
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "archived": archived,
+        "changed_count": changed_count,
+    }
+
+
+def get_order_finance_sync_status() -> Dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(
+            cur,
+            """SELECT last_success_at, changed_count, source_version, last_attempt_slot,
+                      pending_source_version, pending_business_keys_hash, pending_record_count
+               FROM order_finance_sync_status WHERE id = 1""",
+        ).fetchone()
+    status = _row_to_dict(row)
+    return {
+        "last_success_at": status.get("last_success_at"),
+        "changed_count": int(status.get("changed_count") or 0),
+        "source_version": status.get("source_version"),
+        "last_attempt_slot": status.get("last_attempt_slot"),
+        "pending_source_version": status.get("pending_source_version"),
+        "pending_business_keys_hash": status.get("pending_business_keys_hash"),
+        "pending_record_count": int(status.get("pending_record_count") or 0),
+    }
+
+
+def claim_order_finance_sync_slot(slot_key: str) -> bool:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        result = db._exec(
+            cur,
+            """UPDATE order_finance_sync_status
+               SET last_attempt_slot = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = 1 AND COALESCE(last_attempt_slot, '') != ?""",
+            (slot_key, slot_key),
+        )
+        return int(getattr(result, "rowcount", 0) or 0) == 1
+
+
+def record_unchanged_order_finance_sync(
+    sync_success_at: str,
+    source_version: str,
+    attempt_slot: str,
+) -> None:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        db._exec(
+            cur,
+            """UPDATE order_finance_sync_status
+               SET last_success_at = ?, changed_count = 0, source_version = ?,
+                   last_attempt_slot = ?, pending_source_version = NULL,
+                   pending_business_keys_hash = NULL, pending_record_count = 0,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = 1""",
+            (sync_success_at, source_version, attempt_slot),
+        )
+
+
 def archive_existing_excel_order_finance_records() -> int:
     with db.connect() as conn:
         cur = conn.cursor()
@@ -1138,10 +1387,8 @@ def archive_existing_excel_order_finance_records() -> int:
 
 def import_order_finance_directory(directory: Path | str, imported_by: str = "") -> Dict[str, Any]:
     parsed = parse_order_finance_directory(directory)
-    archived = archive_existing_excel_order_finance_records()
-    changes = upsert_order_finance_records(parsed["records"], imported_by=imported_by)
+    changes = apply_order_finance_snapshot(parsed["records"], imported_by=imported_by)
     parsed["summary"].update(changes)
-    parsed["summary"]["archived"] = archived
     return parsed
 
 
@@ -1166,10 +1413,8 @@ async def import_order_finance_upload(request: Request, file_name: str, imported
                 record["source_json"] = json.dumps(source, ensure_ascii=False, default=str)
         for item in parsed.get("files", []):
             item["file"] = file_name
-        archived = archive_existing_excel_order_finance_records()
-        changes = upsert_order_finance_records(parsed["records"], imported_by=imported_by)
+        changes = apply_order_finance_snapshot(parsed["records"], imported_by=imported_by)
         parsed["summary"].update(changes)
-        parsed["summary"]["archived"] = archived
         return parsed
     finally:
         if tmp_path and tmp_path.exists():
@@ -1535,10 +1780,7 @@ def _is_completed_group(rows: List[Dict[str, Any]]) -> bool:
     if any(status == "存续" for status in business_statuses):
         return False
     explicit = [status for status in business_statuses if status]
-    if explicit and all(status in {"结案", "已完成", "已结算"} for status in explicit):
-        return True
-    statuses = [_normalize_text(row.get("finance_status")) for row in rows]
-    return bool(statuses) and all(status == "已还款" or row.get("repaid_amount") for status, row in zip(statuses, rows))
+    return bool(explicit) and all(status in {"结案", "已完成", "已结算"} for status in explicit)
 
 
 def _group_has_value(rows: List[Dict[str, Any]], field: str) -> bool:
@@ -1546,28 +1788,39 @@ def _group_has_value(rows: List[Dict[str, Any]], field: str) -> bool:
 
 
 def _group_shipment_completed(rows: List[Dict[str, Any]]) -> bool:
-    return any(
-        _group_has_value(rows, field)
-        for field in ("shipment_confirmed_date", "bill_of_lading_date", "document_submission_date", "tail_payment_date")
+    return _group_has_value(rows, "shipment_confirmed_date") or _group_has_value(rows, "document_submission_date")
+
+
+def _row_is_paid(row: Dict[str, Any]) -> bool:
+    return bool(_normalize_text(row.get("tail_payment_date")))
+
+
+def _group_document_date(rows: List[Dict[str, Any]]) -> str:
+    dates = sorted(
+        row["document_submission_date"]
+        for row in rows
+        if row.get("document_submission_date")
     )
+    return dates[-1] if dates else ""
+
+
+def _row_document_deadline(row: Dict[str, Any]) -> str:
+    due = _parse_date(row.get("finance_due_date"))
+    return (due - timedelta(days=15)).isoformat() if due else ""
 
 
 def _group_stage(rows: List[Dict[str, Any]]) -> str:
     if _is_completed_group(rows):
         return "已完成"
     has_loan = any(row.get("finance_drawdown_date") or _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected")) for row in rows)
-    has_shipment = _group_shipment_completed(rows)
-    has_document = _group_has_value(rows, "document_submission_date")
-    has_repay = _group_has_value(rows, "tail_payment_date")
-    if not has_loan:
-        return "待放款"
-    if has_repay:
-        return "已还款待结案"
+    has_document = bool(_group_document_date(rows))
+    if rows and all(_row_is_paid(row) for row in rows):
+        return "已回款待结案"
     if has_document:
         return "已交单待回款"
-    if has_shipment:
-        return "已装船待回款"
-    return "已放款待装船"
+    if _group_has_value(rows, "shipment_confirmed_date"):
+        return "已装船待交单"
+    return "已放款待装船" if has_loan else "待放款"
 
 
 def _days_to(value: Any) -> Optional[int]:
@@ -1582,14 +1835,29 @@ def _warning_indicator(warning: Dict[str, Any]) -> str:
     message = _normalize_text(warning.get("message"))
     if field == "latest_shipment_date" or "最迟装船" in message:
         return "shipment"
-    if field == "finance_due_date" or any(text in message for text in ("融资到期", "贷款到期", "还款到期")):
-        return "finance_due"
-    return "confirmation"
+    if field == "document_submission_date" or "交单" in message:
+        return "document"
+    if field == "finance_due_date" or any(text in message for text in ("融资到期", "贷款到期", "还款到期", "回款")):
+        return "payment"
+    return "reminder"
 
 
 def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, str]:
-    risks = {"shipment": "低", "finance_due": "低", "repayment": "低", "confirmation": "低", "reminder": "低"}
+    risks = {"shipment": "低", "document": "低", "payment": "低", "reminder": "低"}
     if stage == "已完成":
+        return risks
+    if stage == "已回款待结案":
+        return risks
+    if stage == "已交单待回款":
+        unpaid_rows = [row for row in rows if not _row_is_paid(row)]
+        due_days = [
+            _days_to(row.get("finance_due_date"))
+            for row in unpaid_rows
+            if row.get("finance_due_date")
+        ]
+        risks["payment"] = (
+            "高" if any(days is not None and days <= 0 for days in due_days) else "中"
+        )
         return risks
     shipment_completed = _group_shipment_completed(rows)
     warnings = [
@@ -1615,16 +1883,21 @@ def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, 
     if any(item is not None and item <= 10 for item in follow_up_days):
         risks["reminder"] = "中"
 
-    due_days = [_days_to(row.get("finance_due_date")) for row in rows if row.get("finance_due_date")]
-    min_due = min([item for item in due_days if item is not None], default=None)
-    missing_repay = not _group_has_value(rows, "tail_payment_date")
-    if missing_repay:
-        if min_due is None or min_due <= 7:
-            risks["finance_due"] = "高"
-        elif min_due <= 30 and risks["finance_due"] != "高":
-            risks["finance_due"] = "中"
-    else:
-        risks["repayment"] = "中"
+    unpaid_rows = [row for row in rows if not _row_is_paid(row)]
+    if not _group_document_date(rows):
+        deadline_days = [
+            _days_to(deadline)
+            for row in unpaid_rows
+            if (deadline := _row_document_deadline(row))
+        ]
+        if any(item is not None and item <= 0 for item in deadline_days):
+            risks["document"] = "中"
+
+    due_days = [_days_to(row.get("finance_due_date")) for row in unpaid_rows if row.get("finance_due_date")]
+    if any(item is not None and item <= 7 for item in due_days):
+        risks["payment"] = "高"
+    elif any(item is not None and item <= 30 for item in due_days):
+        risks["payment"] = "中"
     return risks
 
 
@@ -1641,6 +1914,10 @@ def _group_risk(indicator_risks: Dict[str, str], stage: str) -> str:
 def _group_weekly_focus_reasons(rows: List[Dict[str, Any]], stage: str, risk: str) -> List[str]:
     if stage == "已完成":
         return []
+    if stage == "已回款待结案":
+        return []
+    if stage == "已交单待回款":
+        return ["high_risk"] if risk == "高" else []
     reasons = []
     if risk == "高":
         reasons.append("high_risk")
@@ -1648,6 +1925,15 @@ def _group_weekly_focus_reasons(rows: List[Dict[str, Any]], stage: str, risk: st
         shipment_days = [_days_to(row.get("latest_shipment_date")) for row in rows if row.get("latest_shipment_date")]
         if any(item is not None and 0 <= item <= 10 for item in shipment_days):
             reasons.append("shipment_follow_up")
+    if not _group_document_date(rows):
+        unpaid_rows = [row for row in rows if not _row_is_paid(row)]
+        deadline_days = [
+            _days_to(deadline)
+            for row in unpaid_rows
+            if (deadline := _row_document_deadline(row))
+        ]
+        if any(item is not None and item <= 0 for item in deadline_days):
+            reasons.append("document_follow_up")
     follow_up_days = [_days_to(row.get("next_follow_up_date")) for row in rows if row.get("next_follow_up_date")]
     if any(item is not None and item <= 10 for item in follow_up_days):
         reasons.append("manual_follow_up")
@@ -1665,10 +1951,10 @@ def _group_repayment_timing(rows: List[Dict[str, Any]]) -> str:
         return ""
     latest_delta = max(deltas)
     if latest_delta > 0:
-        return f"逾期 {latest_delta} 天还款"
+        return f"逾期 {latest_delta} 天回款"
     if latest_delta < 0:
-        return f"提前 {abs(latest_delta)} 天还款"
-    return "按期还款"
+        return f"提前 {abs(latest_delta)} 天回款"
+    return "按期回款"
 
 
 def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str:
@@ -1677,17 +1963,15 @@ def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str
         return manual
     if stage == "已完成":
         return "已闭环，保留历史查询"
-    if len(rows) > 1:
-        return "同一项次存在多行融资，请核对并分别跟进"
     if stage == "待放款":
         return "确认贷款行、金额和借款日期"
     if stage == "已放款待装船":
         return "优先联系工厂确认装船进度" if risk == "高" else "跟进工厂装船进度"
-    if stage == "已装船待回款":
-        return "确认银行交单安排"
+    if stage == "已装船待交单":
+        return "跟进交单并确认交单日"
     if stage == "已交单待回款":
-        return "跟进交单后的回款和还款日"
-    if stage == "已还款待结案":
+        return "跟进回款并确认回款日"
+    if stage == "已回款待结案":
         return "确认订单结案状态"
     return "确认当前订单状态"
 
@@ -1701,6 +1985,16 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     risk = _group_risk(indicator_risks, stage)
     finance_total = sum(_money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")) for row in rows)
     due_dates = sorted([row.get("finance_due_date") for row in rows if row.get("finance_due_date")])
+    unpaid_rows = [row for row in rows if not _row_is_paid(row)]
+    missing_due_count = (
+        sum(1 for row in unpaid_rows if not _normalize_text(row.get("finance_due_date")))
+        if stage == "已交单待回款"
+        else 0
+    )
+    unpaid_due_dates = sorted([row.get("finance_due_date") for row in unpaid_rows if row.get("finance_due_date")])
+    document_deadlines = sorted([
+        deadline for row in unpaid_rows if (deadline := _row_document_deadline(row))
+    ])
     latest_shipment_dates = sorted([row.get("latest_shipment_date") for row in rows if row.get("latest_shipment_date")])
     document_dates = sorted([row.get("document_submission_date") for row in rows if row.get("document_submission_date")])
     bill_dates = sorted([row.get("bill_of_lading_date") for row in rows if row.get("bill_of_lading_date")])
@@ -1710,6 +2004,13 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     follow_up_dates = sorted([row.get("next_follow_up_date") for row in rows if row.get("next_follow_up_date")])
     manager_note = next((_normalize_text(row.get("manager_note")) for row in rows if _normalize_text(row.get("manager_note"))), "")
     weekly_focus_reasons = _group_weekly_focus_reasons(rows, stage, risk)
+    paid_count = len(rows) - len(unpaid_rows)
+    if paid_count == len(rows):
+        payment_progress = f"已回款 {paid_count}/{len(rows)}笔"
+    elif paid_count:
+        payment_progress = f"部分回款 {paid_count}/{len(rows)}笔"
+    else:
+        payment_progress = f"待回款 0/{len(rows)}笔"
     warnings = []
     for row in rows:
         warnings.extend(_json_loads(row.get("import_warnings_json"), []))
@@ -1732,14 +2033,18 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "receiving_bank": lc.get("receiving_bank") or "",
         "latest_shipment_date": latest_shipment_dates[0] if latest_shipment_dates else "",
         "shipment_completed": _group_shipment_completed(rows),
+        "shipment_basis": "document" if document_dates else "manual" if shipment_confirmed_dates else "",
         "shipment_confirmed_date": shipment_confirmed_dates[-1] if shipment_confirmed_dates else "",
         "shipment_confirmed_by": next((row.get("shipment_confirmed_by") for row in rows if row.get("shipment_confirmed_by")), ""),
         "shipment_confirmed_at": shipment_confirmed_at[-1] if shipment_confirmed_at else "",
         "vessel": next((row.get("vessel_voyage") for row in rows if row.get("vessel_voyage")), ""),
         "latest_due_date": due_dates[0] if due_dates else "",
+        "payment_due_date": unpaid_due_dates[0] if unpaid_due_dates else (due_dates[0] if due_dates else ""),
+        "document_deadline": document_deadlines[0] if document_deadlines else "",
         "bill_date": bill_dates[-1] if bill_dates else "",
         "document_date": document_dates[-1] if document_dates else "",
         "repay_date": repay_dates[-1] if repay_dates else "",
+        "payment_progress": payment_progress,
         "repayment_timing": _group_repayment_timing(rows),
         "stage": stage,
         "risk": risk,
@@ -1751,7 +2056,10 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "next_action": _group_next_action(rows, stage, risk),
         "total_finance": finance_total,
         "financing_count": len(rows),
-        "data_issue_count": len(warnings),
+        "data_issue_count": (
+            len([warning for warning in warnings if _is_data_quality_warning(warning)])
+            + missing_due_count
+        ),
         "source_file": first.get("source_file") or "",
         "source_sheet": first.get("source_sheet") or "",
         "source_row_start": min((row.get("source_row_start") or 0 for row in rows), default=0),
@@ -1763,14 +2071,19 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "amount": _money_value(row.get("finance_amount_actual"), row.get("finance_amount_expected"), row.get("planned_finance_amount")),
                 "borrow_date": row.get("finance_drawdown_date") or "",
                 "original_due_date": _json_loads(row.get("source_json"), {}).get("original_due_date") or "",
+                "new_due_date": _json_loads(row.get("source_json"), {}).get("new_due_date") or "",
                 "extension_days": _json_loads(row.get("source_json"), {}).get("extension_days") or 0,
                 "due_date": row.get("finance_due_date") or "",
                 "rate": _json_loads(row.get("source_json"), {}).get("finance_rate"),
                 "bill_date": row.get("bill_of_lading_date") or "",
                 "document_date": row.get("document_submission_date") or "",
                 "repay_date": row.get("tail_payment_date") or "",
+                "payment_state": "已回款" if _row_is_paid(row) else "待回款",
                 "status": row.get("finance_status") or row.get("business_status") or "",
                 "next_action": row.get("next_action") or "",
+                "source_file": row.get("source_file") or "",
+                "source_sheet": row.get("source_sheet") or "",
+                "source_row_start": row.get("source_row_start") or 0,
             }
             for row in rows
         ],
@@ -1778,6 +2091,7 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    use_persisted_records = records is None
     records = records if records is not None else list_order_finance_records()
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for row in records:
@@ -1792,18 +2106,27 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
     summary = {
         "open_contracts": len(open_contracts),
         "active_finance": sum(item["total_finance"] for item in open_contracts),
-        "due_7d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 7]),
-        "due_30d": len([item for item in open_contracts if (days := _days_to(item.get("latest_due_date"))) is not None and 0 <= days <= 30]),
+        "due_7d": len([item for item in open_contracts if (days := _days_to(item.get("payment_due_date"))) is not None and 0 <= days <= 7]),
+        "due_30d": len([item for item in open_contracts if (days := _days_to(item.get("payment_due_date"))) is not None and 0 <= days <= 30]),
         "focus_risk": len([item for item in open_contracts if item["is_weekly_focus"]]),
+        "pending_drawdown": len([item for item in open_contracts if item["stage"] == "待放款"]),
         "financed_unshipped": len([item for item in open_contracts if item["stage"] == "已放款待装船"]),
-        "documented_uncollected": len([item for item in open_contracts if item["stage"] == "已交单待回款"]),
-        "collected_unrepaid": len([item for item in open_contracts if item["stage"] == "已还款待结案"]),
+        "shipped_undocumented": len([item for item in open_contracts if item["stage"] == "已装船待交单"]),
+        "documented_unpaid": len([item for item in open_contracts if item["stage"] == "已交单待回款"]),
+        "paid_unclosed": len([item for item in open_contracts if item["stage"] == "已回款待结案"]),
         "completed": len([item for item in contracts if item["stage"] == "已完成"]),
-        "missing_milestones": len([item for item in open_contracts if not item.get("latest_shipment_date") or not item.get("document_date") or not item.get("repay_date")]),
         "data_issues": sum(item["data_issue_count"] for item in open_contracts),
         "total_contracts": len(contracts),
     }
-    return {"summary": summary, "contracts": contracts}
+    sync_status = get_order_finance_sync_status() if use_persisted_records else {}
+    return {
+        "summary": summary,
+        "contracts": contracts,
+        "sync_status": {
+            "last_success_at": sync_status.get("last_success_at"),
+            "changed_count": int(sync_status.get("changed_count") or 0),
+        },
+    }
 
 
 def _sum_by(records: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:

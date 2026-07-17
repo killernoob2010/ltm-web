@@ -6,7 +6,7 @@
 
 - Web 登录页。
 - 主工作台布局。
-- 左侧菜单保持原系统结构：台账管理、信息预警管理、后台管理。
+- 左侧菜单保留旧台账管理，并新增独立一级菜单“交易管理”。
 - 后端 SQLite 数据库初始化。
 - 默认管理员账号：`管理员 / admin`。
 - 上海钧能台账的查询、筛选、新增、编辑、删除、平仓、价格刷新、CSV 导出。
@@ -15,6 +15,8 @@
 - 事中风险监控的策略组和持仓接口骨架。
 - 订单融资管理：从本地订单融资 Excel 台账导入合同、融资、信用证、交单、收汇、还款和额度数据，提供 `订单融资进度` 与 `融资资金监控` 两个页面。
 - 用户与权限管理：独立登录账号、用户/领导/管理员类型、部门默认权限、个人例外、查看/日常/敏感操作分级、自助改密、管理员重置和账号停用。
+- 交易管理：文华成交/平仓/期末持仓三表完整预检和版本覆盖、只读事实总览、持仓与交易、整笔业务归属、上海钧能台账、全量期权台账、可审计的业务开平重配和恢复默认。首版浮动盈亏与期权风险指标统一显示“待计算”，汇总与导出保留入口暂不执行导出。
+- 铁矿石期现：历史 Excel 作为存量底库，新增 EBC 现货指标与新浪 I0 收盘价 API 增量同步；按版本化业务规则计算并保存精简结果与完整明细。期现数据管理提供只读分页查询，期现数据展示提供独立最优仓单、港口页签和按品种/年份绘制的日度基差图表。
 
 ## 本地运行
 
@@ -42,6 +44,40 @@ http://127.0.0.1:8000
 ```text
 http://127.0.0.1:8001
 ```
+
+## 铁矿石基差 Excel 导入
+
+导入命令默认只校验文件、字段、业务唯一键和两张数据表的一致性，不写数据库：
+
+```bash
+env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路径/铁矿石港口基差基础数据库_2024至今.xlsx
+```
+
+校验通过后，显式增加 `--apply` 才会在单一事务中写入或更新期现结果表和计算明细表；同一文件重复导入不会产生重复业务记录：
+
+```bash
+env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路径/铁矿石港口基差基础数据库_2024至今.xlsx --apply
+```
+
+连接 PostgreSQL 时由后端统一读取 `DATABASE_URL`。上线环境执行写入前必须先确认环境映射并完成数据库备份，不能把生产连接信息写入命令、文档或日志。
+
+## 铁矿石基差 API 增量同步
+
+同步读取 `EBC_ACCOUNT`、`EBC_PASSWORD`，可选读取 `EBC_MAINBOARD`、`EBC_CPU`；凭据只配置在目标 Render 服务环境变量中。`IRON_ORE_BASIS_AUTO_SYNC_ENABLED=true` 时，Web 服务启动后会补查最近数据，并按上海时间每日 09:30、10:30、21:30 检查相应时间窗。未显式启用时不会自动抓取或写库。
+
+手工命令默认只抓取、计算和汇总，不写数据库：
+
+```bash
+.venv/bin/python scripts/sync_iron_ore_basis.py --start-date 2026-07-13 --end-date 2026-07-13
+```
+
+确认目标环境、数据库备份和 dry-run 结果后，显式增加 `--apply` 才写入：
+
+```bash
+.venv/bin/python scripts/sync_iron_ore_basis.py --start-date 2026-07-13 --end-date 2026-07-13 --apply
+```
+
+增量写入按来源、指标、业务日期和结果业务键去重。同一来源点首次写入后作为历史口径保留，后续观测到变化只记录差异，不覆盖已有历史源值或已生成的基差结果；缺少任一必要数据的组合跳过。页面顶部仅显示当前结果表的最新数据日期。
 
 ## 操作日志保留与归档
 
@@ -72,6 +108,38 @@ http://127.0.0.1:8001
 ```
 
 导入时只读取 `订单`、`额度`、`预警` 三个页签：`订单`是唯一订单事实来源，`额度`提供银行授信与占用，`预警`按项次关联风险提示。工作簿中的其他页签全部忽略，不参与字段补全或状态判断。网页仍保持“订单融资进度”和“融资资金监控”两个页面。
+
+### 订单融资 WPS 自动同步
+
+订单融资通过已经审批的企业 WPS 应用和单一用户授权只读同步同一份源格式 Excel。Production 是唯一 WPS 源端；Staging 通过受保护的事实快照跟随，不再单独刷新同一枚可轮换 refresh token。实际值不得进入仓库、日志、接口响应或版本记录。
+
+两个环境均配置：
+
+```text
+ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED
+ORDER_FINANCE_SYNC_MODE
+ORDER_FINANCE_SNAPSHOT_SHARED_SECRET
+```
+
+Production 使用 `ORDER_FINANCE_SYNC_MODE=wps_source`，并继续配置现有 WPS 读取变量：
+
+```text
+WPS_APP_ID
+WPS_APP_SECRET
+WPS_USER_REFRESH_TOKEN
+ORDER_FINANCE_WPS_DRIVE_ID
+ORDER_FINANCE_WPS_FILE_ID
+```
+
+Staging 使用 `ORDER_FINANCE_SYNC_MODE=snapshot_follower`，并配置：
+
+```text
+ORDER_FINANCE_SNAPSHOT_UPSTREAM_URL
+```
+
+跟随模式不会构造 WPS 客户端，也不会读取或刷新 WPS token。它只通过 HTTPS 和服务端 Bearer Secret 读取源端 `/api/internal/order-finance/snapshot`；快照仅包含当前有效 WPS 事实字段，不包含数据库 ID、用户、权限、日志或下一步、备注、人工装船确认等环境本地管理字段。Production 不配置 Staging 的数据库连接，Staging 也不配置 Production 的数据库连接。
+
+仅当 `ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED=true` 且当前模式所需配置完整时启动后台任务。两个模式都以每天北京时间 09:00 和 17:00 为业务时点，包括周末和节假日；源端只调用用户 token 刷新、文件元数据和源文件下载接口，不调用上传、修改、分享或删除接口。跟随端在源端尚未完成当前时点时每 5 分钟重试，成功后按源版本和事实哈希幂等写入自己的数据库。页面只显示最近一次成功自动同步时间和该次实际变化条数；失败保留上次成功状态并写入脱敏服务端日志。
 
 ## 测试版验证
 

@@ -154,6 +154,93 @@ CREATE TABLE strategy_positions (
     FOREIGN KEY (group_id) REFERENCES strategy_groups(id)
 );
 
+CREATE TABLE IF NOT EXISTS iron_ore_basis_results (
+    id SERIAL PRIMARY KEY,
+    business_key TEXT NOT NULL UNIQUE,
+    business_date TEXT NOT NULL,
+    business_week INTEGER NOT NULL,
+    week_label TEXT NOT NULL,
+    business_year INTEGER NOT NULL,
+    port TEXT NOT NULL,
+    product TEXT NOT NULL,
+    wet_spot_price DOUBLE PRECISION NOT NULL,
+    quality_adjustment DOUBLE PRECISION NOT NULL,
+    brand_adjustment DOUBLE PRECISION NOT NULL,
+    standardized_spot_price DOUBLE PRECISION NOT NULL,
+    futures_series TEXT NOT NULL DEFAULT 'I0',
+    futures_close DOUBLE PRECISION NOT NULL,
+    basis DOUBLE PRECISION NOT NULL,
+    data_status TEXT NOT NULL,
+    rule_version TEXT NOT NULL,
+    parameter_version TEXT NOT NULL,
+    source_workbook_name TEXT NOT NULL,
+    source_workbook_sha256 TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(business_date, port, product, rule_version, parameter_version)
+);
+
+CREATE TABLE IF NOT EXISTS iron_ore_basis_details (
+    id SERIAL PRIMARY KEY,
+    result_id INTEGER NOT NULL UNIQUE REFERENCES iron_ore_basis_results(id) ON DELETE CASCADE,
+    business_key TEXT NOT NULL UNIQUE,
+    business_date TEXT NOT NULL,
+    week_label TEXT NOT NULL,
+    business_year INTEGER NOT NULL,
+    port TEXT NOT NULL,
+    product TEXT NOT NULL,
+    ebc_indicator_code TEXT,
+    ebc_indicator_name TEXT,
+    ebc_price_fe DOUBLE PRECISION,
+    wet_spot_price DOUBLE PRECISION NOT NULL,
+    parameter_year INTEGER NOT NULL,
+    parameter_type TEXT NOT NULL,
+    fe DOUBLE PRECISION NOT NULL,
+    sio2 DOUBLE PRECISION NOT NULL,
+    al2o3 DOUBLE PRECISION NOT NULL,
+    phosphorus DOUBLE PRECISION NOT NULL,
+    sulfur DOUBLE PRECISION NOT NULL,
+    h2o DOUBLE PRECISION NOT NULL,
+    sulfur_defaulted INTEGER NOT NULL DEFAULT 0,
+    price_proxy_indicator TEXT,
+    price_parameter_spec_diff INTEGER NOT NULL DEFAULT 0,
+    fe_adjustment_x DOUBLE PRECISION NOT NULL,
+    brand_adjustment DOUBLE PRECISION NOT NULL,
+    futures_series TEXT NOT NULL,
+    futures_close DOUBLE PRECISION NOT NULL,
+    fe_adjustment DOUBLE PRECISION NOT NULL,
+    sio2_adjustment DOUBLE PRECISION NOT NULL,
+    al2o3_adjustment DOUBLE PRECISION NOT NULL,
+    phosphorus_adjustment DOUBLE PRECISION NOT NULL,
+    sulfur_adjustment DOUBLE PRECISION NOT NULL,
+    quality_adjustment DOUBLE PRECISION NOT NULL,
+    dry_spot_price DOUBLE PRECISION NOT NULL,
+    standardized_spot_price DOUBLE PRECISION NOT NULL,
+    basis DOUBLE PRECISION NOT NULL,
+    data_status TEXT NOT NULL,
+    note TEXT,
+    rule_version TEXT NOT NULL,
+    parameter_source TEXT NOT NULL,
+    parameter_version TEXT NOT NULL,
+    ebc_original_port TEXT,
+    source_workbook_name TEXT NOT NULL,
+    source_workbook_sha256 TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_results_query
+ON iron_ore_basis_results(business_year, port, product, business_date);
+CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_results_optimal
+ON iron_ore_basis_results(business_year, data_status, business_date, basis);
+CREATE INDEX IF NOT EXISTS idx_iron_ore_basis_details_result
+ON iron_ore_basis_details(result_id);
+
+ALTER TABLE iron_ore_basis_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE iron_ore_basis_details ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE iron_ore_basis_results, iron_ore_basis_details FROM anon, authenticated;
+REVOKE ALL ON SEQUENCE iron_ore_basis_results_id_seq, iron_ore_basis_details_id_seq FROM anon, authenticated;
+
 -- 12. sh_junneng_trades
 CREATE TABLE sh_junneng_trades (
     id SERIAL PRIMARY KEY,

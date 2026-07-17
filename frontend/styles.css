@@ -247,6 +247,43 @@ textarea {
   background: #314050;
 }
 
+.menu-item-parent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.menu-item-toggle {
+  color: #9fb0c0;
+  font-size: 12px;
+}
+
+.menu-subitems {
+  margin: 2px 0 8px 12px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.menu-subitem {
+  width: 100%;
+  display: block;
+  margin: 2px 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #cbd7e2;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.menu-subitem:hover,
+.menu-subitem.active {
+  background: #314050;
+  color: #fff;
+}
+
 .workspace {
   overflow: hidden;
   min-width: 0;
@@ -790,6 +827,8 @@ dialog::backdrop {
 
 @media (max-width: 900px) {
   .app-shell {
+    height: auto;
+    min-height: 100vh;
     grid-template-columns: 1fr;
   }
 
@@ -1058,7 +1097,7 @@ dialog::backdrop {
   border-radius: 6px;
   background: var(--surface);
   padding: 12px;
-  height: min(62vh, 620px);
+  height: max(420px, calc(100vh - 260px));
   min-height: 420px;
   overflow: auto;
 }
@@ -1310,11 +1349,30 @@ dialog::backdrop {
 }
 
 .order-finance-field {
-  min-height: 58px;
+  box-sizing: border-box;
+  height: 58px;
   border: 1px solid #e1e7ee;
   border-radius: 6px;
   background: #f8fafc;
   padding: 9px 10px;
+}
+
+.order-finance-field.wide {
+  grid-column: span 2;
+}
+
+.order-finance-field.wide strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.order-finance-field.single-line strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-finance-field span,
@@ -1669,6 +1727,10 @@ dialog::backdrop {
   }
 
   .order-finance-manual-grid .wide-field {
+    grid-column: auto;
+  }
+
+  .order-finance-field.wide {
     grid-column: auto;
   }
 }

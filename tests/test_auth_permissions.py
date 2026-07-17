@@ -91,6 +91,24 @@ def test_guest_user_has_only_allowed_view_permissions(tmp_path, monkeypatch):
     assert "data_visualization.display:view" in permissions
 
 
+def test_trading_management_uses_existing_permission_levels():
+    trading_modules = {
+        "trading_overview",
+        "trading_positions",
+        "trading_sh_junneng",
+        "trading_options",
+        "trading_export",
+    }
+
+    futures_user = permissions.default_permission_levels("期货组", "用户")
+    leader = permissions.default_permission_levels("公司领导", "领导")
+    admin = permissions.default_permission_levels("管理部门", "管理员")
+
+    assert {futures_user[code] for code in trading_modules} == {"operate"}
+    assert {leader[code] for code in trading_modules} == {"view"}
+    assert {admin[code] for code in trading_modules} == {"sensitive"}
+
+
 def test_order_finance_reminder_requires_edit_permission(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     guest = db.ensure_guest_user()

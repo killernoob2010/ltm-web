@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
+const sharedComponentsJs = readFileSync(new URL("../frontend/data_visualization_components.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
 const dbPy = readFileSync(new URL("../backend/app/db.py", import.meta.url), "utf8");
@@ -64,11 +65,25 @@ test("data visualization data page waits for filters before loading table", () =
   assert.match(appJs, /await loadDVTable\(dvState\.currentMetric\);/);
 });
 
-test("data management table requests one page at a time", () => {
-  assert.match(appJs, /DV_PAGE_SIZE\s*=\s*50/);
-  assert.match(appJs, /limit=.*DV_PAGE_SIZE/);
-  assert.match(appJs, /offset=.*dvState\.dataOffset/);
-  assert.match(indexHtml, /id="dvDataLoadMoreBtn"/);
+test("spot data management uses the shared 20 50 100 server pagination", () => {
+  assert.match(indexHtml, /id="dvDataPagination"/);
+  assert.doesNotMatch(indexHtml, /id="dvDataLoadMoreBtn"/);
+  assert.match(appJs, /dataPage:\s*1/);
+  assert.match(appJs, /dataPageSize:\s*20/);
+  assert.match(appJs, /\(dvState\.dataPage - 1\) \* dvState\.dataPageSize/);
+  assert.match(appJs, /DataVisualizationComponents\.renderPagination\(dvDataPagination/);
+  assert.match(appJs, /pageSizes:\s*\[20, 50, 100\]/);
+  assert.doesNotMatch(appJs, /dataHasMore|dvDataLoadMoreBtn/);
+  assert.match(sharedComponentsJs, /function renderPagination\(container, options\)/);
+  assert.match(sharedComponentsJs, /data-dv-component="server-pagination"/);
+  assert.match(sharedComponentsJs, /class="tm-pagination"/);
+  assert.match(sharedComponentsJs, /data-page-action="prev"/);
+  assert.match(sharedComponentsJs, /data-page-action="next"/);
+});
+
+test("data visualization chart viewport grows with tall screens", () => {
+  assert.match(stylesCss, /\.chart-container \{[\s\S]*height:\s*max\(420px, calc\(100vh - 260px\)\)/);
+  assert.doesNotMatch(stylesCss, /height:\s*min\(62vh, 620px\)/);
 });
 
 test("data integration page keeps only upload and download actions", () => {
@@ -184,10 +199,11 @@ test("data visualization year colors support long history without dark duplicate
 
 test("data visualization atlas highlights all charts for the selected year", () => {
   assert.match(appJs, /highlightedYear/);
-  assert.match(appJs, /closest = \{ lineKey: lineKey, year: year \}/);
-  assert.match(appJs, /dist < closestDist && dist < 30/);
-  assert.match(appJs, /dvState\.highlightedYear === closest\.year/);
-  assert.match(appJs, /var isHighlightedYear = highlightedYear === year;/);
+  assert.match(appJs, /DataVisualizationComponents\.renderYearSmallMultiples/);
+  assert.match(sharedComponentsJs, /closestLine\(hitSegments/);
+  assert.match(sharedComponentsJs, /state\.highlightedYear === hit\.year/);
+  assert.match(sharedComponentsJs, /var selected = state\.highlightedYear === year/);
+  assert.match(sharedComponentsJs, /ctx\.globalAlpha = dimmed \? 0\.14 : 1/);
 });
 
 test("data visualization chart x axis uses month labels", () => {

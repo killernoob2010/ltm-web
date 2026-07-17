@@ -32,9 +32,22 @@ const state = {
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
+  expandedMenuItems: new Set(["data_visualization_data", "data_visualization_chart"]),
+  activeSubmodule: "",
   operationLogs: [],
   operationLogCursor: null,
   operationLogsHasMore: false,
+};
+
+const DATA_VISUALIZATION_SUBMENUS = {
+  data_visualization_data: [
+    { name: "现货数据管理", view: "spot" },
+    { name: "期现数据管理", view: "basis" },
+  ],
+  data_visualization_chart: [
+    { name: "现货数据展示", view: "spot" },
+    { name: "期现数据展示", view: "basis" },
+  ],
 };
 
 const loginView = document.querySelector("#loginView");
@@ -48,6 +61,8 @@ const currentUser = document.querySelector("#currentUser");
 const menu = document.querySelector("#menu");
 const pageTitle = document.querySelector("#pageTitle");
 const pageSubtitle = document.querySelector("#pageSubtitle");
+const globalTopbar = document.querySelector("#globalTopbar");
+const passwordChangeNotice = document.querySelector("#passwordChangeNotice");
 
 function isGuest() {
   return state.user?.role === "guest" || state.user?.is_guest;
@@ -98,6 +113,7 @@ function applyUiPermissions() {
     setHidden(selector, guest || !canModuleSensitive("data_visualization_integration")));
   ["#dvImportBtn", "#dvCommitImportBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
+  setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -118,6 +134,7 @@ const orderFinanceKeywordFilter = document.querySelector("#orderFinanceKeywordFi
 const orderFinanceResetFiltersBtn = document.querySelector("#orderFinanceResetFiltersBtn");
 const orderFinanceStageFilters = document.querySelector("#orderFinanceStageFilters");
 const orderFinanceCapitalPage = document.querySelector("#orderFinanceCapitalPage");
+const tradingManagementPage = document.querySelector("#tradingManagementPage");
 const orderFinanceCapitalRefreshBtn = document.querySelector("#orderFinanceCapitalRefreshBtn");
 const orderFinanceCapitalStatus = document.querySelector("#orderFinanceCapitalStatus");
 const orderFinanceCapitalSummary = document.querySelector("#orderFinanceCapitalSummary");
@@ -169,8 +186,7 @@ const dvDataPage = document.querySelector("#dvDataPage");
 const dvChartPage = document.querySelector("#dvChartPage");
 const dvDataTabs = document.querySelector("#dvDataTabs");
 const dvDataTbody = document.querySelector("#dvDataTbody");
-const dvDataLoadMoreBtn = document.querySelector("#dvDataLoadMoreBtn");
-const dvDataPageInfo = document.querySelector("#dvDataPageInfo");
+const dvDataPagination = document.querySelector("#dvDataPagination");
 const dvChartTabs = document.querySelector("#dvChartTabs");
 const dvChartCanvas = document.querySelector("#dvChartCanvas");
 const dvChartStatus = document.querySelector("#dvChartStatus");
@@ -388,6 +404,38 @@ function renderMenu() {
     const itemsWrap = document.createElement("div");
     itemsWrap.className = "menu-group-items";
     for (const item of group.items) {
+      const children = DATA_VISUALIZATION_SUBMENUS[item.code];
+      if (children) {
+        const parentButton = document.createElement("button");
+        const isExpanded = state.expandedMenuItems.has(item.code);
+        parentButton.type = "button";
+        parentButton.className = "menu-item menu-item-parent";
+        parentButton.setAttribute("aria-expanded", String(isExpanded));
+        parentButton.innerHTML = `<span>${item.name}</span><span class="menu-item-toggle">${isExpanded ? "−" : "+"}</span>`;
+        parentButton.addEventListener("click", function() {
+          if (state.expandedMenuItems.has(item.code)) state.expandedMenuItems.delete(item.code);
+          else state.expandedMenuItems.add(item.code);
+          renderMenu();
+        });
+        itemsWrap.appendChild(parentButton);
+
+        const subitems = document.createElement("div");
+        subitems.className = "menu-subitems";
+        subitems.classList.toggle("hidden", !isExpanded);
+        children.forEach(function(child) {
+          const childButton = document.createElement("button");
+          const isActive = item.code === state.activeModule && child.view === state.activeSubmodule;
+          childButton.type = "button";
+          childButton.className = `menu-subitem ${isActive ? "active" : ""}`;
+          childButton.textContent = child.name;
+          childButton.addEventListener("click", function() {
+            activateModule(item.code, child.name, child.view);
+          });
+          subitems.appendChild(childButton);
+        });
+        itemsWrap.appendChild(subitems);
+        continue;
+      }
       const button = document.createElement("button");
       button.className = `menu-item ${item.code === state.activeModule ? "active" : ""}`;
       button.textContent = item.name;
@@ -400,19 +448,44 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
-async function activateModule(code, subName) {
+async function activateDVSpotData() {
+  await initDVData();
+}
+
+async function activateDVSpotChart() {
+  if (!dvState.dvChartControlsInitialized) {
+    await initDVChartControls();
+    dvState.dvChartControlsInitialized = true;
+  }
+  await loadDVChart();
+}
+
+window.activateDVSpotData = activateDVSpotData;
+window.activateDVSpotChart = activateDVSpotChart;
+
+async function activateModule(code, subName, subView = "") {
   state.activeModule = code;
+  state.activeSubmodule = DATA_VISUALIZATION_SUBMENUS[code] ? (subView || "spot") : "";
+  const tradingModuleCodes = ["trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export"];
+  const isTradingModule = tradingModuleCodes.includes(code);
+  globalTopbar.classList.toggle("hidden", isTradingModule);
+  passwordChangeNotice.classList.toggle("hidden", isTradingModule || isGuest() || !state.user?.password_change_recommended);
   stopMidEventAutoRefresh();
   stopInfoSummaryAutoRefresh();
   const label = moduleLabel(code);
   if (label.group) state.collapsedMenuGroups.delete(label.group);
+  if (DATA_VISUALIZATION_SUBMENUS[code]) state.expandedMenuItems.add(code);
   renderMenu();
-  pageTitle.textContent = label.name;
-  pageSubtitle.textContent = `${label.group} / ${label.name}`;
+  pageTitle.textContent = subName || label.name;
+  if (DATA_VISUALIZATION_SUBMENUS[code] && subName) {
+    pageSubtitle.textContent = `${label.group} / ${label.name} / ${subName}`;
+  } else {
+    pageSubtitle.textContent = `${label.group} / ${label.name}`;
+  }
 
   if (code === "info_summary") {
     showOnly(infoSummaryPage);
@@ -445,6 +518,9 @@ async function activateModule(code, subName) {
     return;
   }
   if (code === "order_finance_progress") {
+    state.orderFinanceFilter = "focusRisk";
+    orderFinanceKeywordFilter.value = "";
+    orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("active", item.dataset.filter === "focusRisk"));
     showOnly(orderFinancePage);
     await loadOrderFinanceProgress();
     return;
@@ -461,16 +537,28 @@ async function activateModule(code, subName) {
   }
   if (code === "data_visualization_data") {
     showOnly(dvDataPage);
-    await initDVData();
+    if (window.IronOreBasis) await window.IronOreBasis.activateManagement(state.activeSubmodule);
+    else await initDVData();
     return;
   }
   if (code === "data_visualization_chart") {
     showOnly(dvChartPage);
-    if (!dvState.dvChartControlsInitialized) {
-      await initDVChartControls();
-      dvState.dvChartControlsInitialized = true;
+    if (window.IronOreBasis) await window.IronOreBasis.activateDisplay(state.activeSubmodule);
+    else {
+      if (!dvState.dvChartControlsInitialized) {
+        await initDVChartControls();
+        dvState.dvChartControlsInitialized = true;
+      }
+      await loadDVChart();
     }
-    await loadDVChart();
+    return;
+  }
+  if (tradingModuleCodes.includes(code)) {
+    showOnly(tradingManagementPage);
+    await window.TradingManagement.activate(code, {
+      canEdit: canModuleEdit(code),
+      canSensitive: canModuleSensitive(code) || canModuleSensitive("trading_positions"),
+    });
     return;
   }
 
@@ -2224,6 +2312,14 @@ function orderFinanceWan(value, digits = 1) {
   return Number.isFinite(number) ? `${money(number, digits)}万` : "-";
 }
 
+function orderFinanceBankDisplayName(value) {
+  const original = String(value || "").trim();
+  const normalized = original.replace(/\s+/g, "");
+  if (normalized === "918ING银行（香港）") return "ING（香港）";
+  if (normalized === "918ING银行（新加坡）") return "ING（新加坡）";
+  return original;
+}
+
 function orderFinanceDaysTo(value) {
   if (!value) return null;
   const target = new Date(`${value}T00:00:00`);
@@ -2236,7 +2332,7 @@ function orderFinanceDaysTo(value) {
 function orderFinanceDueText(value) {
   const days = orderFinanceDaysTo(value);
   if (days === null) return "-";
-  if (days < 0) return `逾期 ${Math.abs(days)} 天`;
+  if (days < 0) return `逾期 ${Math.abs(days)} 天未回款`;
   if (days === 0) return "今日到期";
   return `${days} 天后到期`;
 }
@@ -2244,6 +2340,7 @@ function orderFinanceDueText(value) {
 function orderFinanceShipmentText(item) {
   const value = item.latest_shipment_date;
   if (item.stage === "已完成") return value || "未提供";
+  if (item.shipment_basis === "document") return "已根据交单日认定装船";
   if (item.shipment_confirmed_date) return `已确认装船：${item.shipment_confirmed_date}`;
   if (item.shipment_completed) return value ? `${value} / 已完成装船` : "已完成装船";
   if (!value) return "待 Excel 补充";
@@ -2269,10 +2366,11 @@ function orderFinanceFilteredContracts() {
   const keyword = orderFinanceKeywordFilter.value.trim().toLowerCase();
   return state.orderFinanceContracts.filter((item) => {
     if (filter === "focusRisk" && !item.is_weekly_focus) return false;
+    if (filter === "pendingDrawdown" && item.stage !== "待放款") return false;
     if (filter === "financedUnshipped" && item.stage !== "已放款待装船") return false;
-    if (filter === "shippedUnpaid" && item.stage !== "已装船待回款") return false;
-    if (filter === "collectedUnrepaid" && item.stage !== "已交单待回款") return false;
-    if (filter === "repaidUnsettled" && item.stage !== "已还款待结案") return false;
+    if (filter === "shippedUndocumented" && item.stage !== "已装船待交单") return false;
+    if (filter === "documentedUnpaid" && item.stage !== "已交单待回款") return false;
+    if (filter === "paidUnclosed" && item.stage !== "已回款待结案") return false;
     if (filter === "closed" && item.stage !== "已完成") return false;
     if (filter === "multi" && item.financing_count < 2) return false;
     if (keyword) {
@@ -2294,9 +2392,11 @@ function orderFinanceFilteredContracts() {
 }
 
 const ORDER_FINANCE_STAGE_FILTERS = [
-  { filter: "shippedUnpaid", stage: "已装船待回款", hideWhenEmpty: true },
-  { filter: "collectedUnrepaid", stage: "已交单待回款", hideWhenEmpty: true },
-  { filter: "repaidUnsettled", stage: "已还款待结案", hideWhenEmpty: true },
+  { filter: "pendingDrawdown", stage: "待放款", hideWhenEmpty: true },
+  { filter: "financedUnshipped", stage: "已放款待装船", hideWhenEmpty: true },
+  { filter: "shippedUndocumented", stage: "已装船待交单", hideWhenEmpty: true },
+  { filter: "documentedUnpaid", stage: "已交单待回款", hideWhenEmpty: true },
+  { filter: "paidUnclosed", stage: "已回款待结案", hideWhenEmpty: true },
 ];
 
 function syncOrderFinanceStageFilters() {
@@ -2325,14 +2425,15 @@ function renderOrderFinanceSummary() {
   const items = [
     ["未结算业务", summary.open_contracts || 0],
     ["存续融资金额", orderFinanceWan(summary.active_finance || 0)],
-    ["7天内到期", summary.due_7d || 0],
-    ["30天内到期", summary.due_30d || 0],
+    ["7天内融资到期", summary.due_7d || 0],
+    ["30天内融资到期", summary.due_30d || 0],
     ["本周重点", summary.focus_risk || 0],
+    ["待放款", summary.pending_drawdown || 0],
     ["已放款待装船", summary.financed_unshipped || 0],
-    ["已交单待回款", summary.documented_uncollected || 0],
-    ["已还款待结案", summary.collected_unrepaid || 0],
+    ["已装船待交单", summary.shipped_undocumented || 0],
+    ["已交单待回款", summary.documented_unpaid || 0],
+    ["已回款待结案", summary.paid_unclosed || 0],
     ["已完成", summary.completed || 0],
-    ["缺最迟装船/交单/还款", summary.missing_milestones || 0],
     ["数据异常数", summary.data_issues || 0],
   ];
   orderFinanceSummary.innerHTML = items.map(([label, value]) => (
@@ -2340,26 +2441,67 @@ function renderOrderFinanceSummary() {
   )).join("");
 }
 
-function orderFinanceField(label, value, tone = "") {
-  return `<div class="order-finance-field ${tone}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "-")}</strong></div>`;
+function orderFinanceField(label, value, tone = "", extraClass = "") {
+  return `<div class="order-finance-field ${tone} ${extraClass}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "-")}</strong></div>`;
 }
 
-function orderFinanceConfirmation(item) {
-  if (item.stage === "已完成") return "已结案";
-  if (item.shipment_confirmed_date) return "待确认交单";
-  if (!item.latest_shipment_date) return "待补最迟装船日";
-  if (item.stage === "已放款待装船") return "待确认装船进度";
-  if (!item.document_date) return "待确认交单";
-  if (!item.repay_date && item.stage !== "已完成") return "待确认还款";
-  return "已确认";
+function orderFinanceDocumentText(item) {
+  if (item.document_date) return `已交单 / ${item.document_date}`;
+  return "待交单";
 }
 
-function orderFinanceExtensionStatus(item) {
-  const days = Math.max(0, ...(item.financings || []).map((row) => Number(row.extension_days || 0)));
-  return days ? `展期 ${days} 天` : "无展期";
+function orderFinancePaymentDueText(item) {
+  const dueDate = item.payment_due_date || item.latest_due_date;
+  if (item.stage === "已交单待回款" && !dueDate) return "融资到期日缺失";
+  if (!dueDate) return "未提供";
+  const financing = (item.financings || []).find((row) => row.due_date === dueDate);
+  const extensionDays = Number(financing?.extension_days || 0);
+  const extension = extensionDays ? `含展期 ${extensionDays} 天` : "无展期";
+  const financings = item.financings || [];
+  const allPaid = financings.length > 0 && financings.every((row) => row.payment_state === "已回款");
+  const timing = allPaid && item.repayment_timing ? item.repayment_timing : orderFinanceDueText(dueDate);
+  return `${dueDate}（${extension}） / ${timing}`;
+}
+
+function orderFinancePaymentText(item) {
+  const parts = [item.payment_progress || "待回款"];
+  if (item.repay_date) parts.push(`最近 ${item.repay_date}`);
+  return parts.join(" / ");
+}
+
+function orderFinanceBankAmountText(item) {
+  const banks = [...new Set((item.financings || []).map((row) => orderFinanceBankDisplayName(row.bank)).filter(Boolean))];
+  const amount = item.financing_count > 1
+    ? `${orderFinanceWan(item.total_finance, 1)}（${item.financing_count}笔）`
+    : orderFinanceWan(item.total_finance, 1);
+  return `${banks.join("、") || "贷款行未填"} / ${amount}`;
+}
+
+function orderFinanceRateText(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const rate = Number(value);
+  if (!Number.isFinite(rate)) return "-";
+  return `${(rate * 100).toFixed(2)}%`;
 }
 
 function renderOrderFinanceFinancingRows(item) {
+  if (item.financing_count === 1) {
+    const row = (item.financings || [])[0] || {};
+    return `
+      <div class="order-finance-detail-table">
+        <table>
+          <thead><tr><th>贷款行</th><th>利率</th><th>原到期日</th><th>新到期日</th><th>展期天数</th></tr></thead>
+          <tbody><tr>
+            <td>${escapeHtml(orderFinanceBankDisplayName(row.bank) || "-")}</td>
+            <td>${escapeHtml(orderFinanceRateText(row.rate))}</td>
+            <td>${escapeHtml(row.original_due_date || "-")}</td>
+            <td>${escapeHtml(row.new_due_date || "-")}</td>
+            <td>${escapeHtml(row.extension_days ? `${row.extension_days} 天` : "0 天")}</td>
+          </tr></tbody>
+        </table>
+      </div>
+    `;
+  }
   return `
     <div class="order-finance-detail-table">
       <table>
@@ -2368,22 +2510,22 @@ function renderOrderFinanceFinancingRows(item) {
             <th>贷款行</th>
             <th>融资金额</th>
             <th>借款日</th>
-            <th>到期日</th>
-            <th>交单日</th>
-            <th>还款日</th>
+            <th>原到期日</th>
+            <th>融资到期日</th>
+            <th>回款日</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody>
           ${(item.financings || []).map((row) => `
             <tr>
-              <td>${escapeHtml(row.bank || "-")}</td>
+              <td>${escapeHtml(orderFinanceBankDisplayName(row.bank) || "-")}</td>
               <td class="numeric">${escapeHtml(orderFinanceWan(row.amount || 0, 2))}</td>
               <td>${escapeHtml(row.borrow_date || "-")}</td>
+              <td>${escapeHtml(row.original_due_date || "-")}</td>
               <td>${escapeHtml(row.due_date || "-")}</td>
-              <td>${escapeHtml(row.document_date || "-")}</td>
               <td>${escapeHtml(row.repay_date || "-")}</td>
-              <td>${escapeHtml(row.status || "-")}</td>
+              <td>${escapeHtml(row.payment_state || "-")}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -2396,10 +2538,10 @@ function renderOrderFinanceContract(item) {
   const expanded = state.expandedOrderFinanceContracts.has(item.id);
   const riskClass = item.risk === "高" ? "risk-high" : item.risk === "中" ? "risk-mid" : item.risk === "已完成" ? "risk-done" : "risk-low";
   const canEditOrderFinance = !isGuest() && canModuleEdit("order_finance_progress");
-  const shipmentAction = canEditOrderFinance && item.stage !== "已完成"
+  const shipmentAction = canEditOrderFinance && item.stage !== "已完成" && !item.document_date
     ? item.shipment_confirmed_date
       ? `<button class="secondary order-finance-shipment-undo-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">撤销装船确认</button>`
-      : !item.shipment_completed
+      : !item.document_date && !item.shipment_completed
         ? `<button class="secondary order-finance-shipment-confirm-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">确认已装船</button>`
         : ""
     : "";
@@ -2430,13 +2572,11 @@ function renderOrderFinanceContract(item) {
       </div>
       <div class="order-finance-field-strip">
         ${orderFinanceField("数量", item.quantity ? `${money(item.quantity)}吨` : "-")}
-        ${orderFinanceField("融资金额", item.financing_count > 1 ? `${item.financing_count}笔 / ${orderFinanceWan(item.total_finance, 1)}` : orderFinanceWan(item.total_finance, 1))}
-        ${orderFinanceField("放款情况", (item.financings || []).some((row) => row.borrow_date) ? `已放款 ${(item.financings || []).find((row) => row.borrow_date)?.borrow_date || ""}` : "待放款")}
-        ${orderFinanceField("最迟装船日", orderFinanceShipmentText(item), orderFinanceShipmentTone(item))}
-        ${orderFinanceField("展期状态", orderFinanceExtensionStatus(item))}
-        ${orderFinanceField("融资到期", `${item.latest_due_date || "-"} / ${item.stage === "已完成" ? (item.repayment_timing || "还款日未提供") : orderFinanceDueText(item.latest_due_date)}`, indicatorRiskTone(item, "finance_due"))}
-        ${orderFinanceField("还款日", item.repay_date || (item.stage === "已完成" ? "未提供" : "待还款"), indicatorRiskTone(item, "repayment"))}
-        ${orderFinanceField("确认状态", orderFinanceConfirmation(item), indicatorRiskTone(item, "confirmation"))}
+        ${orderFinanceField("贷款行/融资金额", orderFinanceBankAmountText(item), "", "single-line")}
+        ${orderFinanceField("装船状态", orderFinanceShipmentText(item), orderFinanceShipmentTone(item))}
+        ${orderFinanceField("交单状态", orderFinanceDocumentText(item), indicatorRiskTone(item, "document"))}
+        ${orderFinanceField("融资到期日", orderFinancePaymentDueText(item), indicatorRiskTone(item, "payment"), "wide")}
+        ${orderFinanceField("回款状态", orderFinancePaymentText(item), indicatorRiskTone(item, "payment"), "wide")}
       </div>
       <div class="order-finance-next-action ${item.risk === "高" ? "danger" : ""}">
         <span>下一步</span>
@@ -2484,11 +2624,21 @@ async function loadOrderFinanceProgress() {
     renderOrderFinanceSummary();
     syncOrderFinanceStageFilters();
     renderOrderFinanceContracts();
-    orderFinanceStatus.textContent = "已加载";
+    renderOrderFinanceSyncStatus(result.sync_status);
   } catch (error) {
     orderFinanceStatus.textContent = error.message;
     orderFinanceContractList.innerHTML = `<div class="error-cell">${escapeHtml(error.message)}</div>`;
   }
+}
+
+function orderFinanceSyncTime(value) {
+  return value ? String(value).replace("T", " ").slice(0, 16) : "-";
+}
+
+function renderOrderFinanceSyncStatus(syncStatus) {
+  orderFinanceStatus.textContent = syncStatus?.last_success_at
+    ? `上次同步：${orderFinanceSyncTime(syncStatus.last_success_at)} · 更新 ${Number(syncStatus.changed_count || 0)} 条`
+    : "尚无自动同步记录";
 }
 
 async function importOrderFinanceFile(file) {
@@ -2678,11 +2828,11 @@ function renderOrderFinanceSplitRows(rows) {
 
 function renderOrderFinanceSelectedBank() {
   const bank = state.selectedOrderFinanceBank;
-  orderFinanceSelectedBankTitle.textContent = bank ? `${bank} 明细` : "银行明细";
+  orderFinanceSelectedBankTitle.textContent = bank ? `${orderFinanceBankDisplayName(bank)} 明细` : "银行明细";
   const rows = (state.orderFinanceCapital.bank_details || []).filter((row) => row.bank === bank);
   orderFinanceSelectedBankTable.innerHTML = rows.length ? `
     <table>
-      <thead><tr><th>项次</th><th>合同</th><th>金额</th><th>到期日</th><th>状态</th></tr></thead>
+      <thead><tr><th>项次</th><th>合同</th><th>金额</th><th>融资到期日</th><th>状态</th></tr></thead>
       <tbody>
         ${rows.map((row) => `
           <tr>
@@ -2708,7 +2858,7 @@ function renderOrderFinanceCapital() {
     const tone = rate >= 90 ? "danger" : rate >= 70 ? "warning" : "";
     return `
       <button class="bank-row ${state.selectedOrderFinanceBank === bank.bank ? "selected" : ""}" type="button" data-bank="${escapeHtml(bank.bank)}">
-        <div class="bank-row-head"><strong>${escapeHtml(bank.bank)}</strong><span>${bank.usage_rate == null ? "-" : `${rate.toFixed(1)}%`}</span></div>
+        <div class="bank-row-head"><strong>${escapeHtml(orderFinanceBankDisplayName(bank.bank))}</strong><span>${bank.usage_rate == null ? "-" : `${rate.toFixed(1)}%`}</span></div>
         <div class="progress-bar ${tone}"><span style="width: ${Math.min(rate, 100).toFixed(1)}%"></span></div>
         <div class="bank-row-foot">
           <span>占用 ${escapeHtml(orderFinanceWan(bank.used || 0, 1))}</span>
@@ -2836,12 +2986,11 @@ let dvState = {
   lastChartData: null,
   chartFilters: null,
   dataFilters: null,
-  dataOffset: 0,
-  dataHasMore: false,
+  dataPage: 1,
+  dataPageSize: 20,
   highlightedLineKey: null,
 };
 
-const DV_PAGE_SIZE = 50;
 const DV_YEAR_COLORS = [
   "#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2",
   "#db2777", "#65a30d", "#f97316", "#0f766e", "#9333ea", "#b91c1c",
@@ -3002,49 +3151,18 @@ function appendMultiSelectParam(url, paramName, selectedValues, totalCount) {
   return url + "&" + paramName + "=" + encodeURIComponent(selectedValues.join(","));
 }
 
-function selectAllCheckboxes(container) {
-  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = true; });
-}
-function selectNoneCheckboxes(container) {
-  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = false; });
-}
-
 async function buildYearCheckboxes(container, onChange) {
   try {
     var result = await api("/api/data-visualization/years");
     var years = result.years || [];
-    container.innerHTML = "";
-    years.forEach(function(y) {
-      var label = document.createElement("label");
-      label.className = "dv-checkbox-label";
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.value = String(y);
-      cb.checked = true;
-      cb.addEventListener("change", onChange);
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(String(y)));
-      container.appendChild(label);
-    });
+    DataVisualizationComponents.renderCheckboxOptions(container, years, onChange, true);
   } catch (err) {
     console.error("加载年份列表失败:", err);
   }
 }
 
 function buildCheckboxes(container, items, onChange, checkedDefault) {
-  container.innerHTML = "";
-  items.forEach(function(item) {
-    var label = document.createElement("label");
-    label.className = "dv-checkbox-label";
-    var cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.value = item;
-    cb.checked = !!checkedDefault;
-    cb.addEventListener("change", onChange);
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(item));
-    container.appendChild(label);
-  });
+  DataVisualizationComponents.renderCheckboxOptions(container, items, onChange, checkedDefault);
 }
 
 function shouldApplyDVMainstreamFilter(productPool) {
@@ -3093,23 +3211,14 @@ async function loadDVDataFilters() {
         loadDVTable(dvState.currentMetric);
       };
     }
-    dvDataProductAll.onclick = function() {
-      selectAllCheckboxes(dvDataProductCheckboxes);
-      loadDVTable(dvState.currentMetric);
-    };
-    dvDataProductNone.onclick = function() {
-      selectNoneCheckboxes(dvDataProductCheckboxes);
-      loadDVTable(dvState.currentMetric);
-    };
-
-    dvDataYearAll.onclick = function() {
-      selectAllCheckboxes(dvDataYearCheckboxes);
-      loadDVTable(dvState.currentMetric);
-    };
-    dvDataYearNone.onclick = function() {
-      selectNoneCheckboxes(dvDataYearCheckboxes);
-      loadDVTable(dvState.currentMetric);
-    };
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      dvDataProductCheckboxes, dvDataProductAll, dvDataProductNone,
+      function() { loadDVTable(dvState.currentMetric); }
+    );
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      dvDataYearCheckboxes, dvDataYearAll, dvDataYearNone,
+      function() { loadDVTable(dvState.currentMetric); }
+    );
     await loadDVTable(dvState.currentMetric);
   } catch (err) {
     console.error("加载筛选选项失败:", err);
@@ -3159,9 +3268,9 @@ dvChartTabs.addEventListener("click", function(e) {
 });
 
 // ── Table loading ─────────────────────────────────────────────────────
-async function loadDVTable(metric, append = false) {
+async function loadDVTable(metric, preservePage = false) {
   try {
-    if (!append) dvState.dataOffset = 0;
+    if (!preservePage) dvState.dataPage = 1;
     var yearsArr = getCheckedValues(dvDataYearCheckboxes);
     var productsArr = getCheckedValues(dvDataProductCheckboxes);
     var categoriesArr = getCheckedValues(dvDataCategoryCheckboxes);
@@ -3188,37 +3297,44 @@ async function loadDVTable(metric, append = false) {
     if (shouldApplyDVMainstreamFilter(productPool)) {
       url = appendMultiSelectParam(url, "mainstream_status", mainstreamArr, dvDataMainstreamCheckboxes.querySelectorAll('input[type="checkbox"]').length);
     }
-    url += "&limit=" + encodeURIComponent(DV_PAGE_SIZE) + "&offset=" + encodeURIComponent(dvState.dataOffset);
+    var offset = (dvState.dataPage - 1) * dvState.dataPageSize;
+    url += "&limit=" + encodeURIComponent(dvState.dataPageSize) + "&offset=" + encodeURIComponent(offset);
     var result = await api(url);
-    renderDVTable(result, append);
+    renderDVTable(result);
     var pagination = result.pagination || {};
-    dvState.dataOffset = (pagination.offset || 0) + ((result.data || []).length);
-    dvState.dataHasMore = Boolean(pagination.has_more);
-    if (dvDataLoadMoreBtn) dvDataLoadMoreBtn.classList.toggle("hidden", !dvState.dataHasMore);
-    if (dvDataPageInfo) {
-      var shown = dvState.dataOffset;
-      var total = pagination.total || shown;
-      dvDataPageInfo.textContent = total ? `已显示 ${shown} / ${total} 周` : "";
-    }
+    DataVisualizationComponents.renderPagination(dvDataPagination, {
+      page: dvState.dataPage,
+      pageSize: dvState.dataPageSize,
+      total: pagination.total || 0,
+      pageSizes: [20, 50, 100],
+      onPageChange: function(page) {
+        dvState.dataPage = page;
+        loadDVTable(metric, true);
+      },
+      onPageSizeChange: function(pageSize) {
+        dvState.dataPageSize = pageSize;
+        dvState.dataPage = 1;
+        loadDVTable(metric, true);
+      },
+    });
   } catch (err) {
     dvDataTbody.innerHTML = '<tr><td colspan="14" class="error-cell">加载失败: ' + err.message + '</td></tr>';
+    if (dvDataPagination) dvDataPagination.innerHTML = "";
   }
 }
 
-function renderDVTable(result, append = false) {
+function renderDVTable(result) {
   var data = result.data || [];
   var products = result.products || [];
   var productCount = products.length;
 
-  if (!append && !data.length) {
+  if (!data.length) {
     dvDataTbody.innerHTML = '<tr><td colspan="' + (2 + productCount) + '" class="empty-cell">暂无数据，请先导入</td></tr>';
-    if (dvDataLoadMoreBtn) dvDataLoadMoreBtn.classList.add("hidden");
-    if (dvDataPageInfo) dvDataPageInfo.textContent = "";
     return;
   }
 
   var thead = document.querySelector('#dvDataTable thead');
-  if (thead && !append) {
+  if (thead) {
     thead.innerHTML = '<tr><th>日期</th><th>周次</th>' +
       products.map(function(p) {
         return '<th title="' + escapeHtml(p) + '"><span class="dv-product-header">' + formatDVProductHeaderLabel(p) + '</span></th>';
@@ -3243,18 +3359,8 @@ function renderDVTable(result, append = false) {
       return '<tr><td>' + formatDateOnly(row.date) + '</td><td>' + row.week + '</td>' + cells + '</tr>';
     })
     .join('');
-  if (append) {
-    dvDataTbody.insertAdjacentHTML("beforeend", rowsHtml);
-  } else {
-    dvDataTbody.innerHTML = rowsHtml;
-  }
+  dvDataTbody.innerHTML = rowsHtml;
 
-}
-
-if (dvDataLoadMoreBtn) {
-  dvDataLoadMoreBtn.addEventListener("click", function() {
-    loadDVTable(dvState.currentMetric, true);
-  });
 }
 
 function escapeHtml(value) {
@@ -3868,194 +3974,30 @@ function distanceToSegment(px, py, x1, y1, x2, y2) {
 }
 
 function renderDVChartAtlas(ctx, W, H, series, products) {
-  var cols = W >= 1100 ? 3 : (W >= 760 ? 2 : 1);
-  var panelGap = 28;
-  var panelW = (W - panelGap * (cols - 1)) / cols;
-  var panelH = 190;
-  var rows = Math.ceil(products.length / cols);
-  var dpr = window.devicePixelRatio || 1;
-  dvChartCanvas.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) * dpr;
-  dvChartCanvas.style.height = Math.max(420, rows * panelH + (rows - 1) * panelGap) + "px";
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, W, dvChartCanvas.height / dpr);
-
-  var years = [];
-  products.forEach(function(product) {
-    Object.keys(series[product] || {}).forEach(function(year) {
-      if (years.indexOf(year) < 0) years.push(year);
-    });
-  });
-  years.sort();
-  var yearColorMap = buildYearColorMap(years);
-  updateDVChartYearLegend(years, yearColorMap, true);
-
-  var hitPoints = [];
-  var highlightedYear = dvState.highlightedYear || null;
-  if (highlightedYear && years.indexOf(highlightedYear) < 0) {
-    highlightedYear = null;
-    dvState.highlightedYear = null;
-  }
-  dvState.highlightedLineKey = null;
-
-  products.forEach(function(product, index) {
-    var col = index % cols;
-    var row = Math.floor(index / cols);
-    var x0 = col * (panelW + panelGap);
-    var y0 = row * (panelH + panelGap);
-    var pad = { top: 22, right: 34, bottom: 28, left: 40 };
-    var chartW = panelW - pad.left - pad.right;
-    var chartH = panelH - pad.top - pad.bottom;
-    var productSeries = series[product] || {};
-    var vals = [];
-    Object.keys(productSeries).forEach(function(year) {
-      productSeries[year].forEach(function(point) {
-        var numericValue = getChartPointNumericValue(point);
-        if (numericValue !== null) vals.push(numericValue);
-      });
-    });
-    if (!vals.length) return;
-    var yMin = Math.min.apply(null, vals);
-    var yMax = Math.max.apply(null, vals);
-    var yPad = (yMax - yMin) * 0.08 || 20;
-    yMin = Math.max(0, yMin - yPad);
-    yMax = yMax + yPad;
-    function xScale(weekNo) { return x0 + pad.left + ((weekNo - 1) / 51) * chartW; }
-    function yScale(value) { return y0 + pad.top + chartH - ((value - yMin) / (yMax - yMin)) * chartH; }
-
-    ctx.fillStyle = "#111827";
-    ctx.font = "bold 12px sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText(product, x0 + pad.left, y0 + 14);
-    ctx.strokeStyle = "#e5e7eb";
-    ctx.lineWidth = 1;
-    for (var grid = 0; grid < 4; grid++) {
-      var gy = y0 + pad.top + (grid / 3) * chartH;
-      ctx.beginPath();
-      ctx.moveTo(x0 + pad.left, gy);
-      ctx.lineTo(x0 + pad.left + chartW, gy);
-      ctx.stroke();
-    }
-    drawDVMonthAxis(ctx, xScale, y0 + pad.top + chartH + 18);
-
-    Object.keys(productSeries).sort().forEach(function(year) {
-      var pts = productSeries[year];
-      var color = yearColorMap[year];
-      var lineKey = product + " " + year;
-      var isHighlightedYear = highlightedYear === year;
-      var alpha = highlightedYear && !isHighlightedYear ? 0.14 : 1;
-      ctx.strokeStyle = color;
-      ctx.globalAlpha = alpha;
-      ctx.lineWidth = isHighlightedYear ? 2.6 : 1.4;
-      ctx.beginPath();
-      var firstValidPoint = true;
-      pts.forEach(function(point) {
-        if (isMissingChartPoint(point)) {
-          firstValidPoint = true;
-          return;
-        }
-        var px = xScale(point.week_no);
-        var py = yScale(getChartPointNumericValue(point));
-        if (firstValidPoint) {
-          ctx.moveTo(px, py);
-          firstValidPoint = false;
-        }
-        else ctx.lineTo(px, py);
-        hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
-      });
-      ctx.stroke();
-      pts.forEach(function(point) {
-        if (!isMissingChartPoint(point)) return;
-        var px = xScale(point.week_no);
-        var py = y0 + pad.top + chartH - 7;
-        drawMissingChartMarker(ctx, px, py, color, isHighlightedYear ? 4 : 3);
-        hitPoints.push({ x: px, y: py, year: year, product: product, lineKey: lineKey, point: point });
-      });
-      if (isHighlightedYear) {
-        ctx.fillStyle = color;
-        pts.forEach(function(point) {
-          if (isMissingChartPoint(point)) {
-            drawMissingChartMarker(ctx, xScale(point.week_no), y0 + pad.top + chartH - 7, color, 4);
-            return;
-          }
-          ctx.beginPath();
-          ctx.arc(xScale(point.week_no), yScale(getChartPointNumericValue(point)), 2.5, 0, Math.PI * 2);
-          ctx.fill();
-        });
-      }
-      ctx.globalAlpha = 1;
-    });
-  });
-
-  dvChartCanvas.onclick = function(e) {
-    var rect = dvChartCanvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    var my = e.clientY - rect.top;
-    var closest = null;
-    var closestDist = Infinity;
-    products.forEach(function(product, index) {
-      var col = index % cols;
-      var row = Math.floor(index / cols);
-      var x0 = col * (panelW + panelGap);
-      var y0 = row * (panelH + panelGap);
-      var pad = { top: 22, right: 34, bottom: 28, left: 40 };
-      var chartW = panelW - pad.left - pad.right;
-      var chartH = panelH - pad.top - pad.bottom;
-      var productSeries = series[product] || {};
-      var vals = [];
-      Object.keys(productSeries).forEach(function(year) {
-        productSeries[year].forEach(function(point) {
-          var numericValue = getChartPointNumericValue(point);
-          if (numericValue !== null) vals.push(numericValue);
-        });
-      });
-      if (!vals.length) return;
-      var yMin = Math.min.apply(null, vals);
-      var yMax = Math.max.apply(null, vals);
-      var yPad = (yMax - yMin) * 0.08 || 20;
-      yMin = Math.max(0, yMin - yPad);
-      yMax = yMax + yPad;
-      function xScaleClick(weekNo) { return x0 + pad.left + ((weekNo - 1) / 51) * chartW; }
-      function yScaleClick(value) { return y0 + pad.top + chartH - ((value - yMin) / (yMax - yMin)) * chartH; }
-
-      Object.keys(productSeries).sort().forEach(function(year) {
-        var pts = productSeries[year];
-        var lineKey = product + " " + year;
-        var prevValid = null;
-        for (var pi = 0; pi < pts.length; pi++) {
-          if (isMissingChartPoint(pts[pi])) {
-            prevValid = null;
-            continue;
-          }
-          var px = xScaleClick(pts[pi].week_no);
-          var py = yScaleClick(getChartPointNumericValue(pts[pi]));
-          var dist = Math.hypot(mx - px, my - py);
-          if (prevValid) {
-            dist = Math.min(dist, distanceToSegment(mx, my, xScaleClick(prevValid.week_no), yScaleClick(getChartPointNumericValue(prevValid)), px, py));
-          }
-          if (dist < closestDist && dist < 30) {
-            closestDist = dist;
-            closest = { lineKey: lineKey, year: year };
-          }
-          prevValid = pts[pi];
-        }
-      });
-    });
-    if (closest) {
-      dvState.highlightedYear = dvState.highlightedYear === closest.year ? null : closest.year;
-      dvState.highlightedLineKey = null;
+  DataVisualizationComponents.renderYearSmallMultiples({
+    canvas: dvChartCanvas,
+    legendElement: dvChartYearLegend,
+    series: series,
+    products: products,
+    state: dvState,
+    width: W,
+    pointX: function(point) { return point.week_no; },
+    pointValue: getChartPointNumericValue,
+    isMissing: isMissingChartPoint,
+    xMin: 1,
+    xMax: 52,
+    axisTicks: DV_MONTH_AXIS_TICKS.map(function(tick) {
+      return { value: tick.week, label: tick.label };
+    }),
+    clampFloorZero: true,
+    drawMissingPoints: true,
+    tooltipText: function(hit) {
+      return formatDVChartTooltip(hit.point, hit.product, hit.year);
+    },
+    onHighlight: function() {
       renderDVChart(dvState.lastChartData, dvChartViewMode ? dvChartViewMode.value : "atlas");
-    }
-  };
-
-  dvChartCanvas.onmousemove = function(e) {
-    var rect = dvChartCanvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    var my = e.clientY - rect.top;
-    var closest = findClosestChartHitPoint(hitPoints, mx, my, 12);
-    dvChartCanvas.title = closest
-      ? formatDVChartTooltip(closest.point, closest.product, closest.year)
-      : "";
-  };
+    },
+  });
 }
 
 function drawDVChartLegend(ctx, items, x, y, maxW, maxH) {
@@ -4149,22 +4091,12 @@ async function initDVChartControls() {
       });
     }
 
-    dvChartYearAll.addEventListener("click", function() {
-      selectAllCheckboxes(dvChartYearCheckboxes);
-      loadDVChart();
-    });
-    dvChartYearNone.addEventListener("click", function() {
-      selectNoneCheckboxes(dvChartYearCheckboxes);
-      loadDVChart();
-    });
-    dvChartProductAll.addEventListener("click", function() {
-      selectAllCheckboxes(dvChartProductCheckboxes);
-      loadDVChart();
-    });
-    dvChartProductNone.addEventListener("click", function() {
-      selectNoneCheckboxes(dvChartProductCheckboxes);
-      loadDVChart();
-    });
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      dvChartYearCheckboxes, dvChartYearAll, dvChartYearNone, loadDVChart
+    );
+    DataVisualizationComponents.bindCheckboxPanelActions(
+      dvChartProductCheckboxes, dvChartProductAll, dvChartProductNone, loadDVChart
+    );
   } catch (err) {
     console.error("加载图表筛选选项失败:", err);
   }
