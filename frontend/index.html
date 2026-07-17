@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=order-finance-status-refinement-nowrap-20260715" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-owner-notification-20260717" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -264,7 +264,7 @@
             <span id="riskAlertStatus" class="toolbar-status">后台扫描：开启｜最后更新：--</span>
           </div>
 
-          <div class="content-grid">
+          <div class="risk-alert-stack">
             <section class="panel">
               <div class="panel-head">
                 <h2>预警规则</h2>
@@ -280,7 +280,7 @@
                       <th>预警值</th>
                       <th>方向</th>
                       <th>状态</th>
-                      <th>提醒人</th>
+                      <th>设置人</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -885,10 +885,6 @@
           </select>
         </label>
         <label>
-          提醒人
-          <input id="reminderUsers" placeholder="留空提醒所有人，多个用逗号分隔" />
-        </label>
-        <label>
           状态
           <select id="alertStatus">
             <option value="enabled">启用</option>
@@ -1304,7 +1300,7 @@
 
     <script src="/static/trading_management.js?v=20260712h"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/app.js?v=order-finance-repayment-risk-20260716"></script>
+    <script src="/static/app.js?v=risk-alert-owner-notification-20260717"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

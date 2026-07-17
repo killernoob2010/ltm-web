@@ -1459,6 +1459,13 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+function formatAlertTime(value) {
+  if (!value) return "";
+  const text = String(value);
+  const matched = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  return matched ? `${matched[1]} ${matched[2]}` : text;
+}
+
 async function loadRiskAlert() {
   const canEditRiskAlert = canModuleEdit("risk_alert");
   const canSensitiveRiskAlert = canModuleSensitive("risk_alert");
@@ -1483,7 +1490,7 @@ async function loadRiskAlert() {
       <td>${item.alert_value}</td>
       <td>${directionText(item.direction)}</td>
       <td>${statusBadge(item.status)}</td>
-      <td>${item.reminder_users || "全部"}</td>
+      <td>${item.creator || "-"}</td>
       <td>
         <div class="row-actions">
           ${canEditRiskAlert ? `<button class="link" data-action="edit" data-id="${item.id}">编辑</button>` : ""}
@@ -1499,7 +1506,7 @@ async function loadRiskAlert() {
   });
   historyTable.innerHTML = history.map((item) => `
     <tr>
-      <td>${item.alert_time || ""}</td>
+      <td>${formatAlertTime(item.alert_time)}</td>
       <td>${item.info_type || "-"}</td>
       <td>${money(item.current_value)}</td>
       <td>${money(item.alert_value)}</td>
@@ -1531,7 +1538,6 @@ function openAlertDialog(item = null) {
   document.querySelector("#contractMonth").value = item?.contract_month || "09";
   document.querySelector("#alertValue").value = item?.alert_value ?? "";
   document.querySelector("#direction").value = item?.direction || "above";
-  document.querySelector("#reminderUsers").value = item?.reminder_users || "";
   document.querySelector("#alertStatus").value = item?.status || "enabled";
   alertDialog.showModal();
 }
@@ -1859,7 +1865,6 @@ alertForm.addEventListener("submit", async (event) => {
     alert_value: Number(document.querySelector("#alertValue").value),
     direction: document.querySelector("#direction").value,
     status: document.querySelector("#alertStatus").value,
-    reminder_users: document.querySelector("#reminderUsers").value,
   };
   await api(id ? `/api/risk-alert/settings/${id}` : "/api/risk-alert/settings", {
     method: id ? "PUT" : "POST",
