@@ -144,6 +144,22 @@ def test_notifications_are_visible_only_to_alert_owner(tmp_path, monkeypatch):
     assert main.list_alert_notifications(user=other) == {"count": 0, "items": []}
 
 
+def test_admin_does_not_receive_another_users_notifications(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    administrator = admin_user()
+    ordinary_owner = create_futures_user(
+        "普通设置人", "ordinary-risk-owner", administrator
+    )
+    trigger_for_owner(ordinary_owner)
+
+    assert main.list_alert_notifications(user=administrator) == {
+        "count": 0,
+        "items": [],
+    }
+
+
 def test_shared_history_identifies_notification_owner(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     owner = admin_user()

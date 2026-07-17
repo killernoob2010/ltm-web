@@ -1093,17 +1093,23 @@ def trigger_alert(row, current_value: float, direction_text: str) -> None:
         )
 
 
-def scan_risk_alerts_once(mock: bool = False) -> dict:
+def scan_risk_alerts_once(
+    mock: bool = False,
+    creator_user_id: Optional[int] = None,
+) -> dict:
     with db.connect() as conn:
         cur = conn.cursor()
-        rows = db._exec(cur, 
-            """
+        sql = """
             SELECT *
             FROM alert_settings
-            WHERE status = 'enabled'
-            ORDER BY id
-            """
-        ).fetchall()
+            WHERE status = 'enabled' AND archived_at IS NULL
+        """
+        params = []
+        if creator_user_id is not None:
+            sql += " AND creator_user_id = ?"
+            params.append(creator_user_id)
+        sql += " ORDER BY id"
+        rows = db._exec(cur, sql, tuple(params)).fetchall()
 
     triggered = 0
     checked = 0
@@ -1481,27 +1487,87 @@ def modules(user=Depends(current_user)):
     return [{"group": group, "items": items} for group, items in groups.items()]
 
 
+def is_risk_alert_admin(user: dict) -> bool:
+    return user.get("role") in {"管理员", "admin"}
+
+
+def load_risk_alert_for_action(
+    cur,
+    alert_id: int,
+    user: dict,
+    include_archived: bool = False,
+):
+    sql = "SELECT * FROM alert_settings WHERE id = ?"
+    params = [alert_id]
+    if not include_archived:
+        sql += " AND archived_at IS NULL"
+    if not is_risk_alert_admin(user):
+        sql += " AND creator_user_id = ?"
+        params.append(user["id"])
+    row = db._exec(cur, sql, tuple(params)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="预警规则不存在")
+    return row
+
+
+def log_risk_alert_admin_action(
+    user: dict,
+    setting,
+    operation_type: str,
+    description: str,
+    deleted_count: Optional[int] = None,
+) -> None:
+    if (
+        not is_risk_alert_admin(user)
+        or setting["creator_user_id"] == user["id"]
+    ):
+        return
+    suffix = f"，删除历史 {deleted_count} 条" if deleted_count is not None else ""
+    db.log_operation(
+        user["id"],
+        "risk_alert",
+        operation_type,
+        f"{description}；原设置人用户 ID {setting['creator_user_id']}{suffix}",
+        "alert_settings",
+        setting["id"],
+    )
+
+
 @app.get("/api/risk-alert/settings")
 def list_alert_settings(
     limit: int = 200,
     offset: int = 0,
+    creator_user_id: Optional[int] = None,
     user=Depends(current_user),
 ):
     require_view("risk_alert", user)
     limit = max(1, min(limit or 200, 200))
     offset = max(0, offset or 0)
+    if not is_risk_alert_admin(user):
+        creator_user_id = user["id"]
     with db.connect() as conn:
         cur = conn.cursor()
-        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM alert_settings").fetchone()
-        rows = db._exec(cur,
-            """
+        where = "WHERE archived_at IS NULL"
+        params = []
+        if creator_user_id is not None:
+            where += " AND creator_user_id = ?"
+            params.append(creator_user_id)
+        total_row = db._exec(
+            cur,
+            f"SELECT COUNT(*) AS c FROM alert_settings {where}",
+            tuple(params),
+        ).fetchone()
+        rows = db._exec(
+            cur,
+            f"""
             SELECT id, info_type, contract_year, contract_month, alert_value,
                    direction, status, creator_user_id, creator, created_at, updated_at
             FROM alert_settings
+            {where}
             ORDER BY created_at DESC, id DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            (*params, limit, offset),
         ).fetchall()
     total = int(total_row["c"] or 0)
     return {
@@ -1517,7 +1583,7 @@ def list_alert_settings(
 
 @app.post("/api/risk-alert/settings")
 def create_alert_setting(payload: AlertSettingIn, user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, 
@@ -1544,10 +1610,11 @@ def create_alert_setting(payload: AlertSettingIn, user=Depends(current_user)):
 
 @app.put("/api/risk-alert/settings/{alert_id}")
 def update_alert_setting(alert_id: int, payload: AlertSettingIn, user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        cursor = db._exec(cur, 
+        setting = load_risk_alert_for_action(cur, alert_id, user)
+        db._exec(cur,
             """
             UPDATE alert_settings
             SET info_type = ?, contract_year = ?, contract_month = ?,
@@ -1564,26 +1631,34 @@ def update_alert_setting(alert_id: int, payload: AlertSettingIn, user=Depends(cu
                 alert_id,
             ),
         )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="预警规则不存在")
     db.log_operation(user["id"], "risk_alert", "编辑预警", "编辑风险预警规则", "alert_settings", alert_id)
+    log_risk_alert_admin_action(
+        user,
+        setting,
+        "管理员编辑他人预警",
+        "管理员编辑他人风险预警规则",
+    )
     return {"ok": True}
 
 
 @app.post("/api/risk-alert/settings/{alert_id}/toggle")
 def toggle_alert_setting(alert_id: int, user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        row = db._exec(cur, "SELECT status FROM alert_settings WHERE id = ?", (alert_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="预警规则不存在")
-        next_status = "disabled" if row["status"] == "enabled" else "enabled"
+        setting = load_risk_alert_for_action(cur, alert_id, user)
+        next_status = "disabled" if setting["status"] == "enabled" else "enabled"
         db._exec(cur, 
             "UPDATE alert_settings SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (next_status, alert_id),
         )
     db.log_operation(user["id"], "risk_alert", "切换预警状态", f"预警状态改为 {next_status}", "alert_settings", alert_id)
+    log_risk_alert_admin_action(
+        user,
+        setting,
+        "管理员切换他人预警状态",
+        f"管理员将他人预警状态改为 {next_status}",
+    )
     return {"status": next_status}
 
 
@@ -1612,18 +1687,34 @@ def list_alert_history(
     offset = max(0, offset or 0)
     with db.connect() as conn:
         cur = conn.cursor()
-        total_row = db._exec(cur, "SELECT COUNT(*) AS c FROM alert_history").fetchone()
-        rows = db._exec(cur, 
-            """
+        owner_where = ""
+        params = []
+        if not is_risk_alert_admin(user):
+            owner_where = "WHERE s.creator_user_id = ?"
+            params.append(user["id"])
+        total_row = db._exec(
+            cur,
+            f"""
+            SELECT COUNT(*) AS c
+            FROM alert_history h
+            JOIN alert_settings s ON s.id = h.alert_id
+            {owner_where}
+            """,
+            tuple(params),
+        ).fetchone()
+        rows = db._exec(
+            cur,
+            f"""
             SELECT h.id, h.alert_id, h.alert_time, h.current_value, h.alert_value,
                    h.direction, h.status, s.info_type, s.contract_year,
                    s.contract_month, s.creator_user_id
             FROM alert_history h
-            LEFT JOIN alert_settings s ON s.id = h.alert_id
+            JOIN alert_settings s ON s.id = h.alert_id
+            {owner_where}
             ORDER BY h.alert_time DESC, h.id DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            (*params, limit, offset),
         ).fetchall()
     total = int(total_row["c"] or 0)
     return {
@@ -1660,28 +1751,41 @@ def list_alert_notifications(user=Depends(current_user)):
 
 @app.post("/api/risk-alert/history/{history_id}/read")
 def mark_alert_history_read(history_id: int, user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        cursor = db._exec(cur, 
+        row = db._exec(
+            cur,
             """
-            UPDATE alert_history
-            SET status = 'read'
-            WHERE id = ?
-              AND alert_id IN (
-                  SELECT id FROM alert_settings WHERE creator_user_id = ?
-              )
+            SELECT s.*
+            FROM alert_history h
+            JOIN alert_settings s ON s.id = h.alert_id
+            WHERE h.id = ?
             """,
-            (history_id, user["id"]),
+            (history_id,),
+        ).fetchone()
+        if not row or (
+            not is_risk_alert_admin(user)
+            and row["creator_user_id"] != user["id"]
+        ):
+            raise HTTPException(status_code=404, detail="预警历史不存在")
+        db._exec(
+            cur,
+            "UPDATE alert_history SET status = 'read' WHERE id = ?",
+            (history_id,),
         )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="预警历史不存在")
+    log_risk_alert_admin_action(
+        user,
+        row,
+        "管理员确认他人预警",
+        "管理员将他人预警标记为已读",
+    )
     return {"ok": True}
 
 
 @app.post("/api/risk-alert/history/read-all")
 def mark_all_alert_history_read(user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
         db._exec(
@@ -1701,20 +1805,19 @@ def mark_all_alert_history_read(user=Depends(current_user)):
 
 @app.post("/api/risk-alert/scan")
 def scan_risk_alerts(user=Depends(current_user)):
-    require_edit("risk_alert", user)
-    result = scan_risk_alerts_once()
+    require_view("risk_alert", user)
+    creator_user_id = None if is_risk_alert_admin(user) else user["id"]
+    result = scan_risk_alerts_once(creator_user_id=creator_user_id)
     db.log_operation(user["id"], "risk_alert", "扫描预警", f"检查 {result['checked']} 条，触发 {result['triggered']} 条")
     return result
 
 
 @app.post("/api/risk-alert/settings/{alert_id}/simulate-trigger")
 def simulate_alert_trigger(alert_id: int, current_value: float, user=Depends(current_user)):
-    require_edit("risk_alert", user)
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        setting = db._exec(cur, "SELECT * FROM alert_settings WHERE id = ?", (alert_id,)).fetchone()
-        if not setting:
-            raise HTTPException(status_code=404, detail="预警规则不存在")
+        setting = load_risk_alert_for_action(cur, alert_id, user)
         db._exec(cur, 
             """
             INSERT INTO alert_history (alert_id, current_value, alert_value, direction)
@@ -1723,6 +1826,12 @@ def simulate_alert_trigger(alert_id: int, current_value: float, user=Depends(cur
             (alert_id, current_value, setting["alert_value"], setting["direction"]),
         )
     db.log_operation(user["id"], "risk_alert", "模拟触发", "手动写入预警历史", "alert_settings", alert_id)
+    log_risk_alert_admin_action(
+        user,
+        setting,
+        "管理员模拟触发他人预警",
+        "管理员模拟触发他人风险预警规则",
+    )
     return {"ok": True}
 
 
