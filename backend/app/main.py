@@ -1755,6 +1755,150 @@ def delete_alert_history_group(alert_id: int, user=Depends(current_user)):
     }
 
 
+@app.get("/api/risk-alert/history/summary")
+def list_alert_history_summary(
+    limit: int = 10,
+    offset: int = 0,
+    creator_user_id: Optional[int] = None,
+    user=Depends(current_user),
+):
+    require_view("risk_alert", user)
+    limit = max(1, min(limit or 10, 50))
+    offset = max(0, offset or 0)
+    if not is_risk_alert_admin(user):
+        creator_user_id = user["id"]
+
+    where = ""
+    params = []
+    if creator_user_id is not None:
+        where = "WHERE s.creator_user_id = ?"
+        params.append(creator_user_id)
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        total_row = db._exec(
+            cur,
+            f"""
+            SELECT COUNT(*) AS c
+            FROM alert_settings s
+            JOIN (
+                SELECT DISTINCT alert_id
+                FROM alert_history
+            ) history_rules ON history_rules.alert_id = s.id
+            {where}
+            """,
+            tuple(params),
+        ).fetchone()
+        rows = db._exec(
+            cur,
+            f"""
+            WITH ranked_history AS (
+                SELECT h.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY h.alert_id
+                           ORDER BY h.alert_time DESC, h.id DESC
+                       ) AS row_num,
+                       COUNT(*) OVER (
+                           PARTITION BY h.alert_id
+                       ) AS alert_count,
+                       SUM(
+                           CASE WHEN h.status = 'unread' THEN 1 ELSE 0 END
+                       ) OVER (
+                           PARTITION BY h.alert_id
+                       ) AS unread_count
+                FROM alert_history h
+            )
+            SELECT s.id AS alert_id, s.info_type, s.contract_year,
+                   s.contract_month, s.creator_user_id, s.creator,
+                   s.archived_at, s.status AS rule_status,
+                   h.current_value AS latest_current_value,
+                   h.alert_value AS latest_alert_value,
+                   h.direction AS latest_direction,
+                   h.alert_time AS latest_alert_time,
+                   h.alert_count, h.unread_count
+            FROM alert_settings s
+            JOIN ranked_history h
+              ON h.alert_id = s.id AND h.row_num = 1
+            {where}
+            ORDER BY h.alert_time DESC, h.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        if is_risk_alert_admin(user):
+            owner_rows = db._exec(
+                cur,
+                """
+                SELECT DISTINCT s.creator_user_id AS id, s.creator AS name
+                FROM alert_settings s
+                JOIN alert_history h ON h.alert_id = s.id
+                WHERE s.creator_user_id IS NOT NULL
+                ORDER BY s.creator, s.creator_user_id
+                """,
+            ).fetchall()
+        else:
+            owner_rows = []
+
+    total = int(total_row["c"] or 0)
+    return {
+        "items": [row_to_dict(row) for row in rows],
+        "owners": [row_to_dict(row) for row in owner_rows],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        },
+    }
+
+
+@app.get("/api/risk-alert/history/rules/{alert_id}")
+def list_alert_history_details(
+    alert_id: int,
+    limit: int = 20,
+    offset: int = 0,
+    user=Depends(current_user),
+):
+    require_view("risk_alert", user)
+    limit = max(1, min(limit or 20, 100))
+    offset = max(0, offset or 0)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        load_risk_alert_for_action(
+            cur,
+            alert_id,
+            user,
+            include_archived=True,
+        )
+        total_row = db._exec(
+            cur,
+            "SELECT COUNT(*) AS c FROM alert_history WHERE alert_id = ?",
+            (alert_id,),
+        ).fetchone()
+        rows = db._exec(
+            cur,
+            """
+            SELECT id, alert_id, alert_time, current_value, alert_value,
+                   direction, status
+            FROM alert_history
+            WHERE alert_id = ?
+            ORDER BY alert_time DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (alert_id, limit, offset),
+        ).fetchall()
+    total = int(total_row["c"] or 0)
+    return {
+        "items": [row_to_dict(row) for row in rows],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < total,
+        },
+    }
+
+
 @app.get("/api/risk-alert/history")
 def list_alert_history(
     limit: int = 200,

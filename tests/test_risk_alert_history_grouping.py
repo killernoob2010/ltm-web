@@ -91,6 +91,25 @@ def history_count(alert_id):
         ).fetchone()["c"]
 
 
+def insert_history(
+    alert_id,
+    alert_time,
+    current_value,
+    direction="向上突破",
+    status="unread",
+):
+    with db.connect() as conn:
+        db._exec(
+            conn.cursor(),
+            """
+            INSERT INTO alert_history
+                (alert_id, alert_time, current_value, alert_value, direction, status)
+            VALUES (?, ?, ?, 10, ?, ?)
+            """,
+            (alert_id, alert_time, current_value, direction, status),
+        )
+
+
 def test_alert_schema_has_archival_column_and_history_index(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:
@@ -261,3 +280,142 @@ def test_delete_archived_rule_history_removes_rule_tombstone(
     assert result == {"ok": True, "deleted": 2, "rule_deleted": True}
     assert get_rule(alert_id) is None
     assert history_count(alert_id) == 0
+
+
+def test_history_summary_uses_latest_event_and_counts(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    _, owner, _ = create_risk_alert_users()
+    older_rule = create_rule(owner, "较早规则")
+    latest_rule = create_rule(owner, "最近规则")
+    insert_history(
+        older_rule,
+        "2026-07-17 09:00:00",
+        8,
+        direction="向下突破",
+        status="read",
+    )
+    insert_history(latest_rule, "2026-07-17 10:00:00", 11)
+    insert_history(
+        latest_rule,
+        "2026-07-17 10:01:00",
+        12,
+        status="read",
+    )
+    insert_history(latest_rule, "2026-07-17 10:02:00", 13)
+
+    payload = main.list_alert_history_summary(limit=10, offset=0, user=owner)
+
+    assert payload["pagination"]["total"] == 2
+    assert payload["items"][0] == {
+        "alert_id": latest_rule,
+        "info_type": "最近规则",
+        "contract_year": "2026",
+        "contract_month": "09",
+        "creator_user_id": owner["id"],
+        "creator": owner["name"],
+        "archived_at": None,
+        "rule_status": "enabled",
+        "latest_current_value": 13.0,
+        "latest_alert_value": 10.0,
+        "latest_direction": "向上突破",
+        "latest_alert_time": "2026-07-17 10:02:00",
+        "alert_count": 3,
+        "unread_count": 2,
+    }
+
+
+def test_history_summary_paginates_rules_and_admin_can_filter_owner(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    admin, first, second = create_risk_alert_users()
+    first_ids = []
+    for index in range(12):
+        alert_id = create_rule(first, f"第一人规则-{index:02d}")
+        first_ids.append(alert_id)
+        insert_history(
+            alert_id,
+            f"2026-07-17 11:{index:02d}:00",
+            index,
+        )
+    second_id = create_rule(second, "第二人规则")
+    insert_history(second_id, "2026-07-17 12:00:00", 20)
+
+    first_page = main.list_alert_history_summary(
+        limit=10,
+        offset=0,
+        user=first,
+    )
+    second_page = main.list_alert_history_summary(
+        limit=10,
+        offset=10,
+        user=first,
+    )
+    admin_filtered = main.list_alert_history_summary(
+        limit=10,
+        offset=0,
+        creator_user_id=second["id"],
+        user=admin,
+    )
+
+    assert len(first_page["items"]) == 10
+    assert len(second_page["items"]) == 2
+    assert first_page["pagination"]["total"] == 12
+    assert [item["alert_id"] for item in admin_filtered["items"]] == [second_id]
+    assert {owner["id"] for owner in admin_filtered["owners"]} == {
+        first["id"],
+        second["id"],
+    }
+
+
+def test_history_details_are_lazy_paginated_and_owner_scoped(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    admin, owner, other = create_risk_alert_users()
+    alert_id = create_rule(owner, "25条详情")
+    for index in range(25):
+        insert_history(
+            alert_id,
+            f"2026-07-17 13:{index:02d}:00",
+            index,
+        )
+
+    first = main.list_alert_history_details(
+        alert_id,
+        limit=20,
+        offset=0,
+        user=owner,
+    )
+    second = main.list_alert_history_details(
+        alert_id,
+        limit=20,
+        offset=20,
+        user=owner,
+    )
+
+    assert len(first["items"]) == 20
+    assert len(second["items"]) == 5
+    assert first["pagination"]["total"] == 25
+    assert first["items"][0]["alert_time"] > first["items"][-1]["alert_time"]
+    assert (
+        main.list_alert_history_details(
+            alert_id,
+            limit=20,
+            offset=0,
+            user=admin,
+        )["pagination"]["total"]
+        == 25
+    )
+
+    try:
+        main.list_alert_history_details(
+            alert_id,
+            limit=20,
+            offset=0,
+            user=other,
+        )
+    except main.HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("另一普通用户不应读取该规则详情")
