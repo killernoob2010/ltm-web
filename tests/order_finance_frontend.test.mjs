@@ -176,7 +176,7 @@ test("order finance shows compact automatic sync status and new payment terminol
   assert.match(appJs, /融资到期日/);
   assert.match(indexHtml, /融资到期日/);
   assert.match(indexHtml, /app\.js\?v=risk-alert-history-grouping-20260717/);
-  assert.match(indexHtml, /styles\.css\?v=risk-alert-history-grouping-20260717/);
+  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717/);
 });
 
 test("documented unpaid orders show a missing financing due-date anomaly", () => {
