@@ -37,7 +37,7 @@ ${appJs.slice(alertStart, alertEnd)}`;
   );
   assert.equal(
     formatAlertTime("2026-07-17 14:09:33.023732"),
-    "2026-07-17 14:09:33",
+    "2026-07-17 22:09:33",
   );
   assert.equal(
     formatAlertTime("2026-07-17 18:09:33+00"),
@@ -70,7 +70,7 @@ test("risk alert history static assets use the current versions", () => {
   );
   assert.match(
     html,
-    /app\.js\?v=risk-alert-beijing-time-20260717/,
+    /app\.js\?v=risk-alert-beijing-time-v2-20260717/,
   );
 });
 

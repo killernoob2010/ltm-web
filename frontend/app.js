@@ -1499,7 +1499,11 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function formatAlertTime(value) {
-  return dateTimeToSecond(value);
+  if (!value) return "";
+  const text = String(value).trim();
+  const isDatabaseTimestamp = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(text);
+  const hasTimezone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(text);
+  return dateTimeToSecond(isDatabaseTimestamp && !hasTimezone ? `${text}Z` : text);
 }
 
 async function loadRiskAlert() {
