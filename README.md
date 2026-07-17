@@ -63,7 +63,28 @@ env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路
 
 ## 铁矿石基差 API 增量同步
 
-同步读取 `EBC_ACCOUNT`、`EBC_PASSWORD`，可选读取 `EBC_MAINBOARD`、`EBC_CPU`；凭据只配置在目标 Render 服务环境变量中。`IRON_ORE_BASIS_AUTO_SYNC_ENABLED=true` 时，Web 服务启动后会补查最近数据，并按上海时间每日 09:30、10:30、21:30 检查相应时间窗。未显式启用时不会自动抓取或写库。
+铁矿石期现采用“Staging 单一采集源、Production 快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许 Production 直连 Staging 数据库。
+
+两个环境均显式配置：
+
+```text
+IRON_ORE_BASIS_AUTO_SYNC_ENABLED
+IRON_ORE_BASIS_SYNC_MODE
+```
+
+Staging 使用 `IRON_ORE_BASIS_SYNC_MODE=source`，读取 `EBC_ACCOUNT`、`EBC_PASSWORD`，可选读取 `EBC_MAINBOARD`、`EBC_CPU`。凭据只保存在 Staging Render 环境变量中。启用后，Web 服务启动时补查最近数据，并按北京时间每日 09:30、10:30、21:30 检查相应时间窗。
+
+Production 使用 `IRON_ORE_BASIS_SYNC_MODE=snapshot_follower`，不配置 EBC 凭据，并配置：
+
+```text
+IRON_ORE_BASIS_SNAPSHOT_UPSTREAM_URL=https://ltm-web-staging.onrender.com
+```
+
+两个服务通过服务端 Bearer Secret 访问 `/api/internal/iron-ore-basis/snapshot`。可配置专用 `IRON_ORE_BASIS_SNAPSHOT_SHARED_SECRET`；未配置时兼容复用现有 `ORDER_FINANCE_SNAPSHOT_SHARED_SECRET`，实际值不得进入仓库、日志、接口响应或版本记录。快照仅包含 `2026-07-13` 起由 API 生成的期现结果和计算明细，不包含数据库 ID、用户、权限、日志或源站凭据。
+
+Staging 仅在最近存在 `success` 或 `partial` 源同步批次、结果与明细一一对应且批次覆盖最新数据日期时发布内容哈希版本。Production 每 5 分钟检查一次；先校验字段、行数、最新日期、重复业务键和内容哈希，再在单一事务中只追加缺失业务键。同一业务键只要与 Production 既有结果或明细不同，整包拒绝且不覆盖历史。相同版本重复检查写入 0 行。
+
+`IRON_ORE_BASIS_AUTO_SYNC_ENABLED` 未显式设为 `true`，或同步模式及其必需配置不完整时，不会启动相应后台任务。
 
 手工命令默认只抓取、计算和汇总，不写数据库：
 

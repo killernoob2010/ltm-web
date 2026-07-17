@@ -530,7 +530,7 @@ def _basis_sync_scheduler_loop(interval_seconds: int) -> None:
         time.sleep(interval_seconds)
 
 
-def start_iron_ore_basis_sync_scheduler(interval_seconds: int = 300) -> bool:
+def start_iron_ore_basis_source_scheduler(interval_seconds: int = 300) -> bool:
     global _SCHEDULER_STARTED
     if not auto_sync_enabled() or _SCHEDULER_STARTED:
         return False
