@@ -143,7 +143,6 @@ class AlertSettingIn(BaseModel):
     alert_value: float
     direction: str = "above"
     status: str = "enabled"
-    reminder_users: str = ""
 
 
 class InfoIndicatorIn(BaseModel):
@@ -1497,7 +1496,7 @@ def list_alert_settings(
         rows = db._exec(cur,
             """
             SELECT id, info_type, contract_year, contract_month, alert_value,
-                   direction, status, creator, reminder_users, created_at, updated_at
+                   direction, status, creator_user_id, creator, created_at, updated_at
             FROM alert_settings
             ORDER BY created_at DESC, id DESC
             LIMIT ? OFFSET ?
@@ -1524,7 +1523,7 @@ def create_alert_setting(payload: AlertSettingIn, user=Depends(current_user)):
         cursor = db._exec(cur, 
             """
             INSERT INTO alert_settings
-                (info_type, contract_year, contract_month, alert_value, direction, status, creator, reminder_users)
+                (info_type, contract_year, contract_month, alert_value, direction, status, creator_user_id, creator)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -1534,8 +1533,8 @@ def create_alert_setting(payload: AlertSettingIn, user=Depends(current_user)):
                 payload.alert_value,
                 payload.direction,
                 payload.status,
+                user["id"],
                 user["name"],
-                payload.reminder_users,
             ),
         )
         alert_id = db.last_insert_id(conn)
@@ -1552,7 +1551,7 @@ def update_alert_setting(alert_id: int, payload: AlertSettingIn, user=Depends(cu
             """
             UPDATE alert_settings
             SET info_type = ?, contract_year = ?, contract_month = ?,
-                alert_value = ?, direction = ?, status = ?, reminder_users = ?, updated_at = CURRENT_TIMESTAMP
+                alert_value = ?, direction = ?, status = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
@@ -1562,7 +1561,6 @@ def update_alert_setting(alert_id: int, payload: AlertSettingIn, user=Depends(cu
                 payload.alert_value,
                 payload.direction,
                 payload.status,
-                payload.reminder_users,
                 alert_id,
             ),
         )

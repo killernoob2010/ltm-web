@@ -339,6 +339,7 @@ def init_db() -> None:
                 alert_value DOUBLE PRECISION NOT NULL,
                 direction TEXT NOT NULL DEFAULT 'above',
                 status TEXT NOT NULL DEFAULT 'enabled',
+                creator_user_id INTEGER,
                 creator TEXT,
                 reminder_users TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -750,6 +751,7 @@ def init_db() -> None:
                 alert_value REAL NOT NULL,
                 direction TEXT NOT NULL DEFAULT 'above',
                 status TEXT NOT NULL DEFAULT 'enabled',
+                creator_user_id INTEGER,
                 creator TEXT,
                 reminder_users TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1946,8 +1948,26 @@ def migrate_cache_schema(conn) -> None:
 
 
 def migrate_alert_schema(conn) -> None:
-    """Only for SQLite compatibility — PG schema already has reminder_users."""
+    """Keep alert recipients bound to stable user IDs across database engines."""
     if _is_pg():
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE alert_settings ADD COLUMN IF NOT EXISTS reminder_users TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE alert_settings ADD COLUMN IF NOT EXISTS creator_user_id INTEGER")
+        cur.execute(
+            """
+            UPDATE alert_settings AS alert
+            SET creator_user_id = matched.id
+            FROM users AS matched
+            WHERE alert.creator_user_id IS NULL
+              AND alert.creator = matched.name
+              AND (
+                  SELECT COUNT(*)
+                  FROM users AS candidate
+                  WHERE candidate.name = alert.creator
+              ) = 1
+            """
+        )
+        conn.commit()
         return
     columns = {
         row["name"]
@@ -1955,6 +1975,25 @@ def migrate_alert_schema(conn) -> None:
     }
     if "reminder_users" not in columns:
         conn.execute("ALTER TABLE alert_settings ADD COLUMN reminder_users TEXT DEFAULT ''")
+    if "creator_user_id" not in columns:
+        conn.execute("ALTER TABLE alert_settings ADD COLUMN creator_user_id INTEGER")
+    conn.execute(
+        """
+        UPDATE alert_settings
+        SET creator_user_id = (
+            SELECT MIN(users.id)
+            FROM users
+            WHERE users.name = alert_settings.creator
+        )
+        WHERE creator_user_id IS NULL
+          AND creator IS NOT NULL
+          AND (
+              SELECT COUNT(*)
+              FROM users
+              WHERE users.name = alert_settings.creator
+          ) = 1
+        """
+    )
 
 
 def migrate_mid_event_schema(conn) -> None:
