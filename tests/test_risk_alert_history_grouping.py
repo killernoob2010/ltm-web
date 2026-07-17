@@ -72,6 +72,25 @@ def create_rule(user, info_type):
     return main.create_alert_setting(payload, user=user)["id"]
 
 
+def get_rule(alert_id):
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            "SELECT * FROM alert_settings WHERE id = ?",
+            (alert_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def history_count(alert_id):
+    with db.connect() as conn:
+        return db._exec(
+            conn.cursor(),
+            "SELECT COUNT(*) AS c FROM alert_history WHERE alert_id = ?",
+            (alert_id,),
+        ).fetchone()["c"]
+
+
 def test_alert_schema_has_archival_column_and_history_index(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:
@@ -182,3 +201,63 @@ def test_manual_scan_is_owner_scoped_but_admin_scan_is_global(tmp_path, monkeypa
     seen.clear()
     main.scan_risk_alerts(user=admin)
     assert seen == [first_id, second_id]
+
+
+def test_delete_untriggered_rule_physically_removes_it(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    _, owner, _ = create_risk_alert_users()
+    alert_id = create_rule(owner, "未触发规则")
+
+    assert main.delete_alert_setting(alert_id, user=owner) == {
+        "ok": True,
+        "archived": False,
+    }
+    assert get_rule(alert_id) is None
+
+
+def test_delete_triggered_rule_archives_it_and_preserves_history(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    _, owner, _ = create_risk_alert_users()
+    alert_id = create_rule(owner, "已触发规则")
+    main.simulate_alert_trigger(alert_id, current_value=11, user=owner)
+
+    result = main.delete_alert_setting(alert_id, user=owner)
+
+    assert result == {"ok": True, "archived": True}
+    setting = get_rule(alert_id)
+    assert setting["archived_at"] is not None
+    assert setting["status"] == "disabled"
+    assert history_count(alert_id) == 1
+
+
+def test_delete_active_rule_history_keeps_rule(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    _, owner, _ = create_risk_alert_users()
+    alert_id = create_rule(owner, "保留活跃规则")
+    main.simulate_alert_trigger(alert_id, current_value=11, user=owner)
+    main.simulate_alert_trigger(alert_id, current_value=12, user=owner)
+
+    result = main.delete_alert_history_group(alert_id, user=owner)
+
+    assert result == {"ok": True, "deleted": 2, "rule_deleted": False}
+    assert get_rule(alert_id) is not None
+    assert history_count(alert_id) == 0
+
+
+def test_delete_archived_rule_history_removes_rule_tombstone(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    _, owner, _ = create_risk_alert_users()
+    alert_id = create_rule(owner, "清理归档规则")
+    main.simulate_alert_trigger(alert_id, current_value=11, user=owner)
+    main.simulate_alert_trigger(alert_id, current_value=12, user=owner)
+    main.delete_alert_setting(alert_id, user=owner)
+
+    result = main.delete_alert_history_group(alert_id, user=owner)
+
+    assert result == {"ok": True, "deleted": 2, "rule_deleted": True}
+    assert get_rule(alert_id) is None
+    assert history_count(alert_id) == 0

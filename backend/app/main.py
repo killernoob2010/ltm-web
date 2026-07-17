@@ -1664,16 +1664,95 @@ def toggle_alert_setting(alert_id: int, user=Depends(current_user)):
 
 @app.delete("/api/risk-alert/settings/{alert_id}")
 def delete_alert_setting(alert_id: int, user=Depends(current_user)):
-    require_permission(user, "risk_alert", "delete")
+    require_view("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        row = db._exec(cur, "SELECT id FROM alert_settings WHERE id = ?", (alert_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="预警规则不存在")
-        db._exec(cur, "DELETE FROM alert_history WHERE alert_id = ?", (alert_id,))
-        db._exec(cur, "DELETE FROM alert_settings WHERE id = ?", (alert_id,))
+        setting = load_risk_alert_for_action(cur, alert_id, user)
+        count = db._exec(
+            cur,
+            "SELECT COUNT(*) AS c FROM alert_history WHERE alert_id = ?",
+            (alert_id,),
+        ).fetchone()["c"]
+        if count:
+            db._exec(
+                cur,
+                """
+                UPDATE alert_settings
+                SET status = 'disabled',
+                    archived_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (alert_id,),
+            )
+            archived = True
+        else:
+            db._exec(
+                cur,
+                "DELETE FROM alert_settings WHERE id = ?",
+                (alert_id,),
+            )
+            archived = False
     db.log_operation(user["id"], "risk_alert", "删除预警", "删除风险预警规则", "alert_settings", alert_id)
-    return {"ok": True}
+    log_risk_alert_admin_action(
+        user,
+        setting,
+        "管理员删除他人预警",
+        "管理员删除他人风险预警规则",
+    )
+    return {"ok": True, "archived": archived}
+
+
+@app.delete("/api/risk-alert/history/rules/{alert_id}")
+def delete_alert_history_group(alert_id: int, user=Depends(current_user)):
+    require_view("risk_alert", user)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        setting = load_risk_alert_for_action(
+            cur,
+            alert_id,
+            user,
+            include_archived=True,
+        )
+        count = db._exec(
+            cur,
+            "SELECT COUNT(*) AS c FROM alert_history WHERE alert_id = ?",
+            (alert_id,),
+        ).fetchone()["c"]
+        if not count:
+            raise HTTPException(status_code=404, detail="没有可删除的预警历史")
+        db._exec(
+            cur,
+            "DELETE FROM alert_history WHERE alert_id = ?",
+            (alert_id,),
+        )
+        rule_deleted = bool(setting["archived_at"])
+        if rule_deleted:
+            db._exec(
+                cur,
+                "DELETE FROM alert_settings WHERE id = ?",
+                (alert_id,),
+            )
+    db.log_operation(
+        user["id"],
+        "risk_alert",
+        "删除预警历史",
+        f"删除规则 {alert_id} 的 {count} 条预警历史",
+        "alert_settings",
+        alert_id,
+    )
+    log_risk_alert_admin_action(
+        user,
+        setting,
+        "管理员删除他人预警历史",
+        "管理员删除他人预警历史",
+        deleted_count=int(count),
+    )
+    return {
+        "ok": True,
+        "deleted": int(count),
+        "rule_deleted": rule_deleted,
+    }
 
 
 @app.get("/api/risk-alert/history")
