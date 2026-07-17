@@ -342,6 +342,7 @@ def init_db() -> None:
                 creator_user_id INTEGER,
                 creator TEXT,
                 reminder_users TEXT DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -356,6 +357,9 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'unread',
                 FOREIGN KEY (alert_id) REFERENCES alert_settings(id)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_alert_history_alert_time_id
+            ON alert_history(alert_id, alert_time DESC, id DESC);
 
             CREATE TABLE IF NOT EXISTS calculated_data (
                 id SERIAL PRIMARY KEY,
@@ -754,6 +758,7 @@ def init_db() -> None:
                 creator_user_id INTEGER,
                 creator TEXT,
                 reminder_users TEXT DEFAULT '',
+                archived_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -768,6 +773,9 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'unread',
                 FOREIGN KEY (alert_id) REFERENCES alert_settings(id)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_alert_history_alert_time_id
+            ON alert_history(alert_id, alert_time DESC, id DESC);
 
             CREATE TABLE IF NOT EXISTS calculated_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1953,6 +1961,13 @@ def migrate_alert_schema(conn) -> None:
         cur = conn.cursor()
         cur.execute("ALTER TABLE alert_settings ADD COLUMN IF NOT EXISTS reminder_users TEXT DEFAULT ''")
         cur.execute("ALTER TABLE alert_settings ADD COLUMN IF NOT EXISTS creator_user_id INTEGER")
+        cur.execute("ALTER TABLE alert_settings ADD COLUMN IF NOT EXISTS archived_at TEXT")
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_alert_history_alert_time_id
+            ON alert_history(alert_id, alert_time DESC, id DESC)
+            """
+        )
         cur.execute(
             """
             UPDATE alert_settings AS alert
@@ -1977,6 +1992,14 @@ def migrate_alert_schema(conn) -> None:
         conn.execute("ALTER TABLE alert_settings ADD COLUMN reminder_users TEXT DEFAULT ''")
     if "creator_user_id" not in columns:
         conn.execute("ALTER TABLE alert_settings ADD COLUMN creator_user_id INTEGER")
+    if "archived_at" not in columns:
+        conn.execute("ALTER TABLE alert_settings ADD COLUMN archived_at TEXT")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_alert_history_alert_time_id
+        ON alert_history(alert_id, alert_time DESC, id DESC)
+        """
+    )
     conn.execute(
         """
         UPDATE alert_settings
