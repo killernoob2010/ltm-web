@@ -23,10 +23,29 @@ test("risk alert form binds recipients automatically to the creator", () => {
 });
 
 test("risk alert timestamps render only through seconds", () => {
-  assert.match(appJs, /function formatAlertTime\(value\)/);
-  assert.match(
-    appJs,
-    /text\.match\(\/\^\(\\d\{4\}-\\d\{2\}-\\d\{2\}\)\[ T\]\(\\d\{2\}:\\d\{2\}:\\d\{2\}\)\//,
+  const sharedStart = appJs.indexOf("function dateTimeToSecond(value)");
+  const sharedEnd = appJs.indexOf("function pnlClass(value)", sharedStart);
+  const alertStart = appJs.indexOf("function formatAlertTime(value)");
+  const alertEnd = appJs.indexOf("async function loadRiskAlert()", alertStart);
+  const functionSource = `${appJs.slice(sharedStart, sharedEnd)}
+${appJs.slice(alertStart, alertEnd)}`;
+  const formatAlertTime = new Function(`${functionSource}; return formatAlertTime;`)();
+
+  assert.equal(
+    formatAlertTime("2026-07-17 06:09:33.023732+00"),
+    "2026-07-17 14:09:33",
+  );
+  assert.equal(
+    formatAlertTime("2026-07-17 14:09:33.023732"),
+    "2026-07-17 14:09:33",
+  );
+  assert.equal(
+    formatAlertTime("2026-07-17 18:09:33+00"),
+    "2026-07-18 02:09:33",
+  );
+  assert.equal(
+    formatAlertTime("2026-07-17T14:09:33+08:00"),
+    "2026-07-17 14:09:33",
   );
   assert.match(appJs, /formatAlertTime\(item\.latest_alert_time\)/);
   assert.doesNotMatch(appJs, /<td>\$\{item\.alert_time \|\| ""\}<\/td>/);
@@ -51,7 +70,7 @@ test("risk alert history static assets use the current versions", () => {
   );
   assert.match(
     html,
-    /app\.js\?v=risk-alert-history-grouping-20260717/,
+    /app\.js\?v=risk-alert-beijing-time-20260717/,
   );
 });
 

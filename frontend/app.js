@@ -344,7 +344,34 @@ function midEventPrice(item, value) {
 }
 
 function dateTimeToSecond(value) {
-  return value ? String(value).replace(/\.\d+/, "").replace(/([+-]\d{2})(:\d{2})?$/, "") : "";
+  if (!value) return "";
+  const text = String(value).trim();
+  const matched = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  if (!matched) return text;
+  if (!/(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(text)) {
+    return `${matched[1]} ${matched[2]}`;
+  }
+
+  const normalized = text
+    .replace(" ", "T")
+    .replace(/\.(\d{3})\d+(?=Z|[+-])/, ".$1")
+    .replace(/([+-]\d{2})$/, "$1:00");
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return `${matched[1]} ${matched[2]}`;
+
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(parsed).map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 function pnlClass(value) {
@@ -1472,10 +1499,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function formatAlertTime(value) {
-  if (!value) return "";
-  const text = String(value);
-  const matched = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
-  return matched ? `${matched[1]} ${matched[2]}` : text;
+  return dateTimeToSecond(value);
 }
 
 async function loadRiskAlert() {
