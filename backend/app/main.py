@@ -143,7 +143,6 @@ class AlertSettingIn(BaseModel):
     alert_value: float
     direction: str = "above"
     status: str = "enabled"
-    reminder_users: str = ""
 
 
 class InfoIndicatorIn(BaseModel):
@@ -1497,7 +1496,7 @@ def list_alert_settings(
         rows = db._exec(cur,
             """
             SELECT id, info_type, contract_year, contract_month, alert_value,
-                   direction, status, creator, reminder_users, created_at, updated_at
+                   direction, status, creator_user_id, creator, created_at, updated_at
             FROM alert_settings
             ORDER BY created_at DESC, id DESC
             LIMIT ? OFFSET ?
@@ -1524,7 +1523,7 @@ def create_alert_setting(payload: AlertSettingIn, user=Depends(current_user)):
         cursor = db._exec(cur, 
             """
             INSERT INTO alert_settings
-                (info_type, contract_year, contract_month, alert_value, direction, status, creator, reminder_users)
+                (info_type, contract_year, contract_month, alert_value, direction, status, creator_user_id, creator)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -1534,8 +1533,8 @@ def create_alert_setting(payload: AlertSettingIn, user=Depends(current_user)):
                 payload.alert_value,
                 payload.direction,
                 payload.status,
+                user["id"],
                 user["name"],
-                payload.reminder_users,
             ),
         )
         alert_id = db.last_insert_id(conn)
@@ -1552,7 +1551,7 @@ def update_alert_setting(alert_id: int, payload: AlertSettingIn, user=Depends(cu
             """
             UPDATE alert_settings
             SET info_type = ?, contract_year = ?, contract_month = ?,
-                alert_value = ?, direction = ?, status = ?, reminder_users = ?, updated_at = CURRENT_TIMESTAMP
+                alert_value = ?, direction = ?, status = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (
@@ -1562,7 +1561,6 @@ def update_alert_setting(alert_id: int, payload: AlertSettingIn, user=Depends(cu
                 payload.alert_value,
                 payload.direction,
                 payload.status,
-                payload.reminder_users,
                 alert_id,
             ),
         )
@@ -1618,7 +1616,8 @@ def list_alert_history(
         rows = db._exec(cur, 
             """
             SELECT h.id, h.alert_id, h.alert_time, h.current_value, h.alert_value,
-                   h.direction, h.status, s.info_type, s.contract_year, s.contract_month
+                   h.direction, h.status, s.info_type, s.contract_year,
+                   s.contract_month, s.creator_user_id
             FROM alert_history h
             LEFT JOIN alert_settings s ON s.id = h.alert_id
             ORDER BY h.alert_time DESC, h.id DESC
@@ -1645,21 +1644,17 @@ def list_alert_notifications(user=Depends(current_user)):
         cur = conn.cursor()
         rows = db._exec(cur, 
             """
-            SELECT h.*, s.info_type, s.contract_year, s.contract_month, s.reminder_users
+            SELECT h.*, s.info_type, s.contract_year, s.contract_month,
+                   s.creator, s.creator_user_id
             FROM alert_history h
-            LEFT JOIN alert_settings s ON s.id = h.alert_id
-            WHERE h.status = 'unread'
+            JOIN alert_settings s ON s.id = h.alert_id
+            WHERE h.status = 'unread' AND s.creator_user_id = ?
             ORDER BY h.alert_time DESC, h.id DESC
             LIMIT 20
-            """
+            """,
+            (user["id"],),
         ).fetchall()
-    result = []
-    for row in rows:
-        reminder_users = row["reminder_users"] or ""
-        allowed_users = [item.strip() for item in reminder_users.split(",") if item.strip()]
-        if allowed_users and user["name"] not in allowed_users:
-            continue
-        result.append(row_to_dict(row))
+    result = [row_to_dict(row) for row in rows]
     return {"count": len(result), "items": result}
 
 
@@ -1669,8 +1664,15 @@ def mark_alert_history_read(history_id: int, user=Depends(current_user)):
     with db.connect() as conn:
         cur = conn.cursor()
         cursor = db._exec(cur, 
-            "UPDATE alert_history SET status = 'read' WHERE id = ?",
-            (history_id,),
+            """
+            UPDATE alert_history
+            SET status = 'read'
+            WHERE id = ?
+              AND alert_id IN (
+                  SELECT id FROM alert_settings WHERE creator_user_id = ?
+              )
+            """,
+            (history_id, user["id"]),
         )
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="预警历史不存在")
@@ -1682,7 +1684,18 @@ def mark_all_alert_history_read(user=Depends(current_user)):
     require_edit("risk_alert", user)
     with db.connect() as conn:
         cur = conn.cursor()
-        db._exec(cur, "UPDATE alert_history SET status = 'read' WHERE status = 'unread'")
+        db._exec(
+            cur,
+            """
+            UPDATE alert_history
+            SET status = 'read'
+            WHERE status = 'unread'
+              AND alert_id IN (
+                  SELECT id FROM alert_settings WHERE creator_user_id = ?
+              )
+            """,
+            (user["id"],),
+        )
     return {"ok": True}
 
 
