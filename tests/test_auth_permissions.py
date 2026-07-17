@@ -509,7 +509,9 @@ def test_admin_can_set_password_without_recommendation_or_plaintext_log(tmp_path
     assert db.get_user_by_token(target_token) is None
 
 
-def test_view_only_leader_cannot_mark_shared_alert_history_read(tmp_path, monkeypatch):
+def test_risk_alert_user_cannot_mark_another_users_history_read(
+    tmp_path, monkeypatch
+):
     use_temp_db(tmp_path, monkeypatch)
     admin = admin_user()
     leader = main.create_user(
@@ -538,11 +540,9 @@ def test_view_only_leader_cannot_mark_shared_alert_history_read(tmp_path, monkey
 
     with pytest.raises(HTTPException) as single_exc:
         main.mark_alert_history_read(history_id, user=leader_user)
-    assert single_exc.value.status_code == 403
+    assert single_exc.value.status_code == 404
 
-    with pytest.raises(HTTPException) as bulk_exc:
-        main.mark_all_alert_history_read(user=leader_user)
-    assert bulk_exc.value.status_code == 403
+    assert main.mark_all_alert_history_read(user=leader_user) == {"ok": True}
 
     with db.connect() as conn:
         row = db._exec(conn.cursor(), "SELECT status FROM alert_history WHERE id = ?", (history_id,)).fetchone()
