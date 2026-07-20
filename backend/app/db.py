@@ -31,6 +31,11 @@ TRADING_MANAGEMENT_TABLES = (
     "trading_business_assignments",
     "trading_business_close_allocations",
     "trading_business_allocation_audit",
+    "trading_statement_account_summaries",
+    "trading_statement_cash_movements",
+    "trading_statement_exercises",
+    "trading_statement_position_summaries",
+    "trading_fact_source_differences",
 )
 
 MODULES = [
@@ -1419,6 +1424,7 @@ def migrate_trading_management_schema(conn) -> None:
                 account_code TEXT NOT NULL UNIQUE,
                 display_name TEXT NOT NULL,
                 masked_name TEXT NOT NULL DEFAULT '',
+                statement_account_code TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -1435,6 +1441,8 @@ def migrate_trading_management_schema(conn) -> None:
                 trade_count INTEGER NOT NULL DEFAULT 0,
                 close_count INTEGER NOT NULL DEFAULT 0,
                 position_count INTEGER NOT NULL DEFAULT 0,
+                statement_type TEXT, statement_file_name TEXT, statement_file_sha256 TEXT,
+                statement_account_code_masked TEXT, source_priority INTEGER NOT NULL DEFAULT 0,
                 parse_summary TEXT,
                 supersedes_batch_id INTEGER,
                 created_by TEXT, confirmed_by TEXT,
@@ -1475,6 +1483,7 @@ def migrate_trading_management_schema(conn) -> None:
                 quantity DOUBLE PRECISION NOT NULL, price DOUBLE PRECISION NOT NULL,
                 turnover DOUBLE PRECISION, fee DOUBLE PRECISION,
                 hedge_flag TEXT, premium_cashflow DOUBLE PRECISION,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
                 FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
@@ -1493,6 +1502,7 @@ def migrate_trading_management_schema(conn) -> None:
                 open_price DOUBLE PRECISION NOT NULL, close_price DOUBLE PRECISION NOT NULL,
                 fact_close_pnl DOUBLE PRECISION NOT NULL,
                 matched_fee DOUBLE PRECISION,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 fee_status TEXT NOT NULL DEFAULT 'pending_match',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1511,6 +1521,7 @@ def migrate_trading_management_schema(conn) -> None:
                 quantity DOUBLE PRECISION NOT NULL, average_price DOUBLE PRECISION NOT NULL,
                 margin DOUBLE PRECISION,
                 valuation_price DOUBLE PRECISION, floating_pnl DOUBLE PRECISION,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 market_time TEXT, valuation_status TEXT NOT NULL DEFAULT 'pending_calculation',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1610,7 +1621,39 @@ def migrate_trading_management_schema(conn) -> None:
                 operated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id)
             );
+            CREATE TABLE IF NOT EXISTS trading_statement_account_summaries (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL UNIQUE,
+                summary_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_cash_movements (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL, source_row_no INTEGER NOT NULL,
+                movement_date TEXT, movement_type TEXT, deposit DOUBLE PRECISION,
+                withdrawal DOUBLE PRECISION, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_exercises (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL, source_row_no INTEGER NOT NULL,
+                event_date TEXT NOT NULL, contract TEXT NOT NULL, event_type TEXT NOT NULL,
+                side TEXT, quantity DOUBLE PRECISION, exercise_price DOUBLE PRECISION,
+                exercise_pnl DOUBLE PRECISION, fee DOUBLE PRECISION, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_position_summaries (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL, source_row_no INTEGER NOT NULL,
+                contract TEXT NOT NULL, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_source_differences (
+                id SERIAL PRIMARY KEY, identity_id INTEGER NOT NULL, fact_type TEXT NOT NULL,
+                old_batch_id INTEGER, new_batch_id INTEGER NOT NULL, diff_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (old_batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (new_batch_id) REFERENCES trading_import_batches(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
+            CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash ON trading_import_batches(account_id, statement_file_sha256);
             CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_positions_batch_date_contract ON trading_position_snapshots(batch_id, snapshot_date, contract);
@@ -1625,7 +1668,8 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE TABLE IF NOT EXISTS trading_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_code TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
-                masked_name TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 1,
+                masked_name TEXT NOT NULL DEFAULT '', statement_account_code TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS trading_import_batches (
@@ -1635,7 +1679,10 @@ def migrate_trading_management_schema(conn) -> None:
                 trade_file_name TEXT, close_file_name TEXT, position_file_name TEXT,
                 trade_file_sha256 TEXT, close_file_sha256 TEXT, position_file_sha256 TEXT,
                 trade_count INTEGER NOT NULL DEFAULT 0, close_count INTEGER NOT NULL DEFAULT 0,
-                position_count INTEGER NOT NULL DEFAULT 0, parse_summary TEXT,
+                position_count INTEGER NOT NULL DEFAULT 0,
+                statement_type TEXT, statement_file_name TEXT, statement_file_sha256 TEXT,
+                statement_account_code_masked TEXT, source_priority INTEGER NOT NULL DEFAULT 0,
+                parse_summary TEXT,
                 supersedes_batch_id INTEGER, created_by TEXT, confirmed_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT,
                 FOREIGN KEY (account_id) REFERENCES trading_accounts(id),
@@ -1663,6 +1710,7 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, side TEXT NOT NULL, open_close_raw TEXT,
                 open_close TEXT NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL,
                 turnover REAL, fee REAL, hedge_flag TEXT, premium_cashflow REAL,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
                 FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
@@ -1676,6 +1724,7 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, open_side TEXT NOT NULL, close_side TEXT NOT NULL,
                 quantity REAL NOT NULL, open_price REAL NOT NULL, close_price REAL NOT NULL,
                 fact_close_pnl REAL NOT NULL, matched_fee REAL,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 fee_status TEXT NOT NULL DEFAULT 'pending_match',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1690,6 +1739,7 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, direction TEXT NOT NULL, open_date TEXT,
                 quantity REAL NOT NULL, average_price REAL NOT NULL, margin REAL,
                 valuation_price REAL, floating_pnl REAL, market_time TEXT,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 valuation_status TEXT NOT NULL DEFAULT 'pending_calculation',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1764,7 +1814,40 @@ def migrate_trading_management_schema(conn) -> None:
                 operated_by TEXT NOT NULL, operated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id)
             );
+            CREATE TABLE IF NOT EXISTS trading_statement_account_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL UNIQUE,
+                summary_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_cash_movements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                source_row_no INTEGER NOT NULL, movement_date TEXT, movement_type TEXT,
+                deposit REAL, withdrawal REAL, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_exercises (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                source_row_no INTEGER NOT NULL, event_date TEXT NOT NULL,
+                contract TEXT NOT NULL, event_type TEXT NOT NULL, side TEXT,
+                quantity REAL, exercise_price REAL, exercise_pnl REAL, fee REAL,
+                raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_position_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                source_row_no INTEGER NOT NULL, contract TEXT NOT NULL, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_source_differences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, identity_id INTEGER NOT NULL,
+                fact_type TEXT NOT NULL, old_batch_id INTEGER, new_batch_id INTEGER NOT NULL,
+                diff_json TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (old_batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (new_batch_id) REFERENCES trading_import_batches(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
+            CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash ON trading_import_batches(account_id, statement_file_sha256);
             CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_positions_batch_date_contract ON trading_position_snapshots(batch_id, snapshot_date, contract);
@@ -1772,6 +1855,45 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
             """
         )
+    statement_columns = {
+        "trading_accounts": [("statement_account_code", "TEXT")],
+        "trading_import_batches": [
+            ("statement_type", "TEXT"),
+            ("statement_file_name", "TEXT"),
+            ("statement_file_sha256", "TEXT"),
+            ("statement_account_code_masked", "TEXT"),
+            ("source_priority", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "trading_trade_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_close_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_position_snapshots": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+    }
+    if _is_pg():
+        for table, columns in statement_columns.items():
+            for name, definition in columns:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {definition}")
+    else:
+        for table, columns in statement_columns.items():
+            existing = {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, definition in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+    for table in ("trading_trade_facts", "trading_close_facts", "trading_position_snapshots"):
+        _exec(
+            cur,
+            f"""
+            UPDATE {table}
+            SET is_current = CASE WHEN EXISTS (
+                SELECT 1 FROM trading_import_batches b
+                WHERE b.id = {table}.batch_id AND b.status = 'active'
+            ) THEN 1 ELSE 0 END
+            """,
+        )
+
     reference_accounts = [("hongyuan_futures", "宏源期货账户", "宏源期货")]
     reference_subjects = [
         "东北组", "山东组", "天津组", "唐山组", "大客户组", "南方组", "黄骅组", "期货组",

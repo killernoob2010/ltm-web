@@ -28,6 +28,11 @@ TRADING_TABLES = {
     "trading_business_assignments",
     "trading_business_close_allocations",
     "trading_business_allocation_audit",
+    "trading_statement_account_summaries",
+    "trading_statement_cash_movements",
+    "trading_statement_exercises",
+    "trading_statement_position_summaries",
+    "trading_fact_source_differences",
 }
 
 
@@ -51,6 +56,40 @@ def test_trading_management_schema_contains_isolated_tables(tmp_path, monkeypatc
 
     assert TRADING_TABLES <= actual
     assert not any(name.startswith("sh_junneng") for name in TRADING_TABLES)
+
+
+def test_trading_statement_schema_versions_fact_sources(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        columns = {
+            table: {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for table in (
+                "trading_accounts",
+                "trading_import_batches",
+                "trading_trade_facts",
+                "trading_close_facts",
+                "trading_position_snapshots",
+            )
+        }
+
+    assert "statement_account_code" in columns["trading_accounts"]
+    assert {
+        "statement_type",
+        "statement_file_name",
+        "statement_file_sha256",
+        "statement_account_code_masked",
+        "source_priority",
+    } <= columns["trading_import_batches"]
+    for table in (
+        "trading_trade_facts",
+        "trading_close_facts",
+        "trading_position_snapshots",
+    ):
+        assert "is_current" in columns[table]
 
 
 def test_postgres_trading_tables_are_hidden_from_data_api_roles():
