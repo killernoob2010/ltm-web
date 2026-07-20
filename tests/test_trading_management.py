@@ -1496,6 +1496,43 @@ def test_business_views_only_show_classified_junneng_and_options(tmp_path, monke
     assert "candidates" not in junneng_trades
 
 
+def test_business_trade_ledger_inherits_close_assignment_from_open_trade(
+    tmp_path, monkeypatch
+):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        open_trade_id = conn.execute(
+            """SELECT identity_id FROM trading_trade_facts
+               WHERE contract = 'rb2610' AND open_close = '开仓'"""
+        ).fetchone()["identity_id"]
+    trading_management.classify_trade_identities(
+        [open_trade_id], subject["id"], "basic_hedging",
+        "代内部公司套保", "", "tester",
+    )
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    result = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert result["total_items"] == 2
+    close_trade = next(row for row in result["items"] if row["open_close"] == "平仓")
+    assert close_trade["assignment_status"] == "classified"
+    assert close_trade["business_subject"] == "上海钧能"
+    assert close_trade["business_type"] == "basic_hedging"
+
+    trading_management.remove_trade_assignment(open_trade_id, actor="tester")
+    after_remove = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert after_remove["items"] == []
+
+
 def test_junneng_close_rows_include_auditable_settlement_amounts(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
@@ -1565,6 +1602,34 @@ def test_classified_option_enters_all_option_business_tabs(tmp_path, monkeypatch
     assert closes["items"] == []
 
 
+def test_option_close_exposes_only_the_classified_allocated_share(
+    tmp_path, monkeypatch
+):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE trading_trade_facts SET asset_type = 'option' WHERE contract = 'rb2610'"
+        )
+        conn.execute(
+            "UPDATE trading_close_facts SET asset_type = 'option' WHERE contract = 'rb2610'"
+        )
+        conn.execute(
+            "UPDATE trading_business_close_allocations SET matched_quantity = 1"
+        )
+
+    result = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert result["total_items"] == 1
+    assert result["items"][0]["matched_quantity"] == pytest.approx(1)
+    assert result["items"][0]["fact_close_pnl"] == pytest.approx(600)
+    assert result["items"][0]["matched_fee"] == pytest.approx(3)
+    assert result["summary"]["fact_close_pnl"] == pytest.approx(600)
+    assert result["summary"]["fee"] == pytest.approx(3)
+
+
 def test_classified_option_position_uses_live_quote_and_position_greeks(
     tmp_path, monkeypatch
 ):
@@ -1620,9 +1685,38 @@ def test_classified_option_position_uses_live_quote_and_position_greeks(
     assert result["summary"]["floating_pnl"] == pytest.approx(78.8)
     assert result["summary"]["delta_exposure"] == pytest.approx(40)
 
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            "i2609-c-700": trading_management.QuoteSnapshot(
+                settlement_price=4.8,
+                multiplier=100,
+                source="settlement_statement",
+            )
+        },
+    )
+    fallback = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert fallback["items"][0]["valuation_status"] == "settlement_reference"
+    assert fallback["summary"]["delta_exposure"] is None
+
 
 def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):
-    setup_classified_business_sample(tmp_path, monkeypatch)
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE trading_business_assignments
+            SET business_type = 'strategic_hedging'
+            WHERE trade_identity_id = (
+                SELECT identity_id FROM trading_trade_facts
+                WHERE contract = 'rb2610' AND open_close = '平仓'
+            )
+            """
+        )
 
     all_rows = trading_management.build_overview(
         trading_management.FactFilters(page=1, page_size=20)

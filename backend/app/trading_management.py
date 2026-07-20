@@ -2203,26 +2203,63 @@ def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
             filters.direction, filters.direction,
             filters.asset_type, filters.asset_type,
         )
+        trade_filter_params = (
+            filters.business_type,
+            filters.contract, f"%{filters.contract}%",
+            filters.direction, filters.direction,
+            filters.asset_type, filters.asset_type,
+            filters.start_date, filters.start_date,
+            filters.end_date, filters.end_date,
+        )
         trade_row = db._exec(
             cur,
             """
+            WITH attributed_trades AS (
+                SELECT tf.quantity AS quantity, COALESCE(tf.fee, 0) AS fee
+                FROM trading_trade_facts tf
+                JOIN trading_import_batches b
+                  ON b.id = tf.batch_id AND b.status = 'active'
+                JOIN trading_business_assignments ba
+                  ON ba.trade_identity_id = tf.identity_id
+                WHERE tf.is_current = 1 AND tf.open_close = '开仓'
+                  AND ba.business_type = ?
+                  AND (? = '' OR LOWER(tf.contract) LIKE LOWER(?))
+                  AND (? = '' OR tf.side = ?)
+                  AND (? = '' OR tf.asset_type = ?)
+                  AND (? = '' OR tf.trade_date >= ?)
+                  AND (? = '' OR tf.trade_date <= ?)
+                UNION ALL
+                SELECT tf.quantity * a.matched_quantity
+                           / NULLIF(cf.quantity, 0) AS quantity,
+                       COALESCE(tf.fee, 0) * a.matched_quantity
+                           / NULLIF(cf.quantity, 0) AS fee
+                FROM trading_trade_facts tf
+                JOIN trading_import_batches b
+                  ON b.id = tf.batch_id AND b.status = 'active'
+                JOIN trading_close_trade_links l
+                  ON l.close_trade_identity_id = tf.identity_id
+                JOIN trading_close_facts cf
+                  ON cf.identity_id = l.close_identity_id AND cf.is_current = 1
+                JOIN trading_import_batches cb
+                  ON cb.id = cf.batch_id AND cb.status = 'active'
+                JOIN trading_business_close_allocations a
+                  ON a.close_identity_id = cf.identity_id
+                JOIN trading_business_assignments ba
+                  ON ba.trade_identity_id = a.open_trade_identity_id
+                WHERE tf.is_current = 1 AND tf.open_close <> '开仓'
+                  AND ba.business_type = ?
+                  AND (? = '' OR LOWER(tf.contract) LIKE LOWER(?))
+                  AND (? = '' OR tf.side = ?)
+                  AND (? = '' OR tf.asset_type = ?)
+                  AND (? = '' OR tf.trade_date >= ?)
+                  AND (? = '' OR tf.trade_date <= ?)
+            )
             SELECT COUNT(*) AS record_count,
-                   COALESCE(SUM(tf.quantity), 0) AS quantity,
-                   COALESCE(SUM(tf.fee), 0) AS fee
-            FROM trading_trade_facts tf
-            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
-            JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-            WHERE tf.is_current = 1 AND ba.business_type = ?
-              AND (? = '' OR LOWER(tf.contract) LIKE LOWER(?))
-              AND (? = '' OR tf.side = ?)
-              AND (? = '' OR tf.asset_type = ?)
-              AND (? = '' OR tf.trade_date >= ?)
-              AND (? = '' OR tf.trade_date <= ?)
+                   COALESCE(SUM(quantity), 0) AS quantity,
+                   COALESCE(SUM(fee), 0) AS fee
+            FROM attributed_trades
             """,
-            common_params + (
-                filters.start_date, filters.start_date,
-                filters.end_date, filters.end_date,
-            ),
+            trade_filter_params + trade_filter_params,
         ).fetchone()
         close_rows = db._exec(
             cur,
@@ -2718,15 +2755,46 @@ def classify_trade_identities(
 def remove_trade_assignment(identity_id: int, actor: str) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
-        before_row = db._exec(
+        linked_rows = db._exec(
             cur,
-            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
+            """
+            SELECT DISTINCT l.close_trade_identity_id
+            FROM trading_fact_close_allocations fa
+            JOIN trading_close_trade_links l
+              ON l.close_identity_id = fa.close_identity_id
+            WHERE fa.open_trade_identity_id = ?
+            """,
             (identity_id,),
-        ).fetchone()
-        if not before_row:
+        ).fetchall()
+        affected_ids = [identity_id] + [
+            int(row["close_trade_identity_id"]) for row in linked_rows
+            if int(row["close_trade_identity_id"]) != identity_id
+        ]
+        placeholders = ",".join("?" for _ in affected_ids)
+        before_rows = db._exec(
+            cur,
+            f"""SELECT * FROM trading_business_assignments
+                WHERE trade_identity_id IN ({placeholders})""",
+            tuple(affected_ids),
+        ).fetchall()
+        if not before_rows:
             return {"removed": False}
-        db._exec(cur, "DELETE FROM trading_business_assignments WHERE trade_identity_id = ?", (identity_id,))
-        _write_assignment_audit(cur, identity_id, "取消业务归类", actor, dict(before_row), None)
+        db._exec(
+            cur,
+            f"""DELETE FROM trading_business_assignments
+                WHERE trade_identity_id IN ({placeholders})""",
+            tuple(affected_ids),
+        )
+        for row in before_rows:
+            row_identity_id = int(row["trade_identity_id"])
+            operation_type = (
+                "取消业务归类"
+                if row_identity_id == identity_id
+                else "业务平仓自动移出"
+            )
+            _write_assignment_audit(
+                cur, row_identity_id, operation_type, actor, dict(row), None
+            )
         conn.commit()
     return {"removed": True}
 
@@ -3030,13 +3098,16 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     multiplier=float(multiplier),
                     remaining_open_fee=float(item.get("remaining_open_fee") or 0),
                 )
+        floating_pnl_values = [
+            float(row["floating_pnl"])
+            for row in items if row.get("floating_pnl") is not None
+        ]
         summary = {
             "record_count": len(items),
             "quantity": sum(float(row["quantity"]) for row in items),
             "business_pnl": 0,
-            "floating_pnl": sum(
-                float(row["floating_pnl"])
-                for row in items if row.get("floating_pnl") is not None
+            "floating_pnl": (
+                sum(floating_pnl_values) if floating_pnl_values else None
             ),
             "floating_pnl_status": (
                 "live" if items and all(
@@ -3050,9 +3121,12 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
         }
         if view == "options":
             for greek in ("delta", "gamma", "theta", "vega", "rho"):
-                summary[f"{greek}_exposure"] = sum(
+                exposures = [
                     float(row[f"{greek}_exposure"])
                     for row in items if row.get(f"{greek}_exposure") is not None
+                ]
+                summary[f"{greek}_exposure"] = (
+                    sum(exposures) if exposures else None
                 )
         return _page_result(items, summary, filters)
 
@@ -3182,6 +3256,18 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
         items = _filter_business_items(items, tab, filters)
+        if view == "options":
+            for item in items:
+                matched_fraction = (
+                    float(item["matched_quantity"] or 0)
+                    / float(item["quantity"] or item["matched_quantity"] or 1)
+                )
+                item["fact_close_pnl"] = (
+                    float(item["fact_close_pnl"] or 0) * matched_fraction
+                )
+                item["matched_fee"] = (
+                    float(item["matched_fee"] or 0) * matched_fraction
+                )
         if view == "junneng":
             for item in items:
                 multiplier = spec_by_key.get(

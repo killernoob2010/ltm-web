@@ -216,7 +216,11 @@ class TqSdkQuoteProvider:
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="tqsdk-market-data"
         )
-        self._api = self._executor.submit(self._initialize).result()
+        try:
+            self._api = self._executor.submit(self._initialize).result()
+        except Exception:
+            self._executor.shutdown(wait=True)
+            raise
 
     def _initialize(self):
         from tqsdk import TqApi, TqAuth
@@ -257,17 +261,21 @@ class TqSdkQuoteProvider:
             underlying_quotes.values()
         )
         deadline = time.time() + 3
+        self._api.wait_update(deadline=min(deadline, time.time() + 1))
         while any(not getattr(quote, "datetime", "") for quote in quote_objects):
             if not self._api.wait_update(deadline=deadline):
                 break
         greek_by_symbol: dict[str, dict[str, Any]] = {}
         if option_contracts:
             symbols = [symbol_by_contract[contract] for contract in option_contracts]
-            frame = self._api.query_option_greeks(
-                symbols, v=None, r=OPTION_RISK_FREE_RATE
-            )
-            for _, row in frame.iterrows():
-                greek_by_symbol[str(row["instrument_id"])] = dict(row)
+            try:
+                frame = self._api.query_option_greeks(
+                    symbols, v=None, r=OPTION_RISK_FREE_RATE
+                )
+                for _, row in frame.iterrows():
+                    greek_by_symbol[str(row["instrument_id"])] = dict(row)
+            except Exception:
+                greek_by_symbol = {}
         results: dict[str, QuoteSnapshot] = {}
         for request in requests:
             quote = quote_by_contract[request.contract]
@@ -288,10 +296,14 @@ class TqSdkQuoteProvider:
             last_price = _valid_price(getattr(quote, "last_price", None))
             bid_price = _valid_price(getattr(quote, "bid_price1", None))
             ask_price = _valid_price(getattr(quote, "ask_price1", None))
+            settlement_price = (
+                _valid_price(getattr(quote, "settlement", None))
+                or request.settlement_price
+            )
             option_price = last_price or (
                 (bid_price + ask_price) / 2
                 if bid_price is not None and ask_price is not None else None
-            )
+            ) or settlement_price
             iv = None
             strike_price = _valid_price(getattr(quote, "strike_price", None))
             option_class = str(getattr(quote, "option_class", "") or "").upper()
@@ -306,25 +318,25 @@ class TqSdkQuoteProvider:
                     (expiry_timestamp - time.time()) / (360 * 24 * 60 * 60),
                     1 / 360,
                 )
-                iv_series = tafunc.get_impv(
-                    Series([underlying_price]),
-                    Series([option_price]),
-                    strike_price,
-                    OPTION_RISK_FREE_RATE,
-                    0.2,
-                    time_to_expiry,
-                    option_class,
-                )
-                iv = _valid_price(iv_series.iloc[-1])
+                try:
+                    iv_series = tafunc.get_impv(
+                        Series([underlying_price]),
+                        Series([option_price]),
+                        strike_price,
+                        OPTION_RISK_FREE_RATE,
+                        0.2,
+                        time_to_expiry,
+                        option_class,
+                    )
+                    iv = _valid_price(iv_series.iloc[-1])
+                except Exception:
+                    iv = None
             greek = greek_by_symbol.get(symbol, {})
             results[request.contract] = QuoteSnapshot(
                 last_price=last_price,
                 bid_price=bid_price,
                 ask_price=ask_price,
-                settlement_price=(
-                    _valid_price(getattr(quote, "settlement", None))
-                    or request.settlement_price
-                ),
+                settlement_price=settlement_price,
                 market_time=str(getattr(quote, "datetime", "") or "") or None,
                 source="tqsdk",
                 multiplier=_valid_price(getattr(quote, "volume_multiple", None)),
@@ -342,8 +354,10 @@ class TqSdkQuoteProvider:
         return results
 
     def close(self) -> None:
-        self._executor.submit(self._api.close).result()
-        self._executor.shutdown(wait=True)
+        try:
+            self._executor.submit(self._api.close).result()
+        finally:
+            self._executor.shutdown(wait=True)
 
 
 class MarketDataService:
