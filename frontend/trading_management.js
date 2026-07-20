@@ -386,11 +386,31 @@
     } catch (error) { showError(error); } finally { setImportBusy(false); }
   }
 
+  async function pollImportJob(jobId) {
+    const stageLabels = {
+      queued: "等待后台任务",
+      facts: "写入并切换事实",
+      matching: "建立开平匹配",
+      business_allocations: "重建业务分摊",
+      done: "导入完成",
+    };
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      const job = await api(`/api/trading-management/imports/jobs/${encodeURIComponent(jobId)}`);
+      const label = stageLabels[job.stage] || "处理导入任务";
+      setImportBusy(true, `${label}：${job.message || "处理中"}`);
+      if (job.status === "succeeded") return job.result;
+      if (job.status === "failed") throw new Error(job.message || "后台导入失败");
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    }
+    throw new Error("后台导入仍在运行，请稍后重新打开交易管理查看结果");
+  }
+
   async function confirmImport() {
     if (!tm.importPreviewId) return showError(new Error("请先完成预检"));
-    setImportBusy(true,"正在确认导入并建立事实匹配，请勿关闭窗口");
+    setImportBusy(true,"正在创建后台导入任务");
     try {
-      const result = await api(`/api/trading-management/imports/${tm.importPreviewId}/confirm`, {method:"POST"});
+      const job = await api(`/api/trading-management/imports/${tm.importPreviewId}/confirm`, {method:"POST"});
+      const result = job.job_id ? await pollImportJob(job.job_id) : job;
       tm.importPreviewId = null; invalidateFactCache(); closeDrawer(); showToast(`导入完成：成交 ${result.counts.trade}，平仓 ${result.counts.close}，持仓 ${result.counts.position}`); await renderPositionsView();
     } catch (error) { showError(error); } finally { setImportBusy(false); }
   }

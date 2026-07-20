@@ -11,10 +11,11 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from threading import Lock
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from openpyxl import load_workbook
 from pydantic import BaseModel
 
@@ -34,6 +35,9 @@ from .trading_valuation import (
 
 
 router = APIRouter()
+_TRADING_IMPORT_JOBS: dict[str, dict[str, Any]] = {}
+_TRADING_IMPORT_ACTIVE_JOBS: dict[int, str] = {}
+_TRADING_IMPORT_JOB_LOCK = Lock()
 
 TRADING_MODULES = {
     "overview": "trading_overview",
@@ -881,6 +885,33 @@ def _statement_close_pnl(cur, row: dict[str, Any]) -> float:
     return difference * row["quantity"] * float(spec["contract_multiplier"])
 
 
+def _statement_close_pnls(cur, rows: list[dict[str, Any]]) -> None:
+    specs = {
+        (row["exchange"], row["product_code"], row["asset_type"]): float(
+            row["contract_multiplier"]
+        )
+        for row in db._exec(
+            cur,
+            """
+            SELECT exchange, product_code, asset_type, contract_multiplier
+            FROM trading_contract_specs
+            WHERE is_active = 1
+            """,
+        ).fetchall()
+    }
+    for row in rows:
+        key = (row["exchange"], _contract_product_code(row["contract"]), row["asset_type"])
+        multiplier = specs.get(key)
+        if multiplier is None:
+            raise ValueError(f"合约 {row['contract']} 缺少已验证乘数")
+        difference = (
+            row["close_price"] - row["open_price"]
+            if row["open_side"] == "买"
+            else row["open_price"] - row["close_price"]
+        )
+        row["fact_close_pnl"] = difference * row["quantity"] * multiplier
+
+
 def _source_row_changes(old_raw_json: str, new_raw_json: str) -> list[dict[str, Any]]:
     old = json.loads(old_raw_json)
     new = json.loads(new_raw_json)
@@ -965,7 +996,94 @@ def _statement_current_decision(
     return 1, changed
 
 
-def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, Any]:
+def _statement_current_decisions(
+    cur,
+    table: str,
+    prepared_rows: list[tuple[dict[str, Any], int, int]],
+    new_priority: int,
+    new_batch_id: int,
+    fact_type: str,
+) -> list[tuple[int, int]]:
+    identity_ids = [identity_id for _row, _source_id, identity_id in prepared_rows]
+    current_by_identity: dict[int, Any] = {}
+    for start in range(0, len(identity_ids), 500):
+        chunk = identity_ids[start:start + 500]
+        if not chunk:
+            continue
+        placeholders = ",".join("?" for _ in chunk)
+        current_rows = db._exec(
+            cur,
+            f"""
+            SELECT f.id, f.identity_id, f.batch_id, sr.raw_hash, sr.raw_json,
+                   b.source_priority
+            FROM {table} f
+            JOIN trading_source_rows sr ON sr.id = f.source_row_id
+            JOIN trading_import_batches b ON b.id = f.batch_id
+            WHERE f.identity_id IN ({placeholders}) AND f.is_current = 1
+            ORDER BY f.id DESC
+            """,
+            tuple(chunk),
+        ).fetchall()
+        for current in current_rows:
+            current_by_identity.setdefault(int(current["identity_id"]), current)
+
+    updates = []
+    differences = []
+    decisions = []
+    for row, _source_id, identity_id in prepared_rows:
+        current = current_by_identity.get(identity_id)
+        if not current:
+            decisions.append((1, 0))
+            continue
+        if new_priority < int(current["source_priority"] or 0):
+            decisions.append((0, 0))
+            continue
+        updates.append((current["id"],))
+        new_raw_json = json.dumps(row["raw_data"], ensure_ascii=False, sort_keys=True)
+        new_raw_hash = hashlib.sha256(new_raw_json.encode("utf-8")).hexdigest()
+        changed = int(current["raw_hash"] != new_raw_hash)
+        if changed:
+            differences.append(
+                (
+                    identity_id,
+                    fact_type,
+                    current["batch_id"],
+                    new_batch_id,
+                    json.dumps(
+                        {
+                            "old_raw_hash": current["raw_hash"],
+                            "new_raw_hash": new_raw_hash,
+                            "changes": _source_row_changes(
+                                current["raw_json"], new_raw_json
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+        decisions.append((1, changed))
+
+    if updates:
+        db._executemany(cur, f"UPDATE {table} SET is_current = 0 WHERE id = ?", updates)
+    if differences:
+        db._executemany(
+            cur,
+            """
+            INSERT INTO trading_fact_source_differences
+                (identity_id, fact_type, old_batch_id, new_batch_id, diff_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            differences,
+        )
+    return decisions
+
+
+def confirm_settlement_import(
+    preview_batch_id: int,
+    actor: str,
+    progress: Optional[Callable[[str, str], None]] = None,
+) -> dict[str, Any]:
+    notify = progress or (lambda _stage, _message: None)
     with db.connect() as conn:
         cur = conn.cursor()
         batch = db._exec(
@@ -1005,17 +1123,20 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
         replacements = 0
         differences = 0
 
+        notify("trades", "正在写入并切换成交事实")
         trades = _rows_with_statement_keys("trade", account_code, statement["trades"])
         prepared_trades = _prepare_import_rows(
             cur, preview_batch_id, batch["account_id"], "trade",
             batch["statement_file_name"], "成交记录", trades,
         )
+        trade_decisions = _statement_current_decisions(
+            cur, "trading_trade_facts", prepared_trades,
+            priority, preview_batch_id, "trade",
+        )
         trade_values = []
-        for row, source_id, identity_id in prepared_trades:
-            is_current, changed = _statement_current_decision(
-                cur, "trading_trade_facts", identity_id, source_id,
-                priority, preview_batch_id, "trade",
-            )
+        for (row, source_id, identity_id), (is_current, changed) in zip(
+            prepared_trades, trade_decisions
+        ):
             replacements += int(is_current and changed)
             differences += changed
             trade_values.append(
@@ -1041,19 +1162,21 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
                 trade_values,
             )
 
+        notify("closes", "正在写入并切换平仓事实")
         closes = _rows_with_statement_keys("close", account_code, statement["closes"])
-        for row in closes:
-            row["fact_close_pnl"] = _statement_close_pnl(cur, row)
+        _statement_close_pnls(cur, closes)
         prepared_closes = _prepare_import_rows(
             cur, preview_batch_id, batch["account_id"], "close",
             batch["statement_file_name"], "平仓明细", closes,
         )
+        close_decisions = _statement_current_decisions(
+            cur, "trading_close_facts", prepared_closes,
+            priority, preview_batch_id, "close",
+        )
         close_values = []
-        for row, source_id, identity_id in prepared_closes:
-            is_current, changed = _statement_current_decision(
-                cur, "trading_close_facts", identity_id, source_id,
-                priority, preview_batch_id, "close",
-            )
+        for (row, source_id, identity_id), (is_current, changed) in zip(
+            prepared_closes, close_decisions
+        ):
             replacements += int(is_current and changed)
             differences += changed
             close_values.append(
@@ -1077,6 +1200,7 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
                 close_values,
             )
 
+        notify("positions", "正在写入并切换持仓事实")
         positions = _rows_with_statement_keys(
             "position", account_code, statement["positions"]
         )
@@ -1084,12 +1208,14 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
             cur, preview_batch_id, batch["account_id"], "position",
             batch["statement_file_name"], "持仓明细", positions,
         )
+        position_decisions = _statement_current_decisions(
+            cur, "trading_position_snapshots", prepared_positions,
+            priority, preview_batch_id, "position",
+        )
         position_values = []
-        for row, source_id, identity_id in prepared_positions:
-            is_current, changed = _statement_current_decision(
-                cur, "trading_position_snapshots", identity_id, source_id,
-                priority, preview_batch_id, "position",
-            )
+        for (row, source_id, identity_id), (is_current, changed) in zip(
+            prepared_positions, position_decisions
+        ):
             replacements += int(is_current and changed)
             differences += changed
             position_values.append(
@@ -1120,8 +1246,16 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
             "INSERT INTO trading_statement_account_summaries (batch_id, summary_json) VALUES (?, ?)",
             (preview_batch_id, json.dumps(statement["account_summary"], ensure_ascii=False)),
         )
-        for movement in statement["cash_movements"]:
-            db._exec(
+        movement_values = [
+            (
+                preview_batch_id, movement["source_row_no"], movement["date"],
+                movement["movement_type"], movement["deposit"], movement["withdrawal"],
+                json.dumps(movement["raw_data"], ensure_ascii=False),
+            )
+            for movement in statement["cash_movements"]
+        ]
+        if movement_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_statement_cash_movements
@@ -1129,12 +1263,9 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
                      deposit, withdrawal, raw_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    preview_batch_id, movement["source_row_no"], movement["date"],
-                    movement["movement_type"], movement["deposit"], movement["withdrawal"],
-                    json.dumps(movement["raw_data"], ensure_ascii=False),
-                ),
+                movement_values,
             )
+        notify("events", "正在写入并切换期权了结事实")
         events = _rows_with_statement_keys(
             "option_event", account_code, statement["exercises"]
         )
@@ -1142,21 +1273,51 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
             cur, preview_batch_id, batch["account_id"], "option_event",
             batch["statement_file_name"], "行权明细", events,
         )
-        for event, source_id, identity_id in prepared_events:
-            is_current, changed = _statement_current_decision(
-                cur, "trading_close_facts", identity_id, source_id,
-                priority, preview_batch_id, "option_event",
-            )
+        event_decisions = _statement_current_decisions(
+            cur, "trading_close_facts", prepared_events,
+            priority, preview_batch_id, "option_event",
+        )
+        current_event_identities = []
+        exercise_values = []
+        event_close_values = []
+        for (event, source_id, identity_id), (is_current, changed) in zip(
+            prepared_events, event_decisions
+        ):
             replacements += int(is_current and changed)
             differences += changed
             if is_current:
-                db._exec(
-                    cur,
-                    """UPDATE trading_statement_exercises SET is_current = 0
-                       WHERE identity_id = ? AND is_current = 1""",
-                    (identity_id,),
+                current_event_identities.append((identity_id,))
+            exercise_values.append(
+                (
+                    preview_batch_id, event["source_row_no"], identity_id, source_id,
+                    event["exchange"], event["product"], event["event_date"],
+                    event["contract"], event["event_type"], event["event_type_raw"],
+                    event["side"], event["quantity"], event["exercise_price"],
+                    event["exercise_amount"], event["exercise_pnl"], event["fee"],
+                    is_current,
+                    json.dumps(event["raw_data"], ensure_ascii=False),
                 )
-            db._exec(
+            )
+            close_side = "卖" if event["side"] == "买" else "买"
+            event_close_values.append(
+                (
+                    identity_id, preview_batch_id, source_id, event["event_date"],
+                    event["exchange"], event["contract"], event["side"], close_side,
+                    event["quantity"], event["fee"], is_current, event["event_type"],
+                    event["event_type_raw"], event["exercise_price"],
+                    event["exercise_amount"], event["exercise_pnl"],
+                    "not_required" if event["event_type"] == "expiry_abandon" else "pending",
+                )
+            )
+        if current_event_identities:
+            db._executemany(
+                cur,
+                """UPDATE trading_statement_exercises SET is_current = 0
+                   WHERE identity_id = ? AND is_current = 1""",
+                current_event_identities,
+            )
+        if exercise_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_statement_exercises
@@ -1166,18 +1327,10 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
                      is_current, raw_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    preview_batch_id, event["source_row_no"], identity_id, source_id,
-                    event["exchange"], event["product"], event["event_date"],
-                    event["contract"], event["event_type"], event["event_type_raw"],
-                    event["side"], event["quantity"], event["exercise_price"],
-                    event["exercise_amount"], event["exercise_pnl"], event["fee"],
-                    is_current,
-                    json.dumps(event["raw_data"], ensure_ascii=False),
-                ),
+                exercise_values,
             )
-            close_side = "卖" if event["side"] == "买" else "买"
-            db._exec(
+        if event_close_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_close_facts
@@ -1191,27 +1344,24 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
                         'statement_event', 'file_imported', 'pending_event_match', ?, ?,
                         ?, ?, ?, ?)
                 """,
-                (
-                    identity_id, preview_batch_id, source_id, event["event_date"],
-                    event["exchange"], event["contract"], event["side"], close_side,
-                    event["quantity"], event["fee"], is_current, event["event_type"],
-                    event["event_type_raw"], event["exercise_price"],
-                    event["exercise_amount"], event["exercise_pnl"],
-                    "not_required" if event["event_type"] == "expiry_abandon" else "pending",
-                ),
+                event_close_values,
             )
-        for item in statement["position_summary"]:
-            db._exec(
+        position_summary_values = [
+            (
+                preview_batch_id, item["source_row_no"], item["contract"],
+                json.dumps(item["raw_data"], ensure_ascii=False),
+            )
+            for item in statement["position_summary"]
+        ]
+        if position_summary_values:
+            db._executemany(
                 cur,
                 """
                 INSERT INTO trading_statement_position_summaries
                     (batch_id, source_row_no, contract, raw_json)
                 VALUES (?, ?, ?, ?)
                 """,
-                (
-                    preview_batch_id, item["source_row_no"], item["contract"],
-                    json.dumps(item["raw_data"], ensure_ascii=False),
-                ),
+                position_summary_values,
             )
         db._exec(
             cur,
@@ -3806,6 +3956,77 @@ def _cleanup_preview_files(batch_id: int) -> None:
                 pass
 
 
+def _run_settlement_import_job(
+    job_id: str, preview_batch_id: int, actor: str
+) -> None:
+    job = _TRADING_IMPORT_JOBS[job_id]
+    try:
+        job.update(
+            status="running",
+            stage="facts",
+            message="正在写入并切换事实",
+        )
+
+        def update_fact_progress(stage: str, message: str) -> None:
+            job.update(stage="facts", detail_stage=stage, message=message)
+
+        result = confirm_settlement_import(
+            preview_batch_id, actor, progress=update_fact_progress
+        )
+        job.update(stage="matching", message="正在建立开平匹配")
+        result["matching"] = match_imported_facts(result["batch_id"])
+        job.update(stage="business_allocations", message="正在重建业务分摊")
+        result["business_allocations"] = rebuild_default_business_allocations(
+            result["batch_id"]
+        )
+        _cleanup_preview_files(preview_batch_id)
+        job.update(
+            status="succeeded",
+            stage="done",
+            message="导入、事实匹配和业务分摊均已完成",
+            result=result,
+            finished_at=datetime.utcnow().isoformat(),
+        )
+    except Exception as exc:
+        job.update(
+            status="failed",
+            stage="error",
+            message=str(exc),
+            finished_at=datetime.utcnow().isoformat(),
+        )
+        with _TRADING_IMPORT_JOB_LOCK:
+            if _TRADING_IMPORT_ACTIVE_JOBS.get(preview_batch_id) == job_id:
+                _TRADING_IMPORT_ACTIVE_JOBS.pop(preview_batch_id, None)
+
+
+def _create_settlement_import_job(
+    background_tasks: BackgroundTasks,
+    preview_batch_id: int,
+    actor: str,
+) -> dict[str, Any]:
+    with _TRADING_IMPORT_JOB_LOCK:
+        active_job_id = _TRADING_IMPORT_ACTIVE_JOBS.get(preview_batch_id)
+        if active_job_id:
+            active_job = _TRADING_IMPORT_JOBS.get(active_job_id)
+            if active_job and active_job["status"] in {"queued", "running", "succeeded"}:
+                return active_job
+        job_id = uuid.uuid4().hex
+        job = {
+            "job_id": job_id,
+            "preview_batch_id": preview_batch_id,
+            "status": "queued",
+            "stage": "queued",
+            "message": "已加入后台导入队列",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        _TRADING_IMPORT_JOBS[job_id] = job
+        _TRADING_IMPORT_ACTIVE_JOBS[preview_batch_id] = job_id
+    background_tasks.add_task(
+        _run_settlement_import_job, job_id, preview_batch_id, actor
+    )
+    return job
+
+
 def _api_filters(
     contract: str = "",
     direction: str = "",
@@ -3937,17 +4158,25 @@ def post_trading_import_preview(
 @router.post("/imports/{preview_batch_id}/confirm")
 def post_trading_import_confirm(
     preview_batch_id: int,
+    background_tasks: BackgroundTasks,
     user=Depends(trading_management_current_user),
 ):
     require_permission(user, "trading.imports", "import")
-    try:
-        result = confirm_settlement_import(preview_batch_id, _actor(user))
-        result["matching"] = match_imported_facts(result["batch_id"])
-        result["business_allocations"] = rebuild_default_business_allocations(result["batch_id"])
-        _cleanup_preview_files(preview_batch_id)
-        return result
-    except ValueError as exc:
-        raise _as_http_error(exc) from exc
+    return _create_settlement_import_job(
+        background_tasks, preview_batch_id, _actor(user)
+    )
+
+
+@router.get("/imports/jobs/{job_id}")
+def get_trading_import_job(
+    job_id: str,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.imports", "view")
+    job = _TRADING_IMPORT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="导入任务不存在或已失效")
+    return job
 
 
 @router.get("/config")

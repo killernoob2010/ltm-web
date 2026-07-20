@@ -591,6 +591,13 @@ def test_monthly_statement_replaces_conflicting_daily_fact(tmp_path, monkeypatch
             "SELECT price FROM trading_trade_facts WHERE is_current = 1"
         ).fetchone()
         assert current["price"] == 786
+        versions = conn.execute(
+            "SELECT price, is_current FROM trading_trade_facts ORDER BY id"
+        ).fetchall()
+        assert [(row["price"], row["is_current"]) for row in versions] == [
+            (785, 0),
+            (786, 1),
+        ]
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM trading_fact_source_differences"
         ).fetchone()["c"] >= 1
@@ -603,6 +610,97 @@ def test_monthly_statement_replaces_conflicting_daily_fact(tmp_path, monkeypatch
             change["old"] == "785.000" and change["new"] == "786.000"
             for change in diff["changes"]
         )
+
+
+def test_statement_confirm_uses_bulk_current_fact_decisions(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    content = statement_fixture().encode("gb18030")
+    preview = trading_management.preview_settlement_import(
+        1, "daily.txt", content, actor="tester"
+    )
+
+    monkeypatch.setattr(
+        trading_management,
+        "_statement_current_decision",
+        lambda *_args, **_kwargs: pytest.fail("confirm must not query current facts row by row"),
+    )
+
+    confirmed = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+
+    assert confirmed["counts"]["trade"] == 1
+    assert confirmed["counts"]["close"] == 1
+    assert confirmed["counts"]["position"] == 1
+
+
+def test_statement_confirm_job_reports_stages_and_reuses_active_job(monkeypatch):
+    class BackgroundTasks:
+        def __init__(self):
+            self.calls = []
+
+        def add_task(self, func, *args):
+            self.calls.append((func, args))
+
+    tasks = BackgroundTasks()
+    trading_management._TRADING_IMPORT_JOBS.clear()
+    trading_management._TRADING_IMPORT_ACTIVE_JOBS.clear()
+    monkeypatch.setattr(
+        trading_management,
+        "confirm_settlement_import",
+        lambda batch_id, actor, progress=None: {
+            "batch_id": batch_id,
+            "counts": {"trade": 2, "close": 1, "exercise": 0, "position": 1},
+        },
+    )
+    monkeypatch.setattr(
+        trading_management, "match_imported_facts", lambda batch_id: {"batch_id": batch_id}
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "rebuild_default_business_allocations",
+        lambda batch_id: {"batch_id": batch_id},
+    )
+    monkeypatch.setattr(trading_management, "_cleanup_preview_files", lambda batch_id: None)
+
+    first = trading_management._create_settlement_import_job(tasks, 42, "tester")
+    duplicate = trading_management._create_settlement_import_job(tasks, 42, "tester")
+
+    assert first["job_id"] == duplicate["job_id"]
+    assert len(tasks.calls) == 1
+    func, args = tasks.calls[0]
+    func(*args)
+    finished = trading_management._TRADING_IMPORT_JOBS[first["job_id"]]
+    assert finished["status"] == "succeeded"
+    assert finished["stage"] == "done"
+    assert finished["result"]["counts"]["trade"] == 2
+
+
+def test_failed_statement_confirm_job_can_be_retried(monkeypatch):
+    class BackgroundTasks:
+        def __init__(self):
+            self.calls = []
+
+        def add_task(self, func, *args):
+            self.calls.append((func, args))
+
+    tasks = BackgroundTasks()
+    trading_management._TRADING_IMPORT_JOBS.clear()
+    trading_management._TRADING_IMPORT_ACTIVE_JOBS.clear()
+    monkeypatch.setattr(
+        trading_management,
+        "confirm_settlement_import",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("导入失败")),
+    )
+
+    first = trading_management._create_settlement_import_job(tasks, 42, "tester")
+    func, args = tasks.calls.pop()
+    func(*args)
+    retry = trading_management._create_settlement_import_job(tasks, 42, "tester")
+
+    assert trading_management._TRADING_IMPORT_JOBS[first["job_id"]]["status"] == "failed"
+    assert retry["job_id"] != first["job_id"]
+    assert retry["status"] == "queued"
 
 
 def test_postgres_executemany_uses_batched_protocol(monkeypatch):
@@ -2165,6 +2263,7 @@ def test_trading_management_exposes_complete_p0_api_surface():
     expected = {
         ("/imports/preview", "POST"),
         ("/imports/{preview_batch_id}/confirm", "POST"),
+        ("/imports/jobs/{job_id}", "GET"),
         ("/config", "GET"),
         ("/business-assignments/batch-confirm", "POST"),
         ("/business/junneng/{tab}", "GET"),

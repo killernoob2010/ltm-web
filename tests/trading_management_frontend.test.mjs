@@ -28,7 +28,11 @@ test("settlement import uses one txt file with automatic daily or monthly detect
   assert.match(tradingJs, /\/imports\/preview/);
   assert.match(tradingJs, /\/confirm/);
   assert.match(tradingJs, /正在解析并预检结算单，请稍候/);
-  assert.match(tradingJs, /正在确认导入并建立事实匹配，请勿关闭窗口/);
+  assert.match(tradingJs, /function pollImportJob/);
+  assert.match(tradingJs, /\/imports\/jobs\//);
+  assert.match(tradingJs, /写入并切换事实/);
+  assert.match(tradingJs, /建立开平匹配/);
+  assert.match(tradingJs, /重建业务分摊/);
 });
 
 test("whole trades can be classified and business close relationships can be rematched", () => {
