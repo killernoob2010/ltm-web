@@ -2028,6 +2028,13 @@ def test_manual_rematch_supports_mixed_business_attribution(tmp_path, monkeypatc
         "basic_hedging", "strategic_hedging",
     }
     assert sum(row["matched_quantity"] for row in closes["items"]) == pytest.approx(2)
+    assert [row["fact_close_pnl"] for row in closes["items"]] == pytest.approx(
+        [600, 600]
+    )
+    assert closes["summary"]["fact_close_pnl"] == pytest.approx(1200)
+    assert [row["allocated_close_fee"] for row in closes["items"]] == pytest.approx(
+        [3, 3]
+    )
 
 
 def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp_path, monkeypatch):

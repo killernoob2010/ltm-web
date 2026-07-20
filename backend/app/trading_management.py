@@ -3283,18 +3283,17 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
         items = _filter_business_items(items, tab, filters)
-        if view == "options":
-            for item in items:
-                matched_fraction = (
-                    float(item["matched_quantity"] or 0)
-                    / float(item["quantity"] or item["matched_quantity"] or 1)
-                )
-                item["fact_close_pnl"] = (
-                    float(item["fact_close_pnl"] or 0) * matched_fraction
-                )
-                item["matched_fee"] = (
-                    float(item["matched_fee"] or 0) * matched_fraction
-                )
+        for item in items:
+            matched_fraction = (
+                float(item["matched_quantity"] or 0)
+                / float(item["quantity"] or item["matched_quantity"] or 1)
+            )
+            item["fact_close_pnl"] = (
+                float(item["fact_close_pnl"] or 0) * matched_fraction
+            )
+            item["matched_fee"] = (
+                float(item["matched_fee"] or 0) * matched_fraction
+            )
         if view == "junneng":
             for item in items:
                 multiplier = spec_by_key.get(
@@ -3320,11 +3319,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     * matched_quantity
                     / float(item["open_trade_quantity"] or matched_quantity or 1)
                 )
-                allocated_close_fee = (
-                    float(item["matched_fee"] or 0)
-                    * matched_quantity
-                    / float(item["quantity"] or matched_quantity or 1)
-                )
+                allocated_close_fee = float(item["matched_fee"] or 0)
                 settlement_open_price = float(
                     item["allocated_open_price"]
                     if item["allocated_open_price"] is not None
