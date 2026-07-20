@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.9, FastAPI/Pydantic, SQLite and PostgreSQL through `backend/app/db.py`, vanilla JavaScript, pytest, Node test runner.
 
+**Execution Status (2026-07-20):** Completed on `codex/settlement-statement-import` and deployed to Staging as `074b840`. Local full gates passed (Python 372, Node 99, compile and diff checks); Staging schema migration and browser acceptance passed. Production remains intentionally unreleased pending Gate B confirmation.
+
 ## Global Constraints
 
 - Normal development, database writes, deployment, and acceptance are Staging-only.
