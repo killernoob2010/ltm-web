@@ -228,6 +228,45 @@ def test_market_data_failure_uses_statement_settlement_without_fake_live_price()
         "settlement_reference",
         "settlement_reference",
     )
+    assert snapshot.market_data_status == "provider_error"
+    assert snapshot.market_data_message == "天勤行情读取失败"
+
+
+def test_market_data_service_retries_provider_initialization():
+    class Provider:
+        def fetch(self, requests):
+            return {
+                request.contract: QuoteSnapshot(last_price=12.5)
+                for request in requests
+            }
+
+        def close(self):
+            pass
+
+    attempts = 0
+
+    def provider_factory():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary authentication timeout")
+        return Provider()
+
+    service = MarketDataService(
+        provider_factory=provider_factory,
+        provider_retry_seconds=0,
+        ttl_seconds=0,
+    )
+    request = QuoteRequest(contract="rb2610", exchange="SHFE")
+
+    first = service.get_quotes([request])["rb2610"]
+    second = service.get_quotes([request])["rb2610"]
+
+    assert first.market_data_status == "provider_error"
+    assert first.market_data_message == "天勤行情连接失败，系统将自动重试"
+    assert second.last_price == 12.5
+    assert second.market_data_status == "live"
+    assert attempts == 2
 
 
 def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():

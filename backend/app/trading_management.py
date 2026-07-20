@@ -2775,12 +2775,32 @@ def list_trading_config() -> dict[str, Any]:
         subjects = db._exec(cur, "SELECT * FROM trading_business_subjects ORDER BY name").fetchall()
         strategies = db._exec(cur, "SELECT * FROM trading_strategies ORDER BY name").fetchall()
         accounts = db._exec(cur, "SELECT * FROM trading_accounts WHERE is_active = 1 ORDER BY display_name").fetchall()
+        latest_junneng_close = db._exec(
+            cur,
+            """
+            SELECT MAX(cf.close_date) AS close_date
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b
+              ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_business_close_allocations a
+              ON a.close_identity_id = cf.identity_id
+            JOIN trading_business_assignments ba
+              ON ba.trade_identity_id = a.open_trade_identity_id
+            JOIN trading_business_subjects s
+              ON s.id = ba.business_subject_id
+            WHERE cf.is_current = 1 AND s.name = '上海钧能'
+            """,
+        ).fetchone()
     return {
         "business_types": list(BUSINESS_TYPES),
         "subjects": [dict(row) for row in subjects],
         "strategies": [dict(row) for row in strategies],
         "accounts": [dict(row) for row in accounts],
         "junneng_candidate_products": ["rb", "hc"],
+        "latest_junneng_close_date": (
+            latest_junneng_close["close_date"]
+            if latest_junneng_close else None
+        ),
     }
 
 
@@ -3189,6 +3209,8 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 "valuation_source": valuation_source,
                 "market_time": quote.market_time,
                 "valuation_status": valuation_status,
+                "market_data_status": quote.market_data_status,
+                "market_data_message": quote.market_data_message,
                 "floating_pnl": None,
                 "floating_pnl_status": valuation_status,
                 "contract_multiplier": multiplier,

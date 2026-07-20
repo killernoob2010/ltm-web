@@ -267,6 +267,7 @@ def _position_rows(
         if len(row) < 17 or not DATE_RE.match(row[5]):
             continue
         contract = row[4].lower()
+        settlement_price = _number(row[11])
         result.append(
             {
                 "snapshot_date": snapshot_date,
@@ -281,14 +282,18 @@ def _position_rows(
                 "quantity": _number(row[8]),
                 "average_price": _number(row[9]),
                 "previous_settlement": _number(row[10]),
-                "settlement_price": _number(row[11]),
+                "settlement_price": settlement_price,
                 "source_floating_pnl": _number(row[12]),
                 "mark_pnl": _number(row[13]),
                 "margin": _number(row[14]),
                 "option_market_value": _number(row[15]),
-                "valuation_price": None,
+                "valuation_price": settlement_price,
                 "floating_pnl": None,
-                "valuation_status": "pending_calculation",
+                "valuation_status": (
+                    "settlement_reference"
+                    if settlement_price is not None
+                    else "unavailable"
+                ),
                 "source_row_no": line_no,
                 "raw_data": {"columns": row},
             }

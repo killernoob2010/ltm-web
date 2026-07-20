@@ -174,7 +174,8 @@ test("Shanghai Junneng shows live positions and the five settlement metrics", ()
     assert.match(tradingJs, new RegExp(label));
   }
   assert.match(tradingJs, /settlement_rule_version/);
-  assert.match(tradingJs, /currentMonthRange/);
+  assert.match(tradingJs, /latest_junneng_close_date/);
+  assert.match(tradingJs, /monthRangeForDate/);
   assert.match(tradingJs, /businessDates:\s*\{\s*junneng:/);
 });
 

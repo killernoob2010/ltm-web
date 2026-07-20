@@ -66,6 +66,8 @@ def test_parse_daily_statement_detects_scope_and_sections():
     }
     assert result["trades"][0]["transaction_no"] == "100001"
     assert result["positions"][0]["snapshot_date"] == "20260529"
+    assert result["positions"][0]["valuation_price"] == 785
+    assert result["positions"][0]["valuation_status"] == "settlement_reference"
 
 
 def test_parse_monthly_statement_detects_range_and_abandonment():

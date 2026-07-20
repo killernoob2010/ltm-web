@@ -1596,6 +1596,15 @@ def test_default_business_allocations_preserve_fact_pnl(tmp_path, monkeypatch):
     assert fact_pnl == 1200
 
 
+def test_business_config_exposes_latest_junneng_close_date(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    config = trading_management.list_trading_config()
+
+    assert config["latest_junneng_close_date"] == "20260630"
+
+
 def test_business_views_only_show_classified_junneng_and_options(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])

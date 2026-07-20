@@ -7,7 +7,7 @@ import math
 import os
 import threading
 import time
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Callable, Optional, Protocol, Union
 
 
 SH_JUNNENG_RULE_VERSION = "sh_junneng_v1"
@@ -42,6 +42,8 @@ class QuoteSnapshot:
     vega: Optional[float] = None
     rho: Optional[float] = None
     expired: bool = False
+    market_data_status: str = ""
+    market_data_message: str = ""
 
 
 def _valid_price(value: Any) -> Optional[float]:
@@ -401,19 +403,46 @@ class MarketDataService:
     def __init__(
         self,
         provider: Optional[QuoteProvider] = None,
+        provider_factory: Optional[Callable[[], QuoteProvider]] = None,
+        provider_retry_seconds: float = 30,
         ttl_seconds: float = 10,
     ):
         self.provider = provider
+        self.provider_factory = provider_factory
+        self.provider_retry_seconds = provider_retry_seconds
+        self.provider_status = "live" if provider is not None else "not_configured"
+        self.provider_message = (
+            "" if provider is not None else "天勤行情认证未配置"
+        )
+        self._next_provider_retry = 0.0
         self.ttl_seconds = ttl_seconds
         self._cache: dict[str, tuple[float, QuoteSnapshot]] = {}
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
+
+    def _ensure_provider(self, now: float) -> None:
+        if (
+            self.provider is not None
+            or self.provider_factory is None
+            or now < self._next_provider_retry
+        ):
+            return
+        try:
+            self.provider = self.provider_factory()
+        except Exception:
+            self.provider_status = "provider_error"
+            self.provider_message = "天勤行情连接失败，系统将自动重试"
+            self._next_provider_retry = now + self.provider_retry_seconds
+            return
+        self.provider_status = "live"
+        self.provider_message = ""
 
     def get_quotes(
         self, requests: list[QuoteRequest]
     ) -> dict[str, QuoteSnapshot]:
         with self._fetch_lock:
             now = time.monotonic()
+            self._ensure_provider(now)
             result: dict[str, QuoteSnapshot] = {}
             missing: list[QuoteRequest] = []
             with self._lock:
@@ -427,17 +456,28 @@ class MarketDataService:
             if missing and self.provider is not None:
                 try:
                     fetched = self.provider.fetch(missing)
+                    self.provider_status = "live"
+                    self.provider_message = ""
                 except Exception:
                     fetched = {}
+                    self.provider_status = "provider_error"
+                    self.provider_message = "天勤行情读取失败"
             with self._lock:
                 for request in missing:
-                    snapshot = fetched.get(request.contract) or QuoteSnapshot(
-                        settlement_price=request.settlement_price,
-                        source=(
-                            "settlement_statement"
-                            if request.settlement_price else ""
-                        ),
-                    )
+                    snapshot = fetched.get(request.contract)
+                    if snapshot is not None:
+                        snapshot.market_data_status = "live"
+                        snapshot.market_data_message = ""
+                    else:
+                        snapshot = QuoteSnapshot(
+                            settlement_price=request.settlement_price,
+                            source=(
+                                "settlement_statement"
+                                if request.settlement_price else ""
+                            ),
+                            market_data_status=self.provider_status,
+                            market_data_message=self.provider_message,
+                        )
                     if snapshot.settlement_price is None:
                         snapshot.settlement_price = request.settlement_price
                     self._cache[request.contract] = (
@@ -455,13 +495,11 @@ class MarketDataService:
 def _default_market_data_service() -> MarketDataService:
     username = os.getenv("TQSDK_USERNAME", "").strip()
     password = os.getenv("TQSDK_PASSWORD", "").strip()
-    provider: Optional[QuoteProvider] = None
-    if username and password:
-        try:
-            provider = TqSdkQuoteProvider(username, password)
-        except Exception:
-            provider = None
-    return MarketDataService(provider=provider)
+    if not username or not password:
+        return MarketDataService()
+    return MarketDataService(
+        provider_factory=lambda: TqSdkQuoteProvider(username, password)
+    )
 
 
 _market_data_service: Optional[MarketDataService] = None

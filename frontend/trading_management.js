@@ -1,10 +1,10 @@
 (function() {
-  function currentMonthRange() {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const lastDay = new Date(year, now.getMonth() + 1, 0).getDate();
-    return { from: `${year}${month}01`, to: `${year}${month}${String(lastDay).padStart(2, "0")}` };
+  function monthRangeForDate(value) {
+    if (!/^\d{8}$/.test(value || "")) return { from: "", to: "" };
+    const year = Number(value.slice(0, 4));
+    const month = Number(value.slice(4, 6));
+    const lastDay = new Date(year, month, 0).getDate();
+    return { from: `${value.slice(0, 6)}01`, to: `${value.slice(0, 6)}${String(lastDay).padStart(2, "0")}` };
   }
 
   const tm = {
@@ -21,9 +21,10 @@
     businessQuery: { junneng: "", options: "" },
     businessSide: { junneng: "", options: "" },
     businessDates: {
-      junneng: { positions: { from: "", to: "" }, closes: currentMonthRange(), trades: { from: "", to: "" } },
+      junneng: { positions: { from: "", to: "" }, closes: { from: "", to: "" }, trades: { from: "", to: "" } },
       options: { positions: { from: "", to: "" }, closes: { from: "", to: "" }, trades: { from: "", to: "" } },
     },
+    businessDatesInitialized: false,
     page: 1,
     pageSize: 20,
     query: "",
@@ -118,6 +119,10 @@
 
   async function ensureConfig() {
     if (!tm.config) tm.config = await api("/api/trading-management/config");
+    if (!tm.businessDatesInitialized) {
+      tm.businessDates.junneng.closes = monthRangeForDate(tm.config.latest_junneng_close_date);
+      tm.businessDatesInitialized = true;
+    }
     $("#tmAccountFilter").innerHTML = '<option value="">全部账户</option>' + tm.config.accounts.map((item) => `<option value="${item.id}">${esc(item.display_name || item.account_code)}</option>`).join("");
   }
 
@@ -456,7 +461,8 @@
   function optionPositionTable(data) {
     const body = data.items.map((row) => {
       const anatomy = optionAnatomy(row.contract);
-      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(valuationSource(row.valuation_source))}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${num(row.iv)}</td><td>${num(row.floating_pnl)}</td><td>${num(row.delta_exposure)}</td><td>${num(row.gamma_exposure)}</td><td>${num(row.theta_exposure)}</td><td>${num(row.vega_exposure)}</td><td>${esc(row.market_time || "—")}</td><td>${esc(valuationStatus(row.valuation_status))}</td></tr>`;
+      const status = row.market_data_message ? `${valuationStatus(row.valuation_status)} · ${row.market_data_message}` : valuationStatus(row.valuation_status);
+      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(valuationSource(row.valuation_source))}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${num(row.iv)}</td><td>${num(row.floating_pnl)}</td><td>${num(row.delta_exposure)}</td><td>${num(row.gamma_exposure)}</td><td>${num(row.theta_exposure)}</td><td>${num(row.vega_exposure)}</td><td>${esc(row.market_time || "—")}</td><td>${esc(status)}</td></tr>`;
     }).join("");
     return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>最新价</th><th>估值来源</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>行情时间</th><th>估值状态</th></tr></thead><tbody>${body || '<tr><td colspan="19" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
   }
