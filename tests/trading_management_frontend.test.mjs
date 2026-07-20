@@ -195,6 +195,14 @@ test("option positions show valuation results without internal source or status 
   assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
 });
 
+test("option Greeks use four decimals and expired snapshots are visibly marked", () => {
+  assert.match(
+    tradingJs,
+    /minimumFractionDigits:\s*4,\s*maximumFractionDigits:\s*4/,
+  );
+  assert.match(tradingJs, /row\.is_expired\s*\?\s*`\$\{row\.expiry_date\}（已到期）`/);
+});
+
 test("visible business position pages refresh quotes every fifteen seconds", () => {
   assert.match(tradingJs, /BUSINESS_QUOTE_REFRESH_MS\s*=\s*15000/);
   assert.match(tradingJs, /document\.visibilityState\s*===\s*"visible"/);

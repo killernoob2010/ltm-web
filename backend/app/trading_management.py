@@ -14,6 +14,7 @@ import re
 from threading import Lock
 import uuid
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from openpyxl import load_workbook
@@ -56,6 +57,18 @@ OPTION_CONTRACT_RE = re.compile(
     r"^(?P<underlying>[a-z]+[0-9]+)-(?P<kind>c|p)-(?P<strike>[0-9]+(?:\.[0-9]+)?)$",
     re.IGNORECASE,
 )
+BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _beijing_today() -> date:
+    return datetime.now(BEIJING_TIMEZONE).date()
+
+
+def _option_expired(expiry_date: Any) -> bool:
+    try:
+        return date.fromisoformat(str(expiry_date)) < _beijing_today()
+    except (TypeError, ValueError):
+        return False
 
 
 def _text(value: Any) -> str:
@@ -3288,6 +3301,37 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     },
                     **display_greeks,
                 })
+                if _option_expired(item.get("expiry_date")):
+                    valuation_price = None
+                    item.update({
+                        "is_expired": True,
+                        "market_price": None,
+                        "valuation_price": None,
+                        "valuation_source": "expired",
+                        "valuation_status": "expired",
+                        "market_data_status": "expired",
+                        "market_data_message": (
+                            "最新持仓快照尚未更新；合约已到期，等待后续结算单"
+                            "确认行权或放弃结果"
+                        ),
+                        "floating_pnl": None,
+                        "floating_pnl_status": "expired",
+                        "underlying_price": None,
+                        "iv": None,
+                        **{
+                            name: None
+                            for name in (
+                                "unit_delta", "unit_gamma", "unit_theta",
+                                "unit_vega", "unit_rho",
+                                "delta", "gamma", "theta", "vega", "rho",
+                                "delta_exposure", "gamma_exposure",
+                                "theta_exposure", "vega_exposure",
+                                "rho_exposure",
+                            )
+                        },
+                    })
+                else:
+                    item["is_expired"] = False
             if valuation_price is None or multiplier is None:
                 continue
             if view == "options":

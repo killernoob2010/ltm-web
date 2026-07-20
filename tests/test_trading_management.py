@@ -1,4 +1,5 @@
 """交易管理模块的数据结构与业务规则测试。"""
+from datetime import date
 import importlib.util
 import json
 import os
@@ -1877,6 +1878,9 @@ def test_option_close_exposes_only_the_classified_allocated_share(
 def test_classified_option_position_uses_live_quote_and_position_greeks(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(
+        trading_management, "_beijing_today", lambda: date(2026, 7, 20)
+    )
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
     subject = trading_management.create_business_subject("期货组", actor="tester")
@@ -1975,6 +1979,23 @@ def test_classified_option_position_uses_live_quote_and_position_greeks(
     for greek in ("delta", "gamma", "theta", "vega"):
         assert fallback["items"][0][greek] is not None
         assert fallback["summary"][greek] is not None
+
+    monkeypatch.setattr(
+        trading_management, "_beijing_today", lambda: date(2026, 8, 19)
+    )
+    expired = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+    expired_item = expired["items"][0]
+    assert expired_item["is_expired"] is True
+    assert expired_item["valuation_status"] == "expired"
+    assert expired_item["valuation_price"] is None
+    assert expired_item["iv"] is None
+    assert expired_item["floating_pnl"] is None
+    for greek in ("delta", "gamma", "theta", "vega"):
+        assert expired_item[greek] is None
+        assert expired["summary"][greek] is None
+    assert expired["summary"]["floating_pnl"] is None
 
 
 def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):

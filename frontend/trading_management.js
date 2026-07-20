@@ -54,7 +54,7 @@
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
   const fmt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
-  const greekFmt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 });
+  const greekFmt = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
   const num = (value) => value == null || value === "" ? "—" : fmt.format(Number(value));
   const greekNum = (value) => value == null || value === "" ? "—" : greekFmt.format(Number(value));
   const money = (value) => `${Number(value || 0) > 0 ? "+" : Number(value || 0) < 0 ? "−" : ""}${fmt.format(Math.abs(Number(value || 0)))}`;
@@ -464,7 +464,10 @@
     const body = data.items.map((row) => {
       const anatomy = optionAnatomy(row.contract);
       const iv = row.iv == null ? "—" : `${num(Number(row.iv) * 100)}%`;
-      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${greekNum(row.delta)}</td><td>${greekNum(row.gamma)}</td><td>${greekNum(row.theta)}</td><td>${greekNum(row.vega)}</td><td>${esc(row.valuation_date || row.market_time || "—")}</td></tr>`;
+      const expiry = row.expiry_date
+        ? (row.is_expired ? `${row.expiry_date}（已到期）` : row.expiry_date)
+        : "—";
+      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(expiry)}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${greekNum(row.delta)}</td><td>${greekNum(row.gamma)}</td><td>${greekNum(row.theta)}</td><td>${greekNum(row.vega)}</td><td>${esc(row.valuation_date || row.market_time || "—")}</td></tr>`;
     }).join("");
     return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>估值价</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>德尔塔</th><th>伽马</th><th>西塔</th><th>维伽</th><th>估值日</th></tr></thead><tbody>${body || '<tr><td colspan="17" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
   }
