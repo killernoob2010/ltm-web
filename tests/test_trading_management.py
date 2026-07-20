@@ -118,6 +118,29 @@ def test_postgres_trading_tables_are_hidden_from_data_api_roles():
     )
 
 
+def test_postgres_statement_hash_index_is_created_after_additive_columns(monkeypatch):
+    statements = []
+
+    class Cursor:
+        def execute(self, statement):
+            statements.append(" ".join(statement.split()))
+
+    monkeypatch.setattr(db, "_is_pg", lambda: True)
+    db._ensure_trading_statement_columns(None, Cursor())
+
+    alter_position = next(
+        index
+        for index, statement in enumerate(statements)
+        if "ADD COLUMN IF NOT EXISTS statement_file_sha256" in statement
+    )
+    index_position = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash" in statement
+    )
+    assert alter_position < index_position
+
+
 def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
 

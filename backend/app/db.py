@@ -1406,6 +1406,41 @@ def migrate_iron_ore_basis_schema(conn) -> None:
     )
 
 
+def _ensure_trading_statement_columns(conn, cur) -> None:
+    statement_columns = {
+        "trading_accounts": [("statement_account_code", "TEXT")],
+        "trading_import_batches": [
+            ("statement_type", "TEXT"),
+            ("statement_file_name", "TEXT"),
+            ("statement_file_sha256", "TEXT"),
+            ("statement_account_code_masked", "TEXT"),
+            ("source_priority", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "trading_trade_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_close_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_position_snapshots": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+    }
+    if _is_pg():
+        for table, columns in statement_columns.items():
+            for name, definition in columns:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {definition}")
+    else:
+        for table, columns in statement_columns.items():
+            existing = {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, definition in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash
+        ON trading_import_batches(account_id, statement_file_sha256)
+        """
+    )
+
+
 def migrate_trading_management_schema(conn) -> None:
     """Create isolated trading-management tables without touching legacy ledgers."""
     cur = conn.cursor()
@@ -1653,7 +1688,6 @@ def migrate_trading_management_schema(conn) -> None:
                 FOREIGN KEY (new_batch_id) REFERENCES trading_import_batches(id)
             );
             CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
-            CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash ON trading_import_batches(account_id, statement_file_sha256);
             CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_positions_batch_date_contract ON trading_position_snapshots(batch_id, snapshot_date, contract);
@@ -1847,7 +1881,6 @@ def migrate_trading_management_schema(conn) -> None:
                 FOREIGN KEY (new_batch_id) REFERENCES trading_import_batches(id)
             );
             CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
-            CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash ON trading_import_batches(account_id, statement_file_sha256);
             CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_positions_batch_date_contract ON trading_position_snapshots(batch_id, snapshot_date, contract);
@@ -1855,32 +1888,7 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
             """
         )
-    statement_columns = {
-        "trading_accounts": [("statement_account_code", "TEXT")],
-        "trading_import_batches": [
-            ("statement_type", "TEXT"),
-            ("statement_file_name", "TEXT"),
-            ("statement_file_sha256", "TEXT"),
-            ("statement_account_code_masked", "TEXT"),
-            ("source_priority", "INTEGER NOT NULL DEFAULT 0"),
-        ],
-        "trading_trade_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
-        "trading_close_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
-        "trading_position_snapshots": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
-    }
-    if _is_pg():
-        for table, columns in statement_columns.items():
-            for name, definition in columns:
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {definition}")
-    else:
-        for table, columns in statement_columns.items():
-            existing = {
-                row["name"]
-                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-            for name, definition in columns:
-                if name not in existing:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    _ensure_trading_statement_columns(conn, cur)
 
     for table in ("trading_trade_facts", "trading_close_facts", "trading_position_snapshots"):
         _exec(
