@@ -78,7 +78,26 @@ def test_parse_monthly_statement_detects_range_and_abandonment():
     assert result["metadata"]["range_start"] == "20260501"
     assert result["metadata"]["range_end"] == "20260529"
     assert result["counts"]["exercise"] == 1
-    assert result["exercises"][0]["event_type"] == "abandon"
+    assert result["exercises"][0]["event_type"] == "expiry_abandon"
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "expected"),
+    [
+        ("期权放弃", "expiry_abandon"),
+        ("期权执行", "exercise"),
+        ("期权履约", "assignment"),
+    ],
+)
+def test_option_lifecycle_event_types_are_normalized(raw_type, expected):
+    content = statement_fixture(
+        "20260601-20260630", exercise=True
+    ).replace("期权放弃", raw_type)
+
+    result = parse_settlement_statement(content.encode("gb18030"), "monthly.txt")
+
+    assert result["exercises"][0]["event_type"] == expected
+    assert result["exercises"][0]["event_type_raw"] == raw_type
 
 
 def test_statement_totals_must_match_detail_rows():

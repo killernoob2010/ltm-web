@@ -33,6 +33,7 @@ TRADING_TABLES = {
     "trading_statement_account_summaries",
     "trading_statement_cash_movements",
     "trading_statement_exercises",
+    "trading_option_event_underlying_links",
     "trading_statement_position_summaries",
     "trading_fact_source_differences",
 }
@@ -92,6 +93,46 @@ def test_trading_statement_schema_versions_fact_sources(tmp_path, monkeypatch):
         "trading_position_snapshots",
     ):
         assert "is_current" in columns[table]
+
+
+def test_option_event_close_projection_schema(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        close_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trading_close_facts)").fetchall()
+        }
+        event_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(trading_statement_exercises)"
+            ).fetchall()
+        }
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert close_columns >= {
+        "settlement_type",
+        "event_type_raw",
+        "exercise_price",
+        "exercise_amount",
+        "statement_event_pnl",
+        "underlying_link_status",
+    }
+    assert event_columns >= {
+        "identity_id",
+        "source_row_id",
+        "exchange",
+        "product",
+        "event_type_raw",
+        "exercise_amount",
+        "is_current",
+    }
+    assert "trading_option_event_underlying_links" in tables
 
 
 def test_postgres_trading_tables_are_hidden_from_data_api_roles():

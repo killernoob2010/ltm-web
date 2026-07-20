@@ -186,13 +186,7 @@ def _exercise_rows(text: str) -> tuple[list[dict[str, Any]], str]:
         if len(row) < 15 or not DATE_RE.match(row[0]):
             continue
         raw_type = row[8]
-        event_type = (
-            "abandon"
-            if "放弃" in raw_type
-            else "exercise"
-            if "执行" in raw_type or "行权" in raw_type
-            else raw_type
-        )
+        event_type = _option_event_type(raw_type)
         result.append(
             {
                 "event_date": row[0],
@@ -214,6 +208,16 @@ def _exercise_rows(text: str) -> tuple[list[dict[str, Any]], str]:
             }
         )
     return result, section
+
+
+def _option_event_type(raw_type: str) -> str:
+    if "放弃" in raw_type:
+        return "expiry_abandon"
+    if "履约" in raw_type:
+        return "assignment"
+    if "执行" in raw_type or "行权" in raw_type:
+        return "exercise"
+    return raw_type
 
 
 def _close_rows(text: str) -> tuple[list[dict[str, Any]], str]:
