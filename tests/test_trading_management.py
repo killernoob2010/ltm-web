@@ -46,6 +46,88 @@ def use_temp_db(tmp_path, monkeypatch):
     db.init_db()
 
 
+def option_event_statement(
+    *,
+    event_type="期权放弃",
+    option_contract="i2607-p-750",
+    option_side="买",
+    option_open_price=12.5,
+    option_quantity=2,
+    event_date="20260529",
+    exercise_price=750,
+    include_option_open=True,
+    underlying_contract=None,
+    underlying_side=None,
+):
+    text = statement_fixture(f"20260501-{event_date}", exercise=True)
+    original_trade = (
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石|i2609|卖|套保|785.000|1|"
+        "78500.00|开|1.01|10.00|0.00|100001|TEST001|"
+    )
+    option_premium = option_open_price * option_quantity * 100
+    premium_cashflow = -option_premium if option_side == "买" else option_premium
+    option_trade = (
+        f"|{event_date}|TEST001|大商所|TESTCODE|铁矿石期权|{option_contract}|"
+        f"{option_side}|套保|{option_open_price:.3f}|{option_quantity}|"
+        f"{option_premium:.2f}|开|1.01|0.00|{premium_cashflow:.2f}|"
+        "100001|TEST001|"
+    )
+    replacement_trade = option_trade if include_option_open else original_trade
+    trade_count = 1
+    trade_quantity = option_quantity if include_option_open else 1
+    trade_turnover = option_premium if include_option_open else 78500
+    fee_total = 1.01
+    if underlying_contract and underlying_side:
+        replacement_trade += (
+            f"\n|{event_date}|TEST001|大商所|TESTCODE|铁矿石|{underlying_contract}|"
+            f"{underlying_side}|套保|{exercise_price:.3f}|{option_quantity}|"
+            f"{exercise_price * option_quantity * 100:.2f}|开|1.01|0.00|0.00|"
+            "100002|TEST001|"
+        )
+        trade_count = 2
+        trade_quantity += option_quantity
+        trade_turnover += exercise_price * option_quantity * 100
+        fee_total = 2.02
+    text = text.replace(original_trade, replacement_trade)
+    text = text.replace(
+        "|共 1条|||||||||1|78500.00||1.01|10.00|0.00|||",
+        f"|共 {trade_count}条|||||||||{trade_quantity}|{trade_turnover:.2f}||"
+        f"{fee_total:.2f}|0.00|0.00|||",
+    )
+    text = text.replace(
+        "手 续 费 Commission：1.01", f"手 续 费 Commission：{fee_total:.2f}"
+    )
+    original_event = (
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石期权|i2607-P-750|套保|买|"
+        "期权放弃|1|750.000|75000.00|0.00|0.00|TEST001|"
+    )
+    new_event = (
+        f"|{event_date}|TEST001|大商所|TESTCODE|铁矿石期权|{option_contract}|"
+        f"套保|{option_side}|{event_type}|{option_quantity}|{exercise_price:.3f}|"
+        f"{exercise_price * option_quantity * 100:.2f}|0.00|0.00|TEST001|"
+    )
+    text = text.replace(original_event, new_event)
+    text = text.replace(
+        "|共   1条|||||||||1||75000.00|0.00|0.00||",
+        f"|共   1条|||||||||{option_quantity}||"
+        f"{exercise_price * option_quantity * 100:.2f}|0.00|0.00||",
+    )
+    return text.encode("gb18030")
+
+
+def confirm_option_event_statement(content, tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    preview = trading_management.preview_settlement_import(
+        1, "monthly.txt", content, actor="tester"
+    )
+    confirmed = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    return confirmed
+
+
 def test_trading_management_schema_contains_isolated_tables(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
 
@@ -133,6 +215,69 @@ def test_option_event_close_projection_schema(tmp_path, monkeypatch):
         "is_current",
     }
     assert "trading_option_event_underlying_links" in tables
+
+
+def test_expiry_abandonment_becomes_zero_price_close_without_trade(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(option_event_statement(), tmp_path, monkeypatch)
+
+    closes = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(
+            contract="i2607-p-750", page=1, page_size=20
+        ),
+    )
+    event = closes["items"][0]
+
+    assert event["settlement_type"] == "expiry_abandon"
+    assert event["close_price"] == 0
+    assert event["open_price"] == 12.5
+    assert event["fact_close_pnl"] == -2500
+    assert event["verification_status"] == "matched"
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) AS c FROM trading_trade_facts
+               WHERE contract = 'i2607-p-750' AND open_close = '平仓'"""
+        ).fetchone()["c"] == 0
+
+
+def test_expired_short_option_keeps_full_opening_premium(tmp_path, monkeypatch):
+    confirm_option_event_statement(
+        option_event_statement(option_side="卖", option_open_price=12.5),
+        tmp_path,
+        monkeypatch,
+    )
+
+    event = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(contract="i2607-p-750"),
+    )["items"][0]
+
+    assert event["settlement_type"] == "expiry_abandon"
+    assert event["open_side"] == "卖"
+    assert event["close_price"] == 0
+    assert event["fact_close_pnl"] == 2500
+    assert event["verification_status"] == "matched"
+
+
+def test_option_event_without_open_trade_is_visible_but_pending(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(
+        option_event_statement(include_option_open=False),
+        tmp_path,
+        monkeypatch,
+    )
+
+    event = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(contract="i2607-p-750"),
+    )["items"][0]
+
+    assert event["settlement_type"] == "expiry_abandon"
+    assert event["verification_status"] == "pending_event_match"
+    assert event["fact_close_pnl"] == 0
 
 
 def test_postgres_trading_tables_are_hidden_from_data_api_roles():

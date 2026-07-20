@@ -97,6 +97,21 @@ def test_real_statements_establish_zero_difference_opening_continuity(
     monthly_confirmed = trading_management.confirm_settlement_import(
         monthly["preview_batch_id"], "acceptance-test"
     )
+    trading_management.match_imported_facts(monthly_confirmed["batch_id"])
+    trading_management.rebuild_default_business_allocations(
+        monthly_confirmed["batch_id"]
+    )
+    event_rows = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(
+            contract="i2607-p-750", start_date="20260601", end_date="20260630"
+        ),
+    )
+    event = next(
+        row
+        for row in event_rows["items"]
+        if row["settlement_type"] == "expiry_abandon"
+    )
 
     assert daily["counts"] == {
         "trade": 190,
@@ -114,13 +129,27 @@ def test_real_statements_establish_zero_difference_opening_continuity(
     assert monthly["continuity"]["previous_snapshot_date"] == "20260529"
     assert monthly["continuity"]["difference_lots"] == 0
     assert monthly_confirmed["counts"] == monthly["counts"]
+    assert event["close_date"] == "20260616"
+    assert event["open_side"] == "买"
+    assert event["quantity"] == 100
+    assert event["close_price"] == 0
+    assert event["statement_event_pnl"] == 0
+    assert event["fact_close_pnl"] == pytest.approx(
+        -event["open_price"] * event["quantity"] * 100
+    )
+    assert event["verification_status"] == "matched"
     with db.connect() as conn:
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE is_current = 1"
         ).fetchone()["c"] == 2943
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM trading_close_facts WHERE is_current = 1"
-        ).fetchone()["c"] == 2536
+        ).fetchone()["c"] == 2537
+        assert conn.execute(
+            """SELECT COUNT(*) AS c FROM trading_trade_facts
+               WHERE contract = 'i2607-p-750' AND open_close = '平仓'
+                 AND trade_date = '20260616'"""
+        ).fetchone()["c"] == 0
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM trading_position_snapshots WHERE is_current = 1"
         ).fetchone()["c"] == 1248

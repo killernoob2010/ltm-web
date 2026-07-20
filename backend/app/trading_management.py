@@ -341,6 +341,12 @@ def _statement_fact_signature(
             row.get("exchange"), row.get("contract"), row.get("open_side"),
             row.get("close_side"), row.get("quantity"),
         )
+    elif fact_type == "option_event":
+        values = (
+            account_code, row.get("event_date"), row.get("exchange"),
+            row.get("contract"), row.get("side"), row.get("event_type"),
+            row.get("quantity"), row.get("exercise_price"),
+        )
     else:
         values = (
             account_code, row.get("snapshot_date"), row.get("exchange"),
@@ -1115,20 +1121,69 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
                     json.dumps(movement["raw_data"], ensure_ascii=False),
                 ),
             )
-        for event in statement["exercises"]:
+        events = _rows_with_statement_keys(
+            "option_event", account_code, statement["exercises"]
+        )
+        prepared_events = _prepare_import_rows(
+            cur, preview_batch_id, batch["account_id"], "option_event",
+            batch["statement_file_name"], "行权明细", events,
+        )
+        for event, source_id, identity_id in prepared_events:
+            is_current, changed = _statement_current_decision(
+                cur, "trading_close_facts", identity_id, source_id,
+                priority, preview_batch_id, "option_event",
+            )
+            replacements += int(is_current and changed)
+            differences += changed
+            if is_current:
+                db._exec(
+                    cur,
+                    """UPDATE trading_statement_exercises SET is_current = 0
+                       WHERE identity_id = ? AND is_current = 1""",
+                    (identity_id,),
+                )
             db._exec(
                 cur,
                 """
                 INSERT INTO trading_statement_exercises
-                    (batch_id, source_row_no, event_date, contract, event_type, side,
-                     quantity, exercise_price, exercise_pnl, fee, raw_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (batch_id, source_row_no, identity_id, source_row_id, exchange,
+                     product, event_date, contract, event_type, event_type_raw, side,
+                     quantity, exercise_price, exercise_amount, exercise_pnl, fee,
+                     is_current, raw_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    preview_batch_id, event["source_row_no"], event["event_date"],
-                    event["contract"], event["event_type"], event["side"], event["quantity"],
-                    event["exercise_price"], event["exercise_pnl"], event["fee"],
+                    preview_batch_id, event["source_row_no"], identity_id, source_id,
+                    event["exchange"], event["product"], event["event_date"],
+                    event["contract"], event["event_type"], event["event_type_raw"],
+                    event["side"], event["quantity"], event["exercise_price"],
+                    event["exercise_amount"], event["exercise_pnl"], event["fee"],
+                    is_current,
                     json.dumps(event["raw_data"], ensure_ascii=False),
+                ),
+            )
+            close_side = "卖" if event["side"] == "买" else "买"
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_close_facts
+                    (identity_id, batch_id, source_row_id, open_date, close_date,
+                     exchange, contract, asset_type, open_side, close_side, quantity,
+                     open_price, close_price, fact_close_pnl, matched_fee, is_current,
+                     fee_status, data_status, verification_status, settlement_type,
+                     event_type_raw, exercise_price, exercise_amount,
+                     statement_event_pnl, underlying_link_status)
+                VALUES (?, ?, ?, NULL, ?, ?, ?, 'option', ?, ?, ?, 0, 0, 0, ?, ?,
+                        'statement_event', 'file_imported', 'pending_event_match', ?, ?,
+                        ?, ?, ?, ?)
+                """,
+                (
+                    identity_id, preview_batch_id, source_id, event["event_date"],
+                    event["exchange"], event["contract"], event["side"], close_side,
+                    event["quantity"], event["fee"], is_current, event["event_type"],
+                    event["event_type_raw"], event["exercise_price"],
+                    event["exercise_amount"], event["exercise_pnl"],
+                    "not_required" if event["event_type"] == "expiry_abandon" else "pending",
                 ),
             )
         for item in statement["position_summary"]:
@@ -1163,12 +1218,250 @@ def confirm_settlement_import(preview_batch_id: int, actor: str) -> dict[str, An
     }
 
 
+def _option_event_snapshot_opening(
+    cur, account_id: int, event: dict[str, Any]
+) -> Optional[tuple[str, float]]:
+    previous_row = db._exec(
+        cur,
+        """
+        SELECT MAX(ps.snapshot_date) AS snapshot_date
+        FROM trading_position_snapshots ps
+        JOIN trading_fact_identities fi ON fi.id = ps.identity_id
+        JOIN trading_import_batches b ON b.id = ps.batch_id AND b.status = 'active'
+        WHERE fi.account_id = ? AND ps.is_current = 1
+          AND ps.snapshot_date < ?
+        """,
+        (account_id, event["close_date"]),
+    ).fetchone()
+    snapshot_date = previous_row["snapshot_date"] if previous_row else None
+    if not snapshot_date:
+        return None
+    snapshot_rows = db._exec(
+        cur,
+        """
+        SELECT ps.open_date, ps.average_price, SUM(ps.quantity) AS quantity
+        FROM trading_position_snapshots ps
+        JOIN trading_fact_identities fi ON fi.id = ps.identity_id
+        WHERE fi.account_id = ? AND ps.is_current = 1
+          AND ps.snapshot_date = ? AND ps.contract = ? AND ps.direction = ?
+        GROUP BY ps.open_date, ps.average_price
+        ORDER BY ps.open_date, ps.average_price
+        """,
+        (
+            account_id, snapshot_date, event["contract"], event["open_side"],
+        ),
+    ).fetchall()
+    remaining = {
+        (row["open_date"], round(float(row["average_price"]), 8)):
+            float(row["quantity"] or 0)
+        for row in snapshot_rows
+    }
+    closed_rows = db._exec(
+        cur,
+        """
+        SELECT cf.open_date, cf.open_price, SUM(cf.quantity) AS quantity
+        FROM trading_close_facts cf
+        JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+        WHERE fi.account_id = ? AND cf.is_current = 1
+          AND cf.contract = ? AND cf.open_side = ?
+          AND cf.close_date > ? AND cf.close_date <= ?
+          AND cf.identity_id != ?
+          AND (cf.settlement_type = 'trade_close'
+               OR cf.verification_status = 'matched')
+        GROUP BY cf.open_date, cf.open_price
+        """,
+        (
+            account_id, event["contract"], event["open_side"], snapshot_date,
+            event["close_date"], event["identity_id"],
+        ),
+    ).fetchall()
+    for row in closed_rows:
+        key = (row["open_date"], round(float(row["open_price"]), 8))
+        if key in remaining:
+            remaining[key] = max(0.0, remaining[key] - float(row["quantity"] or 0))
+    needed = float(event["quantity"] or 0)
+    if sum(remaining.values()) + 1e-9 < needed:
+        return None
+    weighted_open = 0.0
+    earliest_open_date = None
+    for (open_date, open_price), available in remaining.items():
+        quantity = min(needed, available)
+        if quantity <= 1e-9:
+            continue
+        weighted_open += open_price * quantity
+        earliest_open_date = min(
+            value for value in (earliest_open_date, open_date) if value
+        )
+        needed -= quantity
+        if needed <= 1e-9:
+            break
+    return earliest_open_date, weighted_open / float(event["quantity"])
+
+
+def _match_option_event_allocations(cur, batch_id: int) -> tuple[int, int]:
+    batch = db._exec(
+        cur, "SELECT account_id FROM trading_import_batches WHERE id = ?", (batch_id,)
+    ).fetchone()
+    if not batch:
+        return 0, 0
+    events = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_close_facts
+        WHERE batch_id = ? AND is_current = 1 AND settlement_type != 'trade_close'
+        ORDER BY close_date, source_row_id, id
+        """,
+        (batch_id,),
+    ).fetchall()
+    if not events:
+        return 0, 0
+    event_ids = [int(row["identity_id"]) for row in events]
+    placeholders = ",".join("?" for _ in event_ids)
+    db._exec(
+        cur,
+        f"DELETE FROM trading_fact_close_allocations WHERE close_identity_id IN ({placeholders})",
+        tuple(event_ids),
+    )
+    opening_rows = db._exec(
+        cur,
+        """
+        SELECT tf.*
+        FROM trading_trade_facts tf
+        JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+        JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+        WHERE fi.account_id = ? AND tf.is_current = 1
+          AND tf.asset_type = 'option' AND tf.open_close = '开仓'
+        ORDER BY tf.trade_date, tf.trade_time, tf.source_row_id, tf.id
+        """,
+        (batch["account_id"],),
+    ).fetchall()
+    used_rows = db._exec(
+        cur,
+        """
+        SELECT fa.open_trade_identity_id, SUM(fa.matched_quantity) AS quantity
+        FROM trading_fact_close_allocations fa
+        JOIN trading_close_facts cf ON cf.identity_id = fa.close_identity_id
+        WHERE cf.is_current = 1
+        GROUP BY fa.open_trade_identity_id
+        """,
+    ).fetchall()
+    used = {
+        int(row["open_trade_identity_id"]): float(row["quantity"] or 0)
+        for row in used_rows
+    }
+    remaining = {
+        int(row["identity_id"]): max(
+            0.0, float(row["quantity"] or 0) - used.get(int(row["identity_id"]), 0.0)
+        )
+        for row in opening_rows
+    }
+    allocation_count = 0
+    pending_count = 0
+    for event in events:
+        candidates = [
+            row for row in opening_rows
+            if row["contract"] == event["contract"]
+            and row["side"] == event["open_side"]
+            and row["trade_date"] <= event["close_date"]
+            and remaining.get(int(row["identity_id"]), 0.0) > 1e-9
+        ]
+        needed = float(event["quantity"] or 0)
+        spec = db._exec(
+            cur,
+            """
+            SELECT contract_multiplier FROM trading_contract_specs
+            WHERE exchange = ? AND product_code = ? AND asset_type = 'option'
+              AND is_active = 1
+            """,
+            (event["exchange"], _product_code(event["contract"])),
+        ).fetchone()
+        available_trade_quantity = sum(
+            remaining[int(row["identity_id"])] for row in candidates
+        )
+        snapshot_opening = None
+        if available_trade_quantity + 1e-9 < needed:
+            snapshot_opening = _option_event_snapshot_opening(
+                cur, int(batch["account_id"]), dict(event)
+            )
+        if not spec or (available_trade_quantity + 1e-9 < needed and not snapshot_opening):
+            pending_count += 1
+            continue
+        multiplier = float(spec["contract_multiplier"])
+        if snapshot_opening:
+            open_date, open_price = snapshot_opening
+            pnl = calculate_business_pnl(
+                open_price, 0.0, event["open_side"], needed, multiplier
+            )
+            db._exec(
+                cur,
+                """
+                UPDATE trading_close_facts
+                SET open_date = ?, open_price = ?, fact_close_pnl = ?,
+                    verification_status = 'matched'
+                WHERE id = ?
+                """,
+                (open_date, open_price, round(pnl, 8), event["id"]),
+            )
+            continue
+        allocations = []
+        pnl = 0.0
+        weighted_open = 0.0
+        earliest_open_date = None
+        for opening in candidates:
+            identity_id = int(opening["identity_id"])
+            quantity = min(needed, remaining[identity_id])
+            if quantity <= 1e-9:
+                continue
+            open_price = float(opening["price"])
+            allocations.append((event["identity_id"], identity_id, quantity))
+            pnl += calculate_business_pnl(
+                open_price, 0.0, event["open_side"], quantity, multiplier
+            )
+            weighted_open += open_price * quantity
+            earliest_open_date = min(
+                value for value in (earliest_open_date, opening["trade_date"]) if value
+            )
+            remaining[identity_id] -= quantity
+            needed -= quantity
+            if needed <= 1e-9:
+                break
+        db._executemany(
+            cur,
+            """
+            INSERT INTO trading_fact_close_allocations
+                (close_identity_id, open_trade_identity_id, matched_quantity,
+                 match_rule_version)
+            VALUES (?, ?, ?, 'option-event-fifo-v1')
+            """,
+            allocations,
+        )
+        allocation_count += len(allocations)
+        db._exec(
+            cur,
+            """
+            UPDATE trading_close_facts
+            SET open_date = ?, open_price = ?, fact_close_pnl = ?,
+                verification_status = 'matched'
+            WHERE id = ?
+            """,
+            (
+                earliest_open_date,
+                weighted_open / float(event["quantity"]),
+                round(pnl, 8),
+                event["id"],
+            ),
+        )
+    return allocation_count, pending_count
+
+
 def match_imported_facts(batch_id: int) -> dict[str, int]:
     with db.connect() as conn:
         cur = conn.cursor()
         closes = db._exec(
             cur,
-            "SELECT * FROM trading_close_facts WHERE batch_id = ? AND is_current = 1 ORDER BY id",
+            """SELECT * FROM trading_close_facts
+               WHERE batch_id = ? AND is_current = 1
+                 AND settlement_type = 'trade_close' ORDER BY id""",
             (batch_id,),
         ).fetchall()
         trades = db._exec(
@@ -1283,6 +1576,9 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
                 """,
                 fact_allocation_rows,
             )
+        event_allocations, pending_events = _match_option_event_allocations(cur, batch_id)
+        fact_allocations += event_allocations
+        pending += pending_events
         conn.commit()
     return {
         "close_trade_links": close_trade_links,
@@ -2128,10 +2424,13 @@ def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
             cur,
             """
             SELECT fa.close_identity_id, fa.open_trade_identity_id, fa.matched_quantity,
-                   cf.open_price, cf.close_price, cf.open_side, cf.exchange, cf.contract, cf.asset_type
+                   cf.open_price, cf.close_price, cf.open_side, cf.exchange, cf.contract,
+                   cf.asset_type, cf.settlement_type, ot.price AS allocated_open_price
             FROM trading_fact_close_allocations fa
             JOIN trading_close_facts cf ON cf.identity_id = fa.close_identity_id
                 AND cf.batch_id = ? AND cf.is_current = 1
+            JOIN trading_trade_facts ot ON ot.identity_id = fa.open_trade_identity_id
+                AND ot.is_current = 1
             ORDER BY fa.id
             """,
             (batch_id,),
@@ -2155,8 +2454,13 @@ def rebuild_default_business_allocations(batch_id: int) -> dict[str, int]:
             )
             business_pnl = None
             if multiplier is not None:
+                open_price = (
+                    float(row["allocated_open_price"])
+                    if row["settlement_type"] != "trade_close"
+                    else float(row["open_price"])
+                )
                 business_pnl = calculate_business_pnl(
-                    float(row["open_price"]), float(row["close_price"]), row["open_side"],
+                    open_price, float(row["close_price"]), row["open_side"],
                     float(row["matched_quantity"]), multiplier,
                 )
             allocation_rows.append(
