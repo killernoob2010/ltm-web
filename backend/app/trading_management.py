@@ -21,6 +21,10 @@ from pydantic import BaseModel
 from . import db
 from .permissions import require_permission
 from .trading_settlement import parse_settlement_statement
+from .trading_valuation import (
+    SH_JUNNENG_RULE_VERSION,
+    calculate_sh_junneng_settlement,
+)
 
 
 router = APIRouter()
@@ -2987,11 +2991,18 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                        COALESCE(a.matched_quantity, cf.quantity) AS matched_quantity,
                        COALESCE(a.allocation_version, 1) AS allocation_version,
                        a.source AS allocation_source,
+                       a.business_pnl AS allocation_business_pnl,
+                       ot.trade_date AS allocated_open_date,
+                       ot.price AS allocated_open_price,
+                       ot.quantity AS open_trade_quantity,
+                       ot.fee AS open_trade_fee,
                        s.name AS business_subject, ba.business_type, st.name AS strategy,
                        CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
                 FROM trading_close_facts cf
                 JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
                 LEFT JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
+                LEFT JOIN trading_trade_facts ot ON ot.identity_id = a.open_trade_identity_id
+                    AND ot.is_current = 1
                 LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
                 LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
                 LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
@@ -2999,6 +3010,21 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 ORDER BY cf.close_date DESC, cf.id DESC
                 """,
             ).fetchall()
+            spec_rows = db._exec(
+                cur,
+                """
+                SELECT exchange, product_code, asset_type, contract_multiplier
+                FROM trading_contract_specs WHERE is_active = 1
+                """,
+            ).fetchall()
+            spec_by_key = {
+                (
+                    str(row["exchange"] or "").lower(),
+                    str(row["product_code"] or "").lower(),
+                    row["asset_type"],
+                ): float(row["contract_multiplier"])
+                for row in spec_rows
+            }
         all_items = [
             dict(row) for row in rows
             if row["assignment_status"] == "classified"
@@ -3012,6 +3038,58 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
         items = _filter_business_items(items, tab, filters)
+        if view == "junneng":
+            for item in items:
+                multiplier = spec_by_key.get(
+                    (
+                        str(item["exchange"] or "").lower(),
+                        _product_code(item["contract"]),
+                        item["asset_type"],
+                    )
+                )
+                if multiplier is None:
+                    item.update({
+                        "net_close_pnl": None,
+                        "fund_interest": None,
+                        "settlement_80": None,
+                        "settlement_20": None,
+                        "settlement_rule_version": SH_JUNNENG_RULE_VERSION,
+                        "settlement_status": "missing_contract_spec",
+                    })
+                    continue
+                matched_quantity = float(item["matched_quantity"] or 0)
+                allocated_open_fee = (
+                    float(item["open_trade_fee"] or 0)
+                    * matched_quantity
+                    / float(item["open_trade_quantity"] or matched_quantity or 1)
+                )
+                allocated_close_fee = (
+                    float(item["matched_fee"] or 0)
+                    * matched_quantity
+                    / float(item["quantity"] or matched_quantity or 1)
+                )
+                settlement = calculate_sh_junneng_settlement(
+                    gross_pnl=float(
+                        item["allocation_business_pnl"]
+                        if item["allocation_business_pnl"] is not None
+                        else item["business_pnl"] or 0
+                    ),
+                    allocated_open_fee=allocated_open_fee,
+                    allocated_close_fee=allocated_close_fee,
+                    open_date=item["allocated_open_date"] or item["open_date"],
+                    close_date=item["close_date"],
+                    matched_quantity=matched_quantity,
+                    open_price=float(
+                        item["allocated_open_price"]
+                        if item["allocated_open_price"] is not None
+                        else item["open_price"]
+                    ),
+                    multiplier=multiplier,
+                )
+                item.update(settlement)
+                item["allocated_open_fee"] = round(allocated_open_fee, 2)
+                item["allocated_close_fee"] = round(allocated_close_fee, 2)
+                item["settlement_status"] = "calculated"
         summary = {
             "record_count": len(items),
             "trade_close_record_count": sum(
@@ -3029,6 +3107,25 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
             "fee": sum(float(row["matched_fee"] or 0) for row in items),
         }
+        if view == "junneng":
+            calculated = [
+                row for row in items if row.get("settlement_status") == "calculated"
+            ]
+            summary.update({
+                "net_close_pnl": sum(float(row["net_close_pnl"]) for row in calculated),
+                "fund_interest": sum(float(row["fund_interest"]) for row in calculated),
+                "settlement_80": sum(float(row["settlement_80"]) for row in calculated),
+                "settlement_20": sum(float(row["settlement_20"]) for row in calculated),
+                "fee": sum(
+                    float(row["allocated_open_fee"]) + float(row["allocated_close_fee"])
+                    for row in calculated
+                ),
+                "settlement_rule_version": SH_JUNNENG_RULE_VERSION,
+                "settlement_status": (
+                    "calculated" if len(calculated) == len(items)
+                    else "partial_missing_contract_spec"
+                ),
+            })
         return _page_result(items, summary, filters)
 
 

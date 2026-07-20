@@ -1496,6 +1496,28 @@ def test_business_views_only_show_classified_junneng_and_options(tmp_path, monke
     assert "candidates" not in junneng_trades
 
 
+def test_junneng_close_rows_include_auditable_settlement_amounts(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    result = trading_management.query_business_rows(
+        "junneng",
+        "closes",
+        trading_management.FactFilters(
+            start_date="20260601", end_date="20260630", page=1, page_size=20
+        ),
+    )
+
+    assert result["summary"]["net_close_pnl"] == pytest.approx(388)
+    assert result["summary"]["fund_interest"] == pytest.approx(8.44)
+    assert result["summary"]["settlement_80"] == pytest.approx(303.65)
+    assert result["summary"]["settlement_20"] == pytest.approx(75.91)
+    assert result["summary"]["fee"] == pytest.approx(12)
+    assert result["summary"]["settlement_rule_version"] == "sh_junneng_v1"
+    assert result["items"][0]["net_close_pnl"] == pytest.approx(388)
+    assert result["items"][0]["settlement_rule_version"] == "sh_junneng_v1"
+
+
 def test_unclassified_rb_hc_never_appear_in_junneng_business_ledger(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
