@@ -112,6 +112,12 @@ def test_real_statements_establish_zero_difference_opening_continuity(
         for row in event_rows["items"]
         if row["settlement_type"] == "expiry_abandon"
     )
+    june_closes = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(
+            start_date="20260601", end_date="20260630", page=1, page_size=20
+        ),
+    )
 
     assert daily["counts"] == {
         "trade": 190,
@@ -138,6 +144,8 @@ def test_real_statements_establish_zero_difference_opening_continuity(
         -event["open_price"] * event["quantity"] * 100
     )
     assert event["verification_status"] == "matched"
+    assert june_closes["summary"]["record_count"] == 2352
+    assert june_closes["summary"]["trade_close_record_count"] == 2351
     with db.connect() as conn:
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE is_current = 1"

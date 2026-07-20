@@ -41,6 +41,12 @@
   const money = (value) => `${Number(value || 0) > 0 ? "+" : Number(value || 0) < 0 ? "−" : ""}${fmt.format(Math.abs(Number(value || 0)))}`;
   const businessType = (value) => ({basic_hedging:"基础套保",strategic_hedging:"战略套保"})[value] || value || "未归类";
   const pending = () => '<span class="tm-tag amber">待计算</span>';
+  const SETTLEMENT_TYPE_LABELS = {
+    trade_close: "普通平仓",
+    exercise: "行权",
+    assignment: "履约",
+    expiry_abandon: "到期放弃",
+  };
 
   const VIEW_COPY = {
     trading_overview: ["交易总览", "全量文华交易的领导驾驶舱", "overview"],
@@ -128,7 +134,7 @@
   function renderOverviewView(data) {
     const summary = `<div class="tm-summary-band">
       ${metric("期间成交", `${num(data.trades.record_count)} 笔`, `${num(data.trades.quantity)} 手 · 文华成交记录`)}
-      ${metric("期间平仓盈亏", `${money(data.closes.fact_close_pnl)} 元`, "文华逐笔平仓盈亏", Number(data.closes.fact_close_pnl) >= 0 ? "tm-positive" : "tm-negative")}
+      ${metric("期间平仓盈亏", `${money(data.closes.fact_close_pnl)} 元`, "普通平仓及期权了结盈亏", Number(data.closes.fact_close_pnl) >= 0 ? "tm-positive" : "tm-negative")}
       ${metric("期间手续费", `${num(data.trades.fee)} 元`, "文华成交记录")}
       ${metric("期末持仓", `${num(data.positions.record_count)} 条`, `${data.positions.snapshot_date || "—"} · 事实快照`)}
       ${metric("期末保证金", `${num(data.positions.margin)} 元`, "文华期末持仓文件")}
@@ -136,9 +142,9 @@
     $("#tmOverviewView").innerHTML = `
       <div class="tm-period-bar"><div class="tm-tabs">${[["month","月"],["day","日"],["quarter","季"],["custom","自定义"]].map(([mode,label])=>`<button class="tm-tab-button ${tm.overviewMode===mode?"active":""}" data-overview-period="${mode}">${label}</button>`).join("")}</div><div class="tm-period-selection">${tm.overviewMode === "custom" ? `<input id="tmOverviewFrom" type="date"><span>至</span><input id="tmOverviewTo" type="date"><button id="tmOverviewApply">应用</button>` : ""}<span class="tm-tag blue">事实层 · 只读</span></div></div>
       ${summary}
-      <section class="tm-panel tm-overview-chart"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按文华逐笔平仓盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_close_pnl || [])}</div></section>
+      <section class="tm-panel tm-overview-chart"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按普通平仓及期权了结盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_close_pnl || [])}</div></section>
       <div class="tm-overview-mini-grid">
-        <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与手续费", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
+        <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与期权了结", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
         <section class="tm-panel"><div class="tm-panel-header"><div><h2>业务归属分布</h2><p class="tm-section-copy">事实交易归类进度</p></div><button class="tm-row-button" data-go-positions>前往归类 →</button></div><div class="tm-business-list">${qualityRow("上海钧能", "RB / HC 正式归属", "业务层")}${qualityRow("期权", "默认展示全部期权", "业务层")}${qualityRow("其它与待归属", "保留事实层完整记录", "待确认", "amber")}</div></section>
         <section class="tm-panel"><div class="tm-panel-header"><h2>活跃合约</h2><small>按当前事实范围</small></div><div class="tm-business-list">${qualityRow("成交手数", `${num(data.trades.quantity)} 手`, "全量")}${qualityRow("持仓手数", `${num(data.positions.quantity)} 手`, "期末")}${qualityRow("期权风险指标", "Delta / Gamma / Theta / Vega", "待计算", "amber")}</div></section>
       </div>`;
@@ -203,18 +209,22 @@
   }
 
   function filterSummary(summary) {
-    const items = [["记录数",summary.record_count],["手数",summary.quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl],["保证金",summary.margin],["浮动盈亏","待计算"]];
+    const items = tm.factsTab === "closes"
+      ? [["记录数",summary.record_count],["了结手数",summary.settlement_quantity],["成交平仓手数",summary.transaction_close_quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl]]
+      : [["记录数",summary.record_count],["手数",summary.quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl],["保证金",summary.margin],["浮动盈亏","待计算"]];
     return `<div class="tm-filter-summary">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
   }
 
   const FACT_COLUMNS = {
     positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["assignment","业务类型 / 策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
-    closes: [["close_date","平仓日"],["contract","合约"],["asset_type","资产类型"],["open_side","方向"],["quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","平仓盈亏"],["matched_fee","手续费"],["assignment","业务类型 / 策略"]],
+    closes: [["close_date","平仓日"],["settlement_type","了结类型"],["contract","合约"],["asset_type","资产类型"],["open_side","方向"],["quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","平仓盈亏"],["matched_fee","手续费"],["assignment","业务类型 / 策略"]],
     trades: [["trade_date","成交日"],["contract","合约"],["asset_type","资产类型"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["fee","手续费"],["fact_close_pnl","平仓盈亏"],["assignment","业务类型 / 策略"]],
   };
 
   function valueCell(row, key) {
     if (key === "pending") return pending();
+    if (key === "settlement_type") return esc(SETTLEMENT_TYPE_LABELS[row[key]] || row[key] || "普通平仓");
+    if (["open_price","fact_close_pnl"].includes(key) && row.settlement_type !== "trade_close" && row.verification_status !== "matched") return '<span class="tm-tag amber">待核验</span>';
     if (key === "assignment") return row.assignment_status === "classified" && row.business_type ? `<span class="tm-tag blue">${esc(businessType(row.business_type))}${row.strategy ? ` / ${esc(row.strategy)}` : ""}</span>` : '<span class="tm-tag amber">待确认</span>';
     if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity"].includes(key)) return num(row[key]);
     if (key === "asset_type") return row[key] === "option" ? "期权" : "期货";
@@ -358,7 +368,7 @@
 
   const BUSINESS_COLUMNS = {
     positions: [["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["business_subject","业务归属"],["business_type","业务类型"],["strategy","策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
-    closes: [["close_date","平仓日"],["contract","合约"],["open_side","方向"],["matched_quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","事实平仓盈亏"],["business_pnl","业务归属盈亏"],["strategy","策略"]],
+    closes: [["close_date","平仓日"],["settlement_type","了结类型"],["contract","合约"],["open_side","方向"],["matched_quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","事实平仓盈亏"],["business_pnl","业务归属盈亏"],["strategy","策略"]],
     trades: [["trade_date","成交日"],["contract","合约"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["business_subject","业务归属"],["business_type","业务类型"],["strategy","策略"]],
   };
 
@@ -388,7 +398,9 @@
   function businessFilterSummary(summary, tab) {
     const items = tab === "positions"
       ? [["记录数",summary.record_count],["手数",summary.quantity],["业务归属盈亏",summary.business_pnl],["浮动盈亏","待计算"]]
-      : [["记录数",summary.record_count],[tab === "closes" ? "平仓手数" : "成交手数",summary.quantity],["业务归属盈亏",summary.business_pnl],["手续费",summary.fee]];
+      : tab === "closes"
+      ? [["记录数",summary.record_count],["了结手数",summary.settlement_quantity],["成交平仓手数",summary.transaction_close_quantity],["业务归属盈亏",summary.business_pnl],["手续费",summary.fee]]
+      : [["记录数",summary.record_count],["成交手数",summary.quantity],["业务归属盈亏",summary.business_pnl],["手续费",summary.fee]];
     return `<div class="tm-filter-summary compact">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
   }
 

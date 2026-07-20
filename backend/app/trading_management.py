@@ -1882,7 +1882,12 @@ def _query_close_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
         cur,
         f"""
         SELECT COUNT(*) AS record_count,
-               COALESCE(SUM(cf.quantity), 0) AS quantity,
+               COUNT(CASE WHEN cf.settlement_type = 'trade_close' THEN 1 END)
+                   AS trade_close_record_count,
+               COALESCE(SUM(cf.quantity), 0) AS settlement_quantity,
+               COALESCE(SUM(CASE WHEN cf.settlement_type = 'trade_close'
+                                 THEN cf.quantity ELSE 0 END), 0)
+                   AS transaction_close_quantity,
                COALESCE(SUM(cf.fact_close_pnl), 0) AS fact_close_pnl,
                COALESCE(SUM(cf.matched_fee), 0) AS fee
         FROM trading_close_facts cf
@@ -1934,7 +1939,14 @@ def _query_close_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
         "items": items,
         "summary": {
             "record_count": total,
-            "quantity": float(summary_row["quantity"] or 0),
+            "trade_close_record_count": int(
+                summary_row["trade_close_record_count"] or 0
+            ),
+            "quantity": float(summary_row["settlement_quantity"] or 0),
+            "settlement_quantity": float(summary_row["settlement_quantity"] or 0),
+            "transaction_close_quantity": float(
+                summary_row["transaction_close_quantity"] or 0
+            ),
             "fact_close_pnl": float(summary_row["fact_close_pnl"] or 0),
             "fee": float(summary_row["fee"] or 0),
         },
@@ -2838,7 +2850,17 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
         items = _filter_business_items(items, tab, filters)
         summary = {
             "record_count": len(items),
+            "trade_close_record_count": sum(
+                1 for row in items if row["settlement_type"] == "trade_close"
+            ),
             "quantity": sum(float(row["matched_quantity"]) for row in items),
+            "settlement_quantity": sum(
+                float(row["matched_quantity"]) for row in items
+            ),
+            "transaction_close_quantity": sum(
+                float(row["matched_quantity"])
+                for row in items if row["settlement_type"] == "trade_close"
+            ),
             "business_pnl": sum(float(row["business_pnl"] or 0) for row in items),
             "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
             "fee": sum(float(row["matched_fee"] or 0) for row in items),

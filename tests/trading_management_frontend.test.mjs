@@ -59,6 +59,16 @@ test("all three ledgers use the approved prototype tab order", () => {
   assert.doesNotMatch(tradingJs, /业务持仓[\s\S]*业务成交[\s\S]*业务平仓/);
 });
 
+test("option lifecycle events reuse close records with one type column", () => {
+  assert.match(tradingJs, /\["settlement_type","了结类型"\]/);
+  assert.match(tradingJs, /trade_close:\s*"普通平仓"/);
+  assert.match(tradingJs, /exercise:\s*"行权"/);
+  assert.match(tradingJs, /assignment:\s*"履约"/);
+  assert.match(tradingJs, /expiry_abandon:\s*"到期放弃"/);
+  assert.match(tradingJs, /成交平仓手数/);
+  assert.doesNotMatch(tradingJs, /行权与到期.*tm-tab-button/);
+});
+
 test("prototype sections replace the simplified placeholder layout", () => {
   assert.match(tradingJs, /逐日平仓盈亏趋势/);
   assert.match(tradingJs, /数据质量/);

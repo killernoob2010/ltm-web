@@ -376,6 +376,36 @@ def test_exercise_without_imported_underlying_trade_stays_pending(
     assert trade_count == 0
 
 
+def test_close_summary_separates_settlement_and_transaction_quantity(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(option_event_statement(), tmp_path, monkeypatch)
+
+    facts = trading_management.query_fact_rows(
+        "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    options = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    positions = trading_management.query_business_rows(
+        "options",
+        "positions",
+        trading_management.FactFilters(
+            contract="i2607-p-750", page=1, page_size=20
+        ),
+    )
+
+    assert facts["summary"]["record_count"] == 2
+    assert facts["summary"]["trade_close_record_count"] == 1
+    assert facts["summary"]["settlement_quantity"] == 3
+    assert facts["summary"]["transaction_close_quantity"] == 1
+    assert {row["settlement_type"] for row in options["items"]} >= {
+        "expiry_abandon"
+    }
+    assert positions["items"] == []
+    assert positions["summary"]["quantity"] == 0
+
+
 def test_postgres_trading_tables_are_hidden_from_data_api_roles():
     class RecordingCursor:
         def __init__(self):
