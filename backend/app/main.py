@@ -66,6 +66,7 @@ from . import (
     order_finance,
     order_finance_snapshot_sync,
     trading_management,
+    trading_valuation,
 )
 
 
@@ -1286,6 +1287,11 @@ def startup() -> None:
     start_alert_monitor()
     start_daily_close_cache_scheduler()
     start_monitoring_loop()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    trading_valuation.close_market_data_service()
 
 
 def current_user(authorization: Optional[str] = Header(default=None)):

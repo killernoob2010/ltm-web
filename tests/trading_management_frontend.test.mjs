@@ -115,8 +115,8 @@ test("business ledgers keep only the summary rows beside tabs and filters", () =
   assert.doesNotMatch(tradingJs, /tm-ledger-hero/);
   assert.doesNotMatch(tradingJs, /tm-ledger-summary-primary/);
   assert.doesNotMatch(tradingJs, /tm-ledger-summary-risk/);
-  assert.match(tradingJs, /businessFilterSummary\(data\.summary,tab\)/);
-  assert.match(tradingJs, /\["浮动盈亏","待计算"\]/);
+  assert.match(tradingJs, /businessFilterSummary\(data\.summary,view,tab\)/);
+  assert.match(tradingJs, /\["浮动盈亏",summary\.floating_pnl\]/);
 });
 
 test("overview chart renders real daily close pnl instead of a fixed placeholder", () => {
@@ -160,4 +160,37 @@ test("business ledgers are classified archives without candidate controls", () =
   assert.doesNotMatch(tradingJs, /默认展示全部 RB\/HC 候选/);
   assert.doesNotMatch(tradingJs, /id="\$\{view\}Classification"/);
   assert.match(tradingJs, /仅展示已完成业务归属的数据/);
+});
+
+test("Shanghai Junneng shows live positions and the five settlement metrics", () => {
+  for (const label of ["最新价", "行情时间", "浮动盈亏", "估值状态"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  for (const label of ["平仓盈亏（含手续费）", "资金利息", "80%结算金额", "20%结算金额", "手续费"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  assert.match(tradingJs, /settlement_rule_version/);
+  assert.match(tradingJs, /currentMonthRange/);
+  assert.match(tradingJs, /businessDates:\s*\{\s*junneng:/);
+});
+
+test("option positions show valuation metadata and position Greek exposures", () => {
+  for (const label of ["最新价", "估值来源", "标的价格", "到期日", "IV", "浮动盈亏", "Delta", "Gamma", "Theta", "Vega", "行情时间"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  for (const field of ["delta_exposure", "gamma_exposure", "theta_exposure", "vega_exposure"]) {
+    assert.match(tradingJs, new RegExp(field));
+  }
+  assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
+});
+
+test("visible business position pages refresh quotes every fifteen seconds", () => {
+  assert.match(tradingJs, /BUSINESS_QUOTE_REFRESH_MS\s*=\s*15000/);
+  assert.match(tradingJs, /document\.visibilityState\s*===\s*"visible"/);
+  assert.match(tradingJs, /tm\[(?:tabKey|"junnengTab"|"optionsTab")\]\s*===\s*"positions"/);
+  assert.match(tradingJs, /window\.setInterval/);
+  assert.match(tradingJs, /stopBusinessQuoteRefresh/);
+  assert.match(tradingJs, /deactivate\(\)/);
+  assert.match(tradingJs, /MutationObserver/);
+  assert.match(tradingJs, /tradingManagementPage/);
 });

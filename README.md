@@ -61,6 +61,12 @@ env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路
 
 连接 PostgreSQL 时由后端统一读取 `DATABASE_URL`。上线环境执行写入前必须先确认环境映射并完成数据库备份，不能把生产连接信息写入命令、文档或日志。
 
+## 交易管理实时估值
+
+交易管理的上海钧能与期权业务台账只读取已经完成业务归属的数据。实时估值通过单一、只读的天勤行情会话获取，服务端只读取 `TQSDK_USERNAME` 和 `TQSDK_PASSWORD`，不配置期货公司、交易账户，也不调用委托或撤单接口。
+
+未配置天勤认证或行情失败时，接口会优先返回结算单中的最近结算价并标记为“参考”；没有可用结算价时明确返回“行情不可用”，不会用开仓价或零值伪装实时行情。实时行情、浮动盈亏、IV 和 Greeks 只在接口响应中计算，不写入交易事实表。
+
 ## 铁矿石基差 API 增量同步
 
 铁矿石期现采用“Staging 单一采集源、Production 快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许 Production 直连 Staging 数据库。

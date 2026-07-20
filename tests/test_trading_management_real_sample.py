@@ -64,7 +64,8 @@ def test_june_wenhua_sample_matches_confirmed_acceptance_baseline(tmp_path, monk
     assert overview["closes"]["fee"] == pytest.approx(16885.34)
     assert overview["positions"]["margin"] == pytest.approx(26177056.50)
     assert matching["close_trade_links"] == 2351
-    assert option_closes["total_items"] == raw_option_close_count
+    assert raw_option_close_count == 1843
+    assert option_closes["total_items"] == 0
     assert overview["positions"]["floating_pnl_status"] == "pending_calculation"
     assert sum(row["fact_close_pnl"] for row in overview["daily_close_pnl"]) == pytest.approx(3497480)
 

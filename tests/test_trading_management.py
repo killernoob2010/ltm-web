@@ -1565,6 +1565,62 @@ def test_classified_option_enters_all_option_business_tabs(tmp_path, monkeypatch
     assert closes["items"] == []
 
 
+def test_classified_option_position_uses_live_quote_and_position_greeks(
+    tmp_path, monkeypatch
+):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("期货组", actor="tester")
+    with db.connect() as conn:
+        option_id = conn.execute(
+            """SELECT identity_id FROM trading_trade_facts
+               WHERE asset_type = 'option' AND open_close = '开仓'"""
+        ).fetchone()["identity_id"]
+    trading_management.classify_trade_identities(
+        [option_id], subject["id"], "strategic_hedging",
+        "战略套保-期权结构化套利", "", "tester",
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            "i2609-c-700": trading_management.QuoteSnapshot(
+                last_price=5,
+                market_time="2026-07-20 14:30:00",
+                source="tqsdk",
+                multiplier=100,
+                underlying_symbol="DCE.i2609",
+                underlying_price=780,
+                expiry_date="2026-08-07",
+                iv=0.22,
+                delta=0.4,
+                gamma=0.01,
+                theta=-0.05,
+                vega=0.1,
+                rho=0.02,
+            )
+        },
+    )
+
+    result = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    item = result["items"][0]
+    assert item["market_price"] == 5
+    assert item["valuation_price"] == 5
+    assert item["valuation_source"] == "last_trade"
+    assert item["valuation_status"] == "live"
+    assert item["floating_pnl"] == pytest.approx(78.8)
+    assert item["iv"] == pytest.approx(0.22)
+    assert item["delta_exposure"] == pytest.approx(40)
+    assert item["gamma_exposure"] == pytest.approx(1)
+    assert item["theta_exposure"] == pytest.approx(-5)
+    assert item["vega_exposure"] == pytest.approx(10)
+    assert result["summary"]["floating_pnl"] == pytest.approx(78.8)
+    assert result["summary"]["delta_exposure"] == pytest.approx(40)
+
+
 def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):
     setup_classified_business_sample(tmp_path, monkeypatch)
 

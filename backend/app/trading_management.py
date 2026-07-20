@@ -22,8 +22,14 @@ from . import db
 from .permissions import require_permission
 from .trading_settlement import parse_settlement_statement
 from .trading_valuation import (
+    QuoteRequest,
+    QuoteSnapshot,
     SH_JUNNENG_RULE_VERSION,
+    calculate_option_position_valuation,
+    calculate_position_floating_pnl,
     calculate_sh_junneng_settlement,
+    get_quote_snapshots,
+    select_valuation_price,
 )
 
 
@@ -2852,6 +2858,13 @@ def _aggregate_business_positions(items: list[dict[str, Any]]) -> list[dict[str,
             grouped[key] = group
         group["quantity"] += quantity
         group["weighted_price"] += float(row.get("average_price") or 0) * quantity
+        group["remaining_open_fee"] = float(
+            group.get("remaining_open_fee") or 0
+        ) + (
+            float(row.get("open_fee") or 0)
+            * quantity
+            / float(row.get("quantity") or quantity or 1)
+        )
         group["source_record_count"] += 1
     result = list(grouped.values())
     for row in result:
@@ -2868,8 +2881,9 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             rows = db._exec(
                 conn.cursor(),
                 """
-                SELECT tf.identity_id, tf.contract, tf.asset_type, tf.side AS direction,
-                       tf.price AS average_price, tf.quantity,
+                SELECT tf.identity_id, tf.exchange, tf.contract, tf.asset_type,
+                       tf.side AS direction, tf.price AS average_price, tf.quantity,
+                       tf.fee AS open_fee,
                        tf.quantity - COALESCE((
                            SELECT SUM(a.matched_quantity)
                            FROM trading_business_close_allocations a
@@ -2886,6 +2900,37 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 ORDER BY tf.contract, tf.id
                 """,
             ).fetchall()
+            snapshot_date_row = db._exec(
+                conn.cursor(),
+                """
+                SELECT MAX(ps.snapshot_date) AS snapshot_date
+                FROM trading_position_snapshots ps
+                JOIN trading_import_batches b ON b.id = ps.batch_id AND b.status = 'active'
+                WHERE ps.is_current = 1
+                """,
+            ).fetchone()
+            snapshot_date = (
+                snapshot_date_row["snapshot_date"] if snapshot_date_row else None
+            )
+            snapshot_rows = db._exec(
+                conn.cursor(),
+                """
+                SELECT contract, direction, valuation_price, market_time
+                FROM trading_position_snapshots ps
+                JOIN trading_import_batches b ON b.id = ps.batch_id AND b.status = 'active'
+                WHERE ps.is_current = 1 AND ps.snapshot_date = ?
+                  AND ps.valuation_price IS NOT NULL
+                ORDER BY ps.id DESC
+                """,
+                (snapshot_date,),
+            ).fetchall() if snapshot_date else []
+            spec_rows = db._exec(
+                conn.cursor(),
+                """
+                SELECT exchange, product_code, asset_type, contract_multiplier
+                FROM trading_contract_specs WHERE is_active = 1
+                """,
+            ).fetchall()
         all_items = [
             dict(row) for row in rows
             if float(row["remaining_quantity"] or 0) > 1e-9
@@ -2900,16 +2945,115 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             items = [row for row in all_items if row["asset_type"] == "option"]
         items = _aggregate_business_positions(items)
         items = _filter_business_items(items, tab, filters)
+        settlement_by_key = {
+            (row["contract"], row["direction"]): float(row["valuation_price"])
+            for row in snapshot_rows
+        }
+        spec_by_key = {
+            (
+                str(row["exchange"] or "").lower(),
+                str(row["product_code"] or "").lower(),
+                row["asset_type"],
+            ): float(row["contract_multiplier"])
+            for row in spec_rows
+        }
+        quote_requests = [
+            QuoteRequest(
+                contract=item["contract"],
+                exchange=item["exchange"] or "",
+                asset_type=item["asset_type"],
+                settlement_price=settlement_by_key.get(
+                    (item["contract"], item["direction"])
+                ),
+            )
+            for item in items
+        ]
+        quotes = get_quote_snapshots(quote_requests)
         for item in items:
-            item["floating_pnl"] = None
-            item["floating_pnl_status"] = "pending_calculation"
+            quote = quotes.get(item["contract"], QuoteSnapshot())
+            valuation_price, valuation_source, valuation_status = (
+                select_valuation_price(quote)
+            )
+            multiplier = quote.multiplier or spec_by_key.get(
+                (
+                    str(item["exchange"] or "").lower(),
+                    _product_code(item["contract"]),
+                    item["asset_type"],
+                )
+            )
+            item.update({
+                "market_price": quote.last_price,
+                "valuation_price": valuation_price,
+                "valuation_source": valuation_source,
+                "market_time": quote.market_time,
+                "valuation_status": valuation_status,
+                "floating_pnl": None,
+                "floating_pnl_status": valuation_status,
+                "contract_multiplier": multiplier,
+            })
+            if view == "options":
+                item.update({
+                    "underlying_symbol": quote.underlying_symbol,
+                    "underlying_price": quote.underlying_price,
+                    "expiry_date": quote.expiry_date,
+                    "iv": quote.iv,
+                    "unit_delta": quote.delta,
+                    "unit_gamma": quote.gamma,
+                    "unit_theta": quote.theta,
+                    "unit_vega": quote.vega,
+                    "unit_rho": quote.rho,
+                })
+            if valuation_price is None or multiplier is None:
+                continue
+            if view == "options":
+                item.update(calculate_option_position_valuation(
+                    open_price=float(item["average_price"]),
+                    valuation_price=valuation_price,
+                    direction=item["direction"],
+                    remaining_quantity=float(item["quantity"]),
+                    multiplier=float(multiplier),
+                    remaining_open_fee=float(item.get("remaining_open_fee") or 0),
+                    unit_greeks={
+                        "delta": quote.delta,
+                        "gamma": quote.gamma,
+                        "theta": quote.theta,
+                        "vega": quote.vega,
+                        "rho": quote.rho,
+                    },
+                ))
+            else:
+                item["floating_pnl"] = calculate_position_floating_pnl(
+                    open_price=float(item["average_price"]),
+                    market_price=valuation_price,
+                    direction=item["direction"],
+                    remaining_quantity=float(item["quantity"]),
+                    multiplier=float(multiplier),
+                    remaining_open_fee=float(item.get("remaining_open_fee") or 0),
+                )
         summary = {
             "record_count": len(items),
             "quantity": sum(float(row["quantity"]) for row in items),
             "business_pnl": 0,
-            "floating_pnl": None,
-            "floating_pnl_status": "pending_calculation",
+            "floating_pnl": sum(
+                float(row["floating_pnl"])
+                for row in items if row.get("floating_pnl") is not None
+            ),
+            "floating_pnl_status": (
+                "live" if items and all(
+                    row.get("valuation_status") == "live" for row in items
+                )
+                else "partial" if any(
+                    row.get("floating_pnl") is not None for row in items
+                )
+                else "unavailable"
+            ),
         }
+        if view == "options":
+            for greek in ("delta", "gamma", "theta", "vega", "rho"):
+                summary[f"{greek}_exposure"] = sum(
+                    float(row[f"{greek}_exposure"])
+                    for row in items if row.get(f"{greek}_exposure") is not None
+                )
         return _page_result(items, summary, filters)
 
     with db.connect() as conn:
