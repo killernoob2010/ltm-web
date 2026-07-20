@@ -1,5 +1,6 @@
 """交易管理模块的数据结构与业务规则测试。"""
 import importlib.util
+import json
 import os
 import sys
 
@@ -10,6 +11,7 @@ from openpyxl import Workbook, load_workbook
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db, trading_management
+from test_trading_settlement import statement_fixture
 
 
 TRADING_TABLES = {
@@ -180,6 +182,79 @@ def test_new_trading_menu_permissions_are_added_without_overwriting_existing_cho
 
 def test_trading_management_router_module_exists():
     assert importlib.util.find_spec("app.trading_management") is not None
+
+
+def test_statement_preview_confirm_binds_account_and_is_idempotent(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    content = statement_fixture().encode("gb18030")
+
+    preview = trading_management.preview_settlement_import(
+        1, "daily.txt", content, actor="tester"
+    )
+    confirmed = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    duplicate = trading_management.preview_settlement_import(
+        1, "copy.txt", content, actor="tester"
+    )
+
+    assert preview["statement_type"] == "daily"
+    assert preview["binding_required"] is True
+    assert confirmed["counts"] == {
+        "trade": 1,
+        "close": 1,
+        "exercise": 0,
+        "position": 1,
+    }
+    assert duplicate["duplicate_batch_id"] == confirmed["batch_id"]
+    with db.connect() as conn:
+        account = conn.execute(
+            "SELECT statement_account_code FROM trading_accounts WHERE id = 1"
+        ).fetchone()
+        assert account["statement_account_code"] == "TEST001"
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE is_current = 1"
+        ).fetchone()["c"] == 1
+
+
+def test_monthly_statement_replaces_conflicting_daily_fact(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    daily = statement_fixture().encode("gb18030")
+    monthly = statement_fixture("20260501-20260529").replace(
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石|i2609|卖|套保|785.000|1|",
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石|i2609|卖|套保|786.000|1|",
+        1,
+    ).encode("gb18030")
+
+    first = trading_management.preview_settlement_import(
+        1, "daily.txt", daily, actor="tester"
+    )
+    trading_management.confirm_settlement_import(first["preview_batch_id"], "tester")
+    second = trading_management.preview_settlement_import(
+        1, "monthly.txt", monthly, actor="tester"
+    )
+    result = trading_management.confirm_settlement_import(
+        second["preview_batch_id"], "tester"
+    )
+
+    assert result["monthly_replacements"] >= 1
+    with db.connect() as conn:
+        current = conn.execute(
+            "SELECT price FROM trading_trade_facts WHERE is_current = 1"
+        ).fetchone()
+        assert current["price"] == 786
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_fact_source_differences"
+        ).fetchone()["c"] >= 1
+        diff = json.loads(
+            conn.execute(
+                "SELECT diff_json FROM trading_fact_source_differences ORDER BY id DESC LIMIT 1"
+            ).fetchone()["diff_json"]
+        )
+        assert any(
+            change["old"] == "785.000" and change["new"] == "786.000"
+            for change in diff["changes"]
+        )
 
 
 def test_postgres_executemany_uses_batched_protocol(monkeypatch):
@@ -423,11 +498,22 @@ def test_confirm_same_range_supersedes_old_batch_and_keeps_source_rows(tmp_path,
             row["id"] for row in conn.execute("SELECT id FROM trading_fact_identities").fetchall()
         }
         source_count = conn.execute("SELECT COUNT(*) AS c FROM trading_source_rows").fetchone()["c"]
+        current_by_batch = {
+            row["batch_id"]: row["c"]
+            for row in conn.execute(
+                """
+                SELECT batch_id, COUNT(*) AS c
+                FROM trading_trade_facts WHERE is_current = 1 GROUP BY batch_id
+                """
+            ).fetchall()
+        }
 
     assert statuses[first["batch_id"]] == "superseded"
     assert statuses[second["batch_id"]] == "active"
     assert first_identity_ids == second_identity_ids
     assert source_count == 10
+    assert first["batch_id"] not in current_by_batch
+    assert current_by_batch[second["batch_id"]] == 3
 
 
 def test_overwrite_trade_pnl_uses_only_active_close_fact_version(tmp_path, monkeypatch):
@@ -1339,3 +1425,9 @@ def test_trading_management_exposes_complete_p0_api_surface():
         ("/business-closes/{close_identity_id}/restore-default", "POST"),
     }
     assert expected <= routes
+
+
+def test_trading_import_preview_schema_accepts_one_statement_file_only():
+    fields = set(trading_management.TradingImportPreviewIn.model_fields)
+
+    assert fields == {"account_id", "statement_file"}

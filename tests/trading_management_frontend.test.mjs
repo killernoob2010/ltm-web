@@ -19,15 +19,16 @@ test("trading management is a separate first-level module with five page modes",
   assert.match(html, /id="tmExportView"/);
 });
 
-test("three-table import requires trade close and position files with preview confirmation", () => {
-  assert.match(tradingJs, /id="tmTradeFile"/);
-  assert.match(tradingJs, /id="tmCloseFile"/);
-  assert.match(tradingJs, /id="tmPositionFile"/);
-  assert.match(tradingJs, /成交、平仓、持仓三表必须齐全/);
+test("settlement import uses one txt file with automatic daily or monthly detection", () => {
+  assert.match(tradingJs, /id="tmStatementFile"/);
+  assert.doesNotMatch(tradingJs, /id="tmTradeFile"/);
+  assert.match(tradingJs, /accept="\.txt"/);
+  assert.match(tradingJs, /系统自动识别日结单或月结单/);
+  assert.match(tradingJs, /statement_file/);
   assert.match(tradingJs, /\/imports\/preview/);
   assert.match(tradingJs, /\/confirm/);
-  assert.match(tradingJs, /正在预检三表，请稍候/);
-  assert.match(tradingJs, /正在覆盖导入并建立事实匹配，请勿关闭窗口/);
+  assert.match(tradingJs, /正在解析并预检结算单，请稍候/);
+  assert.match(tradingJs, /正在确认导入并建立事实匹配，请勿关闭窗口/);
 });
 
 test("whole trades can be classified and business close relationships can be rematched", () => {

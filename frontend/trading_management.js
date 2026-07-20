@@ -239,7 +239,7 @@
     }
     const data = cached || await loadFactData(tm.factsTab);
     const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选结果</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
-    $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入三表</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
+    $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
   }
 
@@ -297,13 +297,13 @@
   }
 
   function setImportBusy(busy, message = "") {
-    ["#tmImportAccount","#tmTradeFile","#tmCloseFile","#tmPositionFile","#tmImportCancel","#tmImportPreview","#tmImportConfirm"].forEach((selector) => { const element = $(selector); if (element) element.disabled = busy; });
+    ["#tmImportAccount","#tmStatementFile","#tmImportCancel","#tmImportPreview","#tmImportConfirm"].forEach((selector) => { const element = $(selector); if (element) element.disabled = busy; });
     const progress = $("#tmImportProgress");
     if (progress && busy) {
       progress.className = "tm-import-progress";
       progress.innerHTML = `<span class="spinner"></span><span>${esc(message)}</span>`;
     } else if (progress && !progress.classList.contains("tm-import-error")) {
-      progress.textContent = tm.importPreviewId ? "预检已完成，请核对结果后确认覆盖导入。" : "请选择同一账户的完整三表后预检。";
+      progress.textContent = tm.importPreviewId ? "预检已完成，请核对结果后确认导入。" : "请选择交易所 TXT 结算单后预检。";
     }
   }
 
@@ -315,29 +315,37 @@
 
   async function openImportDrawer() {
     await ensureConfig(); tm.importPreviewId = null;
-    openDrawer("导入与核验", "文华三表", `<p class="tm-section-copy">错误导入通过重新导入完整三表覆盖；三份文件齐全后才能预检。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>交易账户</span><select id="tmImportAccount">${tm.config.accounts.map((item) => `<option value="${item.id}">${esc(item.display_name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>成交记录</span><input id="tmTradeFile" type="file" accept=".xlsx,.xlsm"></label><label class="tm-upload-box"><span>平仓记录</span><input id="tmCloseFile" type="file" accept=".xlsx,.xlsm"></label><label class="tm-upload-box"><span>期末持仓</span><input id="tmPositionFile" type="file" accept=".xlsx,.xlsm"></label><div id="tmImportProgress" class="tm-import-progress">请选择同一账户的完整三表后预检。</div><div id="tmImportResult" class="tm-section-copy"></div><div class="tm-drawer-actions"><button id="tmImportCancel">取消</button><button id="tmImportPreview" class="tm-primary-button">预检</button><button id="tmImportConfirm" class="tm-primary-button hidden">确认覆盖导入</button></div></div>`);
-    ["#tmImportAccount","#tmTradeFile","#tmCloseFile","#tmPositionFile"].forEach((selector) => $(selector).addEventListener("change", invalidateImportPreview));
+    openDrawer("导入与核验", "交易所结算单", `<p class="tm-section-copy">每次只需上传一个 TXT 文件，系统自动识别日结单或月结单。月结单作为主要来源；日结单用于期初建立、月中更新或补数，重叠数据自动去重且月结优先。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>交易账户</span><select id="tmImportAccount">${tm.config.accounts.map((item) => `<option value="${item.id}">${esc(item.display_name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>交易所结算单（TXT）</span><input id="tmStatementFile" type="file" accept=".txt"></label><div id="tmImportProgress" class="tm-import-progress">请选择交易所 TXT 结算单后预检。</div><div id="tmImportResult" class="tm-section-copy"></div><div class="tm-drawer-actions"><button id="tmImportCancel">取消</button><button id="tmImportPreview" class="tm-primary-button">预检</button><button id="tmImportConfirm" class="tm-primary-button hidden">确认导入</button></div></div>`);
+    ["#tmImportAccount","#tmStatementFile"].forEach((selector) => $(selector).addEventListener("change", invalidateImportPreview));
     $("#tmImportCancel").addEventListener("click", closeDrawer);
     $("#tmImportPreview").addEventListener("click", previewImport);
     $("#tmImportConfirm").addEventListener("click", confirmImport);
   }
 
   async function previewImport() {
-    const files = [$("#tmTradeFile").files[0],$("#tmCloseFile").files[0],$("#tmPositionFile").files[0]];
-    if (files.some((file) => !file)) return showError(new Error("成交、平仓、持仓三表必须齐全"));
-    setImportBusy(true,"正在预检三表，请稍候");
+    const file = $("#tmStatementFile").files[0];
+    if (!file) return showError(new Error("请选择交易所 TXT 结算单"));
+    setImportBusy(true,"正在解析并预检结算单，请稍候");
     try {
-      const encoded = await Promise.all(files.map(async (file) => ({name:file.name,content_base64:await fileBase64(file)})));
-      const result = await api("/api/trading-management/imports/preview", {method:"POST",body:JSON.stringify({account_id:Number($("#tmImportAccount").value),trade_file:encoded[0],close_file:encoded[1],position_file:encoded[2]})});
+      const encoded = {name:file.name,content_base64:await fileBase64(file)};
+      const result = await api("/api/trading-management/imports/preview", {method:"POST",body:JSON.stringify({account_id:Number($("#tmImportAccount").value),statement_file:encoded})});
+      if (result.duplicate_batch_id) {
+        tm.importPreviewId = null;
+        $("#tmImportResult").textContent = `该结算单已导入（批次 ${result.duplicate_batch_id}），无需重复确认。`;
+        $("#tmImportConfirm").classList.add("hidden");
+        return;
+      }
       tm.importPreviewId = result.preview_batch_id;
-      $("#tmImportResult").textContent = `预检通过：成交 ${result.counts.trade} 条，平仓 ${result.counts.close} 条，持仓 ${result.counts.position} 条；${result.range_start || "—"} 至 ${result.range_end || "—"}。`;
+      const typeLabel = result.statement_type === "monthly" ? "月结单" : "日结单";
+      const continuity = result.continuity?.message || "连续性状态待确认";
+      $("#tmImportResult").textContent = `预检通过（${typeLabel}）：成交 ${result.counts.trade} 条，平仓 ${result.counts.close} 条，行权/弃权 ${result.counts.exercise || 0} 条，持仓 ${result.counts.position} 条；${result.range_start || "—"} 至 ${result.range_end || "—"}。${continuity}`;
       $("#tmImportConfirm").classList.remove("hidden");
     } catch (error) { showError(error); } finally { setImportBusy(false); }
   }
 
   async function confirmImport() {
     if (!tm.importPreviewId) return showError(new Error("请先完成预检"));
-    setImportBusy(true,"正在覆盖导入并建立事实匹配，请勿关闭窗口");
+    setImportBusy(true,"正在确认导入并建立事实匹配，请勿关闭窗口");
     try {
       const result = await api(`/api/trading-management/imports/${tm.importPreviewId}/confirm`, {method:"POST"});
       tm.importPreviewId = null; invalidateFactCache(); closeDrawer(); showToast(`导入完成：成交 ${result.counts.trade}，平仓 ${result.counts.close}，持仓 ${result.counts.position}`); await renderPositionsView();
@@ -443,7 +451,7 @@
     if (tm.initialized) return; tm.initialized = true;
     $("#tmCloseDrawer").addEventListener("click", closeDrawer);
     $("#tmDrawerBackdrop").addEventListener("click", closeDrawer);
-    $("#tmDataInfoButton").addEventListener("click", () => openDrawer("数据说明","当前系统口径",`<div class="tm-quality-list">${qualityRow("数据来源","文华成交、平仓、期末持仓三表","事实层")}${qualityRow("业务归属","独立业务层，不改事实","可调整")}${qualityRow("真实交易操作","系统严格禁止","只读")}</div>`));
+    $("#tmDataInfoButton").addEventListener("click", () => openDrawer("数据说明","当前系统口径",`<div class="tm-quality-list">${qualityRow("数据来源","交易所日结单或月结单 TXT","事实层")}${qualityRow("重叠规则","月结优先，保留来源与差异审计","自动去重")}${qualityRow("业务归属","独立业务层，不改事实","可调整")}${qualityRow("真实交易操作","系统严格禁止","只读")}</div>`));
     document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
   }
 
