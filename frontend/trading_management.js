@@ -47,6 +47,7 @@
   let factCacheVersion = 0;
   const BUSINESS_QUOTE_REFRESH_MS = 15000;
   let businessQuoteRefreshTimer = null;
+  let businessQuoteRefreshInFlight = false;
   let businessVisibilityObserver = null;
 
   const $ = (selector) => document.querySelector(selector);
@@ -258,7 +259,7 @@
     if (key === "assignment") return row.assignment_status === "classified" && row.business_type ? `<span class="tm-tag blue">${esc(businessType(row.business_type))}${row.strategy ? ` / ${esc(row.strategy)}` : ""}</span>` : '<span class="tm-tag amber">待确认</span>';
     if (key === "valuation_source") return esc(valuationSource(row[key]));
     if (key === "valuation_status" || key === "floating_pnl_status") return esc(valuationStatus(row[key]));
-    if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity","market_price","valuation_price","underlying_price","iv","floating_pnl","delta_exposure","gamma_exposure","theta_exposure","vega_exposure","net_close_pnl","fund_interest","settlement_80","settlement_20","allocated_open_fee","allocated_close_fee"].includes(key)) return num(row[key]);
+    if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity","market_price","valuation_price","underlying_price","iv","floating_pnl","delta_exposure","gamma_exposure","theta_exposure","vega_exposure","net_close_pnl","fund_interest","settlement_80","settlement_20","allocated_open_fee","allocated_close_fee","settlement_open_price","settlement_fee"].includes(key)) return num(row[key]);
     if (key === "asset_type") return row[key] === "option" ? "期权" : "期货";
     if (key === "business_type") return row.assignment_status === "classified" && row[key] ? `<span class="tm-tag blue">${esc(businessType(row[key]))}</span>` : '<span class="tm-tag amber">待确认</span>';
     return esc(row[key] ?? "—");
@@ -267,7 +268,7 @@
   function factTable(items) {
     const columns = FACT_COLUMNS[tm.factsTab];
     const selectable = tm.factsTab === "trades" && tm.permissions.canEdit;
-    return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td><input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}></td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${columns.length + 2}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
+    return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td>${row.open_close === "开仓" ? `<input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}>` : "继承"}</td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${columns.length + 2}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
   }
 
   function pagination(data, prefix = "tm") {
@@ -280,7 +281,7 @@
       $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><span class="tm-tag blue">统一事实层</span></div>${filters(tm.factsTab === "trades")}<div class="tm-table-loading"><span class="spinner"></span><span>正在读取${tm.factsTab === "positions" ? "持仓" : tm.factsTab === "closes" ? "平仓" : "交易"}记录…</span></div></section>`;
     }
     const data = cached || await loadFactData(tm.factsTab);
-    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选结果</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
+    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条开仓`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页开仓</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选开仓</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
     $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
   }
@@ -293,7 +294,7 @@
     $("#tmDateFrom")?.addEventListener("change", (event) => { tm.dateFrom = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
     $("#tmDateTo")?.addEventListener("change", (event) => { tm.dateTo = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
     document.querySelectorAll("[data-select-row]").forEach((box) => box.addEventListener("change", () => { const id = Number(box.dataset.selectRow); box.checked ? tm.selected.add(id) : tm.selected.delete(id); renderPositionsView().catch(showError); }));
-    $("#tmSelectPage")?.addEventListener("click", () => { tm.selected.clear(); data.items.forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
+    $("#tmSelectPage")?.addEventListener("click", () => { tm.selected.clear(); data.items.filter((row) => row.open_close === "开仓").forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
     $("#tmSelectFiltered")?.addEventListener("click", async () => {
       tm.selectionBusy = true; await renderPositionsView();
       try {
@@ -313,7 +314,7 @@
 
   async function openClassificationDrawer() {
     await ensureConfig();
-    openDrawer("业务归属", `${tm.selected.size} 条已选择`, `<p class="tm-section-copy">一笔成交按完整手数归属，不允许拆分。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>业务归属</span><select id="tmBusinessSubject">${tm.config.subjects.map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>业务类型</span><select id="tmBusinessType"><option value="basic_hedging">基础套保</option><option value="strategic_hedging">战略套保</option></select></label><label class="tm-upload-box"><span>策略</span><input id="tmStrategy" list="tmStrategyList"><datalist id="tmStrategyList">${tm.config.strategies.map((item) => `<option value="${esc(item.name)}"></option>`).join("")}</datalist></label><label class="tm-upload-box"><span>指令/备注</span><textarea id="tmInstruction"></textarea></label><div id="tmClassificationProgress" class="tm-import-progress">已选择 ${tm.selected.size} 条，确认后批量保存。</div><button id="tmSaveClassification" class="tm-primary-button">确认整笔归属</button></div>`);
+    openDrawer("业务归属", `${tm.selected.size} 条开仓已选择`, `<p class="tm-section-copy">归属设置在完整开仓成交；平仓和到期了结按开平分摊自动继承。</p><div class="tm-upload-grid"><label class="tm-upload-box"><span>业务归属</span><select id="tmBusinessSubject">${tm.config.subjects.map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label class="tm-upload-box"><span>业务类型</span><select id="tmBusinessType"><option value="basic_hedging">基础套保</option><option value="strategic_hedging">战略套保</option></select></label><label class="tm-upload-box"><span>策略</span><input id="tmStrategy" list="tmStrategyList"><datalist id="tmStrategyList">${tm.config.strategies.map((item) => `<option value="${esc(item.name)}"></option>`).join("")}</datalist></label><label class="tm-upload-box"><span>指令/备注</span><textarea id="tmInstruction"></textarea></label><div id="tmClassificationProgress" class="tm-import-progress">已选择 ${tm.selected.size} 条开仓，确认后批量保存。</div><button id="tmSaveClassification" class="tm-primary-button">确认整笔归属</button></div>`);
     $("#tmSaveClassification").addEventListener("click", async () => {
       const count = tm.selected.size;
       setClassificationBusy(true, `正在保存 ${count} 条业务归属…`);
@@ -411,9 +412,9 @@
   ];
   const JUNNENG_CLOSE_COLUMNS = [
     ["close_date","平仓日"],["contract","合约"],["open_side","方向"],["matched_quantity","手数"],
-    ["open_price","开仓价"],["close_price","平仓价"],["net_close_pnl","平仓盈亏（含手续费）"],
+    ["settlement_open_price","分摊开仓价"],["close_price","平仓价"],["net_close_pnl","平仓盈亏（含手续费）"],
     ["fund_interest","资金利息"],["settlement_80","80%结算金额"],["settlement_20","20%结算金额"],
-    ["fee","手续费"],["settlement_rule_version","规则版本"],["strategy","策略"],
+    ["settlement_fee","手续费"],["settlement_rule_version","规则版本"],["strategy","策略"],
   ];
 
   function businessColumns(view, tab) {
@@ -467,10 +468,16 @@
   function startBusinessQuoteRefresh() {
     stopBusinessQuoteRefresh();
     const tabKey = tm.view === "junneng" ? "junnengTab" : "optionsTab";
-    if (!["junneng","options"].includes(tm.view) || tm[tabKey] !== "positions" || document.visibilityState !== "visible") return;
-    businessQuoteRefreshTimer = window.setInterval(() => {
-      if (document.visibilityState === "visible" && tm[tabKey] === "positions") {
-        renderBusinessLedger(tm.view).catch(showError);
+    if (!["junneng","options"].includes(tm.view) || tm[tabKey] !== "positions" || document.visibilityState !== "visible" || $("#tradingManagementPage").classList.contains("hidden")) return;
+    businessQuoteRefreshTimer = window.setInterval(async () => {
+      if (document.visibilityState !== "visible" || tm[tabKey] !== "positions" || businessQuoteRefreshInFlight) return;
+      businessQuoteRefreshInFlight = true;
+      try {
+        await renderBusinessLedger(tm.view);
+      } catch (error) {
+        showError(error);
+      } finally {
+        businessQuoteRefreshInFlight = false;
       }
     }, BUSINESS_QUOTE_REFRESH_MS);
   }

@@ -1253,14 +1253,18 @@ def test_batch_classification_validates_active_facts_once(tmp_path, monkeypatch)
     subject = trading_management.create_business_subject("上海钧能", actor="tester")
     with db.connect() as conn:
         identity_ids = [row["identity_id"] for row in db._exec(
-            conn.cursor(), "SELECT identity_id FROM trading_trade_facts ORDER BY identity_id"
+            conn.cursor(),
+            """
+            SELECT identity_id FROM trading_trade_facts
+            WHERE open_close = '开仓' ORDER BY identity_id
+            """,
         ).fetchall()]
     original_exec = db._exec
     validation_queries = 0
 
     def counted_exec(cur, query, params=()):
         nonlocal validation_queries
-        if "SELECT tf.identity_id FROM trading_trade_facts tf" in query:
+        if "SELECT tf.identity_id, tf.open_close FROM trading_trade_facts tf" in query:
             validation_queries += 1
         return original_exec(cur, query, params)
 
@@ -1279,7 +1283,11 @@ def test_batch_classification_uses_bounded_database_round_trips(tmp_path, monkey
     subject = trading_management.create_business_subject("上海钧能", actor="tester")
     with db.connect() as conn:
         identity_ids = [row["identity_id"] for row in db._exec(
-            conn.cursor(), "SELECT identity_id FROM trading_trade_facts ORDER BY identity_id"
+            conn.cursor(),
+            """
+            SELECT identity_id FROM trading_trade_facts
+            WHERE open_close = '开仓' ORDER BY identity_id
+            """,
         ).fetchall()]
     original_exec = db._exec
     original_executemany = db._executemany
@@ -1365,7 +1373,10 @@ def test_classification_assigns_complete_trade_identities(tmp_path, monkeypatch)
         trade_ids = [
             row["identity_id"]
             for row in conn.execute(
-                "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 2"
+                """
+                SELECT identity_id FROM trading_trade_facts
+                WHERE open_close = '开仓' ORDER BY id LIMIT 2
+                """
             ).fetchall()
         ]
 
@@ -1399,10 +1410,20 @@ def test_classification_rejects_partial_quantity_and_disabled_subject(tmp_path, 
         trade_id = conn.execute(
             "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
         ).fetchone()["identity_id"]
+        close_trade_id = conn.execute(
+            """
+            SELECT identity_id FROM trading_trade_facts
+            WHERE open_close = '平仓' ORDER BY id LIMIT 1
+            """
+        ).fetchone()["identity_id"]
 
     with pytest.raises(ValueError, match="不允许按手数拆分"):
         trading_management.classify_trade_identities(
             [trade_id], subject["id"], "basic_hedging", "", "", "tester", requested_quantity=1
+        )
+    with pytest.raises(ValueError, match="只能设置在开仓交易"):
+        trading_management.classify_trade_identities(
+            [close_trade_id], subject["id"], "basic_hedging", "", "", "tester"
         )
 
     with db.connect() as conn:
@@ -1443,7 +1464,11 @@ def setup_classified_business_sample(tmp_path, monkeypatch):
     with db.connect() as conn:
         rb_ids = [
             row["identity_id"] for row in conn.execute(
-                "SELECT identity_id FROM trading_trade_facts WHERE contract = 'rb2610' ORDER BY id"
+                """
+                SELECT identity_id FROM trading_trade_facts
+                WHERE contract = 'rb2610' AND open_close = '开仓'
+                ORDER BY id
+                """
             ).fetchall()
         ]
         conn.execute(
@@ -1515,6 +1540,17 @@ def test_business_trade_ledger_inherits_close_assignment_from_open_trade(
         "代内部公司套保", "", "tester",
     )
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE trading_business_assignments
+            SET business_type = 'strategic_hedging'
+            WHERE trade_identity_id = (
+                SELECT identity_id FROM trading_trade_facts
+                WHERE contract = 'rb2610' AND open_close = '平仓'
+            )
+            """
+        )
 
     result = trading_management.query_business_rows(
         "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
@@ -1531,6 +1567,105 @@ def test_business_trade_ledger_inherits_close_assignment_from_open_trade(
         "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
     )
     assert after_remove["items"] == []
+
+
+def test_business_trade_ledger_prorates_one_close_trade_across_close_facts(
+    tmp_path, monkeypatch
+):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        close = conn.execute("SELECT * FROM trading_close_facts").fetchone()
+        link = conn.execute("SELECT * FROM trading_close_trade_links").fetchone()
+        allocation = conn.execute(
+            "SELECT * FROM trading_business_close_allocations"
+        ).fetchone()
+        account_id = conn.execute(
+            "SELECT account_id FROM trading_import_batches WHERE id = ?",
+            (confirmed["batch_id"],),
+        ).fetchone()["account_id"]
+        second_close_id = conn.execute(
+            """
+            INSERT INTO trading_fact_identities
+                (account_id, fact_type, stable_key)
+            VALUES (?, 'close', 'test-second-close-fact')
+            """,
+            (account_id,),
+        ).lastrowid
+        conn.execute(
+            """
+            UPDATE trading_close_facts
+            SET quantity = 1, fact_close_pnl = 600, matched_fee = 3
+            WHERE identity_id = ?
+            """,
+            (close["identity_id"],),
+        )
+        conn.execute(
+            """
+            UPDATE trading_close_trade_links
+            SET matched_quantity = 1, allocated_fee = 3
+            WHERE id = ?
+            """,
+            (link["id"],),
+        )
+        conn.execute(
+            """
+            UPDATE trading_business_close_allocations
+            SET matched_quantity = 1, business_pnl = 200
+            WHERE id = ?
+            """,
+            (allocation["id"],),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_close_facts
+                (identity_id, batch_id, source_row_id, open_date, close_date,
+                 exchange, contract, asset_type, open_side, close_side,
+                 quantity, open_price, close_price, fact_close_pnl, matched_fee,
+                 is_current, fee_status, data_status, verification_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 600, 3,
+                    1, 'matched', 'file_imported', 'verified')
+            """,
+            (
+                second_close_id, close["batch_id"], close["source_row_id"],
+                close["open_date"], close["close_date"], close["exchange"],
+                close["contract"], close["asset_type"], close["open_side"],
+                close["close_side"], close["open_price"], close["close_price"],
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_close_trade_links
+                (close_identity_id, close_trade_identity_id, matched_quantity,
+                 allocated_fee, status, rule_version)
+            VALUES (?, ?, 1, 3, 'matched', ?)
+            """,
+            (second_close_id, link["close_trade_identity_id"], link["rule_version"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_business_close_allocations
+                (close_identity_id, open_trade_identity_id, matched_quantity,
+                 source, business_pnl, rule_version, allocation_version,
+                 created_by)
+            VALUES (?, ?, 1, 'fact_default', 200, ?, 1, 'tester')
+            """,
+            (
+                second_close_id, allocation["open_trade_identity_id"],
+                allocation["rule_version"],
+            ),
+        )
+
+    result = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+    close_rows = [row for row in result["items"] if row["open_close"] == "平仓"]
+
+    assert len(close_rows) == 2
+    assert sum(row["quantity"] for row in close_rows) == pytest.approx(2)
+    assert sum(row["fee"] for row in close_rows) == pytest.approx(6)
+    assert sum(row["business_pnl"] for row in close_rows) == pytest.approx(1200)
+    assert result["summary"]["record_count"] == 2
 
 
 def test_junneng_close_rows_include_auditable_settlement_amounts(tmp_path, monkeypatch):
@@ -1552,6 +1687,8 @@ def test_junneng_close_rows_include_auditable_settlement_amounts(tmp_path, monke
     assert result["summary"]["fee"] == pytest.approx(12)
     assert result["summary"]["settlement_rule_version"] == "sh_junneng_v1"
     assert result["items"][0]["net_close_pnl"] == pytest.approx(388)
+    assert result["items"][0]["settlement_open_price"] == pytest.approx(3100)
+    assert result["items"][0]["settlement_fee"] == pytest.approx(12)
     assert result["items"][0]["settlement_rule_version"] == "sh_junneng_v1"
 
 
@@ -1809,7 +1946,9 @@ def test_option_business_positions_exclude_unclassified_open_options(tmp_path, m
     assert result["items"] == []
 
 
-def add_later_classified_open(batch_id, subject_id):
+def add_later_classified_open(
+    batch_id, subject_id, business_type="basic_hedging"
+):
     with db.connect() as conn:
         source_row_id = conn.execute(
             """
@@ -1845,11 +1984,50 @@ def add_later_classified_open(batch_id, subject_id):
             """
             INSERT INTO trading_business_assignments
                 (trade_identity_id, business_subject_id, business_type, strategy_id, assigned_by)
-            VALUES (?, ?, 'basic_hedging', ?, 'tester')
+            VALUES (?, ?, ?, ?, 'tester')
             """,
-            (identity_id, subject_id, strategy_id),
+            (identity_id, subject_id, business_type, strategy_id),
         )
     return identity_id
+
+
+def test_manual_rematch_supports_mixed_business_attribution(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        subject_id = conn.execute(
+            "SELECT id FROM trading_business_subjects WHERE name = '上海钧能'"
+        ).fetchone()["id"]
+        close_id = conn.execute(
+            "SELECT identity_id FROM trading_close_facts"
+        ).fetchone()["identity_id"]
+        original_open_id = conn.execute(
+            "SELECT open_trade_identity_id FROM trading_business_close_allocations"
+        ).fetchone()["open_trade_identity_id"]
+    strategic_open_id = add_later_classified_open(
+        confirmed["batch_id"], subject_id, "strategic_hedging"
+    )
+
+    preview = trading_management.preview_business_rematch(
+        close_id,
+        [
+            {"open_trade_identity_id": original_open_id, "quantity": 1},
+            {"open_trade_identity_id": strategic_open_id, "quantity": 1},
+        ],
+        allocation_version=1,
+    )
+    trading_management.confirm_business_rematch(
+        close_id, preview["preview_token"], allocation_version=1, actor="tester"
+    )
+
+    closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert len(closes["items"]) == 2
+    assert {row["business_type"] for row in closes["items"]} == {
+        "basic_hedging", "strategic_hedging",
+    }
+    assert sum(row["matched_quantity"] for row in closes["items"]) == pytest.approx(2)
 
 
 def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp_path, monkeypatch):
@@ -1883,22 +2061,15 @@ def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp
         allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
         fact_allocation = conn.execute("SELECT * FROM trading_fact_close_allocations").fetchone()
         audit = conn.execute("SELECT * FROM trading_business_allocation_audit").fetchone()
-        close_assignment = conn.execute(
-            """
-            SELECT ba.*, s.name AS strategy
-            FROM trading_close_trade_links l
-            JOIN trading_business_assignments ba ON ba.trade_identity_id = l.close_trade_identity_id
-            LEFT JOIN trading_strategies s ON s.id = ba.strategy_id
-            WHERE l.close_identity_id = ?
-            """,
-            (close_id,),
-        ).fetchone()
     assert allocation["open_trade_identity_id"] == new_open_id
     assert allocation["source"] == "manual_override"
     assert fact_allocation["open_trade_identity_id"] == old_open_id
     assert audit["before_business_pnl"] == 400
     assert audit["after_business_pnl"] == 200
-    assert close_assignment["strategy"] == "晚开策略"
+    closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert closes["items"][0]["strategy"] == "晚开策略"
 
     positions = trading_management.query_business_rows(
         "junneng", "positions", trading_management.FactFilters(page=1, page_size=20)
@@ -1926,7 +2097,7 @@ def test_manual_rematch_rejects_stale_version_and_cross_contract(tmp_path, monke
         )
 
 
-def test_restore_default_business_match_reverts_allocation_and_close_inheritance(tmp_path, monkeypatch):
+def test_restore_default_business_match_reverts_allocation_attribution(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
     with db.connect() as conn:
@@ -1951,22 +2122,17 @@ def test_restore_default_business_match_reverts_allocation_and_close_inheritance
     assert restored["business_pnl"] == 400
     with db.connect() as conn:
         allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
-        close_assignment = conn.execute(
-            """
-            SELECT ba.strategy_id
-            FROM trading_close_trade_links l
-            JOIN trading_business_assignments ba ON ba.trade_identity_id = l.close_trade_identity_id
-            WHERE l.close_identity_id = ?
-            """,
-            (close_id,),
-        ).fetchone()
         open_assignment = conn.execute(
             "SELECT strategy_id FROM trading_business_assignments WHERE trade_identity_id = ?",
             (fact_open_id,),
         ).fetchone()
     assert allocation["open_trade_identity_id"] == fact_open_id
     assert allocation["source"] == "fact_default"
-    assert close_assignment["strategy_id"] == open_assignment["strategy_id"]
+    closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert closes["items"][0]["strategy"] == "代内部公司套保"
+    assert open_assignment["strategy_id"] is not None
 
 
 def test_fully_closed_contract_reports_business_pnl_reconciliation_difference(tmp_path, monkeypatch):

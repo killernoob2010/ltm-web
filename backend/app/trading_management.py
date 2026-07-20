@@ -2126,7 +2126,9 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
                     WHERE cf.is_current = 1 AND l.close_trade_identity_id = tf.identity_id) AS fact_close_pnl
             FROM trading_trade_facts tf
             JOIN trading_import_batches b ON b.id = tf.batch_id
-            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            LEFT JOIN trading_business_assignments ba
+              ON ba.trade_identity_id = tf.identity_id
+             AND tf.open_close = '开仓'
             LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
             LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
             WHERE b.status = 'active' AND tf.is_current = 1
@@ -2134,6 +2136,46 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
             """,
         ).fetchall()
         items = [dict(row) for row in rows]
+        close_assignment_rows = db._exec(
+            cur,
+            """
+            SELECT l.close_trade_identity_id, ba.business_type,
+                   s.name AS business_subject, st.name AS strategy,
+                   CASE WHEN ba.id IS NULL
+                        THEN 'unclassified' ELSE 'classified'
+                   END AS assignment_status
+            FROM trading_close_trade_links l
+            JOIN trading_business_close_allocations a
+              ON a.close_identity_id = l.close_identity_id
+            LEFT JOIN trading_business_assignments ba
+              ON ba.trade_identity_id = a.open_trade_identity_id
+            LEFT JOIN trading_business_subjects s
+              ON s.id = ba.business_subject_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+            """,
+        ).fetchall()
+        close_assignments: dict[int, list[dict[str, Any]]] = {}
+        for raw in close_assignment_rows:
+            assignment = dict(raw)
+            close_assignments.setdefault(
+                int(assignment["close_trade_identity_id"]), []
+            ).append(assignment)
+        for item in items:
+            if item["open_close"] == "开仓":
+                continue
+            related = close_assignments.get(int(item["identity_id"]), [])
+            classified = [
+                row for row in related
+                if row["assignment_status"] == "classified"
+            ]
+            item["assignment_status"] = (
+                "classified"
+                if related and len(classified) == len(related)
+                else "unclassified"
+            )
+            for key in ("business_subject", "business_type", "strategy"):
+                values = {row[key] for row in classified}
+                item[key] = next(iter(values)) if len(values) == 1 else None
         if filters.contract:
             items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
         if filters.direction:
@@ -2171,7 +2213,7 @@ def query_trade_selection_identities(filters: FactFilters) -> dict[str, Any]:
             FROM trading_trade_facts tf
             JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
             LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-            WHERE tf.is_current = 1
+            WHERE tf.is_current = 1 AND tf.open_close = '开仓'
             ORDER BY tf.trade_date DESC, tf.id DESC
             """,
         ).fetchall()
@@ -2215,7 +2257,8 @@ def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
             cur,
             """
             WITH attributed_trades AS (
-                SELECT tf.quantity AS quantity, COALESCE(tf.fee, 0) AS fee
+                SELECT tf.identity_id, tf.quantity AS quantity,
+                       COALESCE(tf.fee, 0) AS fee
                 FROM trading_trade_facts tf
                 JOIN trading_import_batches b
                   ON b.id = tf.batch_id AND b.status = 'active'
@@ -2229,10 +2272,12 @@ def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
                   AND (? = '' OR tf.trade_date >= ?)
                   AND (? = '' OR tf.trade_date <= ?)
                 UNION ALL
-                SELECT tf.quantity * a.matched_quantity
+                SELECT tf.identity_id,
+                       l.matched_quantity * a.matched_quantity
                            / NULLIF(cf.quantity, 0) AS quantity,
-                       COALESCE(tf.fee, 0) * a.matched_quantity
-                           / NULLIF(cf.quantity, 0) AS fee
+                       COALESCE(tf.fee, 0)
+                           * l.matched_quantity / NULLIF(tf.quantity, 0)
+                           * a.matched_quantity / NULLIF(cf.quantity, 0) AS fee
                 FROM trading_trade_facts tf
                 JOIN trading_import_batches b
                   ON b.id = tf.batch_id AND b.status = 'active'
@@ -2254,7 +2299,7 @@ def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
                   AND (? = '' OR tf.trade_date >= ?)
                   AND (? = '' OR tf.trade_date <= ?)
             )
-            SELECT COUNT(*) AS record_count,
+            SELECT COUNT(DISTINCT identity_id) AS record_count,
                    COALESCE(SUM(quantity), 0) AS quantity,
                    COALESCE(SUM(fee), 0) AS fee
             FROM attributed_trades
@@ -2634,22 +2679,29 @@ def classify_trade_identities(
         if not subject:
             raise ValueError("业务归属不存在或已停用")
         active_ids: set[int] = set()
+        non_open_ids: set[int] = set()
         for start in range(0, len(identity_ids), 500):
             chunk = identity_ids[start:start + 500]
             placeholders = ",".join("?" for _ in chunk)
             active_rows = db._exec(
                 cur,
                 f"""
-                SELECT tf.identity_id FROM trading_trade_facts tf
+                SELECT tf.identity_id, tf.open_close FROM trading_trade_facts tf
                 JOIN trading_import_batches b ON b.id = tf.batch_id
                 WHERE b.status = 'active' AND tf.is_current = 1 AND tf.identity_id IN ({placeholders})
                 """,
                 tuple(chunk),
             ).fetchall()
             active_ids.update(int(row["identity_id"]) for row in active_rows)
+            non_open_ids.update(
+                int(row["identity_id"])
+                for row in active_rows if row["open_close"] != "开仓"
+            )
         missing_ids = [identity_id for identity_id in identity_ids if identity_id not in active_ids]
         if missing_ids:
             raise ValueError(f"成交事实不存在或不是有效版本：{missing_ids[0]}")
+        if non_open_ids:
+            raise ValueError("业务归属只能设置在开仓交易，平仓归属由开平分摊继承")
         strategy_id = strategy["id"] if strategy else None
 
         def fetch_assignments(ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -2668,30 +2720,6 @@ def classify_trade_identities(
             return result
 
         before = fetch_assignments(identity_ids)
-        linked_close_ids: set[int] = set()
-        for start in range(0, len(identity_ids), 500):
-            chunk = identity_ids[start:start + 500]
-            placeholders = ",".join("?" for _ in chunk)
-            rows = db._exec(
-                cur,
-                f"SELECT DISTINCT close_identity_id FROM trading_fact_close_allocations WHERE open_trade_identity_id IN ({placeholders})",
-                tuple(chunk),
-            ).fetchall()
-            linked_close_ids.update(int(row["close_identity_id"]) for row in rows)
-        inherited_ids: set[int] = set()
-        linked_close_list = sorted(linked_close_ids)
-        for start in range(0, len(linked_close_list), 500):
-            chunk = linked_close_list[start:start + 500]
-            placeholders = ",".join("?" for _ in chunk)
-            rows = db._exec(
-                cur,
-                f"SELECT DISTINCT close_trade_identity_id FROM trading_close_trade_links WHERE close_identity_id IN ({placeholders})",
-                tuple(chunk),
-            ).fetchall()
-            inherited_ids.update(int(row["close_trade_identity_id"]) for row in rows)
-        inherited_ids.difference_update(identity_ids)
-        inherited_list = sorted(inherited_ids)
-        before.update(fetch_assignments(inherited_list))
 
         db._executemany(
             cur,
@@ -2711,29 +2739,10 @@ def classify_trade_identities(
             [(identity_id, business_subject_id, business_type, strategy_id, instruction_text or None, actor, actor)
              for identity_id in identity_ids],
         )
-        if inherited_list:
-            db._executemany(
-                cur,
-                """
-                INSERT INTO trading_business_assignments
-                    (trade_identity_id, business_subject_id, business_type, strategy_id, assigned_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(trade_identity_id) DO UPDATE SET
-                    business_subject_id = excluded.business_subject_id,
-                    business_type = excluded.business_type,
-                    strategy_id = excluded.strategy_id,
-                    updated_by = excluded.updated_by,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                [(identity_id, business_subject_id, business_type, strategy_id, actor, actor)
-                 for identity_id in inherited_list],
-            )
-        all_changed_ids = identity_ids + inherited_list
-        after = fetch_assignments(all_changed_ids)
+        after = fetch_assignments(identity_ids)
         audit_rows = []
-        explicitly_assigned_ids = set(identity_ids)
-        for identity_id in all_changed_ids:
-            operation_type = "业务归类" if identity_id in explicitly_assigned_ids else "业务平仓自动继承"
+        for identity_id in identity_ids:
+            operation_type = "业务归类"
             audit_rows.append((
                 identity_id, operation_type, f"{actor} {operation_type}",
                 json.dumps(before.get(identity_id), ensure_ascii=False) if before.get(identity_id) is not None else None,
@@ -2755,46 +2764,21 @@ def classify_trade_identities(
 def remove_trade_assignment(identity_id: int, actor: str) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
-        linked_rows = db._exec(
+        before_row = db._exec(
             cur,
-            """
-            SELECT DISTINCT l.close_trade_identity_id
-            FROM trading_fact_close_allocations fa
-            JOIN trading_close_trade_links l
-              ON l.close_identity_id = fa.close_identity_id
-            WHERE fa.open_trade_identity_id = ?
-            """,
+            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
             (identity_id,),
-        ).fetchall()
-        affected_ids = [identity_id] + [
-            int(row["close_trade_identity_id"]) for row in linked_rows
-            if int(row["close_trade_identity_id"]) != identity_id
-        ]
-        placeholders = ",".join("?" for _ in affected_ids)
-        before_rows = db._exec(
-            cur,
-            f"""SELECT * FROM trading_business_assignments
-                WHERE trade_identity_id IN ({placeholders})""",
-            tuple(affected_ids),
-        ).fetchall()
-        if not before_rows:
+        ).fetchone()
+        if not before_row:
             return {"removed": False}
         db._exec(
             cur,
-            f"""DELETE FROM trading_business_assignments
-                WHERE trade_identity_id IN ({placeholders})""",
-            tuple(affected_ids),
+            "DELETE FROM trading_business_assignments WHERE trade_identity_id = ?",
+            (identity_id,),
         )
-        for row in before_rows:
-            row_identity_id = int(row["trade_identity_id"])
-            operation_type = (
-                "取消业务归类"
-                if row_identity_id == identity_id
-                else "业务平仓自动移出"
-            )
-            _write_assignment_audit(
-                cur, row_identity_id, operation_type, actor, dict(row), None
-            )
+        _write_assignment_audit(
+            cur, identity_id, "取消业务归类", actor, dict(before_row), None
+        )
         conn.commit()
     return {"removed": True}
 
@@ -3136,30 +3120,73 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             rows = db._exec(
                 cur,
                 """
-                SELECT tf.*, s.name AS business_subject, ba.business_type,
-                       st.name AS strategy, ba.instruction_text,
-                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status,
-                       (SELECT SUM(CASE WHEN a.source = 'fact_default'
-                                           THEN cf.fact_close_pnl * a.matched_quantity / NULLIF(cf.quantity, 0)
-                                           ELSE a.business_pnl END)
-                        FROM trading_close_trade_links l
-                        JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
-                        JOIN trading_import_batches cb ON cb.id = cf.batch_id AND cb.status = 'active'
-                        LEFT JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
-                        WHERE cf.is_current = 1 AND l.close_trade_identity_id = tf.identity_id) AS business_pnl
-                FROM trading_trade_facts tf
-                JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
-                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-                LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
-                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
-                WHERE tf.is_current = 1
-                ORDER BY tf.trade_date DESC, tf.id DESC
+                WITH attributed_trades AS (
+                    SELECT tf.*, tf.quantity AS attributed_quantity,
+                           COALESCE(tf.fee, 0) AS attributed_fee,
+                           s.name AS business_subject, ba.business_type,
+                           st.name AS strategy, ba.instruction_text,
+                           'classified' AS assignment_status,
+                           NULL AS business_pnl
+                    FROM trading_trade_facts tf
+                    JOIN trading_import_batches b
+                      ON b.id = tf.batch_id AND b.status = 'active'
+                    JOIN trading_business_assignments ba
+                      ON ba.trade_identity_id = tf.identity_id
+                    JOIN trading_business_subjects s
+                      ON s.id = ba.business_subject_id
+                    LEFT JOIN trading_strategies st
+                      ON st.id = ba.strategy_id
+                    WHERE tf.is_current = 1 AND tf.open_close = '开仓'
+
+                    UNION ALL
+
+                    SELECT tf.*,
+                           l.matched_quantity * a.matched_quantity
+                             / NULLIF(cf.quantity, 0) AS attributed_quantity,
+                           COALESCE(tf.fee, 0)
+                             * l.matched_quantity / NULLIF(tf.quantity, 0)
+                             * a.matched_quantity
+                             / NULLIF(cf.quantity, 0) AS attributed_fee,
+                           s.name AS business_subject, ba.business_type,
+                           st.name AS strategy, ba.instruction_text,
+                           'classified' AS assignment_status,
+                           (CASE WHEN a.source = 'fact_default'
+                                 THEN cf.fact_close_pnl * a.matched_quantity
+                                      / NULLIF(cf.quantity, 0)
+                                 ELSE a.business_pnl END)
+                             * l.matched_quantity
+                             / NULLIF(cf.quantity, 0) AS business_pnl
+                    FROM trading_trade_facts tf
+                    JOIN trading_import_batches b
+                      ON b.id = tf.batch_id AND b.status = 'active'
+                    JOIN trading_close_trade_links l
+                      ON l.close_trade_identity_id = tf.identity_id
+                    JOIN trading_close_facts cf
+                      ON cf.identity_id = l.close_identity_id
+                     AND cf.is_current = 1
+                    JOIN trading_import_batches cb
+                      ON cb.id = cf.batch_id AND cb.status = 'active'
+                    JOIN trading_business_close_allocations a
+                      ON a.close_identity_id = cf.identity_id
+                    JOIN trading_business_assignments ba
+                      ON ba.trade_identity_id = a.open_trade_identity_id
+                    JOIN trading_business_subjects s
+                      ON s.id = ba.business_subject_id
+                    LEFT JOIN trading_strategies st
+                      ON st.id = ba.strategy_id
+                    WHERE tf.is_current = 1 AND tf.open_close <> '开仓'
+                )
+                SELECT *
+                FROM attributed_trades
+                ORDER BY trade_date DESC, id DESC
                 """,
             ).fetchall()
-            all_items = [
-                dict(row) for row in rows
-                if row["assignment_status"] == "classified"
-            ]
+            all_items = []
+            for row in rows:
+                item = dict(row)
+                item["quantity"] = float(item.pop("attributed_quantity") or 0)
+                item["fee"] = float(item.pop("attributed_fee") or 0)
+                all_items.append(item)
             if view == "junneng":
                 items = [
                     {**row, "ledger_membership": "confirmed"}
@@ -3169,7 +3196,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 items = [row for row in all_items if row["asset_type"] == "option"]
             items = _filter_business_items(items, tab, filters)
             summary = {
-                "record_count": len(items),
+                "record_count": len({row["identity_id"] for row in items}),
                 "quantity": sum(float(row["quantity"]) for row in items),
                 "fee": sum(float(row["fee"] or 0) for row in items),
                 "business_pnl": sum(float(row["business_pnl"] or 0) for row in items),
@@ -3298,6 +3325,11 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     * matched_quantity
                     / float(item["quantity"] or matched_quantity or 1)
                 )
+                settlement_open_price = float(
+                    item["allocated_open_price"]
+                    if item["allocated_open_price"] is not None
+                    else item["open_price"]
+                )
                 settlement = calculate_sh_junneng_settlement(
                     gross_pnl=float(
                         item["allocation_business_pnl"]
@@ -3309,16 +3341,16 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     open_date=item["allocated_open_date"] or item["open_date"],
                     close_date=item["close_date"],
                     matched_quantity=matched_quantity,
-                    open_price=float(
-                        item["allocated_open_price"]
-                        if item["allocated_open_price"] is not None
-                        else item["open_price"]
-                    ),
+                    open_price=settlement_open_price,
                     multiplier=multiplier,
                 )
                 item.update(settlement)
                 item["allocated_open_fee"] = round(allocated_open_fee, 2)
                 item["allocated_close_fee"] = round(allocated_close_fee, 2)
+                item["settlement_open_price"] = settlement_open_price
+                item["settlement_fee"] = round(
+                    allocated_open_fee + allocated_close_fee, 2
+                )
                 item["settlement_status"] = "calculated"
         summary = {
             "record_count": len(items),
@@ -3431,7 +3463,6 @@ def preview_business_rematch(
             raise ValueError("请选择业务开仓记录")
         selected_rows = []
         total = 0.0
-        configs = set()
         for selection in selections:
             identity_id = int(selection["open_trade_identity_id"])
             quantity = float(selection["quantity"])
@@ -3440,11 +3471,8 @@ def preview_business_rematch(
                 raise ValueError("只能选择同账户、同合约、同方向且时间合规的业务开仓")
             if quantity <= 0 or quantity > float(candidate["available_quantity"]) + 1e-9:
                 raise ValueError("业务可平手数不足")
-            configs.add((candidate["business_subject_id"], candidate["business_type"], candidate["strategy_id"]))
             selected_rows.append({**selection, "candidate": candidate})
             total += quantity
-        if len(configs) != 1:
-            raise ValueError("多笔开仓的业务归属、业务类型和策略必须一致")
         if abs(total - float(close["quantity"])) > 1e-9:
             raise ValueError("业务匹配手数合计必须等于平仓手数")
         spec = db._exec(
@@ -3477,7 +3505,6 @@ def preview_business_rematch(
                 {"open_trade_identity_id": int(item["open_trade_identity_id"]), "quantity": float(item["quantity"])}
                 for item in selected_rows
             ],
-            "business_config": list(next(iter(configs))),
             "before_business_pnl": float(before_row["pnl"] or 0),
             "after_business_pnl": after_pnl,
         }
@@ -3564,51 +3591,6 @@ def reconcile_business_pnl(close_identity_id: int) -> dict[str, Any]:
     }
 
 
-def _inherit_close_trade_assignment(cur, close_identity_id: int, business_config: tuple, actor: str) -> None:
-    business_subject_id, business_type, strategy_id = business_config
-    close_trade_rows = db._exec(
-        cur,
-        "SELECT DISTINCT close_trade_identity_id FROM trading_close_trade_links WHERE close_identity_id = ?",
-        (close_identity_id,),
-    ).fetchall()
-    for row in close_trade_rows:
-        trade_identity_id = row["close_trade_identity_id"]
-        before_row = db._exec(
-            cur,
-            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
-            (trade_identity_id,),
-        ).fetchone()
-        before = dict(before_row) if before_row else None
-        if before_row:
-            db._exec(
-                cur,
-                """
-                UPDATE trading_business_assignments
-                SET business_subject_id = ?, business_type = ?, strategy_id = ?,
-                    updated_by = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE trade_identity_id = ?
-                """,
-                (business_subject_id, business_type, strategy_id, actor, trade_identity_id),
-            )
-        else:
-            db._exec(
-                cur,
-                """
-                INSERT INTO trading_business_assignments
-                    (trade_identity_id, business_subject_id, business_type, strategy_id,
-                     assigned_by, updated_by)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (trade_identity_id, business_subject_id, business_type, strategy_id, actor, actor),
-            )
-        after = db._exec(
-            cur,
-            "SELECT * FROM trading_business_assignments WHERE trade_identity_id = ?",
-            (trade_identity_id,),
-        ).fetchone()
-        _write_assignment_audit(cur, trade_identity_id, "业务平仓自动继承", actor, before, dict(after))
-
-
 def confirm_business_rematch(
     close_identity_id: int,
     preview_token: str,
@@ -3663,7 +3645,6 @@ def confirm_business_rematch(
                 (close_identity_id, selection["open_trade_identity_id"], selection["quantity"], group_id, pnl, new_version, actor, actor),
             )
             after_rows.append({"id": allocation_id, **selection, "business_pnl": pnl})
-        _inherit_close_trade_assignment(cur, close_identity_id, tuple(payload["business_config"]), actor)
         db._exec(
             cur,
             """
@@ -3719,12 +3700,6 @@ def restore_default_business_match(
         ).fetchall()
         if not fact_rows:
             raise ValueError("没有可恢复的事实层默认开平关系")
-        configs = {
-            (row["business_subject_id"], row["business_type"], row["strategy_id"])
-            for row in fact_rows
-        }
-        if len(configs) != 1:
-            raise ValueError("事实层开仓对应多个业务归属，无法自动继承到整笔平仓成交")
         spec = db._exec(
             cur,
             """
@@ -3770,7 +3745,6 @@ def restore_default_business_match(
                 "business_pnl": pnl,
             })
             after_pnl += pnl
-        _inherit_close_trade_assignment(cur, close_identity_id, next(iter(configs)), actor)
         before_pnl = sum(float(row.get("business_pnl") or 0) for row in before_rows)
         db._exec(
             cur,

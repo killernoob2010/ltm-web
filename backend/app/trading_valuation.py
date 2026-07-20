@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import math
 import os
 import threading
@@ -12,6 +12,7 @@ from typing import Any, Optional, Protocol, Union
 
 SH_JUNNENG_RULE_VERSION = "sh_junneng_v1"
 OPTION_RISK_FREE_RATE = 0.015
+TQSDK_FETCH_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -208,7 +209,7 @@ def _tqsdk_symbol(request: QuoteRequest) -> str:
 
 
 class TqSdkQuoteProvider:
-    """One read-only TqSdk market-data session; no trading account is constructed."""
+    """One market-data session without a live brokerage account or order calls."""
 
     def __init__(self, username: str, password: str):
         self._username = username
@@ -216,10 +217,26 @@ class TqSdkQuoteProvider:
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="tqsdk-market-data"
         )
+        self._fetch_future: Optional[Future] = None
+        self._future_lock = threading.Lock()
+        initialization = self._executor.submit(self._initialize)
         try:
-            self._api = self._executor.submit(self._initialize).result()
+            self._api = initialization.result(
+                timeout=TQSDK_FETCH_TIMEOUT_SECONDS
+            )
+        except FutureTimeoutError:
+            def close_late_api(future: Future) -> None:
+                try:
+                    future.result().close()
+                except Exception:
+                    pass
+
+            initialization.add_done_callback(close_late_api)
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            raise
         except Exception:
-            self._executor.shutdown(wait=True)
+            initialization.cancel()
+            self._executor.shutdown(wait=False, cancel_futures=True)
             raise
 
     def _initialize(self):
@@ -232,7 +249,28 @@ class TqSdkQuoteProvider:
         )
 
     def fetch(self, requests: list[QuoteRequest]) -> dict[str, QuoteSnapshot]:
-        return self._executor.submit(self._fetch, requests).result()
+        with self._future_lock:
+            if self._fetch_future is not None:
+                if not self._fetch_future.done():
+                    raise RuntimeError("TqSdk market refresh is still in progress")
+                completed = self._fetch_future
+                self._fetch_future = None
+                return completed.result()
+            future = self._executor.submit(self._fetch, requests)
+            self._fetch_future = future
+        try:
+            result = future.result(timeout=TQSDK_FETCH_TIMEOUT_SECONDS)
+        except FutureTimeoutError as exc:
+            raise RuntimeError("TqSdk market refresh timed out") from exc
+        except Exception:
+            with self._future_lock:
+                if self._fetch_future is future:
+                    self._fetch_future = None
+            raise
+        with self._future_lock:
+            if self._fetch_future is future:
+                self._fetch_future = None
+        return result
 
     def _fetch(self, requests: list[QuoteRequest]) -> dict[str, QuoteSnapshot]:
         from pandas import Series
@@ -296,9 +334,8 @@ class TqSdkQuoteProvider:
             last_price = _valid_price(getattr(quote, "last_price", None))
             bid_price = _valid_price(getattr(quote, "bid_price1", None))
             ask_price = _valid_price(getattr(quote, "ask_price1", None))
-            settlement_price = (
-                _valid_price(getattr(quote, "settlement", None))
-                or request.settlement_price
+            settlement_price = request.settlement_price or _valid_price(
+                getattr(quote, "settlement", None)
             )
             option_price = last_price or (
                 (bid_price + ask_price) / 2
@@ -370,40 +407,45 @@ class MarketDataService:
         self.ttl_seconds = ttl_seconds
         self._cache: dict[str, tuple[float, QuoteSnapshot]] = {}
         self._lock = threading.Lock()
+        self._fetch_lock = threading.Lock()
 
     def get_quotes(
         self, requests: list[QuoteRequest]
     ) -> dict[str, QuoteSnapshot]:
-        now = time.monotonic()
-        result: dict[str, QuoteSnapshot] = {}
-        missing: list[QuoteRequest] = []
-        with self._lock:
-            for request in requests:
-                cached = self._cache.get(request.contract)
-                if cached and cached[0] > now:
-                    result[request.contract] = cached[1]
-                else:
-                    missing.append(request)
-        fetched: dict[str, QuoteSnapshot] = {}
-        if missing and self.provider is not None:
-            try:
-                fetched = self.provider.fetch(missing)
-            except Exception:
-                fetched = {}
-        with self._lock:
-            for request in missing:
-                snapshot = fetched.get(request.contract) or QuoteSnapshot(
-                    settlement_price=request.settlement_price,
-                    source="settlement_statement" if request.settlement_price else "",
-                )
-                if snapshot.settlement_price is None:
-                    snapshot.settlement_price = request.settlement_price
-                self._cache[request.contract] = (
-                    now + self.ttl_seconds,
-                    snapshot,
-                )
-                result[request.contract] = snapshot
-        return result
+        with self._fetch_lock:
+            now = time.monotonic()
+            result: dict[str, QuoteSnapshot] = {}
+            missing: list[QuoteRequest] = []
+            with self._lock:
+                for request in requests:
+                    cached = self._cache.get(request.contract)
+                    if cached and cached[0] > now:
+                        result[request.contract] = cached[1]
+                    else:
+                        missing.append(request)
+            fetched: dict[str, QuoteSnapshot] = {}
+            if missing and self.provider is not None:
+                try:
+                    fetched = self.provider.fetch(missing)
+                except Exception:
+                    fetched = {}
+            with self._lock:
+                for request in missing:
+                    snapshot = fetched.get(request.contract) or QuoteSnapshot(
+                        settlement_price=request.settlement_price,
+                        source=(
+                            "settlement_statement"
+                            if request.settlement_price else ""
+                        ),
+                    )
+                    if snapshot.settlement_price is None:
+                        snapshot.settlement_price = request.settlement_price
+                    self._cache[request.contract] = (
+                        now + self.ttl_seconds,
+                        snapshot,
+                    )
+                    result[request.contract] = snapshot
+            return result
 
     def close(self) -> None:
         if self.provider is not None:

@@ -1,5 +1,6 @@
 from datetime import date
 import inspect
+import threading
 
 import pytest
 
@@ -168,6 +169,45 @@ def test_market_data_service_reuses_short_cache_and_closes_provider():
     assert provider.closed is True
 
 
+def test_market_data_service_merges_concurrent_cache_misses():
+    class BlockingProvider:
+        def __init__(self):
+            self.fetch_count = 0
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def fetch(self, requests):
+            self.fetch_count += 1
+            self.started.set()
+            self.release.wait(timeout=1)
+            return {request.contract: QuoteSnapshot(last_price=12.5) for request in requests}
+
+        def close(self):
+            pass
+
+    provider = BlockingProvider()
+    service = MarketDataService(provider=provider, ttl_seconds=10)
+    request = QuoteRequest(contract="rb2610", exchange="SHFE")
+    results = []
+    first = threading.Thread(
+        target=lambda: results.append(service.get_quotes([request]))
+    )
+    second = threading.Thread(
+        target=lambda: results.append(service.get_quotes([request]))
+    )
+
+    first.start()
+    assert provider.started.wait(timeout=1)
+    second.start()
+    provider.release.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert len(results) == 2
+    assert provider.fetch_count == 1
+    assert all(result["rb2610"].last_price == 12.5 for result in results)
+
+
 def test_market_data_failure_uses_statement_settlement_without_fake_live_price():
     class FailingProvider:
         def fetch(self, requests):
@@ -190,7 +230,7 @@ def test_market_data_failure_uses_statement_settlement_without_fake_live_price()
     )
 
 
-def test_tqsdk_provider_contains_no_trading_account_or_order_operations():
+def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():
     source = inspect.getsource(TqSdkQuoteProvider)
     for forbidden in ("TqAccount", "insert_order", "cancel_order"):
         assert forbidden not in source

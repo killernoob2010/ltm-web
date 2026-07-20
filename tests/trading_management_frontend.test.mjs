@@ -32,7 +32,7 @@ test("settlement import uses one txt file with automatic daily or monthly detect
 });
 
 test("whole trades can be classified and business close relationships can be rematched", () => {
-  assert.match(tradingJs, /一笔成交按完整手数归属，不允许拆分/);
+  assert.match(tradingJs, /归属设置在完整开仓成交；平仓和到期了结按开平分摊自动继承/);
   assert.match(tradingJs, /business-assignments\/batch-confirm/);
   assert.match(tradingJs, /business-closes\/\$\{closeId\}\/preview/);
   assert.match(tradingJs, /restore-default/);
@@ -187,9 +187,11 @@ test("option positions show valuation metadata and position Greek exposures", ()
 test("visible business position pages refresh quotes every fifteen seconds", () => {
   assert.match(tradingJs, /BUSINESS_QUOTE_REFRESH_MS\s*=\s*15000/);
   assert.match(tradingJs, /document\.visibilityState\s*===\s*"visible"/);
-  assert.match(tradingJs, /tm\[(?:tabKey|"junnengTab"|"optionsTab")\]\s*===\s*"positions"/);
+  assert.match(tradingJs, /tm\[tabKey\]\s*!==\s*"positions"/);
   assert.match(tradingJs, /window\.setInterval/);
   assert.match(tradingJs, /stopBusinessQuoteRefresh/);
+  assert.match(tradingJs, /businessQuoteRefreshInFlight/);
+  assert.match(tradingJs, /tradingManagementPage"\)\.classList\.contains\("hidden"\)/);
   assert.match(tradingJs, /deactivate\(\)/);
   assert.match(tradingJs, /MutationObserver/);
   assert.match(tradingJs, /tradingManagementPage/);
