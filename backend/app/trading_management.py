@@ -1736,12 +1736,15 @@ class FactFilters:
     start_date: str = ""
     end_date: str = ""
     classification: str = ""
+    business_type: str = ""
     page: int = 1
     page_size: int = 20
 
     def __post_init__(self):
         if self.page_size not in {20, 50, 100}:
             raise ValueError("每页条数只允许 20、50、100")
+        if self.business_type not in {"", *BUSINESS_TYPES}:
+            raise ValueError("未知业务类型")
         self.page = max(1, self.page)
 
 
@@ -2181,7 +2184,182 @@ def query_trade_selection_identities(filters: FactFilters) -> dict[str, Any]:
     return {"identity_ids": identity_ids, "total_items": len(identity_ids)}
 
 
+def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        common_params = (
+            filters.business_type,
+            filters.contract, f"%{filters.contract}%",
+            filters.direction, filters.direction,
+            filters.asset_type, filters.asset_type,
+        )
+        trade_row = db._exec(
+            cur,
+            """
+            SELECT COUNT(*) AS record_count,
+                   COALESCE(SUM(tf.quantity), 0) AS quantity,
+                   COALESCE(SUM(tf.fee), 0) AS fee
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            WHERE tf.is_current = 1 AND ba.business_type = ?
+              AND (? = '' OR LOWER(tf.contract) LIKE LOWER(?))
+              AND (? = '' OR tf.side = ?)
+              AND (? = '' OR tf.asset_type = ?)
+              AND (? = '' OR tf.trade_date >= ?)
+              AND (? = '' OR tf.trade_date <= ?)
+            """,
+            common_params + (
+                filters.start_date, filters.start_date,
+                filters.end_date, filters.end_date,
+            ),
+        ).fetchone()
+        close_rows = db._exec(
+            cur,
+            """
+            SELECT cf.close_date,
+                   a.matched_quantity,
+                   cf.fact_close_pnl * a.matched_quantity / NULLIF(cf.quantity, 0)
+                       AS allocated_fact_close_pnl,
+                   COALESCE(cf.matched_fee, 0) * a.matched_quantity / NULLIF(cf.quantity, 0)
+                       AS allocated_fee
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_business_close_allocations a ON a.close_identity_id = cf.identity_id
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+            WHERE cf.is_current = 1 AND ba.business_type = ?
+              AND (? = '' OR LOWER(cf.contract) LIKE LOWER(?))
+              AND (? = '' OR cf.open_side = ?)
+              AND (? = '' OR cf.asset_type = ?)
+              AND (? = '' OR cf.close_date >= ?)
+              AND (? = '' OR cf.close_date <= ?)
+            ORDER BY cf.close_date
+            """,
+            common_params + (
+                filters.start_date, filters.start_date,
+                filters.end_date, filters.end_date,
+            ),
+        ).fetchall()
+        snapshot_row = db._exec(
+            cur,
+            """
+            SELECT MAX(ps.snapshot_date) AS snapshot_date
+            FROM trading_position_snapshots ps
+            JOIN trading_import_batches b ON b.id = ps.batch_id AND b.status = 'active'
+            WHERE ps.is_current = 1 AND (? = '' OR ps.snapshot_date <= ?)
+            """,
+            (filters.end_date, filters.end_date),
+        ).fetchone()
+        snapshot_date = snapshot_row["snapshot_date"] if snapshot_row else None
+        snapshot_rows = db._exec(
+            cur,
+            """
+            SELECT ps.contract, ps.direction, ps.asset_type,
+                   SUM(ps.quantity) AS quantity, SUM(COALESCE(ps.margin, 0)) AS margin,
+                   COUNT(*) AS source_record_count
+            FROM trading_position_snapshots ps
+            JOIN trading_import_batches b ON b.id = ps.batch_id AND b.status = 'active'
+            WHERE ps.is_current = 1 AND ps.snapshot_date = ?
+            GROUP BY ps.contract, ps.direction, ps.asset_type
+            """,
+            (snapshot_date,),
+        ).fetchall() if snapshot_date else []
+        open_rows = db._exec(
+            cur,
+            """
+            SELECT tf.contract, tf.side AS direction, tf.asset_type,
+                   tf.quantity - COALESCE((
+                       SELECT SUM(a.matched_quantity)
+                       FROM trading_business_close_allocations a
+                       JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
+                       WHERE a.open_trade_identity_id = tf.identity_id
+                         AND (? = '' OR cf.close_date <= ?)
+                   ), 0) AS remaining_quantity
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            WHERE tf.is_current = 1 AND tf.open_close = '开仓'
+              AND ba.business_type = ?
+              AND (? = '' OR LOWER(tf.contract) LIKE LOWER(?))
+              AND (? = '' OR tf.side = ?)
+              AND (? = '' OR tf.asset_type = ?)
+              AND (? = '' OR tf.trade_date <= ?)
+            """,
+            (
+                filters.end_date, filters.end_date,
+                filters.business_type,
+                filters.contract, f"%{filters.contract}%",
+                filters.direction, filters.direction,
+                filters.asset_type, filters.asset_type,
+                filters.end_date, filters.end_date,
+            ),
+        ).fetchall()
+    position_groups: dict[tuple[str, str, str], dict[str, float]] = {}
+    for raw in open_rows:
+        remaining = float(raw["remaining_quantity"] or 0)
+        if remaining <= 1e-9:
+            continue
+        key = (raw["contract"], raw["direction"], raw["asset_type"])
+        group = position_groups.setdefault(key, {"quantity": 0.0, "source_record_count": 0.0})
+        group["quantity"] += remaining
+        group["source_record_count"] += 1
+    snapshot_by_key = {
+        (row["contract"], row["direction"], row["asset_type"]): row
+        for row in snapshot_rows
+    }
+    margin = 0.0
+    for key, group in position_groups.items():
+        snapshot = snapshot_by_key.get(key)
+        if snapshot and float(snapshot["quantity"] or 0) > 0:
+            margin += (
+                float(snapshot["margin"] or 0)
+                * group["quantity"]
+                / float(snapshot["quantity"])
+            )
+    daily: dict[str, float] = {}
+    for row in close_rows:
+        daily[row["close_date"]] = daily.get(row["close_date"], 0.0) + float(
+            row["allocated_fact_close_pnl"] or 0
+        )
+    close_pnl = sum(daily.values())
+    return {
+        "trades": {
+            "record_count": int(trade_row["record_count"] or 0),
+            "quantity": float(trade_row["quantity"] or 0),
+            "fee": float(trade_row["fee"] or 0),
+            "fact_close_pnl": close_pnl,
+        },
+        "closes": {
+            "record_count": len(close_rows),
+            "quantity": sum(float(row["matched_quantity"] or 0) for row in close_rows),
+            "settlement_quantity": sum(float(row["matched_quantity"] or 0) for row in close_rows),
+            "transaction_close_quantity": sum(float(row["matched_quantity"] or 0) for row in close_rows),
+            "fact_close_pnl": close_pnl,
+            "fee": sum(float(row["allocated_fee"] or 0) for row in close_rows),
+        },
+        "positions": {
+            "record_count": int(sum(row["source_record_count"] for row in position_groups.values())),
+            "group_count": len(position_groups),
+            "quantity": sum(row["quantity"] for row in position_groups.values()),
+            "margin": margin,
+            "snapshot_date": snapshot_date,
+            "floating_pnl": None,
+            "floating_pnl_status": "pending_calculation",
+        },
+        "data_status": {
+            "fact": "file_imported",
+            "positions": "ok" if snapshot_date else "no_position_snapshot",
+        },
+        "daily_close_pnl": [
+            {"date": close_date, "fact_close_pnl": value}
+            for close_date, value in sorted(daily.items())
+        ],
+    }
+
+
 def build_overview(filters: FactFilters) -> dict[str, Any]:
+    if filters.business_type:
+        return _build_business_type_overview(filters)
     trades = query_fact_rows("trades", FactFilters(
         contract=filters.contract,
         direction=filters.direction,
@@ -2704,16 +2882,16 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 ORDER BY tf.contract, tf.id
                 """,
             ).fetchall()
-        all_items = [dict(row) for row in rows if float(row["remaining_quantity"] or 0) > 1e-9]
+        all_items = [
+            dict(row) for row in rows
+            if float(row["remaining_quantity"] or 0) > 1e-9
+            and row["assignment_status"] == "classified"
+        ]
         if view == "junneng":
-            items = []
-            for row in all_items:
-                if row["business_subject"] == "上海钧能":
-                    row["ledger_membership"] = "confirmed"
-                    items.append(row)
-                elif not row["business_subject"] and _product_code(row["contract"]) in {"rb", "hc"}:
-                    row["ledger_membership"] = "candidate"
-                    items.append(row)
+            items = [
+                {**row, "ledger_membership": "confirmed"}
+                for row in all_items if row["business_subject"] == "上海钧能"
+            ]
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
         items = _aggregate_business_positions(items)
@@ -2728,11 +2906,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "floating_pnl": None,
             "floating_pnl_status": "pending_calculation",
         }
-        result = _page_result(items, summary, filters)
-        if view == "junneng":
-            candidate_items = [row for row in items if row.get("ledger_membership") == "candidate"]
-            result["candidates"] = {"record_count": len(candidate_items), "quantity": sum(float(row["quantity"]) for row in candidate_items)}
-        return result
+        return _page_result(items, summary, filters)
 
     with db.connect() as conn:
         cur = conn.cursor()
@@ -2760,20 +2934,15 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 ORDER BY tf.trade_date DESC, tf.id DESC
                 """,
             ).fetchall()
-            all_items = [dict(row) for row in rows]
-            candidates = [
-                row for row in all_items
-                if row["assignment_status"] == "unclassified" and _product_code(row["contract"]) in {"rb", "hc"}
+            all_items = [
+                dict(row) for row in rows
+                if row["assignment_status"] == "classified"
             ]
             if view == "junneng":
-                items = []
-                for row in all_items:
-                    if row["business_subject"] == "上海钧能":
-                        row["ledger_membership"] = "confirmed"
-                        items.append(row)
-                    elif not row["business_subject"] and _product_code(row["contract"]) in {"rb", "hc"}:
-                        row["ledger_membership"] = "candidate"
-                        items.append(row)
+                items = [
+                    {**row, "ledger_membership": "confirmed"}
+                    for row in all_items if row["business_subject"] == "上海钧能"
+                ]
             else:
                 items = [row for row in all_items if row["asset_type"] == "option"]
             items = _filter_business_items(items, tab, filters)
@@ -2783,12 +2952,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 "fee": sum(float(row["fee"] or 0) for row in items),
                 "business_pnl": sum(float(row["business_pnl"] or 0) for row in items),
             }
-            result = _page_result(items, summary, filters)
-            result["candidates"] = {
-                "record_count": len(candidates) if view == "junneng" else 0,
-                "quantity": sum(float(row["quantity"]) for row in candidates) if view == "junneng" else 0,
-            }
-            return result
+            return _page_result(items, summary, filters)
         if view == "options":
             rows = db._exec(
                 cur,
@@ -2835,16 +2999,16 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 ORDER BY cf.close_date DESC, cf.id DESC
                 """,
             ).fetchall()
-        all_items = [dict(row) for row in rows]
+        all_items = [
+            dict(row) for row in rows
+            if row["assignment_status"] == "classified"
+            and row["allocation_source"] is not None
+        ]
         if view == "junneng":
-            items = []
-            for row in all_items:
-                if row["business_subject"] == "上海钧能":
-                    row["ledger_membership"] = "confirmed"
-                    items.append(row)
-                elif not row["business_subject"] and _product_code(row["contract"]) in {"rb", "hc"}:
-                    row["ledger_membership"] = "candidate"
-                    items.append(row)
+            items = [
+                {**row, "ledger_membership": "confirmed"}
+                for row in all_items if row["business_subject"] == "上海钧能"
+            ]
         else:
             items = [row for row in all_items if row["asset_type"] == "option"]
         items = _filter_business_items(items, tab, filters)
@@ -2865,11 +3029,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
             "fee": sum(float(row["matched_fee"] or 0) for row in items),
         }
-        result = _page_result(items, summary, filters)
-        if view == "junneng":
-            candidate_items = [row for row in items if row.get("ledger_membership") == "candidate"]
-            result["candidates"] = {"record_count": len(candidate_items), "quantity": sum(float(row["matched_quantity"]) for row in candidate_items)}
-        return result
+        return _page_result(items, summary, filters)
 
 
 def _current_allocation_version(cur, close_identity_id: int) -> int:
@@ -3358,13 +3518,14 @@ def _api_filters(
     start_date: str = "",
     end_date: str = "",
     classification: str = "",
+    business_type: str = "",
     page: int = 1,
     page_size: int = 20,
 ) -> FactFilters:
     return FactFilters(
         contract=contract, direction=direction, asset_type=asset_type, open_close=open_close,
         start_date=start_date, end_date=end_date, classification=classification,
-        page=page, page_size=page_size,
+        business_type=business_type, page=page, page_size=page_size,
     )
 
 

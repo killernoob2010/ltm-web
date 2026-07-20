@@ -146,6 +146,18 @@ test("overview uses one compact row for the three secondary cards and real perio
   assert.match(tradingJs + css, /tm-overview-mini-grid/);
   assert.match(css, /grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
   assert.match(tradingJs, /data-overview-period/);
+  assert.match(tradingJs, /data-overview-business/);
+  for (const label of ["全部", "基础套保", "战略套保"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  assert.match(tradingJs, /params\.set\("business_type",tm\.overviewBusinessType\)/);
   assert.match(tradingJs, /tmOverviewFrom/);
   assert.match(tradingJs, /tmOverviewTo/);
+});
+
+test("business ledgers are classified archives without candidate controls", () => {
+  assert.doesNotMatch(tradingJs, /businessClassification/);
+  assert.doesNotMatch(tradingJs, /默认展示全部 RB\/HC 候选/);
+  assert.doesNotMatch(tradingJs, /id="\$\{view\}Classification"/);
+  assert.match(tradingJs, /仅展示已完成业务归属的数据/);
 });

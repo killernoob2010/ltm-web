@@ -380,6 +380,19 @@ def test_close_summary_separates_settlement_and_transaction_quantity(
     tmp_path, monkeypatch
 ):
     confirm_option_event_statement(option_event_statement(), tmp_path, monkeypatch)
+    subject = trading_management.create_business_subject("期货组", actor="tester")
+    with db.connect() as conn:
+        option_open_ids = [
+            row["identity_id"]
+            for row in conn.execute(
+                """SELECT identity_id FROM trading_trade_facts
+                   WHERE asset_type = 'option' AND open_close = '开仓'"""
+            ).fetchall()
+        ]
+    trading_management.classify_trade_identities(
+        option_open_ids, subject["id"], "strategic_hedging",
+        "战略套保-期权结构化套利", "", "tester",
+    )
 
     facts = trading_management.query_fact_rows(
         "closes", trading_management.FactFilters(page=1, page_size=20)
@@ -1460,7 +1473,7 @@ def test_default_business_allocations_preserve_fact_pnl(tmp_path, monkeypatch):
     assert fact_pnl == 1200
 
 
-def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, monkeypatch):
+def test_business_views_only_show_classified_junneng_and_options(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
 
@@ -1478,12 +1491,12 @@ def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, mo
     assert junneng_closes["summary"]["fact_close_pnl"] == 1200
     assert len(junneng_trades["items"]) == 2
     assert all(item["business_subject"] == "上海钧能" for item in junneng_trades["items"])
-    assert len(option_trades["items"]) == 1
-    assert option_trades["items"][0]["contract"] == "i2609-c-700"
-    assert option_trades["items"][0]["assignment_status"] == "unclassified"
+    assert option_trades["items"] == []
+    assert option_trades["summary"]["record_count"] == 0
+    assert "candidates" not in junneng_trades
 
 
-def test_unclassified_rb_hc_appear_in_junneng_until_assigned_elsewhere(tmp_path, monkeypatch):
+def test_unclassified_rb_hc_never_appear_in_junneng_business_ledger(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
@@ -1491,11 +1504,70 @@ def test_unclassified_rb_hc_appear_in_junneng_until_assigned_elsewhere(tmp_path,
         "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
     )
 
-    assert len(result["items"]) == 2
-    assert result["summary"]["record_count"] == 2
-    assert all(row["assignment_status"] == "unclassified" for row in result["items"])
-    assert all(row["ledger_membership"] == "candidate" for row in result["items"])
-    assert result["candidates"]["record_count"] == 2
+    assert result["items"] == []
+    assert result["summary"]["record_count"] == 0
+    assert "candidates" not in result
+
+
+def test_classified_option_enters_all_option_business_tabs(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    subject = trading_management.create_business_subject("期货组", actor="tester")
+    with db.connect() as conn:
+        option_ids = [
+            row["identity_id"]
+            for row in conn.execute(
+                """SELECT identity_id FROM trading_trade_facts
+                   WHERE asset_type = 'option' ORDER BY id"""
+            ).fetchall()
+        ]
+    trading_management.classify_trade_identities(
+        option_ids, subject["id"], "strategic_hedging",
+        "战略套保-期权结构化套利", "", "tester",
+    )
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    for tab in ("positions", "trades"):
+        result = trading_management.query_business_rows(
+            "options", tab, trading_management.FactFilters(page=1, page_size=20)
+        )
+        assert result["items"]
+        assert all(row["assignment_status"] == "classified" for row in result["items"])
+        assert all(row["business_type"] == "strategic_hedging" for row in result["items"])
+    closes = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert closes["items"] == []
+
+
+def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):
+    setup_classified_business_sample(tmp_path, monkeypatch)
+
+    all_rows = trading_management.build_overview(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+    basic = trading_management.build_overview(
+        trading_management.FactFilters(
+            business_type="basic_hedging", page=1, page_size=20
+        )
+    )
+    strategic = trading_management.build_overview(
+        trading_management.FactFilters(
+            business_type="strategic_hedging", page=1, page_size=20
+        )
+    )
+
+    assert all_rows["trades"]["record_count"] > basic["trades"]["record_count"]
+    assert basic["trades"]["record_count"] == 2
+    assert strategic["trades"]["record_count"] == 0
+
+
+def test_fact_filters_reject_unknown_business_type():
+    with pytest.raises(ValueError, match="未知业务类型"):
+        trading_management.FactFilters(business_type="other")
 
 
 def test_fact_trade_classification_filter_returns_assignment_metadata(tmp_path, monkeypatch):
@@ -1552,7 +1624,7 @@ def test_fact_positions_aggregate_snapshot_rows_by_contract_direction_and_asset(
     assert any(row["source_record_count"] == 2 for row in result["items"])
 
 
-def test_option_business_positions_include_unclassified_open_options(tmp_path, monkeypatch):
+def test_option_business_positions_exclude_unclassified_open_options(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
@@ -1560,11 +1632,9 @@ def test_option_business_positions_include_unclassified_open_options(tmp_path, m
         "options", "positions", trading_management.FactFilters(page=1, page_size=20)
     )
 
-    assert result["summary"]["record_count"] == 1
-    assert result["summary"]["quantity"] == 1
-    assert result["items"][0]["contract"] == "i2609-c-700"
-    assert result["items"][0]["average_price"] == 4.2
-    assert result["items"][0]["floating_pnl_status"] == "pending_calculation"
+    assert result["summary"]["record_count"] == 0
+    assert result["summary"]["quantity"] == 0
+    assert result["items"] == []
 
 
 def add_later_classified_open(batch_id, subject_id):
