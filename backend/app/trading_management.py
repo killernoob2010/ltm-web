@@ -26,6 +26,7 @@ from .trading_valuation import (
     QuoteRequest,
     QuoteSnapshot,
     SH_JUNNENG_RULE_VERSION,
+    calculate_option_display_greeks,
     calculate_option_position_valuation,
     calculate_position_floating_pnl,
     calculate_statement_option_metrics,
@@ -3251,6 +3252,10 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     )
                     for name in ("delta", "gamma", "theta", "vega", "rho")
                 }
+                display_greeks = calculate_option_display_greeks(
+                    direction=item["direction"],
+                    unit_greeks=unit_greeks,
+                )
                 item.update({
                     "underlying_symbol": (
                         quote.underlying_symbol
@@ -3281,6 +3286,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                         f"unit_{name}": value
                         for name, value in unit_greeks.items()
                     },
+                    **display_greeks,
                 })
             if valuation_price is None or multiplier is None:
                 continue
@@ -3332,6 +3338,13 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 ]
                 summary[f"{greek}_exposure"] = (
                     sum(exposures) if exposures else None
+                )
+                position_greeks = [
+                    float(row[greek]) * float(row["quantity"])
+                    for row in items if row.get(greek) is not None
+                ]
+                summary[greek] = (
+                    sum(position_greeks) if position_greeks else None
                 )
         return _page_result(items, summary, filters)
 

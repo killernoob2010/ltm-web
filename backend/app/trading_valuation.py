@@ -144,6 +144,29 @@ def calculate_option_position_valuation(
     return result
 
 
+def calculate_option_display_greeks(
+    *,
+    direction: str,
+    unit_greeks: dict[str, Optional[float]],
+) -> dict[str, Optional[float]]:
+    direction_factor = 1.0 if direction == "买" else -1.0
+    divisors = {
+        "delta": 1.0,
+        "gamma": 1.0,
+        "theta": 360.0,
+        "vega": 100.0,
+        "rho": 100.0,
+    }
+    return {
+        name: (
+            float(unit_greeks[name]) * direction_factor / divisor
+            if unit_greeks.get(name) is not None
+            else None
+        )
+        for name, divisor in divisors.items()
+    }
+
+
 def _standard_dce_option_expiry(contract: str) -> Optional[date]:
     match = _DCE_OPTION_CONTRACT_RE.match(str(contract or "").strip())
     if not match:

@@ -54,7 +54,9 @@
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
   const fmt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
+  const greekFmt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 });
   const num = (value) => value == null || value === "" ? "—" : fmt.format(Number(value));
+  const greekNum = (value) => value == null || value === "" ? "—" : greekFmt.format(Number(value));
   const money = (value) => `${Number(value || 0) > 0 ? "+" : Number(value || 0) < 0 ? "−" : ""}${fmt.format(Math.abs(Number(value || 0)))}`;
   const businessType = (value) => ({basic_hedging:"基础套保",strategic_hedging:"战略套保"})[value] || value || "未归类";
   const pending = () => '<span class="tm-tag amber">待计算</span>';
@@ -180,7 +182,7 @@
       <div class="tm-overview-mini-grid">
         <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与期权了结", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
         <section class="tm-panel"><div class="tm-panel-header"><div><h2>业务归属分布</h2><p class="tm-section-copy">事实交易归类进度</p></div><button class="tm-row-button" data-go-positions>前往归类 →</button></div><div class="tm-business-list">${qualityRow("上海钧能", "RB / HC 正式归属", "业务层")}${qualityRow("期权", "默认展示全部期权", "业务层")}${qualityRow("其它与待归属", "保留事实层完整记录", "待确认", "amber")}</div></section>
-        <section class="tm-panel"><div class="tm-panel-header"><h2>活跃合约</h2><small>按当前事实范围</small></div><div class="tm-business-list">${qualityRow("成交手数", `${num(data.trades.quantity)} 手`, "全量")}${qualityRow("持仓手数", `${num(data.positions.quantity)} 手`, "期末")}${qualityRow("期权风险指标", "Delta / Gamma / Theta / Vega", "待计算", "amber")}</div></section>
+        <section class="tm-panel"><div class="tm-panel-header"><h2>活跃合约</h2><small>按当前事实范围</small></div><div class="tm-business-list">${qualityRow("成交手数", `${num(data.trades.quantity)} 手`, "全量")}${qualityRow("持仓手数", `${num(data.positions.quantity)} 手`, "期末")}${qualityRow("期权风险指标", "德尔塔 / 伽马 / 西塔 / 维伽", "待计算", "amber")}</div></section>
       </div>`;
     $("[data-go-positions]")?.addEventListener("click", () => document.querySelector('.menu-item') && activateModule("trading_positions"));
     document.querySelectorAll("[data-overview-period]").forEach((button)=>button.addEventListener("click",()=>{tm.overviewMode=button.dataset.overviewPeriod;loadOverview().catch(showError);}));
@@ -462,9 +464,9 @@
     const body = data.items.map((row) => {
       const anatomy = optionAnatomy(row.contract);
       const iv = row.iv == null ? "—" : `${num(Number(row.iv) * 100)}%`;
-      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${num(row.delta_exposure)}</td><td>${num(row.gamma_exposure)}</td><td>${num(row.theta_exposure)}</td><td>${num(row.vega_exposure)}</td><td>${esc(row.valuation_date || row.market_time || "—")}</td></tr>`;
+      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${greekNum(row.delta)}</td><td>${greekNum(row.gamma)}</td><td>${greekNum(row.theta)}</td><td>${greekNum(row.vega)}</td><td>${esc(row.valuation_date || row.market_time || "—")}</td></tr>`;
     }).join("");
-    return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>估值价</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>Delta敞口</th><th>Gamma敞口</th><th>Theta敞口</th><th>Vega敞口</th><th>估值日</th></tr></thead><tbody>${body || '<tr><td colspan="17" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
+    return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>估值价</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>德尔塔</th><th>伽马</th><th>西塔</th><th>维伽</th><th>估值日</th></tr></thead><tbody>${body || '<tr><td colspan="17" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
   }
 
   function businessFilters(view, tab) {
@@ -477,13 +479,13 @@
     const items = view === "junneng" && tab === "closes"
       ? [["平仓盈亏（含手续费）",summary.net_close_pnl],["资金利息",summary.fund_interest],["80%结算金额",summary.settlement_80],["20%结算金额",summary.settlement_20],["手续费",summary.fee]]
       : view === "options" && tab === "positions"
-      ? [["组合浮盈",summary.floating_pnl],["Delta",summary.delta_exposure],["Gamma",summary.gamma_exposure],["Theta",summary.theta_exposure],["Vega",summary.vega_exposure]]
+      ? [["组合浮盈",summary.floating_pnl],["组合德尔塔",summary.delta],["组合伽马",summary.gamma],["组合西塔",summary.theta],["组合维伽",summary.vega]]
       : tab === "positions"
       ? [["记录数",summary.record_count],["手数",summary.quantity],["浮动盈亏",summary.floating_pnl],["估值状态",valuationStatus(summary.floating_pnl_status)]]
       : tab === "closes"
       ? [["记录数",summary.record_count],["了结手数",summary.settlement_quantity],["成交平仓手数",summary.transaction_close_quantity],["业务归属盈亏",summary.business_pnl],["手续费",summary.fee]]
       : [["记录数",summary.record_count],["成交手数",summary.quantity],["业务归属盈亏",summary.business_pnl],["手续费",summary.fee]];
-    return `<div class="tm-filter-summary compact">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
+    return `<div class="tm-filter-summary compact">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? (view === "options" && tab === "positions" && label !== "组合浮盈" ? greekNum(value) : num(value)) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
   }
 
   function stopBusinessQuoteRefresh() {

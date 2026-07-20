@@ -9,6 +9,7 @@ from backend.app.trading_valuation import (
     QuoteRequest,
     QuoteSnapshot,
     TqSdkQuoteProvider,
+    calculate_option_display_greeks,
     calculate_option_position_valuation,
     calculate_position_floating_pnl,
     calculate_statement_option_metrics,
@@ -146,6 +147,48 @@ def test_short_option_reverses_pnl_and_all_greek_exposures():
 
 
 @pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        (
+            "买",
+            {
+                "delta": 0.4,
+                "gamma": 0.01,
+                "theta": -0.2,
+                "vega": 0.3,
+                "rho": 0.04,
+            },
+        ),
+        (
+            "卖",
+            {
+                "delta": -0.4,
+                "gamma": -0.01,
+                "theta": 0.2,
+                "vega": -0.3,
+                "rho": -0.04,
+            },
+        ),
+    ],
+)
+def test_option_display_greeks_are_signed_per_lot_daily_and_per_vol_point(
+    direction, expected
+):
+    result = calculate_option_display_greeks(
+        direction=direction,
+        unit_greeks={
+            "delta": 0.4,
+            "gamma": 0.01,
+            "theta": -72,
+            "vega": 30,
+            "rho": 4,
+        },
+    )
+
+    assert result == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
     ("contract", "option_price", "underlying_price", "expected_expiry", "expected_iv"),
     [
         ("i2608-c-780", 2.9, 748, "2026-07-16", 0.2026),
@@ -170,6 +213,26 @@ def test_statement_option_metrics_use_same_snapshot_underlying_and_dce_expiry(
     assert result["iv"] == pytest.approx(expected_iv, abs=5e-5)
     for greek in ("delta", "gamma", "theta", "vega", "rho"):
         assert result[greek] is not None
+
+
+def test_real_statement_sample_displays_per_lot_greeks_in_business_units():
+    metrics = calculate_statement_option_metrics(
+        contract="i2608-c-780",
+        option_price=2.9,
+        underlying_price=748,
+        valuation_date="20260630",
+        exchange="大商所",
+    )
+
+    display = calculate_option_display_greeks(
+        direction="卖",
+        unit_greeks=metrics,
+    )
+
+    assert display["delta"] == pytest.approx(-0.172574, abs=1e-6)
+    assert display["gamma"] == pytest.approx(-0.007999, abs=1e-6)
+    assert display["theta"] == pytest.approx(0.260284, abs=1e-6)
+    assert display["vega"] == pytest.approx(-0.402898, abs=1e-6)
 
 
 def test_market_data_service_reuses_short_cache_and_closes_provider():

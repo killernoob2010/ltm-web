@@ -1926,8 +1926,15 @@ def test_classified_option_position_uses_live_quote_and_position_greeks(
     assert item["gamma_exposure"] == pytest.approx(1)
     assert item["theta_exposure"] == pytest.approx(-5)
     assert item["vega_exposure"] == pytest.approx(10)
+    assert item["delta"] == pytest.approx(0.4)
+    assert item["gamma"] == pytest.approx(0.01)
+    assert item["theta"] == pytest.approx(-0.05 / 360)
+    assert item["vega"] == pytest.approx(0.001)
     assert result["summary"]["floating_pnl"] == pytest.approx(78.8)
-    assert result["summary"]["delta_exposure"] == pytest.approx(40)
+    assert result["summary"]["delta"] == pytest.approx(0.4)
+    assert result["summary"]["gamma"] == pytest.approx(0.01)
+    assert result["summary"]["theta"] == pytest.approx(-0.05 / 360)
+    assert result["summary"]["vega"] == pytest.approx(0.001)
 
     monkeypatch.setattr(
         trading_management,
@@ -1965,7 +1972,9 @@ def test_classified_option_position_uses_live_quote_and_position_greeks(
     assert fallback["items"][0]["expiry_date"] == "2026-08-18"
     assert fallback["items"][0]["valuation_date"] == "2026-06-30"
     assert fallback["items"][0]["iv"] is not None
-    assert fallback["summary"]["delta_exposure"] is not None
+    for greek in ("delta", "gamma", "theta", "vega"):
+        assert fallback["items"][0][greek] is not None
+        assert fallback["summary"][greek] is not None
 
 
 def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):
