@@ -11,6 +11,7 @@ from backend.app.trading_valuation import (
     TqSdkQuoteProvider,
     calculate_option_position_valuation,
     calculate_position_floating_pnl,
+    calculate_statement_option_metrics,
     calculate_sh_junneng_settlement,
     select_valuation_price,
 )
@@ -142,6 +143,33 @@ def test_short_option_reverses_pnl_and_all_greek_exposures():
     assert result["gamma_exposure"] == pytest.approx(-3)
     assert result["theta_exposure"] == pytest.approx(15)
     assert result["vega_exposure"] == pytest.approx(-30)
+
+
+@pytest.mark.parametrize(
+    ("contract", "option_price", "underlying_price", "expected_expiry", "expected_iv"),
+    [
+        ("i2608-c-780", 2.9, 748, "2026-07-16", 0.2026),
+        ("i2609-p-700", 4.7, 745.5, "2026-08-18", 0.1881),
+    ],
+)
+def test_statement_option_metrics_use_same_snapshot_underlying_and_dce_expiry(
+    contract, option_price, underlying_price, expected_expiry, expected_iv
+):
+    result = calculate_statement_option_metrics(
+        contract=contract,
+        option_price=option_price,
+        underlying_price=underlying_price,
+        valuation_date="20260630",
+        exchange="大商所",
+    )
+
+    assert result["underlying_symbol"] == contract.split("-")[0]
+    assert result["underlying_price"] == underlying_price
+    assert result["expiry_date"] == expected_expiry
+    assert result["valuation_date"] == "2026-06-30"
+    assert result["iv"] == pytest.approx(expected_iv, abs=5e-5)
+    for greek in ("delta", "gamma", "theta", "vega", "rho"):
+        assert result[greek] is not None
 
 
 def test_market_data_service_reuses_short_cache_and_closes_provider():

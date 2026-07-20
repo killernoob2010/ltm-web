@@ -28,6 +28,7 @@ from .trading_valuation import (
     SH_JUNNENG_RULE_VERSION,
     calculate_option_position_valuation,
     calculate_position_floating_pnl,
+    calculate_statement_option_metrics,
     calculate_sh_junneng_settlement,
     get_quote_snapshots,
     select_valuation_price,
@@ -3137,7 +3138,8 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
             snapshot_rows = db._exec(
                 conn.cursor(),
                 """
-                SELECT contract, direction, valuation_price, market_time
+                SELECT contract, direction, valuation_price, market_time,
+                       snapshot_date
                 FROM trading_position_snapshots ps
                 JOIN trading_import_batches b ON b.id = ps.batch_id AND b.status = 'active'
                 WHERE ps.is_current = 1 AND ps.snapshot_date = ?
@@ -3169,6 +3171,10 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
         items = _filter_business_items(items, tab, filters)
         settlement_by_key = {
             (row["contract"], row["direction"]): float(row["valuation_price"])
+            for row in snapshot_rows
+        }
+        settlement_by_contract = {
+            str(row["contract"] or "").lower(): float(row["valuation_price"])
             for row in snapshot_rows
         }
         spec_by_key = {
@@ -3216,16 +3222,65 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                 "contract_multiplier": multiplier,
             })
             if view == "options":
+                reference_metrics: dict[str, Any] = {}
+                option_match = OPTION_CONTRACT_RE.match(
+                    str(item["contract"] or "").lower()
+                )
+                if (
+                    valuation_status == "settlement_reference"
+                    and option_match
+                    and snapshot_date
+                ):
+                    underlying_contract = option_match.group("underlying").lower()
+                    underlying_settlement = settlement_by_contract.get(
+                        underlying_contract
+                    )
+                    if underlying_settlement is not None:
+                        reference_metrics = calculate_statement_option_metrics(
+                            contract=item["contract"],
+                            option_price=valuation_price,
+                            underlying_price=underlying_settlement,
+                            valuation_date=snapshot_date,
+                            exchange=item["exchange"] or "",
+                        )
+                unit_greeks = {
+                    name: (
+                        getattr(quote, name)
+                        if getattr(quote, name) is not None
+                        else reference_metrics.get(name)
+                    )
+                    for name in ("delta", "gamma", "theta", "vega", "rho")
+                }
                 item.update({
-                    "underlying_symbol": quote.underlying_symbol,
-                    "underlying_price": quote.underlying_price,
-                    "expiry_date": quote.expiry_date,
-                    "iv": quote.iv,
-                    "unit_delta": quote.delta,
-                    "unit_gamma": quote.gamma,
-                    "unit_theta": quote.theta,
-                    "unit_vega": quote.vega,
-                    "unit_rho": quote.rho,
+                    "underlying_symbol": (
+                        quote.underlying_symbol
+                        or reference_metrics.get("underlying_symbol")
+                    ),
+                    "underlying_price": (
+                        quote.underlying_price
+                        if quote.underlying_price is not None
+                        else reference_metrics.get("underlying_price")
+                    ),
+                    "expiry_date": (
+                        quote.expiry_date
+                        or reference_metrics.get("expiry_date")
+                    ),
+                    "valuation_date": (
+                        reference_metrics.get("valuation_date")
+                        or (
+                            str(quote.market_time)[:10]
+                            if quote.market_time else None
+                        )
+                    ),
+                    "iv": (
+                        quote.iv
+                        if quote.iv is not None
+                        else reference_metrics.get("iv")
+                    ),
+                    **{
+                        f"unit_{name}": value
+                        for name, value in unit_greeks.items()
+                    },
                 })
             if valuation_price is None or multiplier is None:
                 continue
@@ -3237,13 +3292,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                     remaining_quantity=float(item["quantity"]),
                     multiplier=float(multiplier),
                     remaining_open_fee=float(item.get("remaining_open_fee") or 0),
-                    unit_greeks={
-                        "delta": quote.delta,
-                        "gamma": quote.gamma,
-                        "theta": quote.theta,
-                        "vega": quote.vega,
-                        "rho": quote.rho,
-                    },
+                    unit_greeks=unit_greeks,
                 ))
             else:
                 item["floating_pnl"] = calculate_position_floating_pnl(

@@ -439,7 +439,7 @@
     ["close_date","平仓日"],["contract","合约"],["open_side","方向"],["matched_quantity","手数"],
     ["settlement_open_price","分摊开仓价"],["close_price","平仓价"],["net_close_pnl","平仓盈亏（含手续费）"],
     ["fund_interest","资金利息"],["settlement_80","80%结算金额"],["settlement_20","20%结算金额"],
-    ["settlement_fee","手续费"],["settlement_rule_version","规则版本"],["strategy","策略"],
+    ["settlement_fee","手续费"],["strategy","策略"],
   ];
 
   function businessColumns(view, tab) {
@@ -461,10 +461,10 @@
   function optionPositionTable(data) {
     const body = data.items.map((row) => {
       const anatomy = optionAnatomy(row.contract);
-      const status = row.market_data_message ? `${valuationStatus(row.valuation_status)} · ${row.market_data_message}` : valuationStatus(row.valuation_status);
-      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(valuationSource(row.valuation_source))}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${num(row.iv)}</td><td>${num(row.floating_pnl)}</td><td>${num(row.delta_exposure)}</td><td>${num(row.gamma_exposure)}</td><td>${num(row.theta_exposure)}</td><td>${num(row.vega_exposure)}</td><td>${esc(row.market_time || "—")}</td><td>${esc(status)}</td></tr>`;
+      const iv = row.iv == null ? "—" : `${num(Number(row.iv) * 100)}%`;
+      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(row.expiry_date || "—")}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${num(row.delta_exposure)}</td><td>${num(row.gamma_exposure)}</td><td>${num(row.theta_exposure)}</td><td>${num(row.vega_exposure)}</td><td>${esc(row.valuation_date || row.market_time || "—")}</td></tr>`;
     }).join("");
-    return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>最新价</th><th>估值来源</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>行情时间</th><th>估值状态</th></tr></thead><tbody>${body || '<tr><td colspan="19" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
+    return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>估值价</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>Delta敞口</th><th>Gamma敞口</th><th>Theta敞口</th><th>Vega敞口</th><th>估值日</th></tr></thead><tbody>${body || '<tr><td colspan="17" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
   }
 
   function businessFilters(view, tab) {
@@ -520,10 +520,9 @@
     if (dates.from) params.set("start_date",dates.from);
     if (dates.to) params.set("end_date",dates.to);
     const data = await api(`/api/trading-management/business/${view}/${tab}?${params}`);
-    const notice = view === "junneng" ? "仅展示已完成业务归属的上海钧能数据。" : "仅展示已完成业务归属的数据；风险指标按实时行情计算。";
+    const notice = view === "junneng" ? "仅展示已完成业务归属的上海钧能数据。" : "仅展示已完成业务归属的数据；风险指标按可用行情或结算快照计算。";
     const ledgerTable = view === "options" && tab === "positions" ? optionPositionTable(data) : businessTable(data,view,tab,tm.permissions.canEdit);
-    const ruleNote = view === "junneng" && tab === "closes" ? `<p class="tm-section-copy">结算规则：${esc(data.summary.settlement_rule_version || "sh_junneng_v1")}</p>` : "";
-    const html = `<section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${businessFilters(view,tab)}${businessFilterSummary(data.summary,view,tab)}${ruleNote}${ledgerTable}${pagination(data,view)}</section>`;
+    const html = `<section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${businessFilters(view,tab)}${businessFilterSummary(data.summary,view,tab)}${ledgerTable}${pagination(data,view)}</section>`;
     $(view === "junneng" ? "#tmJunnengView" : "#tmOptionsView").innerHTML = html;
     document.querySelectorAll(`[data-${view}-tab]`).forEach((button) => button.addEventListener("click", () => { tm[tabKey] = button.dataset[`${view}Tab`]; tm[pageKey] = 1; stopBusinessQuoteRefresh(); renderBusinessLedger(view).catch(showError); }));
     $(`#${view}SearchApply`).addEventListener("click",()=>{tm.businessQuery[view]=$(`#${view}Search`).value.trim();tm[pageKey]=1;renderBusinessLedger(view).catch(showError);});

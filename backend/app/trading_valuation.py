@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import math
 import os
+import re
 import threading
 import time
 from typing import Any, Callable, Optional, Protocol, Union
@@ -13,6 +14,11 @@ from typing import Any, Callable, Optional, Protocol, Union
 SH_JUNNENG_RULE_VERSION = "sh_junneng_v1"
 OPTION_RISK_FREE_RATE = 0.015
 TQSDK_FETCH_TIMEOUT_SECONDS = 5
+_DCE_OPTION_CONTRACT_RE = re.compile(
+    r"^(?P<product>[a-z]+)(?P<year>\d{2})(?P<month>\d{2})-"
+    r"(?P<option_class>c|p)-(?P<strike>\d+(?:\.\d+)?)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,178 @@ def calculate_option_position_valuation(
             round(float(value) * scale, 8) if value is not None else None
         )
     return result
+
+
+def _standard_dce_option_expiry(contract: str) -> Optional[date]:
+    match = _DCE_OPTION_CONTRACT_RE.match(str(contract or "").strip())
+    if not match:
+        return None
+    delivery_year = 2000 + int(match.group("year"))
+    delivery_month = int(match.group("month"))
+    previous_month_end = date(delivery_year, delivery_month, 1) - timedelta(days=1)
+    day = previous_month_end.replace(day=1)
+    trading_days = 0
+    while day.month == previous_month_end.month:
+        if day.weekday() < 5:
+            trading_days += 1
+            if trading_days == 12:
+                return day
+        day += timedelta(days=1)
+    return None
+
+
+def _normal_cdf(value: float) -> float:
+    return 0.5 * (1 + math.erf(value / math.sqrt(2)))
+
+
+def _normal_pdf(value: float) -> float:
+    return math.exp(-0.5 * value * value) / math.sqrt(2 * math.pi)
+
+
+def _bs_price(
+    underlying_price: float,
+    strike_price: float,
+    risk_free_rate: float,
+    volatility: float,
+    time_to_expiry: float,
+    option_class: str,
+) -> float:
+    sqrt_time = math.sqrt(time_to_expiry)
+    d1 = (
+        math.log(underlying_price / strike_price)
+        + (risk_free_rate + 0.5 * volatility * volatility) * time_to_expiry
+    ) / (volatility * sqrt_time)
+    d2 = d1 - volatility * sqrt_time
+    discounted_strike = strike_price * math.exp(
+        -risk_free_rate * time_to_expiry
+    )
+    if option_class == "CALL":
+        return (
+            underlying_price * _normal_cdf(d1)
+            - discounted_strike * _normal_cdf(d2)
+        )
+    return (
+        discounted_strike * _normal_cdf(-d2)
+        - underlying_price * _normal_cdf(-d1)
+    )
+
+
+def _implied_volatility(
+    *,
+    underlying_price: float,
+    option_price: float,
+    strike_price: float,
+    risk_free_rate: float,
+    time_to_expiry: float,
+    option_class: str,
+) -> Optional[float]:
+    low = 1e-6
+    high = 5.0
+    low_price = _bs_price(
+        underlying_price, strike_price, risk_free_rate, low,
+        time_to_expiry, option_class,
+    )
+    high_price = _bs_price(
+        underlying_price, strike_price, risk_free_rate, high,
+        time_to_expiry, option_class,
+    )
+    if option_price < low_price - 1e-8 or option_price > high_price + 1e-8:
+        return None
+    for _ in range(100):
+        mid = (low + high) / 2
+        model_price = _bs_price(
+            underlying_price, strike_price, risk_free_rate, mid,
+            time_to_expiry, option_class,
+        )
+        if abs(model_price - option_price) < 1e-10:
+            return mid
+        if model_price < option_price:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2
+
+
+def calculate_statement_option_metrics(
+    *,
+    contract: str,
+    option_price: float,
+    underlying_price: float,
+    valuation_date: Union[str, date],
+    exchange: str,
+    risk_free_rate: float = OPTION_RISK_FREE_RATE,
+) -> dict[str, Optional[float] | str]:
+    match = _DCE_OPTION_CONTRACT_RE.match(str(contract or "").strip())
+    if not match or str(exchange or "").strip().lower() not in {
+        "dce", "大商所",
+    }:
+        return {}
+    as_of = _as_date(valuation_date)
+    expiry = _standard_dce_option_expiry(contract)
+    if expiry is None or expiry <= as_of:
+        return {}
+    option_value = _valid_price(option_price)
+    underlying_value = _valid_price(underlying_price)
+    strike_price = _valid_price(match.group("strike"))
+    if (
+        option_value is None
+        or underlying_value is None
+        or strike_price is None
+    ):
+        return {}
+    option_class = "CALL" if match.group("option_class").lower() == "c" else "PUT"
+    time_to_expiry = (expiry - as_of).days / 360
+    iv = _implied_volatility(
+        underlying_price=underlying_value,
+        option_price=option_value,
+        strike_price=strike_price,
+        risk_free_rate=risk_free_rate,
+        time_to_expiry=time_to_expiry,
+        option_class=option_class,
+    )
+    if iv is None:
+        return {}
+    sqrt_time = math.sqrt(time_to_expiry)
+    d1 = (
+        math.log(underlying_value / strike_price)
+        + (risk_free_rate + 0.5 * iv * iv) * time_to_expiry
+    ) / (iv * sqrt_time)
+    d2 = d1 - iv * sqrt_time
+    option_sign = 1 if option_class == "CALL" else -1
+    discounted_strike = strike_price * math.exp(
+        -risk_free_rate * time_to_expiry
+    )
+    delta = option_sign * _normal_cdf(option_sign * d1)
+    gamma = _normal_pdf(d1) / (underlying_value * iv * sqrt_time)
+    theta = (
+        -iv * underlying_value * _normal_pdf(d1) / (2 * sqrt_time)
+        - option_sign
+        * risk_free_rate
+        * discounted_strike
+        * _normal_cdf(option_sign * d2)
+    )
+    vega = underlying_value * sqrt_time * _normal_pdf(d1)
+    rho = (
+        option_sign
+        * strike_price
+        * time_to_expiry
+        * math.exp(-risk_free_rate * time_to_expiry)
+        * _normal_cdf(option_sign * d2)
+    )
+    return {
+        "underlying_symbol": match.group("product").lower()
+        + match.group("year")
+        + match.group("month"),
+        "underlying_price": underlying_value,
+        "expiry_date": expiry.isoformat(),
+        "valuation_date": as_of.isoformat(),
+        "iv": iv,
+        "delta": delta,
+        "gamma": gamma,
+        "theta": theta,
+        "vega": vega,
+        "rho": rho,
+    }
 
 
 def calculate_sh_junneng_settlement(

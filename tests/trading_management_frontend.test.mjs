@@ -173,19 +173,23 @@ test("Shanghai Junneng shows live positions and the five settlement metrics", ()
   for (const label of ["平仓盈亏（含手续费）", "资金利息", "80%结算金额", "20%结算金额", "手续费"]) {
     assert.match(tradingJs, new RegExp(label));
   }
-  assert.match(tradingJs, /settlement_rule_version/);
+  assert.doesNotMatch(tradingJs, /\["settlement_rule_version","规则版本"\]/);
+  assert.doesNotMatch(tradingJs, /结算规则：\$\{/);
   assert.match(tradingJs, /latest_junneng_close_date/);
   assert.match(tradingJs, /monthRangeForDate/);
   assert.match(tradingJs, /businessDates:\s*\{\s*junneng:/);
 });
 
-test("option positions show valuation metadata and position Greek exposures", () => {
-  for (const label of ["最新价", "估值来源", "标的价格", "到期日", "IV", "浮动盈亏", "Delta", "Gamma", "Theta", "Vega", "行情时间"]) {
+test("option positions show valuation results without internal source or status columns", () => {
+  for (const label of ["估值价", "标的价格", "到期日", "IV", "浮动盈亏", "Delta敞口", "Gamma敞口", "Theta敞口", "Vega敞口", "估值日"]) {
     assert.match(tradingJs, new RegExp(label));
   }
   for (const field of ["delta_exposure", "gamma_exposure", "theta_exposure", "vega_exposure"]) {
     assert.match(tradingJs, new RegExp(field));
   }
+  assert.doesNotMatch(tradingJs, /<th>估值来源<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>估值状态<\/th>/);
+  assert.match(tradingJs, /Number\(row\.iv\) \* 100/);
   assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
 });
 

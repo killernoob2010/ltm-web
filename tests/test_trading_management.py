@@ -1940,11 +1940,32 @@ def test_classified_option_position_uses_live_quote_and_position_greeks(
             )
         },
     )
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO trading_position_snapshots
+                (identity_id,batch_id,source_row_id,snapshot_date,snapshot_time,
+                 exchange,contract,asset_type,direction,open_date,quantity,
+                 average_price,margin,valuation_price,floating_pnl,market_time,
+                 is_current,valuation_status,data_status,verification_status)
+            SELECT identity_id,batch_id,source_row_id,snapshot_date,snapshot_time,
+                   '大商所','i2609','future','买',open_date,1,
+                   680,0,680,NULL,NULL,1,'settlement_reference',
+                   data_status,verification_status
+            FROM trading_position_snapshots ORDER BY id LIMIT 1
+            """
+        )
+        conn.commit()
     fallback = trading_management.query_business_rows(
         "options", "positions", trading_management.FactFilters(page=1, page_size=20)
     )
     assert fallback["items"][0]["valuation_status"] == "settlement_reference"
-    assert fallback["summary"]["delta_exposure"] is None
+    assert fallback["items"][0]["underlying_symbol"] == "i2609"
+    assert fallback["items"][0]["underlying_price"] == pytest.approx(680)
+    assert fallback["items"][0]["expiry_date"] == "2026-08-18"
+    assert fallback["items"][0]["valuation_date"] == "2026-06-30"
+    assert fallback["items"][0]["iv"] is not None
+    assert fallback["summary"]["delta_exposure"] is not None
 
 
 def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):
