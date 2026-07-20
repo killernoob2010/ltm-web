@@ -36,6 +36,10 @@ TRADING_MODULES = {
 TRADE_REQUIRED_HEADERS = {"交易所", "合约", "买卖", "开平", "手数", "成交价", "手续费"}
 CLOSE_REQUIRED_HEADERS = {"交易所", "合约", "开仓日期", "买入", "卖出", "手数", "价格", "逐笔平仓盈亏"}
 POSITION_REQUIRED_HEADERS = {"交易所", "开仓日期", "合约", "买卖", "手数", "价格", "占用保证金"}
+OPTION_CONTRACT_RE = re.compile(
+    r"^(?P<underlying>[a-z]+[0-9]+)-(?P<kind>c|p)-(?P<strike>[0-9]+(?:\.[0-9]+)?)$",
+    re.IGNORECASE,
+)
 
 
 def _text(value: Any) -> str:
@@ -1298,6 +1302,141 @@ def _option_event_snapshot_opening(
     return earliest_open_date, weighted_open / float(event["quantity"])
 
 
+def _option_contract_parts(contract: str) -> Optional[tuple[str, str]]:
+    match = OPTION_CONTRACT_RE.match((contract or "").strip())
+    if not match:
+        return None
+    return (
+        match.group("underlying").lower(),
+        "call" if match.group("kind").lower() == "c" else "put",
+    )
+
+
+def _option_event_underlying_side(option_kind: str, open_side: str) -> str:
+    if option_kind == "call":
+        return open_side
+    return "卖" if open_side == "买" else "买"
+
+
+def _link_option_event_underlying_trades(cur, batch_id: int) -> int:
+    batch = db._exec(
+        cur, "SELECT account_id FROM trading_import_batches WHERE id = ?", (batch_id,)
+    ).fetchone()
+    if not batch:
+        return 0
+    events = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_close_facts
+        WHERE batch_id = ? AND is_current = 1
+          AND settlement_type IN ('exercise', 'assignment')
+        ORDER BY close_date, source_row_id, id
+        """,
+        (batch_id,),
+    ).fetchall()
+    if not events:
+        return 0
+    event_ids = [int(row["identity_id"]) for row in events]
+    placeholders = ",".join("?" for _ in event_ids)
+    db._exec(
+        cur,
+        f"""DELETE FROM trading_option_event_underlying_links
+             WHERE event_identity_id IN ({placeholders})""",
+        tuple(event_ids),
+    )
+    used_rows = db._exec(
+        cur,
+        """
+        SELECT l.underlying_trade_identity_id, SUM(l.matched_quantity) AS quantity
+        FROM trading_option_event_underlying_links l
+        JOIN trading_close_facts cf ON cf.identity_id = l.event_identity_id
+        WHERE cf.is_current = 1
+        GROUP BY l.underlying_trade_identity_id
+        """,
+    ).fetchall()
+    used = {
+        int(row["underlying_trade_identity_id"]): float(row["quantity"] or 0)
+        for row in used_rows
+    }
+    link_count = 0
+    for event in events:
+        parts = _option_contract_parts(event["contract"])
+        if not parts:
+            db._exec(
+                cur,
+                "UPDATE trading_close_facts SET underlying_link_status = 'pending' WHERE id = ?",
+                (event["id"],),
+            )
+            continue
+        underlying_contract, option_kind = parts
+        underlying_side = _option_event_underlying_side(
+            option_kind, event["open_side"]
+        )
+        candidates = db._exec(
+            cur,
+            """
+            SELECT tf.*
+            FROM trading_trade_facts tf
+            JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            WHERE fi.account_id = ? AND tf.is_current = 1
+              AND tf.asset_type = 'future' AND tf.open_close = '开仓'
+              AND tf.trade_date = ? AND tf.contract = ? AND tf.side = ?
+            ORDER BY tf.trade_time, tf.source_row_id, tf.id
+            """,
+            (
+                batch["account_id"], event["close_date"], underlying_contract,
+                underlying_side,
+            ),
+        ).fetchall()
+        available = {
+            int(row["identity_id"]): max(
+                0.0,
+                float(row["quantity"] or 0)
+                - used.get(int(row["identity_id"]), 0.0),
+            )
+            for row in candidates
+            if abs(float(row["price"]) - float(event["exercise_price"] or 0)) < 1e-8
+        }
+        needed = float(event["quantity"] or 0)
+        if sum(available.values()) + 1e-9 < needed:
+            db._exec(
+                cur,
+                "UPDATE trading_close_facts SET underlying_link_status = 'pending' WHERE id = ?",
+                (event["id"],),
+            )
+            continue
+        link_rows = []
+        for trade in candidates:
+            identity_id = int(trade["identity_id"])
+            quantity = min(needed, available.get(identity_id, 0.0))
+            if quantity <= 1e-9:
+                continue
+            link_rows.append((event["identity_id"], identity_id, quantity))
+            available[identity_id] -= quantity
+            used[identity_id] = used.get(identity_id, 0.0) + quantity
+            needed -= quantity
+            if needed <= 1e-9:
+                break
+        db._executemany(
+            cur,
+            """
+            INSERT INTO trading_option_event_underlying_links
+                (event_identity_id, underlying_trade_identity_id, matched_quantity,
+                 rule_version)
+            VALUES (?, ?, ?, 'option-exercise-underlying-v1')
+            """,
+            link_rows,
+        )
+        link_count += len(link_rows)
+        db._exec(
+            cur,
+            "UPDATE trading_close_facts SET underlying_link_status = 'matched' WHERE id = ?",
+            (event["id"],),
+        )
+    return link_count
+
+
 def _match_option_event_allocations(cur, batch_id: int) -> tuple[int, int]:
     batch = db._exec(
         cur, "SELECT account_id FROM trading_import_batches WHERE id = ?", (batch_id,)
@@ -1577,6 +1716,7 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
                 fact_allocation_rows,
             )
         event_allocations, pending_events = _match_option_event_allocations(cur, batch_id)
+        _link_option_event_underlying_trades(cur, batch_id)
         fact_allocations += event_allocations
         pending += pending_events
         conn.commit()

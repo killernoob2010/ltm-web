@@ -280,6 +280,102 @@ def test_option_event_without_open_trade_is_visible_but_pending(
     assert event["fact_close_pnl"] == 0
 
 
+@pytest.mark.parametrize(
+    ("contract", "expected"),
+    [
+        ("i2607-c-750", ("i2607", "call")),
+        ("i2607-p-750", ("i2607", "put")),
+        ("rb2610C3500", None),
+    ],
+)
+def test_option_contract_parts(contract, expected):
+    assert trading_management._option_contract_parts(contract) == expected
+
+
+@pytest.mark.parametrize(
+    ("option_kind", "open_side", "expected"),
+    [
+        ("call", "买", "买"),
+        ("call", "卖", "卖"),
+        ("put", "买", "卖"),
+        ("put", "卖", "买"),
+    ],
+)
+def test_option_event_underlying_side(option_kind, open_side, expected):
+    assert trading_management._option_event_underlying_side(
+        option_kind, open_side
+    ) == expected
+
+
+def test_exercise_links_real_underlying_open_without_synthesizing_trade(
+    tmp_path, monkeypatch
+):
+    confirmed = confirm_option_event_statement(
+        option_event_statement(
+            event_type="期权执行",
+            option_contract="i2607-c-750",
+            option_side="买",
+            option_quantity=2,
+            exercise_price=750,
+            underlying_contract="i2607",
+            underlying_side="买",
+        ),
+        tmp_path,
+        monkeypatch,
+    )
+
+    with db.connect() as conn:
+        event = conn.execute(
+            """SELECT identity_id, underlying_link_status
+               FROM trading_close_facts
+               WHERE settlement_type = 'exercise' AND is_current = 1"""
+        ).fetchone()
+        link = conn.execute(
+            """SELECT matched_quantity
+               FROM trading_option_event_underlying_links
+               WHERE event_identity_id = ?""",
+            (event["identity_id"],),
+        ).fetchone()
+        generated_trade_count = conn.execute(
+            """SELECT COUNT(*) AS c FROM trading_trade_facts
+               WHERE contract = 'i2607' AND batch_id = ?""",
+            (confirmed["batch_id"],),
+        ).fetchone()["c"]
+
+    assert event["underlying_link_status"] == "matched"
+    assert link["matched_quantity"] == 2
+    assert generated_trade_count == 1
+
+
+def test_exercise_without_imported_underlying_trade_stays_pending(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(
+        option_event_statement(
+            event_type="期权执行",
+            option_contract="i2607-c-750",
+            option_side="买",
+            option_quantity=2,
+            exercise_price=750,
+        ),
+        tmp_path,
+        monkeypatch,
+    )
+
+    with db.connect() as conn:
+        event = conn.execute(
+            """SELECT underlying_link_status
+               FROM trading_close_facts
+               WHERE settlement_type = 'exercise' AND is_current = 1"""
+        ).fetchone()
+        trade_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE asset_type = 'future'"
+        ).fetchone()["c"]
+
+    assert event["underlying_link_status"] == "pending"
+    assert trade_count == 0
+
+
 def test_postgres_trading_tables_are_hidden_from_data_api_roles():
     class RecordingCursor:
         def __init__(self):
