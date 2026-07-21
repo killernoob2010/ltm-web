@@ -922,6 +922,100 @@ def test_confirm_import_writes_immutable_fact_versions(tmp_path, monkeypatch):
         trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
 
+def test_fact_matching_uses_open_trades_from_previous_active_batches(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        jan_batch = conn.execute(
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type)
+            VALUES (1, '20260101', '20260131', 'active', 'monthly')
+            """
+        ).lastrowid
+        feb_batch = conn.execute(
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type)
+            VALUES (1, '20260201', '20260228', 'active', 'monthly')
+            """
+        ).lastrowid
+        conn.executemany(
+            """
+            INSERT INTO trading_fact_identities (account_id, fact_type, stable_key)
+            VALUES (1, ?, ?)
+            """,
+            [("trade", "jan-open"), ("trade", "feb-close"), ("close", "feb-close-fact")],
+        )
+        identities = {
+            row["stable_key"]: row["id"]
+            for row in conn.execute(
+                "SELECT id, stable_key FROM trading_fact_identities"
+            ).fetchall()
+        }
+        conn.executemany(
+            """
+            INSERT INTO trading_source_rows
+                (batch_id, source_type, source_file, source_sheet, source_row_no,
+                 raw_hash, raw_json)
+            VALUES (?, ?, 'fixture.txt', ?, ?, ?, '{}')
+            """,
+            [
+                (jan_batch, "trade", "成交记录", 1, "jan-open"),
+                (feb_batch, "trade", "成交记录", 1, "feb-close"),
+                (feb_batch, "close", "平仓明细", 1, "feb-close-fact"),
+            ],
+        )
+        source_rows = {
+            row["raw_hash"]: row["id"]
+            for row in conn.execute(
+                "SELECT id, raw_hash FROM trading_source_rows"
+            ).fetchall()
+        }
+        conn.execute(
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, exchange, contract, asset_type,
+                 side, open_close_raw, open_close, quantity, price, fee, is_current)
+            VALUES (?, ?, ?, '20260130', '上期所', 'rb2605', 'future',
+                    '买', '开', '开仓', 2, 3100, 2, 1)
+            """,
+            (identities["jan-open"], jan_batch, source_rows["jan-open"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, exchange, contract, asset_type,
+                 side, open_close_raw, open_close, quantity, price, fee, is_current)
+            VALUES (?, ?, ?, '20260203', '上期所', 'rb2605', 'future',
+                    '卖', '平', '平仓', 2, 3120, 2, 1)
+            """,
+            (identities["feb-close"], feb_batch, source_rows["feb-close"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_close_facts
+                (identity_id, batch_id, source_row_id, open_date, close_date, exchange, contract,
+                 asset_type, open_side, close_side, quantity, open_price, close_price,
+                 fact_close_pnl, settlement_type, is_current)
+            VALUES (?, ?, ?, '20260130', '20260203', '上期所', 'rb2605',
+                    'future', '买', '卖', 2, 3100, 3120, 400,
+                    'trade_close', 1)
+            """,
+            (identities["feb-close-fact"], feb_batch, source_rows["feb-close-fact"]),
+        )
+
+    result = trading_management.match_imported_facts(feb_batch)
+
+    assert result["pending_closes"] == 0
+    with db.connect() as conn:
+        allocation = conn.execute(
+            "SELECT * FROM trading_fact_close_allocations"
+        ).fetchone()
+    assert allocation["close_identity_id"] == identities["feb-close-fact"]
+    assert allocation["open_trade_identity_id"] == identities["jan-open"]
+    assert allocation["matched_quantity"] == 2
+
+
 def test_confirm_same_range_supersedes_old_batch_and_keeps_source_rows(tmp_path, monkeypatch):
     first_preview = create_preview_batch(tmp_path, monkeypatch)
     first = trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")

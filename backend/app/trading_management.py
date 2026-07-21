@@ -1778,11 +1778,6 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
                  AND settlement_type = 'trade_close' ORDER BY id""",
             (batch_id,),
         ).fetchall()
-        trades = db._exec(
-            cur,
-            "SELECT * FROM trading_trade_facts WHERE batch_id = ? AND is_current = 1 ORDER BY trade_date, trade_time, source_row_id, id",
-            (batch_id,),
-        ).fetchall()
         db._exec(
             cur,
             """
@@ -1804,14 +1799,67 @@ def match_imported_facts(batch_id: int) -> dict[str, int]:
             (batch_id,),
         )
 
+        trades = db._exec(
+            cur,
+            """
+            SELECT tf.*
+            FROM trading_trade_facts tf
+            JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            WHERE fi.account_id = (
+                SELECT account_id FROM trading_import_batches WHERE id = ?
+            ) AND tf.is_current = 1
+            ORDER BY tf.trade_date, tf.trade_time, tf.source_row_id, tf.id
+            """,
+            (batch_id,),
+        ).fetchall()
+        used_rows = db._exec(
+            cur,
+            """
+            SELECT 'close' AS allocation_type,
+                   close_trade_identity_id AS trade_identity_id,
+                   SUM(matched_quantity) AS quantity
+            FROM trading_close_trade_links
+            GROUP BY close_trade_identity_id
+            UNION ALL
+            SELECT 'open' AS allocation_type,
+                   open_trade_identity_id AS trade_identity_id,
+                   SUM(matched_quantity) AS quantity
+            FROM trading_fact_close_allocations
+            GROUP BY open_trade_identity_id
+            """,
+        ).fetchall()
+        used_close = {
+            int(row["trade_identity_id"]): float(row["quantity"] or 0)
+            for row in used_rows if row["allocation_type"] == "close"
+        }
+        used_open = {
+            int(row["trade_identity_id"]): float(row["quantity"] or 0)
+            for row in used_rows if row["allocation_type"] == "open"
+        }
+
         close_trade_links = 0
         fact_allocations = 0
         pending = 0
         close_trade_rows = []
         close_fee_updates = []
         fact_allocation_rows = []
-        remaining_close_trades = {row["id"]: float(row["quantity"]) for row in trades if row["open_close"] == "平仓"}
-        remaining_open_trades = {row["id"]: float(row["quantity"]) for row in trades if row["open_close"] == "开仓"}
+        remaining_close_trades = {
+            row["id"]: max(
+                0.0,
+                float(row["quantity"])
+                - used_close.get(int(row["identity_id"]), 0.0),
+            )
+            for row in trades if row["open_close"] == "平仓"
+        }
+        remaining_open_trades = {
+            row["id"]: max(
+                0.0,
+                float(row["quantity"])
+                - used_open.get(int(row["identity_id"]), 0.0),
+            )
+            for row in trades if row["open_close"] == "开仓"
+        }
         for close in closes:
             matching_closes = [
                 row for row in trades
