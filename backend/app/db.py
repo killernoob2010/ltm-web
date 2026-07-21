@@ -2006,10 +2006,13 @@ def migrate_trading_management_schema(conn) -> None:
     ]
     reference_specs = [
         ("上期所", "rb", "future", 10, 1),
+        ("上期所", "rb", "option", 10, None),
         ("上期所", "hc", "future", 10, 1),
         ("大商所", "i", "future", 100, 0.5),
         ("大商所", "i", "option", 100, 0.1),
         ("大商所", "j", "future", 100, 0.5),
+        ("大商所", "jm", "future", 60, None),
+        ("大商所", "jm", "option", 60, None),
     ]
     for account_code, display_name, masked_name in reference_accounts:
         if not _exec(cur, "SELECT id FROM trading_accounts WHERE account_code = ?", (account_code,)).fetchone():

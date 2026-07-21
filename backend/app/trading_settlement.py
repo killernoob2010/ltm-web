@@ -33,7 +33,12 @@ def _number(value: Any, default: float = 0.0) -> float:
 
 def _asset_type(contract: str) -> str:
     normalized = contract.upper()
-    return "option" if "-C-" in normalized or "-P-" in normalized else "future"
+    is_option = (
+        "-C-" in normalized
+        or "-P-" in normalized
+        or re.fullmatch(r"[A-Z]+\d{3,4}[CP]\d+", normalized) is not None
+    )
+    return "option" if is_option else "future"
 
 
 def _open_close(value: str) -> str:

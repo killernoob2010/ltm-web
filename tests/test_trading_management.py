@@ -481,10 +481,13 @@ def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monke
     assert account["display_name"] == "宏源期货账户"
     assert {(row["exchange"], row["product_code"], row["asset_type"], row["contract_multiplier"]) for row in specs} >= {
         ("上期所", "rb", "future", 10),
+        ("上期所", "rb", "option", 10),
         ("上期所", "hc", "future", 10),
         ("大商所", "i", "future", 100),
         ("大商所", "i", "option", 100),
         ("大商所", "j", "future", 100),
+        ("大商所", "jm", "future", 60),
+        ("大商所", "jm", "option", 60),
     }
 
 

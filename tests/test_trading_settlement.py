@@ -83,6 +83,16 @@ def test_parse_monthly_statement_detects_range_and_abandonment():
     assert result["exercises"][0]["event_type"] == "expiry_abandon"
 
 
+def test_parse_shfe_compact_option_contract_as_option_in_all_sections():
+    content = statement_fixture().replace("i2609", "rb2602c3400")
+
+    result = parse_settlement_statement(content.encode("gb18030"), "daily.txt")
+
+    assert result["trades"][0]["asset_type"] == "option"
+    assert result["closes"][0]["asset_type"] == "option"
+    assert result["positions"][0]["asset_type"] == "option"
+
+
 @pytest.mark.parametrize(
     ("raw_type", "expected"),
     [

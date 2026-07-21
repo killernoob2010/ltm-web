@@ -21,6 +21,15 @@ DAILY_STATEMENT = Path(
 MONTHLY_STATEMENT = Path(
     "/Users/wangjingze/Desktop/902711111BILLS/D202606o.txt"
 )
+HISTORY_MONTHLY_STATEMENTS = [
+    Path("/Users/wangjingze/Desktop/902711111BILLS/902711111BILLS/D202512o.txt"),
+    Path("/Users/wangjingze/Desktop/902711111BILLS/902711111BILLS/D202601o.txt"),
+    Path("/Users/wangjingze/Desktop/902711111BILLS/902711111BILLS/D202602o.txt"),
+    Path("/Users/wangjingze/Desktop/902711111BILLS/902711111BILLS/D202603o.txt"),
+    Path("/Users/wangjingze/Desktop/902711111BILLS/902711111BILLS/D202604o.txt"),
+    Path("/Users/wangjingze/Desktop/902711111BILLS/902711111BILLS/D202605o.txt"),
+    MONTHLY_STATEMENT,
+]
 
 
 @pytest.mark.skipif(
@@ -162,3 +171,41 @@ def test_real_statements_establish_zero_difference_opening_continuity(
         assert conn.execute(
             "SELECT COUNT(*) AS c FROM trading_position_snapshots WHERE is_current = 1"
         ).fetchone()["c"] == 1248
+
+
+@pytest.mark.skipif(
+    not all(path.exists() for path in HISTORY_MONTHLY_STATEMENTS),
+    reason="本机未提供 2025-12 至 2026-06 月结单",
+)
+def test_history_monthly_statements_import_in_sequence_with_zero_continuity_difference(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "statement-history.db")
+    db.init_db()
+    with db.connect() as conn:
+        account_id = conn.execute(
+            "SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures'"
+        ).fetchone()["id"]
+
+    previews = []
+    for path in HISTORY_MONTHLY_STATEMENTS:
+        preview = trading_management.preview_settlement_import(
+            account_id, path.name, path.read_bytes(), "acceptance-test"
+        )
+        trading_management.confirm_settlement_import(
+            preview["preview_batch_id"], "acceptance-test"
+        )
+        previews.append(preview)
+
+    assert previews[0]["continuity"]["status"] == "unverified"
+    assert all(item["continuity"]["status"] == "passed" for item in previews[1:])
+    assert all(item["continuity"]["difference_lots"] == 0 for item in previews[1:])
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE is_current = 1"
+        ).fetchone()["c"] == 16019
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_close_facts WHERE is_current = 1"
+        ).fetchone()["c"] == 13649
