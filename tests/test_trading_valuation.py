@@ -4,6 +4,8 @@ import threading
 
 import pytest
 
+from backend.app import trading_valuation
+
 from backend.app.trading_valuation import (
     MarketDataService,
     QuoteRequest,
@@ -16,6 +18,31 @@ from backend.app.trading_valuation import (
     calculate_sh_junneng_settlement,
     select_valuation_price,
 )
+
+
+@pytest.mark.parametrize(
+    ("strike_price", "option_price", "expected_delta"),
+    [
+        (790, 2.8, 0.1421),
+        (800, 2.2, 0.1107),
+        (810, 1.5, 0.0790),
+        (850, 0.7, 0.0344),
+        (890, 0.5, 0.0217),
+    ],
+)
+def test_black76_call_delta_matches_wh_same_screen_sample(
+    strike_price, option_price, expected_delta
+):
+    result = trading_valuation.calculate_black76_option_metrics(
+        option_price=option_price,
+        underlying_price=745.5,
+        strike_price=strike_price,
+        risk_free_rate=0.015,
+        time_to_expiry=28 / 360,
+        option_class="CALL",
+    )
+
+    assert result["delta"] == pytest.approx(expected_delta, abs=5e-5)
 
 
 @pytest.mark.parametrize(
@@ -191,8 +218,8 @@ def test_option_display_greeks_are_signed_per_lot_daily_and_per_vol_point(
 @pytest.mark.parametrize(
     ("contract", "option_price", "underlying_price", "expected_expiry", "expected_iv"),
     [
-        ("i2608-c-780", 2.9, 748, "2026-07-16", 0.2026),
-        ("i2609-p-700", 4.7, 745.5, "2026-08-18", 0.1881),
+        ("i2608-c-780", 2.9, 748, "2026-07-16", 0.20469),
+        ("i2609-p-700", 4.7, 745.5, "2026-08-18", 0.18445),
     ],
 )
 def test_statement_option_metrics_use_same_snapshot_underlying_and_dce_expiry(
@@ -229,10 +256,10 @@ def test_real_statement_sample_displays_per_lot_greeks_in_business_units():
         unit_greeks=metrics,
     )
 
-    assert display["delta"] == pytest.approx(-0.172574, abs=1e-6)
-    assert display["gamma"] == pytest.approx(-0.007999, abs=1e-6)
-    assert display["theta"] == pytest.approx(0.260284, abs=1e-6)
-    assert display["vega"] == pytest.approx(-0.402898, abs=1e-6)
+    assert display["delta"] == pytest.approx(-0.171144, abs=1e-6)
+    assert display["gamma"] == pytest.approx(-0.007872, abs=1e-6)
+    assert display["theta"] == pytest.approx(0.256163, abs=1e-6)
+    assert display["vega"] == pytest.approx(-0.400666, abs=1e-6)
 
 
 def test_market_data_service_reuses_short_cache_and_closes_provider():
@@ -364,3 +391,56 @@ def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():
     source = inspect.getsource(TqSdkQuoteProvider)
     for forbidden in ("TqAccount", "insert_order", "cancel_order"):
         assert forbidden not in source
+
+
+def test_tqsdk_provider_calculates_black76_from_the_same_quote_snapshot(monkeypatch):
+    now = 1_774_073_600.0
+    monkeypatch.setattr(trading_valuation.time, "time", lambda: now)
+
+    class Quote:
+        def __init__(self, **values):
+            self.__dict__.update(values)
+
+    option = Quote(
+        underlying_symbol="DCE.i2609",
+        datetime="2026-03-20 14:00:00.000000",
+        expire_datetime=now + 28 * 24 * 60 * 60,
+        last_price=2.2,
+        bid_price1=2.1,
+        ask_price1=2.2,
+        settlement=2.0,
+        strike_price=800,
+        option_class="CALL",
+        volume_multiple=100,
+        expired=False,
+    )
+    underlying = Quote(
+        datetime="2026-03-20 14:00:00.000000",
+        last_price=747,
+    )
+
+    class Api:
+        def get_quote(self, symbol):
+            return option if symbol == "DCE.i2609-C-800" else underlying
+
+        def wait_update(self, deadline):
+            return True
+
+        def query_option_greeks(self, *args, **kwargs):
+            raise AssertionError("Black-76 must not reuse TqSdk BS Greeks")
+
+    provider = TqSdkQuoteProvider.__new__(TqSdkQuoteProvider)
+    provider._api = Api()
+    result = provider._fetch([
+        QuoteRequest(
+            contract="i2609-c-800",
+            exchange="DCE",
+            asset_type="option",
+        )
+    ])["i2609-c-800"]
+
+    assert result.iv == pytest.approx(0.19811, abs=5e-5)
+    assert result.delta == pytest.approx(0.11243, abs=5e-5)
+    assert result.gamma == pytest.approx(0.00463, abs=5e-5)
+    assert result.theta / 360 == pytest.approx(-0.14063, abs=5e-5)
+    assert result.vega / 100 == pytest.approx(0.39777, abs=5e-5)

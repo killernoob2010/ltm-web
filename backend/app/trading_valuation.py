@@ -193,8 +193,8 @@ def _normal_pdf(value: float) -> float:
     return math.exp(-0.5 * value * value) / math.sqrt(2 * math.pi)
 
 
-def _bs_price(
-    underlying_price: float,
+def _black76_price(
+    futures_price: float,
     strike_price: float,
     risk_free_rate: float,
     volatility: float,
@@ -203,58 +203,100 @@ def _bs_price(
 ) -> float:
     sqrt_time = math.sqrt(time_to_expiry)
     d1 = (
-        math.log(underlying_price / strike_price)
-        + (risk_free_rate + 0.5 * volatility * volatility) * time_to_expiry
+        math.log(futures_price / strike_price)
+        + 0.5 * volatility * volatility * time_to_expiry
     ) / (volatility * sqrt_time)
     d2 = d1 - volatility * sqrt_time
-    discounted_strike = strike_price * math.exp(
-        -risk_free_rate * time_to_expiry
-    )
-    if option_class == "CALL":
-        return (
-            underlying_price * _normal_cdf(d1)
-            - discounted_strike * _normal_cdf(d2)
-        )
-    return (
-        discounted_strike * _normal_cdf(-d2)
-        - underlying_price * _normal_cdf(-d1)
+    option_sign = 1 if option_class == "CALL" else -1
+    discount_factor = math.exp(-risk_free_rate * time_to_expiry)
+    return discount_factor * option_sign * (
+        futures_price * _normal_cdf(option_sign * d1)
+        - strike_price * _normal_cdf(option_sign * d2)
     )
 
 
-def _implied_volatility(
+def calculate_black76_option_metrics(
     *,
-    underlying_price: float,
     option_price: float,
+    underlying_price: float,
     strike_price: float,
     risk_free_rate: float,
     time_to_expiry: float,
     option_class: str,
-) -> Optional[float]:
+) -> dict[str, Optional[float]]:
+    futures_value = _valid_price(underlying_price)
+    option_value = _valid_price(option_price)
+    strike_value = _valid_price(strike_price)
+    rate_value = _finite_number(risk_free_rate)
+    time_value = _valid_price(time_to_expiry)
+    option_kind = str(option_class or "").upper()
+    if (
+        futures_value is None
+        or option_value is None
+        or strike_value is None
+        or rate_value is None
+        or time_value is None
+        or option_kind not in {"CALL", "PUT"}
+    ):
+        return {}
+
     low = 1e-6
     high = 5.0
-    low_price = _bs_price(
-        underlying_price, strike_price, risk_free_rate, low,
-        time_to_expiry, option_class,
+    low_price = _black76_price(
+        futures_value, strike_value, rate_value, low, time_value, option_kind
     )
-    high_price = _bs_price(
-        underlying_price, strike_price, risk_free_rate, high,
-        time_to_expiry, option_class,
+    high_price = _black76_price(
+        futures_value, strike_value, rate_value, high, time_value, option_kind
     )
-    if option_price < low_price - 1e-8 or option_price > high_price + 1e-8:
-        return None
+    if option_value < low_price - 1e-8 or option_value > high_price + 1e-8:
+        return {}
     for _ in range(100):
         mid = (low + high) / 2
-        model_price = _bs_price(
-            underlying_price, strike_price, risk_free_rate, mid,
-            time_to_expiry, option_class,
+        model_price = _black76_price(
+            futures_value,
+            strike_value,
+            rate_value,
+            mid,
+            time_value,
+            option_kind,
         )
-        if abs(model_price - option_price) < 1e-10:
-            return mid
-        if model_price < option_price:
+        if abs(model_price - option_value) < 1e-10:
+            low = high = mid
+            break
+        if model_price < option_value:
             low = mid
         else:
             high = mid
-    return (low + high) / 2
+    iv = (low + high) / 2
+    sqrt_time = math.sqrt(time_value)
+    d1 = (
+        math.log(futures_value / strike_value)
+        + 0.5 * iv * iv * time_value
+    ) / (iv * sqrt_time)
+    option_sign = 1 if option_kind == "CALL" else -1
+    discount_factor = math.exp(-rate_value * time_value)
+    model_price = _black76_price(
+        futures_value,
+        strike_value,
+        rate_value,
+        iv,
+        time_value,
+        option_kind,
+    )
+    density = _normal_pdf(d1)
+    return {
+        "iv": iv,
+        "delta": discount_factor
+        * option_sign
+        * _normal_cdf(option_sign * d1),
+        "gamma": discount_factor
+        * density
+        / (futures_value * iv * sqrt_time),
+        "theta": rate_value * model_price
+        - discount_factor * futures_value * density * iv / (2 * sqrt_time),
+        "vega": discount_factor * futures_value * sqrt_time * density,
+        "rho": -time_value * model_price,
+    }
 
 
 def calculate_statement_option_metrics(
@@ -286,43 +328,16 @@ def calculate_statement_option_metrics(
         return {}
     option_class = "CALL" if match.group("option_class").lower() == "c" else "PUT"
     time_to_expiry = (expiry - as_of).days / 360
-    iv = _implied_volatility(
-        underlying_price=underlying_value,
+    metrics = calculate_black76_option_metrics(
         option_price=option_value,
+        underlying_price=underlying_value,
         strike_price=strike_price,
         risk_free_rate=risk_free_rate,
         time_to_expiry=time_to_expiry,
         option_class=option_class,
     )
-    if iv is None:
+    if not metrics:
         return {}
-    sqrt_time = math.sqrt(time_to_expiry)
-    d1 = (
-        math.log(underlying_value / strike_price)
-        + (risk_free_rate + 0.5 * iv * iv) * time_to_expiry
-    ) / (iv * sqrt_time)
-    d2 = d1 - iv * sqrt_time
-    option_sign = 1 if option_class == "CALL" else -1
-    discounted_strike = strike_price * math.exp(
-        -risk_free_rate * time_to_expiry
-    )
-    delta = option_sign * _normal_cdf(option_sign * d1)
-    gamma = _normal_pdf(d1) / (underlying_value * iv * sqrt_time)
-    theta = (
-        -iv * underlying_value * _normal_pdf(d1) / (2 * sqrt_time)
-        - option_sign
-        * risk_free_rate
-        * discounted_strike
-        * _normal_cdf(option_sign * d2)
-    )
-    vega = underlying_value * sqrt_time * _normal_pdf(d1)
-    rho = (
-        option_sign
-        * strike_price
-        * time_to_expiry
-        * math.exp(-risk_free_rate * time_to_expiry)
-        * _normal_cdf(option_sign * d2)
-    )
     return {
         "underlying_symbol": match.group("product").lower()
         + match.group("year")
@@ -330,12 +345,7 @@ def calculate_statement_option_metrics(
         "underlying_price": underlying_value,
         "expiry_date": expiry.isoformat(),
         "valuation_date": as_of.isoformat(),
-        "iv": iv,
-        "delta": delta,
-        "gamma": gamma,
-        "theta": theta,
-        "vega": vega,
-        "rho": rho,
+        **metrics,
     }
 
 
@@ -476,9 +486,6 @@ class TqSdkQuoteProvider:
         return result
 
     def _fetch(self, requests: list[QuoteRequest]) -> dict[str, QuoteSnapshot]:
-        from pandas import Series
-        from tqsdk import tafunc
-
         symbol_by_contract = {
             request.contract: _tqsdk_symbol(request) for request in requests
         }
@@ -506,21 +513,9 @@ class TqSdkQuoteProvider:
         while any(not getattr(quote, "datetime", "") for quote in quote_objects):
             if not self._api.wait_update(deadline=deadline):
                 break
-        greek_by_symbol: dict[str, dict[str, Any]] = {}
-        if option_contracts:
-            symbols = [symbol_by_contract[contract] for contract in option_contracts]
-            try:
-                frame = self._api.query_option_greeks(
-                    symbols, v=None, r=OPTION_RISK_FREE_RATE
-                )
-                for _, row in frame.iterrows():
-                    greek_by_symbol[str(row["instrument_id"])] = dict(row)
-            except Exception:
-                greek_by_symbol = {}
         results: dict[str, QuoteSnapshot] = {}
         for request in requests:
             quote = quote_by_contract[request.contract]
-            symbol = symbol_by_contract[request.contract]
             expiry_timestamp = _valid_price(
                 getattr(quote, "expire_datetime", None)
             )
@@ -544,9 +539,9 @@ class TqSdkQuoteProvider:
                 (bid_price + ask_price) / 2
                 if bid_price is not None and ask_price is not None else None
             ) or settlement_price
-            iv = None
             strike_price = _valid_price(getattr(quote, "strike_price", None))
             option_class = str(getattr(quote, "option_class", "") or "").upper()
+            metrics: dict[str, Optional[float]] = {}
             if (
                 option_price is not None
                 and underlying_price is not None
@@ -558,20 +553,14 @@ class TqSdkQuoteProvider:
                     (expiry_timestamp - time.time()) / (360 * 24 * 60 * 60),
                     1 / 360,
                 )
-                try:
-                    iv_series = tafunc.get_impv(
-                        Series([underlying_price]),
-                        Series([option_price]),
-                        strike_price,
-                        OPTION_RISK_FREE_RATE,
-                        0.2,
-                        time_to_expiry,
-                        option_class,
-                    )
-                    iv = _valid_price(iv_series.iloc[-1])
-                except Exception:
-                    iv = None
-            greek = greek_by_symbol.get(symbol, {})
+                metrics = calculate_black76_option_metrics(
+                    option_price=option_price,
+                    underlying_price=underlying_price,
+                    strike_price=strike_price,
+                    risk_free_rate=OPTION_RISK_FREE_RATE,
+                    time_to_expiry=time_to_expiry,
+                    option_class=option_class,
+                )
             results[request.contract] = QuoteSnapshot(
                 last_price=last_price,
                 bid_price=bid_price,
@@ -583,12 +572,12 @@ class TqSdkQuoteProvider:
                 underlying_symbol=underlying_symbol,
                 underlying_price=underlying_price,
                 expiry_date=expiry_date,
-                iv=iv,
-                delta=_finite_number(greek.get("delta")),
-                gamma=_finite_number(greek.get("gamma")),
-                theta=_finite_number(greek.get("theta")),
-                vega=_finite_number(greek.get("vega")),
-                rho=_finite_number(greek.get("rho")),
+                iv=metrics.get("iv"),
+                delta=metrics.get("delta"),
+                gamma=metrics.get("gamma"),
+                theta=metrics.get("theta"),
+                vega=metrics.get("vega"),
+                rho=metrics.get("rho"),
                 expired=bool(getattr(quote, "expired", False)),
             )
         return results
