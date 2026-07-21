@@ -83,9 +83,10 @@ test("prototype sections replace the simplified placeholder layout", () => {
 
 test("option positions preserve the prototype anatomy and risk columns", () => {
   assert.match(tradingJs, /function optionAnatomy/);
-  for (const label of ["标的", "看涨\/看跌", "行权价", "德尔塔", "伽马", "西塔", "维伽"]) {
+  for (const label of ["标的", "看涨\/看跌", "行权价", "Delta", "Gamma", "Theta", "Vega"]) {
     assert.match(tradingJs, new RegExp(label));
   }
+  assert.doesNotMatch(tradingJs, /德尔塔|伽马|西塔|维伽/);
 });
 
 test("fact tabs cache by filters without prefetching sibling tabs", () => {
@@ -181,18 +182,22 @@ test("Shanghai Junneng shows live positions and the five settlement metrics", ()
 });
 
 test("option positions show valuation results without internal source or status columns", () => {
-  for (const label of ["估值价", "标的价格", "到期日", "IV", "浮动盈亏", "德尔塔", "伽马", "西塔", "维伽", "估值日"]) {
+  for (const label of ["估值价", "标的价格", "到期日", "IV", "浮动盈亏", "Delta", "Gamma", "Theta", "Vega", "估值日"]) {
     assert.match(tradingJs, new RegExp(label));
   }
   for (const field of ["row.delta", "row.gamma", "row.theta", "row.vega"]) {
     assert.match(tradingJs, new RegExp(field));
   }
   assert.doesNotMatch(tradingJs, /<th>[^<]*敞口<\/th>/);
-  assert.doesNotMatch(tradingJs, /<th>(Delta|Gamma|Theta|Vega)<\/th>/);
+  for (const greek of ["Delta", "Gamma", "Theta", "Vega"]) {
+    assert.match(tradingJs, new RegExp(`<th>${greek}<\\/th>`));
+  }
   assert.doesNotMatch(tradingJs, /<th>估值来源<\/th>/);
   assert.doesNotMatch(tradingJs, /<th>估值状态<\/th>/);
   assert.match(tradingJs, /Number\(row\.iv\) \* 100/);
   assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
+  assert.match(tradingJs, /每15秒刷新/);
+  assert.match(tradingJs, /IV 与 Greeks 不作为实时值/);
 });
 
 test("option Greeks use four decimals and expired snapshots are visibly marked", () => {

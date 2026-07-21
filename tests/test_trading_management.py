@@ -2072,10 +2072,10 @@ def test_classified_option_position_uses_live_quote_and_position_greeks(
     assert fallback["items"][0]["underlying_price"] == pytest.approx(680)
     assert fallback["items"][0]["expiry_date"] == "2026-08-18"
     assert fallback["items"][0]["valuation_date"] == "2026-06-30"
-    assert fallback["items"][0]["iv"] is not None
+    assert fallback["items"][0]["iv"] is None
     for greek in ("delta", "gamma", "theta", "vega"):
-        assert fallback["items"][0][greek] is not None
-        assert fallback["summary"][greek] is not None
+        assert fallback["items"][0][greek] is None
+        assert fallback["summary"][greek] is None
 
     monkeypatch.setattr(
         trading_management, "_beijing_today", lambda: date(2026, 8, 19)

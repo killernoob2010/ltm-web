@@ -3306,11 +3306,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                             exchange=item["exchange"] or "",
                         )
                 unit_greeks = {
-                    name: (
-                        getattr(quote, name)
-                        if getattr(quote, name) is not None
-                        else reference_metrics.get(name)
-                    )
+                    name: getattr(quote, name)
                     for name in ("delta", "gamma", "theta", "vega", "rho")
                 }
                 display_greeks = calculate_option_display_greeks(
@@ -3338,11 +3334,7 @@ def query_business_rows(view: str, tab: str, filters: FactFilters) -> dict[str, 
                             if quote.market_time else None
                         )
                     ),
-                    "iv": (
-                        quote.iv
-                        if quote.iv is not None
-                        else reference_metrics.get("iv")
-                    ),
+                    "iv": quote.iv,
                     **{
                         f"unit_{name}": value
                         for name, value in unit_greeks.items()
