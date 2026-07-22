@@ -4136,17 +4136,6 @@ def _apply_business_batch_edges(
             ).fetchall()]
             for close_id in close_ids
         }
-        config_row = db._exec(
-            cur,
-            """
-            SELECT ba.business_subject_id, ba.business_type, ba.strategy_id
-            FROM trading_business_assignments ba
-            WHERE ba.trade_identity_id = ?
-            """,
-            (edges[0]["open_trade_identity_id"],),
-        ).fetchone()
-        if not config_row:
-            raise ValueError("业务归属不存在")
         placeholders = ",".join("?" for _ in close_ids)
         db._exec(cur, f"DELETE FROM trading_business_close_allocations WHERE close_identity_id IN ({placeholders})", tuple(close_ids))
         after_by_close = {close_id: [] for close_id in close_ids}
@@ -4171,9 +4160,7 @@ def _apply_business_batch_edges(
                 ),
             )
             after_by_close[close_id].append({"id": allocation_id, **edge, "business_pnl": pnl})
-        business_config = (config_row["business_subject_id"], config_row["business_type"], config_row["strategy_id"])
         for close_id in close_ids:
-            _inherit_close_trade_assignment(cur, close_id, business_config, actor)
             before_pnl = sum(float(row["business_pnl"] or 0) for row in before_by_close[close_id])
             after_pnl = sum(float(row["business_pnl"] or 0) for row in after_by_close[close_id])
             db._exec(
