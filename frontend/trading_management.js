@@ -42,6 +42,9 @@
     selectionBusy: false,
     importPreviewId: null,
     permissions: { canEdit: false, canSensitive: false },
+    quoteRefreshState: {
+      options: { fingerprint: "", updatedAt: "—", status: "等待更新" },
+    },
   };
   const factCache = new Map();
   const factRequests = new Map();
@@ -464,12 +467,56 @@
     const body = data.items.map((row) => {
       const anatomy = optionAnatomy(row.contract);
       const iv = row.iv == null ? "—" : `${num(Number(row.iv) * 100)}%`;
-      const expiry = row.expiry_date
-        ? (row.is_expired ? `${row.expiry_date}（已到期）` : row.expiry_date)
-        : "—";
-      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${esc(row.underlying_symbol || anatomy.underlying)}</td><td>${num(row.underlying_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${esc(expiry)}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${greekNum(row.delta)}</td><td>${greekNum(row.gamma)}</td><td>${greekNum(row.theta)}</td><td>${greekNum(row.vega)}</td><td>${esc(row.valuation_date || row.market_time || "—")}</td></tr>`;
+      return `<tr><td>${esc(row.contract)}</td><td>${esc(row.direction)}</td><td>${num(row.quantity)}</td><td>${num(row.average_price)}</td><td>${num(row.valuation_price)}</td><td>${anatomy.kind}</td><td>${anatomy.strike}</td><td>${iv}</td><td>${num(row.floating_pnl)}</td><td>${greekNum(row.delta)}</td><td>${greekNum(row.gamma)}</td><td>${greekNum(row.theta)}</td><td>${greekNum(row.vega)}</td></tr>`;
     }).join("");
-    return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>估值价</th><th>标的</th><th>标的价格</th><th>看涨/看跌</th><th>行权价</th><th>到期日</th><th>IV</th><th>浮动盈亏</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>估值日</th></tr></thead><tbody>${body || '<tr><td colspan="17" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
+    return `<div class="tm-table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>手数</th><th>持仓均价</th><th>估值价</th><th>看涨/看跌</th><th>行权价</th><th>IV</th><th>浮动盈亏</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th></tr></thead><tbody>${body || '<tr><td colspan="13" class="tm-empty-state">暂无数据</td></tr>'}</tbody></table></div>`;
+  }
+
+  function optionQuoteFingerprint(data) {
+    return JSON.stringify(data.items.map((row) => [
+      row.contract, row.direction, row.quantity, row.valuation_price,
+      row.iv, row.floating_pnl, row.delta, row.gamma, row.theta, row.vega,
+      row.market_time, row.market_data_status,
+    ]));
+  }
+
+  function refreshTimestamp() {
+    return new Date().toLocaleString("zh-CN", { hour12: false });
+  }
+
+  function updateOptionQuoteRefreshState(data, reason) {
+    const state = tm.quoteRefreshState.options;
+    const fingerprint = optionQuoteFingerprint(data);
+    const statuses = data.items.map((row) => row.valuation_status || row.market_data_status);
+    let status = "行情不可用";
+    if (statuses.length && statuses.every((value) => value === "live")) {
+      status = reason === "timer" && state.fingerprint === fingerprint
+        ? "已检查，行情无变化"
+        : "数据已更新";
+    } else if (statuses.some((value) => value === "live")) {
+      status = "部分行情已更新";
+    } else if (statuses.some((value) => value === "settlement_reference")) {
+      status = "参考结算行情";
+    }
+    state.fingerprint = fingerprint;
+    state.updatedAt = refreshTimestamp();
+    state.status = status;
+  }
+
+  function optionQuoteRefreshStatus() {
+    const state = tm.quoteRefreshState.options;
+    const tone = ["行情不可用", "更新失败", "参考结算行情"].includes(state.status) ? "amber" : "blue";
+    return `<div class="tm-refresh-status"><span class="tm-tag">上次更新时间：<strong id="tmOptionsRefreshTime">${esc(state.updatedAt)}</strong></span><span class="tm-tag ${tone}">更新状态：<strong id="tmOptionsRefreshStatus">${esc(state.status)}</strong></span></div>`;
+  }
+
+  function markOptionQuoteRefreshFailure() {
+    const state = tm.quoteRefreshState.options;
+    state.updatedAt = refreshTimestamp();
+    state.status = "更新失败";
+    const time = $("#tmOptionsRefreshTime");
+    const status = $("#tmOptionsRefreshStatus");
+    if (time) time.textContent = state.updatedAt;
+    if (status) status.textContent = state.status;
   }
 
   function businessFilters(view, tab) {
@@ -504,8 +551,9 @@
       if (document.visibilityState !== "visible" || tm[tabKey] !== "positions" || businessQuoteRefreshInFlight) return;
       businessQuoteRefreshInFlight = true;
       try {
-        await renderBusinessLedger(tm.view);
+        await renderBusinessLedger(tm.view, "timer");
       } catch (error) {
+        if (tm.view === "options") markOptionQuoteRefreshFailure();
         showError(error);
       } finally {
         businessQuoteRefreshInFlight = false;
@@ -513,7 +561,7 @@
     }, BUSINESS_QUOTE_REFRESH_MS);
   }
 
-  async function renderBusinessLedger(view) {
+  async function renderBusinessLedger(view, reason = "load") {
     const tabKey = view === "junneng" ? "junnengTab" : "optionsTab";
     const tab = tm[tabKey];
     const pageKey = view === "junneng" ? "junnengPage" : "optionsPage";
@@ -525,9 +573,11 @@
     if (dates.from) params.set("start_date",dates.from);
     if (dates.to) params.set("end_date",dates.to);
     const data = await api(`/api/trading-management/business/${view}/${tab}?${params}`);
-    const notice = view === "junneng" ? "仅展示已完成业务归属的上海钧能数据。" : "仅展示已完成业务归属的数据；页面每15秒刷新，实时行情未接通时结算价仅供参考，IV 与 Greeks 不作为实时值。";
+    if (view === "options" && tab === "positions") updateOptionQuoteRefreshState(data, reason);
+    const notice = view === "junneng" ? "仅展示已完成业务归属的上海钧能数据。" : "仅展示已完成业务归属的数据；页面每15秒刷新，实时行情未接通时结算价仅供参考，IV 与 Greeks 不作为实时值；明细 Greeks 为带方向的单手口径。";
+    const refreshStatus = view === "options" && tab === "positions" ? optionQuoteRefreshStatus() : "";
     const ledgerTable = view === "options" && tab === "positions" ? optionPositionTable(data) : businessTable(data,view,tab,tm.permissions.canEdit);
-    const html = `<section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<span class="tm-tag blue">${notice}</span></div>${businessFilters(view,tab)}${businessFilterSummary(data.summary,view,tab)}${ledgerTable}${pagination(data,view)}</section>`;
+    const html = `<section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<div class="tm-refresh-status"><span class="tm-tag blue">${notice}</span>${refreshStatus}</div></div>${businessFilters(view,tab)}${businessFilterSummary(data.summary,view,tab)}${ledgerTable}${pagination(data,view)}</section>`;
     $(view === "junneng" ? "#tmJunnengView" : "#tmOptionsView").innerHTML = html;
     document.querySelectorAll(`[data-${view}-tab]`).forEach((button) => button.addEventListener("click", () => { tm[tabKey] = button.dataset[`${view}Tab`]; tm[pageKey] = 1; stopBusinessQuoteRefresh(); renderBusinessLedger(view).catch(showError); }));
     $(`#${view}SearchApply`).addEventListener("click",()=>{tm.businessQuery[view]=$(`#${view}Search`).value.trim();tm[pageKey]=1;renderBusinessLedger(view).catch(showError);});

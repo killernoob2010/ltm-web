@@ -83,9 +83,11 @@ test("prototype sections replace the simplified placeholder layout", () => {
 
 test("option positions preserve the prototype anatomy and risk columns", () => {
   assert.match(tradingJs, /function optionAnatomy/);
-  for (const label of ["标的", "看涨\/看跌", "行权价", "Delta", "Gamma", "Theta", "Vega"]) {
+  for (const label of ["看涨\/看跌", "行权价", "Delta", "Gamma", "Theta", "Vega"]) {
     assert.match(tradingJs, new RegExp(label));
   }
+  assert.doesNotMatch(tradingJs, /<th>标的<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>标的价格<\/th>/);
   assert.doesNotMatch(tradingJs, /德尔塔|伽马|西塔|维伽/);
 });
 
@@ -182,7 +184,7 @@ test("Shanghai Junneng shows live positions and the five settlement metrics", ()
 });
 
 test("option positions show valuation results without internal source or status columns", () => {
-  for (const label of ["估值价", "标的价格", "到期日", "IV", "浮动盈亏", "Delta", "Gamma", "Theta", "Vega", "估值日"]) {
+  for (const label of ["估值价", "IV", "浮动盈亏", "Delta", "Gamma", "Theta", "Vega"]) {
     assert.match(tradingJs, new RegExp(label));
   }
   for (const field of ["row.delta", "row.gamma", "row.theta", "row.vega"]) {
@@ -194,18 +196,37 @@ test("option positions show valuation results without internal source or status 
   }
   assert.doesNotMatch(tradingJs, /<th>估值来源<\/th>/);
   assert.doesNotMatch(tradingJs, /<th>估值状态<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>到期日<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>估值日<\/th>/);
+  assert.doesNotMatch(tradingJs, /row\.underlying_symbol/);
+  assert.doesNotMatch(tradingJs, /row\.underlying_price/);
+  assert.doesNotMatch(tradingJs, /row\.expiry_date/);
+  assert.doesNotMatch(tradingJs, /row\.valuation_date/);
+  assert.match(tradingJs, /colspan="13"/);
   assert.match(tradingJs, /Number\(row\.iv\) \* 100/);
   assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
   assert.match(tradingJs, /每15秒刷新/);
   assert.match(tradingJs, /IV 与 Greeks 不作为实时值/);
+  assert.match(tradingJs, /明细 Greeks 为带方向的单手口径/);
 });
 
-test("option Greeks use four decimals and expired snapshots are visibly marked", () => {
+test("option Greeks use four decimals without showing expiry metadata", () => {
   assert.match(
     tradingJs,
     /minimumFractionDigits:\s*4,\s*maximumFractionDigits:\s*4/,
   );
-  assert.match(tradingJs, /row\.is_expired\s*\?\s*`\$\{row\.expiry_date\}（已到期）`/);
+  assert.doesNotMatch(tradingJs, /（已到期）/);
+});
+
+test("option quote refresh shows last update time and whether values changed", () => {
+  assert.match(tradingJs, /quoteRefreshState/);
+  assert.match(tradingJs, /上次更新时间/);
+  assert.match(tradingJs, /更新状态/);
+  assert.match(tradingJs, /数据已更新/);
+  assert.match(tradingJs, /已检查，行情无变化/);
+  assert.match(tradingJs, /更新失败/);
+  assert.match(tradingJs, /row\.valuation_status\s*\|\|\s*row\.market_data_status/);
+  assert.match(tradingJs, /renderBusinessLedger\(tm\.view,\s*"timer"\)/);
 });
 
 test("visible business position pages refresh quotes every fifteen seconds", () => {
