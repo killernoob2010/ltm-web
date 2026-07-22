@@ -32,6 +32,7 @@ from . import db
 from .permissions import (
     ACTIVE_BUSINESS_MODULES,
     DEPARTMENTS,
+    RETIRED_MODULE_CODES,
     USER_ROLES,
     default_permission_levels,
     get_user_permissions as list_user_permissions,
@@ -1461,10 +1462,11 @@ def me(user=Depends(current_user)):
 
 @app.get("/api/auth/modules")
 def modules(user=Depends(current_user)):
+    module_rows = [row for row in db.MODULES if row[1] not in RETIRED_MODULE_CODES]
     if user["role"] == "管理员":
         visible = {
             code: {"can_view": True, "can_edit": True, "can_sensitive": True}
-            for _, code, _ in db.MODULES
+            for _, code, _ in module_rows
         }
     else:
         with db.connect() as conn:
@@ -1487,7 +1489,7 @@ def modules(user=Depends(current_user)):
         }
 
     groups = {}
-    for group, code, name in db.MODULES:
+    for group, code, name in module_rows:
         if code in visible:
             groups.setdefault(group, []).append(
                 {"code": code, "name": name, **visible[code]}
@@ -2470,8 +2472,16 @@ def list_sh_junneng_trades(
     }
 
 
+LEGACY_LEDGER_RETIRED_MESSAGE = "旧台账管理已退役，请使用交易管理"
+
+
+def reject_retired_legacy_ledger_operation() -> None:
+    raise HTTPException(status_code=410, detail=LEGACY_LEDGER_RETIRED_MESSAGE)
+
+
 @app.post("/api/ledgers/sh-junneng/trades")
 def create_sh_junneng_trade(payload: ShJunnengTradeIn, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_edit("sh_junneng", user)
     if payload.direction not in {"long", "short", "多头", "空头", "多", "空"}:
         raise HTTPException(status_code=400, detail="无效的交易方向")
@@ -2550,6 +2560,7 @@ def create_sh_junneng_trade(payload: ShJunnengTradeIn, user=Depends(current_user
 
 @app.put("/api/ledgers/sh-junneng/trades/{trade_id}")
 def update_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeIn, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_edit("sh_junneng", user)
     if payload.direction not in {"long", "short", "多头", "空头", "多", "空"}:
         raise HTTPException(status_code=400, detail="无效的交易方向")
@@ -2600,6 +2611,7 @@ def update_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeIn, user=Depen
 
 @app.delete("/api/ledgers/sh-junneng/trades/{trade_id}")
 def delete_sh_junneng_trade(trade_id: int, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_permission(user, "sh_junneng.trades", "delete")
     with db.connect() as conn:
         cur = conn.cursor()
@@ -2617,6 +2629,7 @@ def delete_sh_junneng_trade(trade_id: int, user=Depends(current_user)):
 
 @app.post("/api/ledgers/sh-junneng/trades/{trade_id}/close")
 def close_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeCloseIn, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_edit("sh_junneng", user)
     with db.connect() as conn:
         cur = conn.cursor()
@@ -2686,6 +2699,7 @@ def close_sh_junneng_trade(trade_id: int, payload: ShJunnengTradeCloseIn, user=D
 
 @app.post("/api/ledgers/sh-junneng/prices/refresh")
 def refresh_sh_junneng_prices(mock: bool = False, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_edit("sh_junneng", user)
     result = refresh_sh_junneng_trade_prices(mock=mock)
     db.log_operation(user["id"], "sh_junneng", "刷新价格", f"刷新 {result['refreshed_contracts']} 个上海钧能合约价格")
@@ -2694,6 +2708,7 @@ def refresh_sh_junneng_prices(mock: bool = False, user=Depends(current_user)):
 
 @app.post("/api/ledgers/sh-junneng/prices/manual")
 def update_sh_junneng_prices_manually(payload: ShJunnengManualPricesIn, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_edit("sh_junneng", user)
     updated = 0
     with db.connect() as conn:
@@ -2781,6 +2796,7 @@ def sh_junneng_settled_overview(
 
 @app.get("/api/ledgers/sh-junneng/export")
 def export_sh_junneng_trades(selected_date: Optional[str] = None, user=Depends(current_user)):
+    reject_retired_legacy_ledger_operation()
     require_permission(user, "sh_junneng.trades", "export")
     selected_date = selected_date or date.today().isoformat()
     sections = list_sh_junneng_trades(selected_date=selected_date, limit=5000, offset=0, user=user)
