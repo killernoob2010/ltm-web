@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-finance-port-status-20260722" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722a" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -397,7 +397,8 @@
               <button class="filter-button active" data-filter="all" type="button">全部</button>
               <button class="filter-button" data-filter="focusRisk" type="button">本周重点</button>
               <button class="filter-button" data-filter="pendingDrawdown" type="button">待放款</button>
-              <button class="filter-button" data-filter="financedUnshipped" type="button">已放款待装船</button>
+              <button class="filter-button" data-filter="financedUncollected" type="button">已放款待集港</button>
+              <button class="filter-button" data-filter="collectedUnshipped" type="button">已集港待装船</button>
               <button class="filter-button" data-filter="shippedUndocumented" type="button">已装船待交单</button>
               <button class="filter-button" data-filter="documentedUnpaid" type="button">已交单待回款</button>
               <button class="filter-button" data-filter="paidUnclosed" type="button">已回款待结案</button>
@@ -534,6 +535,21 @@
             <div class="dialog-actions">
               <button id="cancelOrderFinanceManualBtn" type="button" class="secondary">取消</button>
               <button type="submit">保存</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="orderFinancePortDialog">
+          <form id="orderFinancePortForm" method="dialog" class="dialog-form">
+            <h2>确认已集港</h2>
+            <p id="orderFinancePortItem" class="toolbar-status"></p>
+            <label>
+              实际集港日
+              <input id="orderFinancePortDate" type="date" required />
+            </label>
+            <div class="dialog-actions">
+              <button id="cancelOrderFinancePortBtn" type="button" class="secondary">取消</button>
+              <button type="submit">确认已集港</button>
             </div>
           </form>
         </dialog>
@@ -1295,7 +1311,7 @@
 
   <script src="/static/trading_management.js?v=20260722a"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

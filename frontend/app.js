@@ -157,6 +157,11 @@ const orderFinanceManualDialog = document.querySelector("#orderFinanceManualDial
 const orderFinanceManualForm = document.querySelector("#orderFinanceManualForm");
 const cancelOrderFinanceManualBtn = document.querySelector("#cancelOrderFinanceManualBtn");
 const orderFinanceManualDuplicateHint = document.querySelector("#orderFinanceManualDuplicateHint");
+const orderFinancePortDialog = document.querySelector("#orderFinancePortDialog");
+const orderFinancePortForm = document.querySelector("#orderFinancePortForm");
+const orderFinancePortItem = document.querySelector("#orderFinancePortItem");
+const orderFinancePortDate = document.querySelector("#orderFinancePortDate");
+const cancelOrderFinancePortBtn = document.querySelector("#cancelOrderFinancePortBtn");
 const orderFinanceShipmentDialog = document.querySelector("#orderFinanceShipmentDialog");
 const orderFinanceShipmentForm = document.querySelector("#orderFinanceShipmentForm");
 const orderFinanceShipmentItem = document.querySelector("#orderFinanceShipmentItem");
@@ -182,6 +187,7 @@ const ofManualSystemContract = document.querySelector("#ofManualSystemContract")
 const ofManualRepaymentRequirement = document.querySelector("#ofManualRepaymentRequirement");
 const ofManualNextAction = document.querySelector("#ofManualNextAction");
 const ofManualManagerNote = document.querySelector("#ofManualManagerNote");
+let orderFinancePortItemNo = "";
 let orderFinanceShipmentItemNo = "";
 let orderFinanceReminderItemNo = "";
 const dvIntegrationPage = document.querySelector("#dvIntegrationPage");
@@ -2590,6 +2596,7 @@ function orderFinanceShipmentText(item) {
   if (item.stage === "已完成") return value || "未提供";
   if (item.shipment_basis === "document") return "已根据交单日认定装船";
   if (item.shipment_confirmed_date) return `已确认装船：${item.shipment_confirmed_date}`;
+  if (item.port_confirmed_date) return `已确认集港：${item.port_confirmed_date}`;
   if (item.shipment_completed) return value ? `${value} / 已完成装船` : "已完成装船";
   if (!value) return "待 Excel 补充";
   const days = orderFinanceDaysTo(value);
@@ -2615,7 +2622,8 @@ function orderFinanceFilteredContracts() {
   return state.orderFinanceContracts.filter((item) => {
     if (filter === "focusRisk" && !item.is_weekly_focus) return false;
     if (filter === "pendingDrawdown" && item.stage !== "待放款") return false;
-    if (filter === "financedUnshipped" && item.stage !== "已放款待装船") return false;
+    if (filter === "financedUncollected" && item.stage !== "已放款待集港") return false;
+    if (filter === "collectedUnshipped" && item.stage !== "已集港待装船") return false;
     if (filter === "shippedUndocumented" && item.stage !== "已装船待交单") return false;
     if (filter === "documentedUnpaid" && item.stage !== "已交单待回款") return false;
     if (filter === "paidUnclosed" && item.stage !== "已回款待结案") return false;
@@ -2641,7 +2649,8 @@ function orderFinanceFilteredContracts() {
 
 const ORDER_FINANCE_STAGE_FILTERS = [
   { filter: "pendingDrawdown", stage: "待放款", hideWhenEmpty: true },
-  { filter: "financedUnshipped", stage: "已放款待装船", hideWhenEmpty: true },
+  { filter: "financedUncollected", stage: "已放款待集港", hideWhenEmpty: true },
+  { filter: "collectedUnshipped", stage: "已集港待装船", hideWhenEmpty: true },
   { filter: "shippedUndocumented", stage: "已装船待交单", hideWhenEmpty: true },
   { filter: "documentedUnpaid", stage: "已交单待回款", hideWhenEmpty: true },
   { filter: "paidUnclosed", stage: "已回款待结案", hideWhenEmpty: true },
@@ -2677,7 +2686,8 @@ function renderOrderFinanceSummary() {
     ["30天内融资到期", summary.due_30d || 0],
     ["本周重点", summary.focus_risk || 0],
     ["待放款", summary.pending_drawdown || 0],
-    ["已放款待装船", summary.financed_unshipped || 0],
+    ["已放款待集港", summary.financed_uncollected || 0],
+    ["已集港待装船", summary.collected_unshipped || 0],
     ["已装船待交单", summary.shipped_undocumented || 0],
     ["已交单待回款", summary.documented_unpaid || 0],
     ["已回款待结案", summary.paid_unclosed || 0],
@@ -2786,10 +2796,15 @@ function renderOrderFinanceContract(item) {
   const expanded = state.expandedOrderFinanceContracts.has(item.id);
   const riskClass = item.risk === "高" ? "risk-high" : item.risk === "中" ? "risk-mid" : item.risk === "已完成" ? "risk-done" : "risk-low";
   const canEditOrderFinance = !isGuest() && canModuleEdit("order_finance_progress");
-  const shipmentAction = canEditOrderFinance && item.stage !== "已完成" && !item.document_date
+  const portAction = canEditOrderFinance && item.stage === "已放款待集港"
+    ? `<button class="secondary order-finance-port-confirm-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">确认已集港</button>`
+    : canEditOrderFinance && item.stage === "已集港待装船"
+      ? `<button class="secondary order-finance-port-undo-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">撤销集港确认</button>`
+      : "";
+  const shipmentAction = canEditOrderFinance && !item.document_date
     ? item.shipment_confirmed_date
       ? `<button class="secondary order-finance-shipment-undo-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">撤销装船确认</button>`
-      : !item.document_date && !item.shipment_completed
+      : item.stage === "已集港待装船"
         ? `<button class="secondary order-finance-shipment-confirm-btn" type="button" data-item-no="${escapeHtml(item.item_no)}">确认已装船</button>`
         : ""
     : "";
@@ -2813,6 +2828,7 @@ function renderOrderFinanceContract(item) {
           <p>${escapeHtml(item.entity || "-")} / ${escapeHtml(item.subsidiary || "-")} / ${escapeHtml(item.product || "-")} / ${escapeHtml(item.terminal_customer || "-")}</p>
         </div>
         <div class="order-finance-card-actions">
+          ${portAction}
           ${shipmentAction}
           ${reminderAction}
           <button class="secondary order-finance-expand-btn" type="button" data-contract="${escapeHtml(item.id)}">${expanded ? "收起明细" : "查看明细"}</button>
@@ -2857,6 +2873,12 @@ function renderOrderFinanceContracts() {
   });
   orderFinanceContractList.querySelectorAll(".order-finance-shipment-undo-btn").forEach((button) => {
     button.addEventListener("click", () => undoOrderFinanceShipment(button.dataset.itemNo));
+  });
+  orderFinanceContractList.querySelectorAll(".order-finance-port-confirm-btn").forEach((button) => {
+    button.addEventListener("click", () => openOrderFinancePortDialog(button.dataset.itemNo));
+  });
+  orderFinanceContractList.querySelectorAll(".order-finance-port-undo-btn").forEach((button) => {
+    button.addEventListener("click", () => undoOrderFinancePort(button.dataset.itemNo));
   });
   orderFinanceContractList.querySelectorAll(".order-finance-reminder-btn").forEach((button) => {
     button.addEventListener("click", () => openOrderFinanceReminderDialog(button.dataset.itemNo));
@@ -2923,6 +2945,46 @@ function openOrderFinanceShipmentDialog(itemNo) {
   orderFinanceShipmentItem.textContent = `项次：${itemNo}`;
   orderFinanceShipmentDate.value = today();
   orderFinanceShipmentDialog.showModal();
+}
+
+function openOrderFinancePortDialog(itemNo) {
+  orderFinancePortItemNo = itemNo;
+  orderFinancePortItem.textContent = `项次：${itemNo}`;
+  orderFinancePortDate.value = today();
+  orderFinancePortDialog.showModal();
+}
+
+async function saveOrderFinancePort(event) {
+  event.preventDefault();
+  try {
+    await api(`/api/order-finance/contracts/${encodeURIComponent(orderFinancePortItemNo)}/port-confirmation`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        confirmed: true,
+        port_confirmed_date: orderFinancePortDate.value,
+      }),
+    });
+    orderFinancePortDialog.close();
+    await loadOrderFinanceProgress();
+    orderFinanceStatus.textContent = `已确认 ${orderFinancePortItemNo} 集港`;
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+  }
+}
+
+async function undoOrderFinancePort(itemNo) {
+  const confirmed = await confirmAction("撤销集港确认", `确认撤销 ${itemNo} 的集港确认？`);
+  if (!confirmed) return;
+  try {
+    await api(`/api/order-finance/contracts/${encodeURIComponent(itemNo)}/port-confirmation`, {
+      method: "PATCH",
+      body: JSON.stringify({ confirmed: false }),
+    });
+    await loadOrderFinanceProgress();
+    orderFinanceStatus.textContent = `已撤销 ${itemNo} 的集港确认`;
+  } catch (error) {
+    orderFinanceStatus.textContent = error.message;
+  }
 }
 
 async function saveOrderFinanceShipment(event) {
@@ -3191,6 +3253,8 @@ closeLogsBtn.addEventListener("click", () => operationLogsDialog.close());
 
 cancelOrderFinanceManualBtn.addEventListener("click", () => orderFinanceManualDialog.close());
 orderFinanceManualForm.addEventListener("submit", saveOrderFinanceManual);
+cancelOrderFinancePortBtn.addEventListener("click", () => orderFinancePortDialog.close());
+orderFinancePortForm.addEventListener("submit", saveOrderFinancePort);
 cancelOrderFinanceShipmentBtn.addEventListener("click", () => orderFinanceShipmentDialog.close());
 orderFinanceShipmentForm.addEventListener("submit", saveOrderFinanceShipment);
 cancelOrderFinanceReminderBtn.addEventListener("click", () => orderFinanceReminderDialog.close());

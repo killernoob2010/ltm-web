@@ -154,12 +154,29 @@ test("order finance supports shipment confirmation and removes import report", (
   assert.match(appJs, /order-finance-shipment-undo-btn/);
   assert.match(appJs, /\/shipment-confirmation/);
   assert.match(appJs, /shipment_confirmed_date/);
-  assert.match(appJs, /!item\.document_date && !item\.shipment_completed/);
+  assert.match(appJs, /item\.stage === "已集港待装船"/);
   assert.match(appJs, /\/api\/order-finance\/progress\?ts=\$\{Date\.now\(\)\}/);
   assert.doesNotMatch(indexHtml, /id="orderFinanceImportReport"/);
   assert.doesNotMatch(indexHtml, />导入报告</);
   assert.doesNotMatch(appJs, /orderFinanceImportReport/);
   assert.match(appJs, /导入完成：\$\{summary\.record_count \|\| 0\} 条，异常 \$\{summary\.warning_count \|\| 0\} 条/);
+});
+
+test("order finance supports port confirmation and the collected-unshipped stage", () => {
+  assert.match(indexHtml, /data-filter="financedUncollected"[^>]*>已放款待集港<\/button>/);
+  assert.match(indexHtml, /data-filter="collectedUnshipped"[^>]*>已集港待装船<\/button>/);
+  assert.match(indexHtml, /id="orderFinancePortDialog"/);
+  assert.match(indexHtml, /id="orderFinancePortDate"[^>]*type="date"/);
+  assert.match(appJs, /filter === "financedUncollected" && item\.stage !== "已放款待集港"/);
+  assert.match(appJs, /filter === "collectedUnshipped" && item\.stage !== "已集港待装船"/);
+  assert.match(appJs, /order-finance-port-confirm-btn/);
+  assert.match(appJs, /order-finance-port-undo-btn/);
+  assert.match(appJs, /\/port-confirmation/);
+  assert.match(appJs, /已确认集港：\$\{item\.port_confirmed_date\}/);
+  assert.match(appJs, /\["已放款待集港", summary\.financed_uncollected \|\| 0\]/);
+  assert.match(appJs, /\["已集港待装船", summary\.collected_unshipped \|\| 0\]/);
+  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722/);
+  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-finance-port-status-20260722/);
 });
 
 test("order finance shows compact automatic sync status and new payment terminology", () => {
