@@ -480,22 +480,27 @@ def _business_position_groups(cur, filters: OverviewFilters) -> list[dict[str, A
     rows = db._exec(
         cur,
         """
+        WITH allocated_quantities AS (
+            SELECT a.open_trade_identity_id,
+                   SUM(a.matched_quantity) AS matched_quantity
+            FROM trading_business_close_allocations a
+            JOIN trading_close_facts cf
+              ON cf.identity_id = a.close_identity_id AND cf.is_current = 1
+            JOIN trading_import_batches cb
+              ON cb.id = cf.batch_id AND cb.status = 'active'
+            WHERE (? = '' OR cf.close_date <= ?)
+            GROUP BY a.open_trade_identity_id
+        )
         SELECT b.account_id, tf.contract, tf.side AS direction, tf.asset_type,
-               tf.quantity - COALESCE((
-                   SELECT SUM(a.matched_quantity)
-                   FROM trading_business_close_allocations a
-                   JOIN trading_close_facts cf
-                     ON cf.identity_id = a.close_identity_id AND cf.is_current = 1
-                   JOIN trading_import_batches cb
-                     ON cb.id = cf.batch_id AND cb.status = 'active'
-                   WHERE a.open_trade_identity_id = tf.identity_id
-                     AND (? = '' OR cf.close_date <= ?)
-               ), 0) AS remaining_quantity
+               tf.quantity - COALESCE(aq.matched_quantity, 0)
+                   AS remaining_quantity
         FROM trading_trade_facts tf
         JOIN trading_import_batches b
           ON b.id = tf.batch_id AND b.status = 'active'
         JOIN trading_business_assignments ba
           ON ba.trade_identity_id = tf.identity_id
+        LEFT JOIN allocated_quantities aq
+          ON aq.open_trade_identity_id = tf.identity_id
         WHERE tf.is_current = 1 AND tf.open_close = '开仓'
           AND ba.business_type = ?
           AND (? = 0 OR b.account_id = ?)

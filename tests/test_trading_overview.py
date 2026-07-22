@@ -642,3 +642,28 @@ def test_overview_query_count_is_bounded(tmp_path, monkeypatch):
 
     assert calls <= 8
     assert "items" not in result
+
+
+def test_business_position_query_preaggregates_allocations(tmp_path, monkeypatch):
+    _seed_overview_sample(tmp_path, monkeypatch)
+    original_exec = db._exec
+    statements = []
+
+    def captured_exec(cur, sql, params=()):
+        statements.append(sql)
+        return original_exec(cur, sql, params)
+
+    monkeypatch.setattr(db, "_exec", captured_exec)
+    trading_overview.build_trading_overview(
+        trading_overview.OverviewFilters(
+            scope="basic_hedging",
+            start_date="20260701",
+            end_date="20260731",
+        )
+    )
+
+    position_sql = next(
+        sql for sql in statements if "remaining_quantity" in sql
+    )
+    assert "WITH allocated_quantities AS" in position_sql
+    assert "LEFT JOIN allocated_quantities" in position_sql
