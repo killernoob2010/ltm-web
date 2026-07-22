@@ -574,10 +574,10 @@
     if (dates.to) params.set("end_date",dates.to);
     const data = await api(`/api/trading-management/business/${view}/${tab}?${params}`);
     if (view === "options" && tab === "positions") updateOptionQuoteRefreshState(data, reason);
-    const notice = view === "junneng" ? "仅展示已完成业务归属的上海钧能数据。" : "仅展示已完成业务归属的数据；页面每15秒刷新，实时行情未接通时结算价仅供参考，IV 与 Greeks 不作为实时值；明细 Greeks 为带方向的单手口径。";
+    const notice = view === "junneng" ? '<span class="tm-tag blue">仅展示已完成业务归属的上海钧能数据。</span>' : "";
     const refreshStatus = view === "options" && tab === "positions" ? optionQuoteRefreshStatus() : "";
     const ledgerTable = view === "options" && tab === "positions" ? optionPositionTable(data) : businessTable(data,view,tab,tm.permissions.canEdit);
-    const html = `<section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<div class="tm-refresh-status"><span class="tm-tag blue">${notice}</span>${refreshStatus}</div></div>${businessFilters(view,tab)}${businessFilterSummary(data.summary,view,tab)}${ledgerTable}${pagination(data,view)}</section>`;
+    const html = `<section class="tm-section tm-panel"><div class="tm-section-header">${businessTabs(tab,view)}<div class="tm-refresh-status">${notice}${refreshStatus}</div></div>${businessFilters(view,tab)}${businessFilterSummary(data.summary,view,tab)}${ledgerTable}${pagination(data,view)}</section>`;
     $(view === "junneng" ? "#tmJunnengView" : "#tmOptionsView").innerHTML = html;
     document.querySelectorAll(`[data-${view}-tab]`).forEach((button) => button.addEventListener("click", () => { tm[tabKey] = button.dataset[`${view}Tab`]; tm[pageKey] = 1; stopBusinessQuoteRefresh(); renderBusinessLedger(view).catch(showError); }));
     $(`#${view}SearchApply`).addEventListener("click",()=>{tm.businessQuery[view]=$(`#${view}Search`).value.trim();tm[pageKey]=1;renderBusinessLedger(view).catch(showError);});

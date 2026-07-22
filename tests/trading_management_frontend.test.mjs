@@ -166,7 +166,6 @@ test("business ledgers are classified archives without candidate controls", () =
   assert.doesNotMatch(tradingJs, /businessClassification/);
   assert.doesNotMatch(tradingJs, /默认展示全部 RB\/HC 候选/);
   assert.doesNotMatch(tradingJs, /id="\$\{view\}Classification"/);
-  assert.match(tradingJs, /仅展示已完成业务归属的数据/);
 });
 
 test("Shanghai Junneng shows live positions and the five settlement metrics", () => {
@@ -205,9 +204,9 @@ test("option positions show valuation results without internal source or status 
   assert.match(tradingJs, /colspan="13"/);
   assert.match(tradingJs, /Number\(row\.iv\) \* 100/);
   assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
-  assert.match(tradingJs, /每15秒刷新/);
-  assert.match(tradingJs, /IV 与 Greeks 不作为实时值/);
-  assert.match(tradingJs, /明细 Greeks 为带方向的单手口径/);
+  assert.doesNotMatch(tradingJs, /仅展示已完成业务归属的数据；页面每15秒刷新/);
+  assert.doesNotMatch(tradingJs, /IV 与 Greeks 不作为实时值/);
+  assert.doesNotMatch(tradingJs, /明细 Greeks 为带方向的单手口径/);
 });
 
 test("option Greeks use four decimals without showing expiry metadata", () => {
