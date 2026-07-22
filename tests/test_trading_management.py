@@ -2330,7 +2330,7 @@ def test_manual_rematch_supports_mixed_business_attribution(tmp_path, monkeypatc
     )
 
 
-def setup_batch_rematch_sample(tmp_path, monkeypatch):
+def setup_batch_rematch_sample(tmp_path, monkeypatch, include_extra_open=False):
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:
         account_id = conn.execute("SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures'").fetchone()["id"]
@@ -2373,6 +2373,8 @@ def setup_batch_rematch_sample(tmp_path, monkeypatch):
             ("20260625", 3095, [20]),
             ("20260603", 3171, [100]),
         ]
+        if include_extra_open:
+            open_specs.append(("20260620", 3200, [100]))
         for open_date, price, fragments in open_specs:
             ids = []
             for index, quantity in enumerate(fragments):
@@ -2560,6 +2562,32 @@ def test_batch_rematch_rejects_incomplete_close_column_and_stale_version(tmp_pat
         trading_management.preview_business_batch_rematch(
             sample["entry_close_id"], group["matrix"], stale_versions, "20260701", "20260731"
         )
+
+
+def test_batch_rematch_partial_close_keeps_unmatched_quantity_in_business_position(tmp_path, monkeypatch):
+    sample = setup_batch_rematch_sample(tmp_path, monkeypatch, include_extra_open=True)
+    group = trading_management.get_business_rematch_group(
+        sample["entry_close_id"], start_date="20260701", end_date="20260731"
+    )
+    targets = {open_id: dict(values) for open_id, values in group["matrix"].items()}
+    open_3091 = next(pool["id"] for pool in group["open_pools"] if pool["price"] == 3091)
+    open_3200 = next(pool["id"] for pool in group["open_pools"] if pool["price"] == 3200)
+    close_3082 = next(pool["id"] for pool in group["close_pools"] if pool["price"] == 3082)
+    targets[open_3091][close_3082] = 50
+    targets[open_3200] = {close_3082: 50}
+
+    preview = trading_management.preview_business_batch_rematch(
+        sample["entry_close_id"], targets, group["versions"], "20260701", "20260731"
+    )
+    confirmed = trading_management.confirm_business_batch_rematch(
+        sample["entry_close_id"], preview["preview_token"], group["versions"], actor="tester"
+    )
+
+    remaining = {item["price"]: item["remaining_quantity"] for item in preview["remaining_positions"]}
+    assert remaining[3091] == 50
+    assert remaining[3200] == 50
+    assert confirmed["matrix"][open_3091][close_3082] == 50
+    assert confirmed["matrix"][open_3200][close_3082] == 50
 
 
 def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp_path, monkeypatch):

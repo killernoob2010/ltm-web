@@ -3889,6 +3889,20 @@ def get_business_rematch_group(
             "trade_time": row["trade_time"], "quantity": quantity,
             "available_quantity": fragment_available, "price": float(row["price"]),
         })
+    current_group_open_ids = {
+        allocation["open_trade_identity_id"]
+        for allocation in allocation_rows
+        if allocation["close_identity_id"] in close_ids and matching_config(allocation)
+    }
+    open_pools = {
+        pool_id: pool for pool_id, pool in open_pools.items()
+        if pool["available_quantity"] > 1e-9
+        or any(fragment["identity_id"] in current_group_open_ids for fragment in pool["fragments"])
+    }
+    open_by_identity = {
+        fragment["identity_id"]: open_by_identity[fragment["identity_id"]]
+        for pool in open_pools.values() for fragment in pool["fragments"]
+    }
     close_pools: dict[str, dict[str, Any]] = {}
     close_by_identity = {}
     for row in close_rows:

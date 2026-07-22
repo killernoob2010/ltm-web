@@ -39,9 +39,24 @@ test("settlement import uses one txt file with automatic daily or monthly detect
 test("whole trades can be classified and business close relationships can be rematched", () => {
   assert.match(tradingJs, /归属设置在完整开仓成交；平仓和到期了结按开平分摊自动继承/);
   assert.match(tradingJs, /business-assignments\/batch-confirm/);
-  assert.match(tradingJs, /business-closes\/\$\{closeId\}\/preview/);
+  assert.match(tradingJs, /business-close-groups\/\$\{closeId\}/);
   assert.match(tradingJs, /restore-default/);
   assert.match(tradingJs, /事实层不变/);
+});
+
+test("junneng rematch uses the existing drawer for an open-by-close quantity matrix", () => {
+  assert.match(tradingJs, /data-rematch-id/);
+  assert.match(tradingJs, /tm-rematch-matrix/);
+  assert.match(tradingJs, /原始碎片/);
+  assert.match(tradingJs, /data-rematch-open/);
+  assert.match(tradingJs, /data-rematch-close/);
+  assert.match(tradingJs, /平仓列必须完整分配/);
+  assert.match(tradingJs, /事实平仓盈亏保持不变/);
+  assert.match(tradingJs, /确认批量调整/);
+  assert.match(tradingJs, /恢复本组默认关系/);
+  assert.match(css, /\.tm-drawer\.tm-rematch-wide/);
+  assert.match(css, /\.tm-rematch-matrix/);
+  assert.doesNotMatch(html, /开平关系模拟器/);
 });
 
 test("pending calculations and reserved export are visible in the first version", () => {

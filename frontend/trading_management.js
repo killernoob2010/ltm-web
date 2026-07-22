@@ -108,6 +108,7 @@
   function closeDrawer() {
     $("#tmDrawerBackdrop").classList.add("hidden");
     $("#tmDrawer").classList.remove("open");
+    $("#tmDrawer").classList.remove("tm-rematch-wide");
     $("#tmDrawer").setAttribute("aria-hidden", "true");
   }
 
@@ -676,14 +677,87 @@
     startBusinessQuoteRefresh();
   }
 
-  async function openRematch(closeId, version) {
-    const result = await api(`/api/trading-management/business-closes/${closeId}/candidates`);
-    openDrawer("调整业务开平关系", `平仓事实 ${closeId}`, `<p class="tm-section-copy">事实层不变；只调整业务层对应关系。</p><div class="tm-upload-grid">${result.items.map((item) => `<label class="tm-upload-box"><span>${esc(item.contract)} · ${esc(item.trade_date)} · ${num(item.price)}</span><small>可平 ${num(item.available_quantity)} 手 · ${esc(item.strategy || "未配置策略")}</small><input class="tm-rematch-quantity" data-id="${item.identity_id}" type="number" min="0" max="${item.available_quantity}" value="0"></label>`).join("")}<div id="tmRematchImpact" class="tm-import-progress">选择开仓记录和手数后预览影响。</div><label class="tm-upload-box"><span>调整原因</span><textarea id="tmRematchReason"></textarea></label><div class="tm-drawer-actions"><button id="tmRestoreDefault">恢复默认</button><button id="tmPreviewRematch" class="tm-primary-button">预览影响</button><button id="tmConfirmRematch" class="tm-primary-button hidden">确认调整</button></div></div>`);
+  async function openRematch(closeId) {
+    const query = new URLSearchParams();
+    if (tm.dateFrom) query.set("start_date",tm.dateFrom);
+    if (tm.dateTo) query.set("end_date",tm.dateTo);
+    let group = await api(`/api/trading-management/business-close-groups/${closeId}?${query}`);
+    $("#tmDrawer").classList.add("tm-rematch-wide");
+    const dateText = (value) => value && value.length === 8 ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value || "—";
+    const headers = group.close_pools.map((pool) => `<th><strong>${dateText(pool.close_date)}</strong><small>${num(pool.price)} 元 · 必须 ${num(pool.quantity)} 手</small></th>`).join("");
+    const rows = group.open_pools.map((open) => {
+      const cells = group.close_pools.map((close) => {
+        const current = group.matrix[open.id]?.[close.id] || 0;
+        const invalidDate = open.open_date > close.close_date;
+        return `<td><input class="tm-rematch-input" data-rematch-open="${esc(open.id)}" data-rematch-close="${esc(close.id)}" type="number" min="0" max="${open.available_quantity}" step="1" value="${current}" ${invalidDate ? "disabled" : ""} aria-label="${dateText(open.open_date)} ${num(open.price)}元分配至${dateText(close.close_date)} ${num(close.price)}元"></td>`;
+      }).join("");
+      return `<tr><td class="tm-rematch-open-cell"><strong>${dateText(open.open_date)} · ${num(open.price)} 元</strong><small>原始碎片 ${open.fragments.length} 笔 · 开仓 ${num(open.quantity)} 手 · 本组可用 ${num(open.available_quantity)} 手</small></td>${cells}<td><strong data-rematch-row-total="${esc(open.id)}">0 / ${num(open.available_quantity)} 手</strong></td></tr>`;
+    }).join("");
+    const foot = group.close_pools.map((pool) => `<td><strong data-rematch-column-total="${esc(pool.id)}">0 / ${num(pool.quantity)} 手</strong></td>`).join("");
+    openDrawer("调整业务开平关系", `${group.scope.contract.toUpperCase()} · ${group.scope.direction} · ${num(group.scope.quantity)} 手`, `
+      <div class="tm-rematch-scope"><div><span>业务归属</span><strong>${esc(group.scope.business_subject)}</strong></div><div><span>业务类型 / 策略</span><strong>${esc(businessType(group.scope.business_type))} / ${esc(group.scope.strategy || "未配置策略")}</strong></div><div><span>平仓范围</span><strong>${dateText(group.scope.start_date)} 至 ${dateText(group.scope.end_date)}</strong></div><div><span>本次数量</span><strong>${num(group.scope.quantity)} 手</strong></div></div>
+      <p class="tm-section-copy">事实层不变；只调整业务层对应关系。同日同价的成交自动聚合，确认后再准确拆回原始事实。</p>
+      <div class="tm-rematch-table-wrap"><table class="tm-rematch-matrix"><thead><tr><th>开仓数量池</th>${headers}<th>本行已平 / 可用</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td><strong>平仓列合计</strong><small>平仓列必须完整分配</small></td>${foot}<td>每列必须一致</td></tr></tfoot></table></div>
+      <div id="tmRematchValidation" class="tm-rematch-validation">正在校验数量…</div>
+      <div id="tmRematchImpact" class="tm-import-progress">数量对齐后点击“预览影响”，确认保存后主表会立即刷新。</div>
+      <label class="tm-upload-box"><span>调整原因</span><textarea id="tmRematchReason" placeholder="例如：修正实际平仓价格对应关系">修正业务开平对应关系</textarea></label>
+      <div class="tm-drawer-actions"><button id="tmRestoreDefault">恢复本组默认关系</button><button id="tmPreviewRematch" class="tm-primary-button">预览影响</button><button id="tmConfirmRematch" class="tm-primary-button hidden">确认批量调整</button></div>`);
+    $("#tmDrawer").classList.add("tm-rematch-wide");
     let preview = null;
-    const selections = () => [...document.querySelectorAll(".tm-rematch-quantity")].map((input) => ({open_trade_identity_id:Number(input.dataset.id),quantity:Number(input.value)})).filter((item) => item.quantity > 0);
-    $("#tmPreviewRematch").addEventListener("click", async () => { try { preview = await api(`/api/trading-management/business-closes/${closeId}/preview`,{method:"POST",body:JSON.stringify({allocation_version:version,selections:selections()})}); $("#tmRematchImpact").textContent = `业务盈亏从 ${num(preview.before_business_pnl)} 调整为 ${num(preview.after_business_pnl)}；事实盈亏不变。`; $("#tmConfirmRematch").classList.remove("hidden"); } catch (error) { showError(error); } });
-    $("#tmConfirmRematch").addEventListener("click", async () => { try { await api(`/api/trading-management/business-closes/${closeId}/confirm`,{method:"POST",body:JSON.stringify({preview_token:preview.preview_token,allocation_version:version,reason:$("#tmRematchReason").value.trim()})}); invalidateFactCache(); closeDrawer(); showToast("业务开平关系已更新"); await renderBusinessLedger(tm.view); } catch (error) { showError(error); } });
-    $("#tmRestoreDefault").addEventListener("click", async () => { try { await api(`/api/trading-management/business-closes/${closeId}/restore-default`,{method:"POST",body:JSON.stringify({allocation_version:version,reason:"恢复事实层默认开平关系"})}); invalidateFactCache(); closeDrawer(); showToast("已恢复默认关系"); await renderBusinessLedger(tm.view); } catch (error) { showError(error); } });
+    const targets = () => {
+      const result = {};
+      group.open_pools.forEach((pool) => { result[pool.id] = {}; });
+      document.querySelectorAll(".tm-rematch-input").forEach((input) => {
+        const quantity = Number(input.value || 0);
+        if (quantity > 0) result[input.dataset.rematchOpen][input.dataset.rematchClose] = quantity;
+      });
+      return result;
+    };
+    const updateTotals = () => {
+      let valid = true;
+      group.open_pools.forEach((pool) => {
+        const inputs = [...document.querySelectorAll(".tm-rematch-input")].filter((input) => input.dataset.rematchOpen === pool.id);
+        const total = inputs.reduce((sum,input)=>sum+Number(input.value||0),0);
+        const cell = document.querySelector(`[data-rematch-row-total="${CSS.escape(pool.id)}"]`);
+        cell.textContent = `${num(total)} / ${num(pool.available_quantity)} 手`;
+        cell.className = total <= Number(pool.available_quantity)+1e-9 ? "tm-total-ok" : "tm-total-error";
+        if (total > Number(pool.available_quantity)+1e-9) valid = false;
+      });
+      group.close_pools.forEach((pool) => {
+        const inputs = [...document.querySelectorAll(".tm-rematch-input")].filter((input) => input.dataset.rematchClose === pool.id);
+        const total = inputs.reduce((sum,input)=>sum+Number(input.value||0),0);
+        const cell = document.querySelector(`[data-rematch-column-total="${CSS.escape(pool.id)}"]`);
+        cell.textContent = `${num(total)} / ${num(pool.quantity)} 手`;
+        cell.className = Math.abs(total-Number(pool.quantity))<=1e-9 ? "tm-total-ok" : "tm-total-error";
+        if (Math.abs(total-Number(pool.quantity))>1e-9) valid = false;
+      });
+      $("#tmRematchValidation").className = `tm-rematch-validation ${valid ? "valid" : "invalid"}`;
+      $("#tmRematchValidation").textContent = valid ? "数量校验通过，可以预览影响。" : "数量尚未对齐：平仓列必须完整分配，开仓行不能超过本组可用手数。";
+      $("#tmPreviewRematch").disabled = !valid;
+      $("#tmConfirmRematch").classList.add("hidden");
+      preview = null;
+    };
+    document.querySelectorAll(".tm-rematch-input").forEach((input)=>input.addEventListener("input",updateTotals));
+    $("#tmPreviewRematch").addEventListener("click", async () => {
+      try {
+        preview = await api(`/api/trading-management/business-close-groups/${closeId}/preview`,{method:"POST",body:JSON.stringify({start_date:group.scope.start_date,end_date:group.scope.end_date,versions:group.versions,targets:targets()})});
+        $("#tmRematchImpact").innerHTML = `<strong>预览通过</strong><span>业务归属盈亏：${num(preview.before_business_pnl)} → ${num(preview.after_business_pnl)} 元；事实平仓盈亏保持不变：${num(preview.fact_pnl_before)} 元；调整后剩余持仓 ${preview.remaining_positions.length} 组。</span>`;
+        $("#tmConfirmRematch").classList.remove("hidden");
+      } catch (error) { showError(error); }
+    });
+    $("#tmConfirmRematch").addEventListener("click", async () => {
+      try {
+        await api(`/api/trading-management/business-close-groups/${closeId}/confirm`,{method:"POST",body:JSON.stringify({preview_token:preview.preview_token,versions:group.versions,reason:$("#tmRematchReason").value.trim()})});
+        invalidateFactCache(); closeDrawer(); showToast("批量业务开平关系已更新"); await renderBusinessLedger(tm.view);
+      } catch (error) { showError(error); }
+    });
+    $("#tmRestoreDefault").addEventListener("click", async () => {
+      try {
+        group = await api(`/api/trading-management/business-close-groups/${closeId}/restore-default`,{method:"POST",body:JSON.stringify({start_date:group.scope.start_date,end_date:group.scope.end_date,versions:group.versions,reason:"恢复事实层默认开平关系"})});
+        invalidateFactCache(); closeDrawer(); showToast("本组已恢复事实层默认关系"); await renderBusinessLedger(tm.view);
+      } catch (error) { showError(error); }
+    });
+    updateTotals();
   }
 
   function exportRow(title,note) {
