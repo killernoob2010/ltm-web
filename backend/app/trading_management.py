@@ -3822,6 +3822,34 @@ def get_business_rematch_group(
             """,
             (entry["account_id"], entry["contract"], entry["open_side"]),
         ).fetchall()]
+        fact_default_rows = [dict(row) for row in db._exec(
+            cur,
+            """
+            SELECT fa.close_identity_id, fa.open_trade_identity_id, fa.matched_quantity,
+                   tf.price AS open_price, cf.close_price,
+                   ba.business_subject_id, ba.business_type, ba.strategy_id
+            FROM trading_fact_close_allocations fa
+            JOIN trading_close_facts cf ON cf.identity_id = fa.close_identity_id
+            JOIN trading_import_batches cb ON cb.id = cf.batch_id AND cb.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            JOIN trading_trade_facts tf ON tf.identity_id = fa.open_trade_identity_id
+            JOIN trading_import_batches tb ON tb.id = tf.batch_id AND tb.status = 'active'
+            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = fa.open_trade_identity_id
+            WHERE fi.account_id = ? AND cf.contract = ? AND cf.open_side = ?
+              AND cf.close_date >= ? AND cf.close_date <= ?
+            """,
+            (entry["account_id"], entry["contract"], entry["open_side"], start_date, end_date),
+        ).fetchall()]
+        multiplier_row = db._exec(
+            cur,
+            """
+            SELECT contract_multiplier FROM trading_contract_specs
+            WHERE LOWER(exchange) = LOWER(?) AND LOWER(product_code) = ?
+              AND asset_type = ? AND is_active = 1
+            ORDER BY id LIMIT 1
+            """,
+            (entry["exchange"], _product_code(entry["contract"]), entry["asset_type"]),
+        ).fetchone()
         matching_config = lambda row: (
             row["business_subject_id"] == config["business_subject_id"]
             and row["business_type"] == config["business_type"]
@@ -3832,6 +3860,25 @@ def get_business_rematch_group(
             current = [item for item in allocation_rows if item["close_identity_id"] == row["identity_id"]]
             if current and all(matching_config(item) for item in current):
                 group_close_ids.add(row["identity_id"])
+                continue
+            defaults = [item for item in fact_default_rows if item["close_identity_id"] == row["identity_id"]]
+            if (
+                not current
+                and defaults
+                and all(matching_config(item) for item in defaults)
+                and abs(sum(float(item["matched_quantity"]) for item in defaults) - float(row["quantity"])) <= 1e-9
+            ):
+                group_close_ids.add(row["identity_id"])
+                for item in defaults:
+                    allocation_rows.append({
+                        **item,
+                        "source": "fact_default",
+                        "allocation_version": 0,
+                        "business_pnl": calculate_business_pnl(
+                            float(item["open_price"]), float(item["close_price"]), entry["open_side"],
+                            float(item["matched_quantity"]), float(multiplier_row["contract_multiplier"]) if multiplier_row else 0,
+                        ),
+                    })
         close_rows = [row for row in close_rows if row["identity_id"] in group_close_ids]
         close_ids = set(group_close_ids)
         if close_identity_id not in close_ids:

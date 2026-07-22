@@ -2492,6 +2492,41 @@ def test_batch_rematch_group_aggregates_fact_fragments_into_quantity_pools(tmp_p
     assert sum(sum(row.values()) for row in result["matrix"].values()) == 300
 
 
+def test_batch_rematch_group_includes_fact_default_closes_not_yet_materialized_in_business(tmp_path, monkeypatch):
+    sample = setup_batch_rematch_sample(tmp_path, monkeypatch)
+    missing_close_ids = [identity_id for identity_id, _ in sample["close_pools"][3101]]
+    with db.connect() as conn:
+        placeholders = ",".join("?" for _ in missing_close_ids)
+        conn.execute(
+            f"DELETE FROM trading_business_close_allocations WHERE close_identity_id IN ({placeholders})",
+            tuple(missing_close_ids),
+        )
+
+    result = trading_management.get_business_rematch_group(
+        sample["entry_close_id"], start_date="20260701", end_date="20260731"
+    )
+
+    assert result["scope"]["quantity"] == 300
+    close_3101 = next(pool["id"] for pool in result["close_pools"] if pool["price"] == 3101)
+    open_3171 = next(pool["id"] for pool in result["open_pools"] if pool["price"] == 3171)
+    assert result["matrix"][open_3171][close_3101] == 100
+    assert result["versions"][str(missing_close_ids[0])] == 0
+
+    preview = trading_management.preview_business_batch_rematch(
+        sample["entry_close_id"], result["matrix"], result["versions"], "20260701", "20260731"
+    )
+    confirmed = trading_management.confirm_business_batch_rematch(
+        sample["entry_close_id"], preview["preview_token"], result["versions"], actor="tester"
+    )
+    assert confirmed["scope"]["quantity"] == 300
+    with db.connect() as conn:
+        materialized = conn.execute(
+            "SELECT SUM(matched_quantity) AS quantity FROM trading_business_close_allocations WHERE close_identity_id = ?",
+            (missing_close_ids[0],),
+        ).fetchone()["quantity"]
+    assert materialized == 100
+
+
 def test_batch_rematch_atomically_swaps_two_close_pools_and_restores_default(tmp_path, monkeypatch):
     sample = setup_batch_rematch_sample(tmp_path, monkeypatch)
     group = trading_management.get_business_rematch_group(
