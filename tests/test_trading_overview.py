@@ -667,3 +667,5 @@ def test_business_position_query_preaggregates_allocations(tmp_path, monkeypatch
     )
     assert "WITH allocated_quantities AS" in position_sql
     assert "LEFT JOIN allocated_quantities" in position_sql
+    assert "SUM(tf.quantity - COALESCE" in position_sql
+    assert "GROUP BY b.account_id" in position_sql

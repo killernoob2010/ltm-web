@@ -492,7 +492,7 @@ def _business_position_groups(cur, filters: OverviewFilters) -> list[dict[str, A
             GROUP BY a.open_trade_identity_id
         )
         SELECT b.account_id, tf.contract, tf.side AS direction, tf.asset_type,
-               tf.quantity - COALESCE(aq.matched_quantity, 0)
+               SUM(tf.quantity - COALESCE(aq.matched_quantity, 0))
                    AS remaining_quantity
         FROM trading_trade_facts tf
         JOIN trading_import_batches b
@@ -505,6 +505,8 @@ def _business_position_groups(cur, filters: OverviewFilters) -> list[dict[str, A
           AND ba.business_type = ?
           AND (? = 0 OR b.account_id = ?)
           AND (? = '' OR tf.trade_date <= ?)
+        GROUP BY b.account_id, tf.contract, tf.side, tf.asset_type
+        HAVING SUM(tf.quantity - COALESCE(aq.matched_quantity, 0)) > 0
         ORDER BY b.account_id, tf.contract, tf.side, tf.asset_type
         """,
         (
@@ -512,25 +514,15 @@ def _business_position_groups(cur, filters: OverviewFilters) -> list[dict[str, A
             account_id, account_id, filters.end_date, filters.end_date,
         ),
     ).fetchall()
-    grouped: dict[tuple[Any, ...], float] = {}
-    for row in rows:
-        remaining = float(row["remaining_quantity"] or 0)
-        if remaining <= 1e-9:
-            continue
-        key = (
-            int(row["account_id"]), row["contract"], row["direction"],
-            row["asset_type"],
-        )
-        grouped[key] = grouped.get(key, 0.0) + remaining
     return [
         {
-            "account_id": key[0],
-            "contract": key[1],
-            "direction": key[2],
-            "asset_type": key[3],
-            "quantity": quantity,
+            "account_id": int(row["account_id"]),
+            "contract": row["contract"],
+            "direction": row["direction"],
+            "asset_type": row["asset_type"],
+            "quantity": float(row["remaining_quantity"] or 0),
         }
-        for key, quantity in grouped.items()
+        for row in rows
     ]
 
 
