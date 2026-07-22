@@ -436,10 +436,10 @@ def derive_business_status(record: Dict[str, Any]) -> Dict[str, str]:
         if due and due <= today:
             return {"business_status": "需展期确认", "risk_level": "高", "next_action": "确认是否延期融资"}
         if due and (due - today).days <= 7:
-            return {"business_status": "已放款待装船", "risk_level": "高", "next_action": "跟进船期和提单"}
+            return {"business_status": "已放款待集港", "risk_level": "高", "next_action": "跟进集港进度"}
         if due and (due - today).days <= 30:
-            return {"business_status": "已放款待装船", "risk_level": "中", "next_action": "跟进船期和提单"}
-        return {"business_status": "已放款待装船", "risk_level": "中", "next_action": "跟进船期和提单"}
+            return {"business_status": "已放款待集港", "risk_level": "中", "next_action": "跟进集港进度"}
+        return {"business_status": "已放款待集港", "risk_level": "中", "next_action": "跟进集港进度"}
     if not collection:
         return {"business_status": "已装船待回款", "risk_level": "中", "next_action": "跟进交单和回款"}
     return {"business_status": "已回款待结算", "risk_level": "低", "next_action": "确认结算"}
@@ -1859,7 +1859,9 @@ def _group_stage(rows: List[Dict[str, Any]]) -> str:
         return "已交单待回款"
     if _group_has_value(rows, "shipment_confirmed_date"):
         return "已装船待交单"
-    return "已放款待装船" if has_loan else "待放款"
+    if _group_has_value(rows, "port_confirmed_date"):
+        return "已集港待装船"
+    return "已放款待集港" if has_loan else "待放款"
 
 
 def _days_to(value: Any) -> Optional[int]:
@@ -1897,6 +1899,15 @@ def _group_indicator_risks(rows: List[Dict[str, Any]], stage: str) -> Dict[str, 
         risks["payment"] = (
             "高" if any(days is not None and days <= 0 for days in due_days) else "中"
         )
+        return risks
+    if stage == "已集港待装船":
+        shipment_days = [
+            _days_to(row.get("latest_shipment_date"))
+            for row in rows
+            if row.get("latest_shipment_date")
+        ]
+        valid_days = [days for days in shipment_days if days is not None]
+        risks["shipment"] = "高" if not valid_days or min(valid_days) <= 2 else "中"
         return risks
     shipment_completed = _group_shipment_completed(rows)
     warnings = [
@@ -1957,6 +1968,8 @@ def _group_weekly_focus_reasons(rows: List[Dict[str, Any]], stage: str, risk: st
         return []
     if stage == "已交单待回款":
         return ["high_risk"] if risk == "高" else []
+    if stage == "已集港待装船":
+        return ["high_risk"] if risk == "高" else []
     reasons = []
     if risk == "高":
         reasons.append("high_risk")
@@ -1997,6 +2010,8 @@ def _group_repayment_timing(rows: List[Dict[str, Any]]) -> str:
 
 
 def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str:
+    if stage == "已集港待装船":
+        return "确认装船状态或交单状态" if risk == "高" else "跟进装船并及时确认状态"
     manual = next((_normalize_text(row.get("next_action")) for row in rows if _normalize_text(row.get("next_action"))), "")
     if manual and manual != "无":
         return manual
@@ -2004,8 +2019,8 @@ def _group_next_action(rows: List[Dict[str, Any]], stage: str, risk: str) -> str
         return "已闭环，保留历史查询"
     if stage == "待放款":
         return "确认贷款行、金额和借款日期"
-    if stage == "已放款待装船":
-        return "优先联系工厂确认装船进度" if risk == "高" else "跟进工厂装船进度"
+    if stage == "已放款待集港":
+        return "优先联系工厂确认集港进度" if risk == "高" else "跟进集港进度"
     if stage == "已装船待交单":
         return "跟进交单并确认交单日"
     if stage == "已交单待回款":
@@ -2040,6 +2055,8 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     repay_dates = sorted([row.get("tail_payment_date") for row in rows if row.get("tail_payment_date")])
     shipment_confirmed_dates = sorted([row.get("shipment_confirmed_date") for row in rows if row.get("shipment_confirmed_date")])
     shipment_confirmed_at = sorted([row.get("shipment_confirmed_at") for row in rows if row.get("shipment_confirmed_at")])
+    port_confirmed_dates = sorted([row.get("port_confirmed_date") for row in rows if row.get("port_confirmed_date")])
+    port_confirmed_at = sorted([row.get("port_confirmed_at") for row in rows if row.get("port_confirmed_at")])
     follow_up_dates = sorted([row.get("next_follow_up_date") for row in rows if row.get("next_follow_up_date")])
     manager_note = next((_normalize_text(row.get("manager_note")) for row in rows if _normalize_text(row.get("manager_note"))), "")
     weekly_focus_reasons = _group_weekly_focus_reasons(rows, stage, risk)
@@ -2071,6 +2088,9 @@ def _build_progress_group(group_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "transferable": lc.get("transferable") or "",
         "receiving_bank": lc.get("receiving_bank") or "",
         "latest_shipment_date": latest_shipment_dates[0] if latest_shipment_dates else "",
+        "port_confirmed_date": port_confirmed_dates[-1] if port_confirmed_dates else "",
+        "port_confirmed_by": next((row.get("port_confirmed_by") for row in rows if row.get("port_confirmed_by")), ""),
+        "port_confirmed_at": port_confirmed_at[-1] if port_confirmed_at else "",
         "shipment_completed": _group_shipment_completed(rows),
         "shipment_basis": "document" if document_dates else "manual" if shipment_confirmed_dates else "",
         "shipment_confirmed_date": shipment_confirmed_dates[-1] if shipment_confirmed_dates else "",
@@ -2149,7 +2169,8 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
         "due_30d": len([item for item in open_contracts if (days := _days_to(item.get("payment_due_date"))) is not None and 0 <= days <= 30]),
         "focus_risk": len([item for item in open_contracts if item["is_weekly_focus"]]),
         "pending_drawdown": len([item for item in open_contracts if item["stage"] == "待放款"]),
-        "financed_unshipped": len([item for item in open_contracts if item["stage"] == "已放款待装船"]),
+        "financed_uncollected": len([item for item in open_contracts if item["stage"] == "已放款待集港"]),
+        "collected_unshipped": len([item for item in open_contracts if item["stage"] == "已集港待装船"]),
         "shipped_undocumented": len([item for item in open_contracts if item["stage"] == "已装船待交单"]),
         "documented_unpaid": len([item for item in open_contracts if item["stage"] == "已交单待回款"]),
         "paid_unclosed": len([item for item in open_contracts if item["stage"] == "已回款待结案"]),
