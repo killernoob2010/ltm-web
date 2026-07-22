@@ -2,14 +2,54 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from threading import Lock
 from typing import Any, Optional
+
+import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
 
 from . import db
 
 
 OVERVIEW_SCOPES = {"all", "basic_hedging", "strategic_hedging"}
+_overview_pool = None
+_overview_pool_url = None
+_overview_pool_lock = Lock()
+
+
+@contextmanager
+def _overview_connect():
+    global _overview_pool, _overview_pool_url
+    db_url = db.get_db_url()
+    if not db_url.startswith("postgres"):
+        with db.connect() as conn:
+            yield conn
+        return
+    with _overview_pool_lock:
+        if _overview_pool is None or _overview_pool_url != db_url:
+            if _overview_pool is not None:
+                _overview_pool.closeall()
+            _overview_pool = ThreadedConnectionPool(
+                1,
+                4,
+                db_url,
+                connect_timeout=30,
+                cursor_factory=psycopg2.extras.RealDictCursor,
+            )
+            _overview_pool_url = db_url
+    conn = _overview_pool.getconn()
+    close_connection = False
+    try:
+        yield conn
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            close_connection = True
+        _overview_pool.putconn(conn, close=close_connection or bool(conn.closed))
 
 
 @dataclass
@@ -37,7 +77,7 @@ class OverviewFilters:
 
 def latest_overview_date(account_id: Optional[int] = None) -> Optional[str]:
     account_filter = int(account_id or 0)
-    with db.connect() as conn:
+    with _overview_connect() as conn:
         row = db._exec(
             conn.cursor(),
             """
@@ -585,7 +625,7 @@ def _business_overview(cur, filters: OverviewFilters) -> dict[str, Any]:
 
 
 def build_trading_overview(filters: OverviewFilters) -> dict[str, Any]:
-    with db.connect() as conn:
+    with _overview_connect() as conn:
         cur = conn.cursor()
         if filters.scope == "all":
             return _fact_overview(cur, filters)

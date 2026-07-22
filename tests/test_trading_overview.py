@@ -12,6 +12,47 @@ def use_temp_db(tmp_path, monkeypatch):
     db.init_db()
 
 
+def test_overview_postgres_connections_are_returned_to_the_module_pool(monkeypatch):
+    class FakeConnection:
+        closed = 0
+
+        def __init__(self):
+            self.rollback_count = 0
+
+        def rollback(self):
+            self.rollback_count += 1
+
+    connection = FakeConnection()
+
+    class FakePool:
+        def __init__(self):
+            self.get_count = 0
+            self.returned = []
+
+        def getconn(self):
+            self.get_count += 1
+            return connection
+
+        def putconn(self, value, close=False):
+            self.returned.append((value, close))
+
+    fake_pool = FakePool()
+    monkeypatch.setattr(db, "get_db_url", lambda: "postgresql://staging")
+    monkeypatch.setattr(trading_overview, "_overview_pool", fake_pool)
+    monkeypatch.setattr(
+        trading_overview, "_overview_pool_url", "postgresql://staging"
+    )
+
+    with trading_overview._overview_connect() as first:
+        assert first is connection
+    with trading_overview._overview_connect() as second:
+        assert second is connection
+
+    assert fake_pool.get_count == 2
+    assert fake_pool.returned == [(connection, False), (connection, False)]
+    assert connection.rollback_count == 2
+
+
 @pytest.mark.parametrize(
     "kwargs,message",
     [
