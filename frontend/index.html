@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
     <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-finance-port-status-20260722" />
-    <link rel="stylesheet" href="/static/trading_management.css?v=20260712e" />
+    <link rel="stylesheet" href="/static/trading_management.css?v=20260722b" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
   <body>
@@ -351,7 +351,6 @@
             <div><h1 id="tmPageTitle">交易总览</h1><p id="tmPageSubtitle">全量文华交易的领导驾驶舱</p></div>
             <div class="tm-top-actions">
               <select id="tmAccountFilter" aria-label="账户"><option>全部账户</option></select>
-              <select id="tmDateFilter" aria-label="交易日期"><option value="latest">最新持仓日</option></select>
               <button id="tmDataInfoButton" class="tm-ghost-button" type="button">数据说明</button>
             </div>
           </header>
@@ -1309,9 +1308,10 @@
     </aside>
     <div id="tmToast" class="tm-toast hidden" role="status"></div>
 
-    <script src="/static/trading_management.js?v=20260712h"></script>
+    <script src="/static/trading_overview_state.js?v=20260722a"></script>
+    <script src="/static/trading_management.js?v=20260722c"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=inner-outer-rolling-20260722"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

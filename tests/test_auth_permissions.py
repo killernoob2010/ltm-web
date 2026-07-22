@@ -109,6 +109,23 @@ def test_trading_management_uses_existing_permission_levels():
     assert {admin[code] for code in trading_modules} == {"sensitive"}
 
 
+def test_retired_ledger_modules_are_hidden_and_receive_no_default_permissions():
+    retired = {"sh_junneng", "steel_export", "subsidiary_hedging", "option_trading"}
+    admin_modules = main.modules(user={"id": 1, "role": "管理员"})
+    visible_codes = {
+        item["code"]
+        for group in admin_modules
+        for item in group["items"]
+    }
+
+    assert not retired & visible_codes
+    assert "台账管理" not in {group["group"] for group in admin_modules}
+    assert retired.isdisjoint(permissions.ACTIVE_BUSINESS_MODULES)
+    for department, role in [("期货组", "用户"), ("管理部门", "管理员")]:
+        levels = permissions.default_permission_levels(department, role)
+        assert {levels[code] for code in retired} == {"none"}
+
+
 def test_order_finance_reminder_requires_edit_permission(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     guest = db.ensure_guest_user()
@@ -257,10 +274,10 @@ def test_department_and_leader_default_permission_levels():
     assert trade["info_summary"] == "operate"
     assert trade["data_visualization_chart"] == "operate"
     assert trade["order_finance_progress"] == "none"
-    assert futures["sh_junneng"] == "operate"
+    assert futures["sh_junneng"] == "none"
     assert finance["order_finance_progress"] == "operate"
     assert treasury["order_finance_capital"] == "operate"
-    assert management["sh_junneng"] == "operate"
+    assert management["sh_junneng"] == "none"
     assert management["user_management"] == "none"
     assert all(leader[code] == "view" for code in permissions.ACTIVE_BUSINESS_MODULES)
     assert leader["user_management"] == "none"

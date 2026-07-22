@@ -8,15 +8,54 @@ from backend.app.main import (
     cache_month_key,
     calculate_info_summary_payload,
     calculate_info_summary_all,
+    calculate_inner_outer_months,
     calculate_today_indicator,
     default_info_contracts,
     indicator_contracts_for_cache,
     info_summary_config,
+    realtime_dependencies_for_payload,
     value_from_cached_prices,
 )
 
 
 class InfoSummaryRulesTest(unittest.TestCase):
+    def test_inner_outer_dependencies_use_rolling_contract_years(self):
+        payload = InfoCalculateIn(
+            info_type="内外盘差",
+            year=2026,
+            calc_date="2026-12-22",
+        )
+
+        dependencies = realtime_dependencies_for_payload(payload)
+
+        self.assertIn(("price", "I", "2612"), dependencies)
+        self.assertIn(("price", "I", "2701"), dependencies)
+        self.assertIn(("price", "FE", "2704"), dependencies)
+        self.assertIn(("fx", "USD/CNH", "2704"), dependencies)
+        self.assertNotIn(("price", "I", "2601"), dependencies)
+
+    def test_inner_outer_calculation_keys_results_by_contract_year_and_month(self):
+        payload = InfoCalculateIn(
+            info_type="内外盘差2",
+            year=2026,
+            calc_date="2026-12-22",
+        )
+
+        def fake_calculate(monthly_payload, mock=False, quote_provider=None):
+            return {
+                "today_value": float(monthly_payload.month),
+                "contracts": {"I": f"I{str(monthly_payload.year)[-2:]}{monthly_payload.month}"},
+            }
+
+        with patch("backend.app.main.calculate_today_indicator", side_effect=fake_calculate):
+            result = calculate_inner_outer_months(payload)
+
+        self.assertEqual(
+            list(result["month_values"]),
+            ["2026-12", "2027-01", "2027-02", "2027-03", "2027-04"],
+        )
+        self.assertEqual(result["contracts"]["2027-01"]["I"], "I2701")
+
     def test_default_month_diff_matches_source_for_june(self):
         defaults = default_info_contracts(date(2026, 6, 23))
 
@@ -174,8 +213,20 @@ class InfoSummaryRulesTest(unittest.TestCase):
             "std_value": 3.0,
         }
         realtime = {
-            "month_values": {"05": None, "06": None, "07": None, "08": None, "09": 82.0},
-            "contracts": {"05": {}, "06": {}, "07": {}, "08": {}, "09": {"I": "I2609"}},
+            "month_values": {
+                "2026-07": None,
+                "2026-08": None,
+                "2026-09": 82.0,
+                "2026-10": None,
+                "2026-11": None,
+            },
+            "contracts": {
+                "2026-07": {},
+                "2026-08": {},
+                "2026-09": {"I": "I2609"},
+                "2026-10": {},
+                "2026-11": {},
+            },
         }
 
         with patch("backend.app.main.calculate_inner_outer_months", return_value=realtime), \
@@ -184,9 +235,9 @@ class InfoSummaryRulesTest(unittest.TestCase):
             result = calculate_info_summary_payload(payload, fill_missing_history=False)
 
         self.assertFalse(result["cache_hit"])
-        self.assertFalse(result["month_results"]["09"]["cache_hit"])
-        self.assertTrue(result["month_results"]["09"]["history_stale"])
-        self.assertEqual(result["month_results"]["09"]["history_calc_date"], "2026-06-11")
+        self.assertFalse(result["month_results"]["2026-09"]["cache_hit"])
+        self.assertTrue(result["month_results"]["2026-09"]["history_stale"])
+        self.assertEqual(result["month_results"]["2026-09"]["history_calc_date"], "2026-06-11")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,12 @@ TRADING_MANAGEMENT_TABLES = (
     "trading_business_assignments",
     "trading_business_close_allocations",
     "trading_business_allocation_audit",
+    "trading_statement_account_summaries",
+    "trading_statement_cash_movements",
+    "trading_statement_exercises",
+    "trading_option_event_underlying_links",
+    "trading_statement_position_summaries",
+    "trading_fact_source_differences",
 )
 
 MODULES = [
@@ -39,7 +45,7 @@ MODULES = [
     ("台账管理", "subsidiary_hedging", "子公司套保台账"),
     ("台账管理", "option_trading", "期权交易台账"),
     ("交易管理", "trading_overview", "总览"),
-    ("交易管理", "trading_positions", "持仓与交易"),
+    ("交易管理", "trading_positions", "持仓与交易明细"),
     ("交易管理", "trading_sh_junneng", "上海钧能台账"),
     ("交易管理", "trading_options", "期权台账"),
     ("交易管理", "trading_export", "汇总与导出"),
@@ -1407,6 +1413,92 @@ def migrate_iron_ore_basis_schema(conn) -> None:
     )
 
 
+def _ensure_trading_statement_columns(conn, cur) -> None:
+    statement_columns = {
+        "trading_accounts": [("statement_account_code", "TEXT")],
+        "trading_import_batches": [
+            ("statement_type", "TEXT"),
+            ("statement_file_name", "TEXT"),
+            ("statement_file_sha256", "TEXT"),
+            ("statement_account_code_masked", "TEXT"),
+            ("source_priority", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+        "trading_trade_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_close_facts": [
+            ("is_current", "INTEGER NOT NULL DEFAULT 1"),
+            ("settlement_type", "TEXT NOT NULL DEFAULT 'trade_close'"),
+            ("event_type_raw", "TEXT"),
+            ("exercise_price", "DOUBLE PRECISION"),
+            ("exercise_amount", "DOUBLE PRECISION"),
+            ("statement_event_pnl", "DOUBLE PRECISION"),
+            ("underlying_link_status", "TEXT"),
+        ],
+        "trading_position_snapshots": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_statement_exercises": [
+            ("identity_id", "INTEGER"),
+            ("source_row_id", "INTEGER"),
+            ("exchange", "TEXT"),
+            ("product", "TEXT"),
+            ("event_type_raw", "TEXT"),
+            ("exercise_amount", "DOUBLE PRECISION"),
+            ("is_current", "INTEGER NOT NULL DEFAULT 1"),
+        ],
+    }
+    if _is_pg():
+        for table, columns in statement_columns.items():
+            for name, definition in columns:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {definition}")
+    else:
+        for table, columns in statement_columns.items():
+            existing = {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, definition in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trading_option_event_underlying_links (
+            id SERIAL PRIMARY KEY,
+            event_identity_id INTEGER NOT NULL,
+            underlying_trade_identity_id INTEGER NOT NULL,
+            matched_quantity DOUBLE PRECISION NOT NULL,
+            rule_version TEXT NOT NULL,
+            UNIQUE(event_identity_id, underlying_trade_identity_id),
+            FOREIGN KEY (event_identity_id) REFERENCES trading_fact_identities(id),
+            FOREIGN KEY (underlying_trade_identity_id) REFERENCES trading_fact_identities(id)
+        )
+        """
+        if _is_pg()
+        else """
+        CREATE TABLE IF NOT EXISTS trading_option_event_underlying_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_identity_id INTEGER NOT NULL,
+            underlying_trade_identity_id INTEGER NOT NULL,
+            matched_quantity REAL NOT NULL,
+            rule_version TEXT NOT NULL,
+            UNIQUE(event_identity_id, underlying_trade_identity_id),
+            FOREIGN KEY (event_identity_id) REFERENCES trading_fact_identities(id),
+            FOREIGN KEY (underlying_trade_identity_id) REFERENCES trading_fact_identities(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        UPDATE trading_close_facts
+        SET settlement_type = 'trade_close'
+        WHERE settlement_type IS NULL OR settlement_type = ''
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash
+        ON trading_import_batches(account_id, statement_file_sha256)
+        """
+    )
+
+
 def migrate_trading_management_schema(conn) -> None:
     """Create isolated trading-management tables without touching legacy ledgers."""
     cur = conn.cursor()
@@ -1425,6 +1517,7 @@ def migrate_trading_management_schema(conn) -> None:
                 account_code TEXT NOT NULL UNIQUE,
                 display_name TEXT NOT NULL,
                 masked_name TEXT NOT NULL DEFAULT '',
+                statement_account_code TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -1441,6 +1534,8 @@ def migrate_trading_management_schema(conn) -> None:
                 trade_count INTEGER NOT NULL DEFAULT 0,
                 close_count INTEGER NOT NULL DEFAULT 0,
                 position_count INTEGER NOT NULL DEFAULT 0,
+                statement_type TEXT, statement_file_name TEXT, statement_file_sha256 TEXT,
+                statement_account_code_masked TEXT, source_priority INTEGER NOT NULL DEFAULT 0,
                 parse_summary TEXT,
                 supersedes_batch_id INTEGER,
                 created_by TEXT, confirmed_by TEXT,
@@ -1481,6 +1576,7 @@ def migrate_trading_management_schema(conn) -> None:
                 quantity DOUBLE PRECISION NOT NULL, price DOUBLE PRECISION NOT NULL,
                 turnover DOUBLE PRECISION, fee DOUBLE PRECISION,
                 hedge_flag TEXT, premium_cashflow DOUBLE PRECISION,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
                 FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
@@ -1499,6 +1595,13 @@ def migrate_trading_management_schema(conn) -> None:
                 open_price DOUBLE PRECISION NOT NULL, close_price DOUBLE PRECISION NOT NULL,
                 fact_close_pnl DOUBLE PRECISION NOT NULL,
                 matched_fee DOUBLE PRECISION,
+                settlement_type TEXT NOT NULL DEFAULT 'trade_close',
+                event_type_raw TEXT,
+                exercise_price DOUBLE PRECISION,
+                exercise_amount DOUBLE PRECISION,
+                statement_event_pnl DOUBLE PRECISION,
+                underlying_link_status TEXT,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 fee_status TEXT NOT NULL DEFAULT 'pending_match',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1517,6 +1620,7 @@ def migrate_trading_management_schema(conn) -> None:
                 quantity DOUBLE PRECISION NOT NULL, average_price DOUBLE PRECISION NOT NULL,
                 margin DOUBLE PRECISION,
                 valuation_price DOUBLE PRECISION, floating_pnl DOUBLE PRECISION,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 market_time TEXT, valuation_status TEXT NOT NULL DEFAULT 'pending_calculation',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1616,6 +1720,52 @@ def migrate_trading_management_schema(conn) -> None:
                 operated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id)
             );
+            CREATE TABLE IF NOT EXISTS trading_statement_account_summaries (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL UNIQUE,
+                summary_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_cash_movements (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL, source_row_no INTEGER NOT NULL,
+                movement_date TEXT, movement_type TEXT, deposit DOUBLE PRECISION,
+                withdrawal DOUBLE PRECISION, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_exercises (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL, source_row_no INTEGER NOT NULL,
+                identity_id INTEGER, source_row_id INTEGER, exchange TEXT, product TEXT,
+                event_date TEXT NOT NULL, contract TEXT NOT NULL, event_type TEXT NOT NULL,
+                event_type_raw TEXT, side TEXT, quantity DOUBLE PRECISION,
+                exercise_price DOUBLE PRECISION, exercise_amount DOUBLE PRECISION,
+                exercise_pnl DOUBLE PRECISION, fee DOUBLE PRECISION,
+                is_current INTEGER NOT NULL DEFAULT 1, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_option_event_underlying_links (
+                id SERIAL PRIMARY KEY,
+                event_identity_id INTEGER NOT NULL,
+                underlying_trade_identity_id INTEGER NOT NULL,
+                matched_quantity DOUBLE PRECISION NOT NULL,
+                rule_version TEXT NOT NULL,
+                UNIQUE(event_identity_id, underlying_trade_identity_id),
+                FOREIGN KEY (event_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (underlying_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_position_summaries (
+                id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL, source_row_no INTEGER NOT NULL,
+                contract TEXT NOT NULL, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_source_differences (
+                id SERIAL PRIMARY KEY, identity_id INTEGER NOT NULL, fact_type TEXT NOT NULL,
+                old_batch_id INTEGER, new_batch_id INTEGER NOT NULL, diff_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (old_batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (new_batch_id) REFERENCES trading_import_batches(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
             CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
@@ -1631,7 +1781,8 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE TABLE IF NOT EXISTS trading_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_code TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
-                masked_name TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 1,
+                masked_name TEXT NOT NULL DEFAULT '', statement_account_code TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS trading_import_batches (
@@ -1641,7 +1792,10 @@ def migrate_trading_management_schema(conn) -> None:
                 trade_file_name TEXT, close_file_name TEXT, position_file_name TEXT,
                 trade_file_sha256 TEXT, close_file_sha256 TEXT, position_file_sha256 TEXT,
                 trade_count INTEGER NOT NULL DEFAULT 0, close_count INTEGER NOT NULL DEFAULT 0,
-                position_count INTEGER NOT NULL DEFAULT 0, parse_summary TEXT,
+                position_count INTEGER NOT NULL DEFAULT 0,
+                statement_type TEXT, statement_file_name TEXT, statement_file_sha256 TEXT,
+                statement_account_code_masked TEXT, source_priority INTEGER NOT NULL DEFAULT 0,
+                parse_summary TEXT,
                 supersedes_batch_id INTEGER, created_by TEXT, confirmed_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT,
                 FOREIGN KEY (account_id) REFERENCES trading_accounts(id),
@@ -1669,6 +1823,7 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, side TEXT NOT NULL, open_close_raw TEXT,
                 open_close TEXT NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL,
                 turnover REAL, fee REAL, hedge_flag TEXT, premium_cashflow REAL,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
                 FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
@@ -1682,6 +1837,10 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, open_side TEXT NOT NULL, close_side TEXT NOT NULL,
                 quantity REAL NOT NULL, open_price REAL NOT NULL, close_price REAL NOT NULL,
                 fact_close_pnl REAL NOT NULL, matched_fee REAL,
+                settlement_type TEXT NOT NULL DEFAULT 'trade_close',
+                event_type_raw TEXT, exercise_price REAL, exercise_amount REAL,
+                statement_event_pnl REAL, underlying_link_status TEXT,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 fee_status TEXT NOT NULL DEFAULT 'pending_match',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1696,6 +1855,7 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, direction TEXT NOT NULL, open_date TEXT,
                 quantity REAL NOT NULL, average_price REAL NOT NULL, margin REAL,
                 valuation_price REAL, floating_pnl REAL, market_time TEXT,
+                is_current INTEGER NOT NULL DEFAULT 1,
                 valuation_status TEXT NOT NULL DEFAULT 'pending_calculation',
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -1770,6 +1930,53 @@ def migrate_trading_management_schema(conn) -> None:
                 operated_by TEXT NOT NULL, operated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (close_identity_id) REFERENCES trading_fact_identities(id)
             );
+            CREATE TABLE IF NOT EXISTS trading_statement_account_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL UNIQUE,
+                summary_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_cash_movements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                source_row_no INTEGER NOT NULL, movement_date TEXT, movement_type TEXT,
+                deposit REAL, withdrawal REAL, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_exercises (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                source_row_no INTEGER NOT NULL, identity_id INTEGER, source_row_id INTEGER,
+                exchange TEXT, product TEXT, event_date TEXT NOT NULL,
+                contract TEXT NOT NULL, event_type TEXT NOT NULL, side TEXT,
+                event_type_raw TEXT, quantity REAL, exercise_price REAL,
+                exercise_amount REAL, exercise_pnl REAL, fee REAL,
+                is_current INTEGER NOT NULL DEFAULT 1,
+                raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (source_row_id) REFERENCES trading_source_rows(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_option_event_underlying_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_identity_id INTEGER NOT NULL,
+                underlying_trade_identity_id INTEGER NOT NULL,
+                matched_quantity REAL NOT NULL,
+                rule_version TEXT NOT NULL,
+                UNIQUE(event_identity_id, underlying_trade_identity_id),
+                FOREIGN KEY (event_identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (underlying_trade_identity_id) REFERENCES trading_fact_identities(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_statement_position_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                source_row_no INTEGER NOT NULL, contract TEXT NOT NULL, raw_json TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES trading_import_batches(id)
+            );
+            CREATE TABLE IF NOT EXISTS trading_fact_source_differences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, identity_id INTEGER NOT NULL,
+                fact_type TEXT NOT NULL, old_batch_id INTEGER, new_batch_id INTEGER NOT NULL,
+                diff_json TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (identity_id) REFERENCES trading_fact_identities(id),
+                FOREIGN KEY (old_batch_id) REFERENCES trading_import_batches(id),
+                FOREIGN KEY (new_batch_id) REFERENCES trading_import_batches(id)
+            );
             CREATE INDEX IF NOT EXISTS idx_trading_batches_account_range ON trading_import_batches(account_id, range_start, range_end, status);
             CREATE INDEX IF NOT EXISTS idx_trading_trades_batch_date_contract ON trading_trade_facts(batch_id, trade_date, contract);
             CREATE INDEX IF NOT EXISTS idx_trading_closes_batch_date_contract ON trading_close_facts(batch_id, close_date, contract);
@@ -1778,6 +1985,20 @@ def migrate_trading_management_schema(conn) -> None:
             CREATE INDEX IF NOT EXISTS idx_trading_business_open ON trading_business_close_allocations(open_trade_identity_id);
             """
         )
+    _ensure_trading_statement_columns(conn, cur)
+
+    for table in ("trading_trade_facts", "trading_close_facts", "trading_position_snapshots"):
+        _exec(
+            cur,
+            f"""
+            UPDATE {table}
+            SET is_current = CASE WHEN EXISTS (
+                SELECT 1 FROM trading_import_batches b
+                WHERE b.id = {table}.batch_id AND b.status = 'active'
+            ) THEN 1 ELSE 0 END
+            """,
+        )
+
     reference_accounts = [("hongyuan_futures", "宏源期货账户", "宏源期货")]
     reference_subjects = [
         "东北组", "山东组", "天津组", "唐山组", "大客户组", "南方组", "黄骅组", "期货组",
@@ -1791,10 +2012,13 @@ def migrate_trading_management_schema(conn) -> None:
     ]
     reference_specs = [
         ("上期所", "rb", "future", 10, 1),
+        ("上期所", "rb", "option", 10, None),
         ("上期所", "hc", "future", 10, 1),
         ("大商所", "i", "future", 100, 0.5),
         ("大商所", "i", "option", 100, 0.1),
         ("大商所", "j", "future", 100, 0.5),
+        ("大商所", "jm", "future", 60, None),
+        ("大商所", "jm", "option", 60, None),
     ]
     for account_code, display_name, masked_name in reference_accounts:
         if not _exec(cur, "SELECT id FROM trading_accounts WHERE account_code = ?", (account_code,)).fetchone():

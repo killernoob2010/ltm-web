@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const tradingJs = readFileSync(new URL("../frontend/trading_management.js", import.meta.url), "utf8");
+const overviewStateJs = readFileSync(new URL("../frontend/trading_overview_state.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/trading_management.css", import.meta.url), "utf8");
 
@@ -19,19 +20,24 @@ test("trading management is a separate first-level module with five page modes",
   assert.match(html, /id="tmExportView"/);
 });
 
-test("three-table import requires trade close and position files with preview confirmation", () => {
-  assert.match(tradingJs, /id="tmTradeFile"/);
-  assert.match(tradingJs, /id="tmCloseFile"/);
-  assert.match(tradingJs, /id="tmPositionFile"/);
-  assert.match(tradingJs, /成交、平仓、持仓三表必须齐全/);
+test("settlement import uses one txt file with automatic daily or monthly detection", () => {
+  assert.match(tradingJs, /id="tmStatementFile"/);
+  assert.doesNotMatch(tradingJs, /id="tmTradeFile"/);
+  assert.match(tradingJs, /accept="\.txt"/);
+  assert.match(tradingJs, /系统自动识别日结单或月结单/);
+  assert.match(tradingJs, /statement_file/);
   assert.match(tradingJs, /\/imports\/preview/);
   assert.match(tradingJs, /\/confirm/);
-  assert.match(tradingJs, /正在预检三表，请稍候/);
-  assert.match(tradingJs, /正在覆盖导入并建立事实匹配，请勿关闭窗口/);
+  assert.match(tradingJs, /正在解析并预检结算单，请稍候/);
+  assert.match(tradingJs, /function pollImportJob/);
+  assert.match(tradingJs, /\/imports\/jobs\//);
+  assert.match(tradingJs, /写入并切换事实/);
+  assert.match(tradingJs, /建立开平匹配/);
+  assert.match(tradingJs, /重建业务分摊/);
 });
 
 test("whole trades can be classified and business close relationships can be rematched", () => {
-  assert.match(tradingJs, /一笔成交按完整手数归属，不允许拆分/);
+  assert.match(tradingJs, /归属设置在完整开仓成交；平仓和到期了结按开平分摊自动继承/);
   assert.match(tradingJs, /business-assignments\/batch-confirm/);
   assert.match(tradingJs, /business-closes\/\$\{closeId\}\/preview/);
   assert.match(tradingJs, /restore-default/);
@@ -58,19 +64,32 @@ test("all three ledgers use the approved prototype tab order", () => {
   assert.doesNotMatch(tradingJs, /业务持仓[\s\S]*业务成交[\s\S]*业务平仓/);
 });
 
+test("option lifecycle events reuse close records with one type column", () => {
+  assert.match(tradingJs, /\["settlement_type","了结类型"\]/);
+  assert.match(tradingJs, /trade_close:\s*"普通平仓"/);
+  assert.match(tradingJs, /exercise:\s*"行权"/);
+  assert.match(tradingJs, /assignment:\s*"履约"/);
+  assert.match(tradingJs, /expiry_abandon:\s*"到期放弃"/);
+  assert.match(tradingJs, /成交平仓手数/);
+  assert.doesNotMatch(tradingJs, /行权与到期.*tm-tab-button/);
+});
+
 test("prototype sections replace the simplified placeholder layout", () => {
   assert.match(tradingJs, /逐日平仓盈亏趋势/);
   assert.match(tradingJs, /数据质量/);
-  assert.match(tradingJs, /业务归属分布/);
+  assert.match(tradingJs, /统计口径/);
   assert.match(tradingJs, /统一输出/);
   assert.doesNotMatch(html, /class="trading-metric-grid"/);
 });
 
 test("option positions preserve the prototype anatomy and risk columns", () => {
   assert.match(tradingJs, /function optionAnatomy/);
-  for (const label of ["标的", "看涨\/看跌", "行权价", "Delta", "Gamma", "Theta", "Vega"]) {
+  for (const label of ["看涨\/看跌", "行权价", "Delta", "Gamma", "Theta", "Vega"]) {
     assert.match(tradingJs, new RegExp(label));
   }
+  assert.doesNotMatch(tradingJs, /<th>标的<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>标的价格<\/th>/);
+  assert.doesNotMatch(tradingJs, /德尔塔|伽马|西塔|维伽/);
 });
 
 test("fact tabs cache by filters without prefetching sibling tabs", () => {
@@ -104,16 +123,16 @@ test("business ledgers keep only the summary rows beside tabs and filters", () =
   assert.doesNotMatch(tradingJs, /tm-ledger-hero/);
   assert.doesNotMatch(tradingJs, /tm-ledger-summary-primary/);
   assert.doesNotMatch(tradingJs, /tm-ledger-summary-risk/);
-  assert.match(tradingJs, /businessFilterSummary\(data\.summary,tab\)/);
-  assert.match(tradingJs, /\["浮动盈亏","待计算"\]/);
+  assert.match(tradingJs, /businessFilterSummary\(data\.summary,view,tab\)/);
+  assert.match(tradingJs, /\["浮动盈亏",summary\.floating_pnl\]/);
 });
 
 test("overview chart renders real daily close pnl instead of a fixed placeholder", () => {
   assert.match(tradingJs, /function dailyPnlChart/);
-  assert.match(tradingJs, /data\.daily_close_pnl/);
-  assert.match(tradingJs, /row\.fact_close_pnl/);
+  assert.match(tradingJs, /data\.daily_pnl/);
+  assert.match(tradingJs, /row\.value/);
   assert.doesNotMatch(tradingJs, /52,125 190,125 328,125/);
-  assert.match(tradingJs, /暂无平仓盈亏数据/);
+  assert.match(tradingJs, /当前范围暂无盈亏数据/);
 });
 
 test("prototype assignment status and business pagination are functional contracts", () => {
@@ -135,6 +154,119 @@ test("overview uses one compact row for the three secondary cards and real perio
   assert.match(tradingJs + css, /tm-overview-mini-grid/);
   assert.match(css, /grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
   assert.match(tradingJs, /data-overview-period/);
+  assert.match(tradingJs, /data-overview-business/);
+  for (const label of ["全部", "基础套保", "战略套保"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  assert.match(tradingJs + overviewStateJs, /scope/);
   assert.match(tradingJs, /tmOverviewFrom/);
   assert.match(tradingJs, /tmOverviewTo/);
+});
+
+test("overview uses explicit controls and removes the decorative top date filter", () => {
+  assert.doesNotMatch(html, /id="tmDateFilter"/);
+  assert.match(tradingJs, /id="tmOverviewDay"/);
+  assert.match(tradingJs, /id="tmOverviewMonth"/);
+  assert.match(tradingJs, /id="tmOverviewYear"/);
+  assert.match(tradingJs, /id="tmOverviewQuarter"/);
+  assert.match(tradingJs, /overviewAppliedFilters/);
+  assert.match(tradingJs + css, /tm-overview-loading/);
+  assert.match(tradingJs, /tmAccountFilter.*classList\.toggle\("hidden", view !== "overview"\)/);
+  assert.match(html, /trading_overview_state\.js/);
+});
+
+test("overview labels fact and business pnl without showing both at once", () => {
+  for (const label of [
+    "事实口径", "业务口径", "期间事实盈亏", "期间业务归属盈亏",
+    "逐日事实盈亏趋势", "逐日业务归属盈亏趋势",
+  ]) assert.match(tradingJs, new RegExp(label));
+  assert.match(tradingJs, /data\.pnl\.metric/);
+  assert.doesNotMatch(tradingJs, /data\.closes\.fact_close_pnl/);
+  assert.match(tradingJs, /平仓事实/);
+  assert.match(tradingJs, /close_record_count/);
+});
+
+test("fact detail entry is renamed without changing its module code", () => {
+  assert.match(tradingJs, /trading_positions:\s*\["持仓与交易明细"/);
+  assert.match(tradingJs, /查询和核验全部成交、平仓及持仓事实/);
+  assert.match(appJs, /trading_positions/);
+});
+
+test("business ledgers are classified archives without candidate controls", () => {
+  assert.doesNotMatch(tradingJs, /businessClassification/);
+  assert.doesNotMatch(tradingJs, /默认展示全部 RB\/HC 候选/);
+  assert.doesNotMatch(tradingJs, /id="\$\{view\}Classification"/);
+});
+
+test("Shanghai Junneng shows live positions and the five settlement metrics", () => {
+  for (const label of ["最新价", "行情时间", "浮动盈亏", "估值状态"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  for (const label of ["平仓盈亏（含手续费）", "资金利息", "80%结算金额", "20%结算金额", "手续费"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  assert.doesNotMatch(tradingJs, /\["settlement_rule_version","规则版本"\]/);
+  assert.doesNotMatch(tradingJs, /结算规则：\$\{/);
+  assert.match(tradingJs, /latest_junneng_close_date/);
+  assert.match(tradingJs, /monthRangeForDate/);
+  assert.match(tradingJs, /businessDates:\s*\{\s*junneng:/);
+});
+
+test("option positions show valuation results without internal source or status columns", () => {
+  for (const label of ["估值价", "IV", "浮动盈亏", "Delta", "Gamma", "Theta", "Vega"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  for (const field of ["row.delta", "row.gamma", "row.theta", "row.vega"]) {
+    assert.match(tradingJs, new RegExp(field));
+  }
+  assert.doesNotMatch(tradingJs, /<th>[^<]*敞口<\/th>/);
+  for (const greek of ["Delta", "Gamma", "Theta", "Vega"]) {
+    assert.match(tradingJs, new RegExp(`<th>${greek}<\\/th>`));
+  }
+  assert.doesNotMatch(tradingJs, /<th>估值来源<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>估值状态<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>到期日<\/th>/);
+  assert.doesNotMatch(tradingJs, /<th>估值日<\/th>/);
+  assert.doesNotMatch(tradingJs, /row\.underlying_symbol/);
+  assert.doesNotMatch(tradingJs, /row\.underlying_price/);
+  assert.doesNotMatch(tradingJs, /row\.expiry_date/);
+  assert.doesNotMatch(tradingJs, /row\.valuation_date/);
+  assert.match(tradingJs, /colspan="13"/);
+  assert.match(tradingJs, /Number\(row\.iv\) \* 100/);
+  assert.doesNotMatch(tradingJs, /风险指标<\/span><strong>待计算/);
+  assert.doesNotMatch(tradingJs, /仅展示已完成业务归属的数据；页面每15秒刷新/);
+  assert.doesNotMatch(tradingJs, /IV 与 Greeks 不作为实时值/);
+  assert.doesNotMatch(tradingJs, /明细 Greeks 为带方向的单手口径/);
+});
+
+test("option Greeks use four decimals without showing expiry metadata", () => {
+  assert.match(
+    tradingJs,
+    /minimumFractionDigits:\s*4,\s*maximumFractionDigits:\s*4/,
+  );
+  assert.doesNotMatch(tradingJs, /（已到期）/);
+});
+
+test("option quote refresh shows last update time and whether values changed", () => {
+  assert.match(tradingJs, /quoteRefreshState/);
+  assert.match(tradingJs, /上次更新时间/);
+  assert.match(tradingJs, /更新状态/);
+  assert.match(tradingJs, /数据已更新/);
+  assert.match(tradingJs, /已检查，行情无变化/);
+  assert.match(tradingJs, /更新失败/);
+  assert.match(tradingJs, /row\.valuation_status\s*\|\|\s*row\.market_data_status/);
+  assert.match(tradingJs, /renderBusinessLedger\(tm\.view,\s*"timer"\)/);
+});
+
+test("visible business position pages refresh quotes every fifteen seconds", () => {
+  assert.match(tradingJs, /BUSINESS_QUOTE_REFRESH_MS\s*=\s*15000/);
+  assert.match(tradingJs, /document\.visibilityState\s*===\s*"visible"/);
+  assert.match(tradingJs, /tm\[tabKey\]\s*!==\s*"positions"/);
+  assert.match(tradingJs, /window\.setInterval/);
+  assert.match(tradingJs, /stopBusinessQuoteRefresh/);
+  assert.match(tradingJs, /businessQuoteRefreshInFlight/);
+  assert.match(tradingJs, /tradingManagementPage"\)\.classList\.contains\("hidden"\)/);
+  assert.match(tradingJs, /deactivate\(\)/);
+  assert.match(tradingJs, /MutationObserver/);
+  assert.match(tradingJs, /tradingManagementPage/);
 });

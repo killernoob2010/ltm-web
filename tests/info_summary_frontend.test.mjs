@@ -5,6 +5,44 @@ import { test } from "node:test";
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 
+function loadInnerOuterContractMonths() {
+  const start = appJs.indexOf("function innerOuterContractMonths(");
+  assert.notEqual(start, -1, "rolling inner/outer month helper should exist");
+  const end = appJs.indexOf("\nfunction ", start + 1);
+  const source = appJs.slice(start, end);
+  return Function(`${source}; return innerOuterContractMonths;`)();
+}
+
+test("inner outer cards roll five months forward from the selected month", () => {
+  const innerOuterContractMonths = loadInnerOuterContractMonths();
+
+  assert.deepEqual(innerOuterContractMonths(2026, "2026-07-22"), [
+    { year: 2026, month: "07", key: "2026-07" },
+    { year: 2026, month: "08", key: "2026-08" },
+    { year: 2026, month: "09", key: "2026-09" },
+    { year: 2026, month: "10", key: "2026-10" },
+    { year: 2026, month: "11", key: "2026-11" },
+  ]);
+});
+
+test("inner outer cards roll January contracts into the next year", () => {
+  const innerOuterContractMonths = loadInnerOuterContractMonths();
+
+  assert.deepEqual(innerOuterContractMonths(2026, "2026-12-22"), [
+    { year: 2026, month: "12", key: "2026-12" },
+    { year: 2027, month: "01", key: "2027-01" },
+    { year: 2027, month: "02", key: "2027-02" },
+    { year: 2027, month: "03", key: "2027-03" },
+    { year: 2027, month: "04", key: "2027-04" },
+  ]);
+});
+
+test("inner outer cards rerender rolling labels after date or year changes", () => {
+  assert.match(appJs, /data-contract-month="\$\{item\.key\}"/);
+  assert.match(appJs, /dateInput\.addEventListener\("change", renderRollingMonths\)/);
+  assert.match(appJs, /year\.addEventListener\("change", renderRollingMonths\)/);
+});
+
 test("swap month diff uses month-diff controls", () => {
   assert.match(appJs, /type === "月差" \|\| type === "掉期月差"/);
 });

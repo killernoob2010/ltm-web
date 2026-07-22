@@ -41,8 +41,13 @@ ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.st
 
 DEPARTMENTS = ("贸易处", "期货组", "财企处", "资金处", "管理部门", "公司领导")
 USER_ROLES = ("用户", "领导", "管理员")
-ACTIVE_BUSINESS_MODULES = {
+RETIRED_MODULE_CODES = {
     "sh_junneng",
+    "steel_export",
+    "subsidiary_hedging",
+    "option_trading",
+}
+ACTIVE_BUSINESS_MODULES = {
     "info_summary",
     "risk_alert",
     "mid_event_monitor",
@@ -63,7 +68,7 @@ DEPARTMENT_MODULES = {
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
     },
     "期货组": {
-        "sh_junneng", "info_summary", "risk_alert", "mid_event_monitor",
+        "info_summary", "risk_alert", "mid_event_monitor",
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
         "trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export",
     },
@@ -82,7 +87,10 @@ DEPARTMENT_MODULES = {
 def default_permission_levels(department: str, role: str) -> dict[str, str]:
     levels = {code: "none" for _, code, _ in db.MODULES}
     if role == "管理员":
-        return {code: "sensitive" for _, code, _ in db.MODULES}
+        return {
+            code: "none" if code in RETIRED_MODULE_CODES else "sensitive"
+            for _, code, _ in db.MODULES
+        }
     if role == "领导":
         for code in ACTIVE_BUSINESS_MODULES:
             levels[code] = "view"
@@ -118,6 +126,9 @@ def _module_permission(user: dict, module_code: str) -> Optional[dict]:
 def can(user: dict, resource: str, action: str, context: Optional[dict] = None) -> bool:
     if not user:
         return False
+    module_code = RESOURCE_MODULES.get(resource, resource)
+    if module_code in RETIRED_MODULE_CODES and action not in VIEW_ACTIONS:
+        return False
     if is_admin(user):
         return True
     if is_guest(user):
@@ -125,7 +136,6 @@ def can(user: dict, resource: str, action: str, context: Optional[dict] = None) 
     if resource in ADMIN_ONLY_RESOURCES:
         return False
 
-    module_code = RESOURCE_MODULES.get(resource, resource)
     permission = _module_permission(user, module_code)
     if not permission:
         return False
@@ -168,6 +178,8 @@ def get_user_permissions(user: dict) -> list[str]:
             if row["can_view"]:
                 permissions.append(f"{resource}:view")
                 permissions.append(f"{resource}:detail")
+            if module_code in RETIRED_MODULE_CODES:
+                continue
             if row["can_edit"]:
                 permissions.extend(
                     f"{resource}:{action}"

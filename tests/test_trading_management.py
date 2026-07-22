@@ -1,5 +1,7 @@
 """交易管理模块的数据结构与业务规则测试。"""
+from datetime import date
 import importlib.util
+import json
 import os
 import sys
 
@@ -10,6 +12,7 @@ from openpyxl import Workbook, load_workbook
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db, trading_management
+from test_trading_settlement import statement_fixture
 
 
 TRADING_TABLES = {
@@ -28,6 +31,12 @@ TRADING_TABLES = {
     "trading_business_assignments",
     "trading_business_close_allocations",
     "trading_business_allocation_audit",
+    "trading_statement_account_summaries",
+    "trading_statement_cash_movements",
+    "trading_statement_exercises",
+    "trading_option_event_underlying_links",
+    "trading_statement_position_summaries",
+    "trading_fact_source_differences",
 }
 
 
@@ -36,6 +45,88 @@ def use_temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "trading-management.db")
     db.init_db()
+
+
+def option_event_statement(
+    *,
+    event_type="期权放弃",
+    option_contract="i2607-p-750",
+    option_side="买",
+    option_open_price=12.5,
+    option_quantity=2,
+    event_date="20260529",
+    exercise_price=750,
+    include_option_open=True,
+    underlying_contract=None,
+    underlying_side=None,
+):
+    text = statement_fixture(f"20260501-{event_date}", exercise=True)
+    original_trade = (
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石|i2609|卖|套保|785.000|1|"
+        "78500.00|开|1.01|10.00|0.00|100001|TEST001|"
+    )
+    option_premium = option_open_price * option_quantity * 100
+    premium_cashflow = -option_premium if option_side == "买" else option_premium
+    option_trade = (
+        f"|{event_date}|TEST001|大商所|TESTCODE|铁矿石期权|{option_contract}|"
+        f"{option_side}|套保|{option_open_price:.3f}|{option_quantity}|"
+        f"{option_premium:.2f}|开|1.01|0.00|{premium_cashflow:.2f}|"
+        "100001|TEST001|"
+    )
+    replacement_trade = option_trade if include_option_open else original_trade
+    trade_count = 1
+    trade_quantity = option_quantity if include_option_open else 1
+    trade_turnover = option_premium if include_option_open else 78500
+    fee_total = 1.01
+    if underlying_contract and underlying_side:
+        replacement_trade += (
+            f"\n|{event_date}|TEST001|大商所|TESTCODE|铁矿石|{underlying_contract}|"
+            f"{underlying_side}|套保|{exercise_price:.3f}|{option_quantity}|"
+            f"{exercise_price * option_quantity * 100:.2f}|开|1.01|0.00|0.00|"
+            "100002|TEST001|"
+        )
+        trade_count = 2
+        trade_quantity += option_quantity
+        trade_turnover += exercise_price * option_quantity * 100
+        fee_total = 2.02
+    text = text.replace(original_trade, replacement_trade)
+    text = text.replace(
+        "|共 1条|||||||||1|78500.00||1.01|10.00|0.00|||",
+        f"|共 {trade_count}条|||||||||{trade_quantity}|{trade_turnover:.2f}||"
+        f"{fee_total:.2f}|0.00|0.00|||",
+    )
+    text = text.replace(
+        "手 续 费 Commission：1.01", f"手 续 费 Commission：{fee_total:.2f}"
+    )
+    original_event = (
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石期权|i2607-P-750|套保|买|"
+        "期权放弃|1|750.000|75000.00|0.00|0.00|TEST001|"
+    )
+    new_event = (
+        f"|{event_date}|TEST001|大商所|TESTCODE|铁矿石期权|{option_contract}|"
+        f"套保|{option_side}|{event_type}|{option_quantity}|{exercise_price:.3f}|"
+        f"{exercise_price * option_quantity * 100:.2f}|0.00|0.00|TEST001|"
+    )
+    text = text.replace(original_event, new_event)
+    text = text.replace(
+        "|共   1条|||||||||1||75000.00|0.00|0.00||",
+        f"|共   1条|||||||||{option_quantity}||"
+        f"{exercise_price * option_quantity * 100:.2f}|0.00|0.00||",
+    )
+    return text.encode("gb18030")
+
+
+def confirm_option_event_statement(content, tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    preview = trading_management.preview_settlement_import(
+        1, "monthly.txt", content, actor="tester"
+    )
+    confirmed = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    return confirmed
 
 
 def test_trading_management_schema_contains_isolated_tables(tmp_path, monkeypatch):
@@ -51,6 +142,282 @@ def test_trading_management_schema_contains_isolated_tables(tmp_path, monkeypatc
 
     assert TRADING_TABLES <= actual
     assert not any(name.startswith("sh_junneng") for name in TRADING_TABLES)
+
+
+def test_trading_statement_schema_versions_fact_sources(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with db.connect() as conn:
+        columns = {
+            table: {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for table in (
+                "trading_accounts",
+                "trading_import_batches",
+                "trading_trade_facts",
+                "trading_close_facts",
+                "trading_position_snapshots",
+            )
+        }
+
+    assert "statement_account_code" in columns["trading_accounts"]
+    assert {
+        "statement_type",
+        "statement_file_name",
+        "statement_file_sha256",
+        "statement_account_code_masked",
+        "source_priority",
+    } <= columns["trading_import_batches"]
+    for table in (
+        "trading_trade_facts",
+        "trading_close_facts",
+        "trading_position_snapshots",
+    ):
+        assert "is_current" in columns[table]
+
+
+def test_option_event_close_projection_schema(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        close_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trading_close_facts)").fetchall()
+        }
+        event_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(trading_statement_exercises)"
+            ).fetchall()
+        }
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert close_columns >= {
+        "settlement_type",
+        "event_type_raw",
+        "exercise_price",
+        "exercise_amount",
+        "statement_event_pnl",
+        "underlying_link_status",
+    }
+    assert event_columns >= {
+        "identity_id",
+        "source_row_id",
+        "exchange",
+        "product",
+        "event_type_raw",
+        "exercise_amount",
+        "is_current",
+    }
+    assert "trading_option_event_underlying_links" in tables
+
+
+def test_expiry_abandonment_becomes_zero_price_close_without_trade(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(option_event_statement(), tmp_path, monkeypatch)
+
+    closes = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(
+            contract="i2607-p-750", page=1, page_size=20
+        ),
+    )
+    event = closes["items"][0]
+
+    assert event["settlement_type"] == "expiry_abandon"
+    assert event["close_price"] == 0
+    assert event["open_price"] == 12.5
+    assert event["fact_close_pnl"] == -2500
+    assert event["verification_status"] == "matched"
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) AS c FROM trading_trade_facts
+               WHERE contract = 'i2607-p-750' AND open_close = '平仓'"""
+        ).fetchone()["c"] == 0
+
+
+def test_expired_short_option_keeps_full_opening_premium(tmp_path, monkeypatch):
+    confirm_option_event_statement(
+        option_event_statement(option_side="卖", option_open_price=12.5),
+        tmp_path,
+        monkeypatch,
+    )
+
+    event = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(contract="i2607-p-750"),
+    )["items"][0]
+
+    assert event["settlement_type"] == "expiry_abandon"
+    assert event["open_side"] == "卖"
+    assert event["close_price"] == 0
+    assert event["fact_close_pnl"] == 2500
+    assert event["verification_status"] == "matched"
+
+
+def test_option_event_without_open_trade_is_visible_but_pending(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(
+        option_event_statement(include_option_open=False),
+        tmp_path,
+        monkeypatch,
+    )
+
+    event = trading_management.query_fact_rows(
+        "closes",
+        trading_management.FactFilters(contract="i2607-p-750"),
+    )["items"][0]
+
+    assert event["settlement_type"] == "expiry_abandon"
+    assert event["verification_status"] == "pending_event_match"
+    assert event["fact_close_pnl"] == 0
+
+
+@pytest.mark.parametrize(
+    ("contract", "expected"),
+    [
+        ("i2607-c-750", ("i2607", "call")),
+        ("i2607-p-750", ("i2607", "put")),
+        ("rb2610C3500", None),
+    ],
+)
+def test_option_contract_parts(contract, expected):
+    assert trading_management._option_contract_parts(contract) == expected
+
+
+@pytest.mark.parametrize(
+    ("option_kind", "open_side", "expected"),
+    [
+        ("call", "买", "买"),
+        ("call", "卖", "卖"),
+        ("put", "买", "卖"),
+        ("put", "卖", "买"),
+    ],
+)
+def test_option_event_underlying_side(option_kind, open_side, expected):
+    assert trading_management._option_event_underlying_side(
+        option_kind, open_side
+    ) == expected
+
+
+def test_exercise_links_real_underlying_open_without_synthesizing_trade(
+    tmp_path, monkeypatch
+):
+    confirmed = confirm_option_event_statement(
+        option_event_statement(
+            event_type="期权执行",
+            option_contract="i2607-c-750",
+            option_side="买",
+            option_quantity=2,
+            exercise_price=750,
+            underlying_contract="i2607",
+            underlying_side="买",
+        ),
+        tmp_path,
+        monkeypatch,
+    )
+
+    with db.connect() as conn:
+        event = conn.execute(
+            """SELECT identity_id, underlying_link_status
+               FROM trading_close_facts
+               WHERE settlement_type = 'exercise' AND is_current = 1"""
+        ).fetchone()
+        link = conn.execute(
+            """SELECT matched_quantity
+               FROM trading_option_event_underlying_links
+               WHERE event_identity_id = ?""",
+            (event["identity_id"],),
+        ).fetchone()
+        generated_trade_count = conn.execute(
+            """SELECT COUNT(*) AS c FROM trading_trade_facts
+               WHERE contract = 'i2607' AND batch_id = ?""",
+            (confirmed["batch_id"],),
+        ).fetchone()["c"]
+
+    assert event["underlying_link_status"] == "matched"
+    assert link["matched_quantity"] == 2
+    assert generated_trade_count == 1
+
+
+def test_exercise_without_imported_underlying_trade_stays_pending(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(
+        option_event_statement(
+            event_type="期权执行",
+            option_contract="i2607-c-750",
+            option_side="买",
+            option_quantity=2,
+            exercise_price=750,
+        ),
+        tmp_path,
+        monkeypatch,
+    )
+
+    with db.connect() as conn:
+        event = conn.execute(
+            """SELECT underlying_link_status
+               FROM trading_close_facts
+               WHERE settlement_type = 'exercise' AND is_current = 1"""
+        ).fetchone()
+        trade_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE asset_type = 'future'"
+        ).fetchone()["c"]
+
+    assert event["underlying_link_status"] == "pending"
+    assert trade_count == 0
+
+
+def test_close_summary_separates_settlement_and_transaction_quantity(
+    tmp_path, monkeypatch
+):
+    confirm_option_event_statement(option_event_statement(), tmp_path, monkeypatch)
+    subject = trading_management.create_business_subject("期货组", actor="tester")
+    with db.connect() as conn:
+        option_open_ids = [
+            row["identity_id"]
+            for row in conn.execute(
+                """SELECT identity_id FROM trading_trade_facts
+                   WHERE asset_type = 'option' AND open_close = '开仓'"""
+            ).fetchall()
+        ]
+    trading_management.classify_trade_identities(
+        option_open_ids, subject["id"], "strategic_hedging",
+        "战略套保-期权结构化套利", "", "tester",
+    )
+
+    facts = trading_management.query_fact_rows(
+        "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    options = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    positions = trading_management.query_business_rows(
+        "options",
+        "positions",
+        trading_management.FactFilters(
+            contract="i2607-p-750", page=1, page_size=20
+        ),
+    )
+
+    assert facts["summary"]["record_count"] == 2
+    assert facts["summary"]["trade_close_record_count"] == 1
+    assert facts["summary"]["settlement_quantity"] == 3
+    assert facts["summary"]["transaction_close_quantity"] == 1
+    assert {row["settlement_type"] for row in options["items"]} >= {
+        "expiry_abandon"
+    }
+    assert positions["items"] == []
+    assert positions["summary"]["quantity"] == 0
 
 
 def test_postgres_trading_tables_are_hidden_from_data_api_roles():
@@ -77,6 +444,29 @@ def test_postgres_trading_tables_are_hidden_from_data_api_roles():
     )
 
 
+def test_postgres_statement_hash_index_is_created_after_additive_columns(monkeypatch):
+    statements = []
+
+    class Cursor:
+        def execute(self, statement):
+            statements.append(" ".join(statement.split()))
+
+    monkeypatch.setattr(db, "_is_pg", lambda: True)
+    db._ensure_trading_statement_columns(None, Cursor())
+
+    alter_position = next(
+        index
+        for index, statement in enumerate(statements)
+        if "ADD COLUMN IF NOT EXISTS statement_file_sha256" in statement
+    )
+    index_position = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE INDEX IF NOT EXISTS idx_trading_batches_statement_hash" in statement
+    )
+    assert alter_position < index_position
+
+
 def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
 
@@ -91,10 +481,13 @@ def test_trading_management_seeds_verified_sample_reference_data(tmp_path, monke
     assert account["display_name"] == "宏源期货账户"
     assert {(row["exchange"], row["product_code"], row["asset_type"], row["contract_multiplier"]) for row in specs} >= {
         ("上期所", "rb", "future", 10),
+        ("上期所", "rb", "option", 10),
         ("上期所", "hc", "future", 10),
         ("大商所", "i", "future", 100),
         ("大商所", "i", "option", 100),
         ("大商所", "j", "future", 100),
+        ("大商所", "jm", "future", 60),
+        ("大商所", "jm", "option", 60),
     }
 
 
@@ -143,6 +536,177 @@ def test_trading_management_router_module_exists():
     assert importlib.util.find_spec("app.trading_management") is not None
 
 
+def test_statement_preview_confirm_binds_account_and_is_idempotent(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    content = statement_fixture().encode("gb18030")
+
+    preview = trading_management.preview_settlement_import(
+        1, "daily.txt", content, actor="tester"
+    )
+    confirmed = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    duplicate = trading_management.preview_settlement_import(
+        1, "copy.txt", content, actor="tester"
+    )
+
+    assert preview["statement_type"] == "daily"
+    assert preview["binding_required"] is True
+    assert confirmed["counts"] == {
+        "trade": 1,
+        "close": 1,
+        "exercise": 0,
+        "position": 1,
+    }
+    assert duplicate["duplicate_batch_id"] == confirmed["batch_id"]
+    with db.connect() as conn:
+        account = conn.execute(
+            "SELECT statement_account_code FROM trading_accounts WHERE id = 1"
+        ).fetchone()
+        assert account["statement_account_code"] == "TEST001"
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_trade_facts WHERE is_current = 1"
+        ).fetchone()["c"] == 1
+
+
+def test_monthly_statement_replaces_conflicting_daily_fact(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    daily = statement_fixture().encode("gb18030")
+    monthly = statement_fixture("20260501-20260529").replace(
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石|i2609|卖|套保|785.000|1|",
+        "|20260529|TEST001|大商所|TESTCODE|铁矿石|i2609|卖|套保|786.000|1|",
+        1,
+    ).encode("gb18030")
+
+    first = trading_management.preview_settlement_import(
+        1, "daily.txt", daily, actor="tester"
+    )
+    trading_management.confirm_settlement_import(first["preview_batch_id"], "tester")
+    second = trading_management.preview_settlement_import(
+        1, "monthly.txt", monthly, actor="tester"
+    )
+    result = trading_management.confirm_settlement_import(
+        second["preview_batch_id"], "tester"
+    )
+
+    assert result["monthly_replacements"] >= 1
+    with db.connect() as conn:
+        current = conn.execute(
+            "SELECT price FROM trading_trade_facts WHERE is_current = 1"
+        ).fetchone()
+        assert current["price"] == 786
+        versions = conn.execute(
+            "SELECT price, is_current FROM trading_trade_facts ORDER BY id"
+        ).fetchall()
+        assert [(row["price"], row["is_current"]) for row in versions] == [
+            (785, 0),
+            (786, 1),
+        ]
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM trading_fact_source_differences"
+        ).fetchone()["c"] >= 1
+        diff = json.loads(
+            conn.execute(
+                "SELECT diff_json FROM trading_fact_source_differences ORDER BY id DESC LIMIT 1"
+            ).fetchone()["diff_json"]
+        )
+        assert any(
+            change["old"] == "785.000" and change["new"] == "786.000"
+            for change in diff["changes"]
+        )
+
+
+def test_statement_confirm_uses_bulk_current_fact_decisions(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    content = statement_fixture().encode("gb18030")
+    preview = trading_management.preview_settlement_import(
+        1, "daily.txt", content, actor="tester"
+    )
+
+    monkeypatch.setattr(
+        trading_management,
+        "_statement_current_decision",
+        lambda *_args, **_kwargs: pytest.fail("confirm must not query current facts row by row"),
+    )
+
+    confirmed = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+
+    assert confirmed["counts"]["trade"] == 1
+    assert confirmed["counts"]["close"] == 1
+    assert confirmed["counts"]["position"] == 1
+
+
+def test_statement_confirm_job_reports_stages_and_reuses_active_job(monkeypatch):
+    class BackgroundTasks:
+        def __init__(self):
+            self.calls = []
+
+        def add_task(self, func, *args):
+            self.calls.append((func, args))
+
+    tasks = BackgroundTasks()
+    trading_management._TRADING_IMPORT_JOBS.clear()
+    trading_management._TRADING_IMPORT_ACTIVE_JOBS.clear()
+    monkeypatch.setattr(
+        trading_management,
+        "confirm_settlement_import",
+        lambda batch_id, actor, progress=None: {
+            "batch_id": batch_id,
+            "counts": {"trade": 2, "close": 1, "exercise": 0, "position": 1},
+        },
+    )
+    monkeypatch.setattr(
+        trading_management, "match_imported_facts", lambda batch_id: {"batch_id": batch_id}
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "rebuild_default_business_allocations",
+        lambda batch_id: {"batch_id": batch_id},
+    )
+    monkeypatch.setattr(trading_management, "_cleanup_preview_files", lambda batch_id: None)
+
+    first = trading_management._create_settlement_import_job(tasks, 42, "tester")
+    duplicate = trading_management._create_settlement_import_job(tasks, 42, "tester")
+
+    assert first["job_id"] == duplicate["job_id"]
+    assert len(tasks.calls) == 1
+    func, args = tasks.calls[0]
+    func(*args)
+    finished = trading_management._TRADING_IMPORT_JOBS[first["job_id"]]
+    assert finished["status"] == "succeeded"
+    assert finished["stage"] == "done"
+    assert finished["result"]["counts"]["trade"] == 2
+
+
+def test_failed_statement_confirm_job_can_be_retried(monkeypatch):
+    class BackgroundTasks:
+        def __init__(self):
+            self.calls = []
+
+        def add_task(self, func, *args):
+            self.calls.append((func, args))
+
+    tasks = BackgroundTasks()
+    trading_management._TRADING_IMPORT_JOBS.clear()
+    trading_management._TRADING_IMPORT_ACTIVE_JOBS.clear()
+    monkeypatch.setattr(
+        trading_management,
+        "confirm_settlement_import",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("导入失败")),
+    )
+
+    first = trading_management._create_settlement_import_job(tasks, 42, "tester")
+    func, args = tasks.calls.pop()
+    func(*args)
+    retry = trading_management._create_settlement_import_job(tasks, 42, "tester")
+
+    assert trading_management._TRADING_IMPORT_JOBS[first["job_id"]]["status"] == "failed"
+    assert retry["job_id"] != first["job_id"]
+    assert retry["status"] == "queued"
+
+
 def test_postgres_executemany_uses_batched_protocol(monkeypatch):
     calls = []
 
@@ -167,7 +731,7 @@ def test_trading_management_modules_are_new_first_level_menu():
 
     assert modules == [
         ("交易管理", "trading_overview", "总览"),
-        ("交易管理", "trading_positions", "持仓与交易"),
+        ("交易管理", "trading_positions", "持仓与交易明细"),
         ("交易管理", "trading_sh_junneng", "上海钧能台账"),
         ("交易管理", "trading_options", "期权台账"),
         ("交易管理", "trading_export", "汇总与导出"),
@@ -358,6 +922,100 @@ def test_confirm_import_writes_immutable_fact_versions(tmp_path, monkeypatch):
         trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
 
+def test_fact_matching_uses_open_trades_from_previous_active_batches(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        jan_batch = conn.execute(
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type)
+            VALUES (1, '20260101', '20260131', 'active', 'monthly')
+            """
+        ).lastrowid
+        feb_batch = conn.execute(
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type)
+            VALUES (1, '20260201', '20260228', 'active', 'monthly')
+            """
+        ).lastrowid
+        conn.executemany(
+            """
+            INSERT INTO trading_fact_identities (account_id, fact_type, stable_key)
+            VALUES (1, ?, ?)
+            """,
+            [("trade", "jan-open"), ("trade", "feb-close"), ("close", "feb-close-fact")],
+        )
+        identities = {
+            row["stable_key"]: row["id"]
+            for row in conn.execute(
+                "SELECT id, stable_key FROM trading_fact_identities"
+            ).fetchall()
+        }
+        conn.executemany(
+            """
+            INSERT INTO trading_source_rows
+                (batch_id, source_type, source_file, source_sheet, source_row_no,
+                 raw_hash, raw_json)
+            VALUES (?, ?, 'fixture.txt', ?, ?, ?, '{}')
+            """,
+            [
+                (jan_batch, "trade", "成交记录", 1, "jan-open"),
+                (feb_batch, "trade", "成交记录", 1, "feb-close"),
+                (feb_batch, "close", "平仓明细", 1, "feb-close-fact"),
+            ],
+        )
+        source_rows = {
+            row["raw_hash"]: row["id"]
+            for row in conn.execute(
+                "SELECT id, raw_hash FROM trading_source_rows"
+            ).fetchall()
+        }
+        conn.execute(
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, exchange, contract, asset_type,
+                 side, open_close_raw, open_close, quantity, price, fee, is_current)
+            VALUES (?, ?, ?, '20260130', '上期所', 'rb2605', 'future',
+                    '买', '开', '开仓', 2, 3100, 2, 1)
+            """,
+            (identities["jan-open"], jan_batch, source_rows["jan-open"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, exchange, contract, asset_type,
+                 side, open_close_raw, open_close, quantity, price, fee, is_current)
+            VALUES (?, ?, ?, '20260203', '上期所', 'rb2605', 'future',
+                    '卖', '平', '平仓', 2, 3120, 2, 1)
+            """,
+            (identities["feb-close"], feb_batch, source_rows["feb-close"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_close_facts
+                (identity_id, batch_id, source_row_id, open_date, close_date, exchange, contract,
+                 asset_type, open_side, close_side, quantity, open_price, close_price,
+                 fact_close_pnl, settlement_type, is_current)
+            VALUES (?, ?, ?, '20260130', '20260203', '上期所', 'rb2605',
+                    'future', '买', '卖', 2, 3100, 3120, 400,
+                    'trade_close', 1)
+            """,
+            (identities["feb-close-fact"], feb_batch, source_rows["feb-close-fact"]),
+        )
+
+    result = trading_management.match_imported_facts(feb_batch)
+
+    assert result["pending_closes"] == 0
+    with db.connect() as conn:
+        allocation = conn.execute(
+            "SELECT * FROM trading_fact_close_allocations"
+        ).fetchone()
+    assert allocation["close_identity_id"] == identities["feb-close-fact"]
+    assert allocation["open_trade_identity_id"] == identities["jan-open"]
+    assert allocation["matched_quantity"] == 2
+
+
 def test_confirm_same_range_supersedes_old_batch_and_keeps_source_rows(tmp_path, monkeypatch):
     first_preview = create_preview_batch(tmp_path, monkeypatch)
     first = trading_management.confirm_trading_import(first_preview["preview_batch_id"], actor="tester")
@@ -384,11 +1042,22 @@ def test_confirm_same_range_supersedes_old_batch_and_keeps_source_rows(tmp_path,
             row["id"] for row in conn.execute("SELECT id FROM trading_fact_identities").fetchall()
         }
         source_count = conn.execute("SELECT COUNT(*) AS c FROM trading_source_rows").fetchone()["c"]
+        current_by_batch = {
+            row["batch_id"]: row["c"]
+            for row in conn.execute(
+                """
+                SELECT batch_id, COUNT(*) AS c
+                FROM trading_trade_facts WHERE is_current = 1 GROUP BY batch_id
+                """
+            ).fetchall()
+        }
 
     assert statuses[first["batch_id"]] == "superseded"
     assert statuses[second["batch_id"]] == "active"
     assert first_identity_ids == second_identity_ids
     assert source_count == 10
+    assert first["batch_id"] not in current_by_batch
+    assert current_by_batch[second["batch_id"]] == 3
 
 
 def test_overwrite_trade_pnl_uses_only_active_close_fact_version(tmp_path, monkeypatch):
@@ -774,20 +1443,61 @@ def test_fact_api_routes_are_registered():
     } <= paths
 
 
+def test_overview_api_uses_dedicated_account_scope_and_date_filters(monkeypatch):
+    filters = trading_management._api_overview_filters(
+        account_id=2,
+        scope="strategic_hedging",
+        start_date="20260701",
+        end_date="20260731",
+    )
+    captured = {}
+
+    def fake_build(value):
+        captured["filters"] = value
+        return {"filters": {"scope": value.scope}}
+
+    monkeypatch.setattr(trading_management, "build_trading_overview", fake_build)
+    result = trading_management.get_trading_overview(
+        filters=filters,
+        user={"id": 1, "role": "管理员"},
+    )
+
+    assert filters.account_id == 2
+    assert filters.scope == "strategic_hedging"
+    assert filters.start_date == "20260701"
+    assert filters.end_date == "20260731"
+    assert captured["filters"] is filters
+    assert result == {"filters": {"scope": "strategic_hedging"}}
+
+
+def test_overview_api_rejects_invalid_date_range_as_client_error():
+    with pytest.raises(Exception) as error:
+        trading_management._api_overview_filters(
+            start_date="20260731", end_date="20260701"
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "开始日期不能晚于结束日期"
+
+
 def test_batch_classification_validates_active_facts_once(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
     subject = trading_management.create_business_subject("上海钧能", actor="tester")
     with db.connect() as conn:
         identity_ids = [row["identity_id"] for row in db._exec(
-            conn.cursor(), "SELECT identity_id FROM trading_trade_facts ORDER BY identity_id"
+            conn.cursor(),
+            """
+            SELECT identity_id FROM trading_trade_facts
+            WHERE open_close = '开仓' ORDER BY identity_id
+            """,
         ).fetchall()]
     original_exec = db._exec
     validation_queries = 0
 
     def counted_exec(cur, query, params=()):
         nonlocal validation_queries
-        if "SELECT tf.identity_id FROM trading_trade_facts tf" in query:
+        if "SELECT tf.identity_id, tf.open_close FROM trading_trade_facts tf" in query:
             validation_queries += 1
         return original_exec(cur, query, params)
 
@@ -806,7 +1516,11 @@ def test_batch_classification_uses_bounded_database_round_trips(tmp_path, monkey
     subject = trading_management.create_business_subject("上海钧能", actor="tester")
     with db.connect() as conn:
         identity_ids = [row["identity_id"] for row in db._exec(
-            conn.cursor(), "SELECT identity_id FROM trading_trade_facts ORDER BY identity_id"
+            conn.cursor(),
+            """
+            SELECT identity_id FROM trading_trade_facts
+            WHERE open_close = '开仓' ORDER BY identity_id
+            """,
         ).fetchall()]
     original_exec = db._exec
     original_executemany = db._executemany
@@ -892,7 +1606,10 @@ def test_classification_assigns_complete_trade_identities(tmp_path, monkeypatch)
         trade_ids = [
             row["identity_id"]
             for row in conn.execute(
-                "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 2"
+                """
+                SELECT identity_id FROM trading_trade_facts
+                WHERE open_close = '开仓' ORDER BY id LIMIT 2
+                """
             ).fetchall()
         ]
 
@@ -926,10 +1643,20 @@ def test_classification_rejects_partial_quantity_and_disabled_subject(tmp_path, 
         trade_id = conn.execute(
             "SELECT identity_id FROM trading_trade_facts ORDER BY id LIMIT 1"
         ).fetchone()["identity_id"]
+        close_trade_id = conn.execute(
+            """
+            SELECT identity_id FROM trading_trade_facts
+            WHERE open_close = '平仓' ORDER BY id LIMIT 1
+            """
+        ).fetchone()["identity_id"]
 
     with pytest.raises(ValueError, match="不允许按手数拆分"):
         trading_management.classify_trade_identities(
             [trade_id], subject["id"], "basic_hedging", "", "", "tester", requested_quantity=1
+        )
+    with pytest.raises(ValueError, match="只能设置在开仓交易"):
+        trading_management.classify_trade_identities(
+            [close_trade_id], subject["id"], "basic_hedging", "", "", "tester"
         )
 
     with db.connect() as conn:
@@ -970,7 +1697,11 @@ def setup_classified_business_sample(tmp_path, monkeypatch):
     with db.connect() as conn:
         rb_ids = [
             row["identity_id"] for row in conn.execute(
-                "SELECT identity_id FROM trading_trade_facts WHERE contract = 'rb2610' ORDER BY id"
+                """
+                SELECT identity_id FROM trading_trade_facts
+                WHERE contract = 'rb2610' AND open_close = '开仓'
+                ORDER BY id
+                """
             ).fetchall()
         ]
         conn.execute(
@@ -1000,7 +1731,17 @@ def test_default_business_allocations_preserve_fact_pnl(tmp_path, monkeypatch):
     assert fact_pnl == 1200
 
 
-def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, monkeypatch):
+def test_business_config_exposes_latest_junneng_close_date(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    config = trading_management.list_trading_config()
+
+    assert config["latest_junneng_close_date"] == "20260630"
+    assert config["latest_overview_date"] == "20260630"
+
+
+def test_business_views_only_show_classified_junneng_and_options(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
 
@@ -1018,12 +1759,183 @@ def test_business_views_separate_junneng_candidates_and_all_options(tmp_path, mo
     assert junneng_closes["summary"]["fact_close_pnl"] == 1200
     assert len(junneng_trades["items"]) == 2
     assert all(item["business_subject"] == "上海钧能" for item in junneng_trades["items"])
-    assert len(option_trades["items"]) == 1
-    assert option_trades["items"][0]["contract"] == "i2609-c-700"
-    assert option_trades["items"][0]["assignment_status"] == "unclassified"
+    assert option_trades["items"] == []
+    assert option_trades["summary"]["record_count"] == 0
+    assert "candidates" not in junneng_trades
 
 
-def test_unclassified_rb_hc_appear_in_junneng_until_assigned_elsewhere(tmp_path, monkeypatch):
+def test_business_trade_ledger_inherits_close_assignment_from_open_trade(
+    tmp_path, monkeypatch
+):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    subject = trading_management.create_business_subject("上海钧能", actor="tester")
+    with db.connect() as conn:
+        open_trade_id = conn.execute(
+            """SELECT identity_id FROM trading_trade_facts
+               WHERE contract = 'rb2610' AND open_close = '开仓'"""
+        ).fetchone()["identity_id"]
+    trading_management.classify_trade_identities(
+        [open_trade_id], subject["id"], "basic_hedging",
+        "代内部公司套保", "", "tester",
+    )
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE trading_business_assignments
+            SET business_type = 'strategic_hedging'
+            WHERE trade_identity_id = (
+                SELECT identity_id FROM trading_trade_facts
+                WHERE contract = 'rb2610' AND open_close = '平仓'
+            )
+            """
+        )
+
+    result = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert result["total_items"] == 2
+    close_trade = next(row for row in result["items"] if row["open_close"] == "平仓")
+    assert close_trade["assignment_status"] == "classified"
+    assert close_trade["business_subject"] == "上海钧能"
+    assert close_trade["business_type"] == "basic_hedging"
+
+    trading_management.remove_trade_assignment(open_trade_id, actor="tester")
+    after_remove = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert after_remove["items"] == []
+
+
+def test_business_trade_ledger_prorates_one_close_trade_across_close_facts(
+    tmp_path, monkeypatch
+):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        close = conn.execute("SELECT * FROM trading_close_facts").fetchone()
+        link = conn.execute("SELECT * FROM trading_close_trade_links").fetchone()
+        allocation = conn.execute(
+            "SELECT * FROM trading_business_close_allocations"
+        ).fetchone()
+        account_id = conn.execute(
+            "SELECT account_id FROM trading_import_batches WHERE id = ?",
+            (confirmed["batch_id"],),
+        ).fetchone()["account_id"]
+        second_close_id = conn.execute(
+            """
+            INSERT INTO trading_fact_identities
+                (account_id, fact_type, stable_key)
+            VALUES (?, 'close', 'test-second-close-fact')
+            """,
+            (account_id,),
+        ).lastrowid
+        conn.execute(
+            """
+            UPDATE trading_close_facts
+            SET quantity = 1, fact_close_pnl = 600, matched_fee = 3
+            WHERE identity_id = ?
+            """,
+            (close["identity_id"],),
+        )
+        conn.execute(
+            """
+            UPDATE trading_close_trade_links
+            SET matched_quantity = 1, allocated_fee = 3
+            WHERE id = ?
+            """,
+            (link["id"],),
+        )
+        conn.execute(
+            """
+            UPDATE trading_business_close_allocations
+            SET matched_quantity = 1, business_pnl = 200
+            WHERE id = ?
+            """,
+            (allocation["id"],),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_close_facts
+                (identity_id, batch_id, source_row_id, open_date, close_date,
+                 exchange, contract, asset_type, open_side, close_side,
+                 quantity, open_price, close_price, fact_close_pnl, matched_fee,
+                 is_current, fee_status, data_status, verification_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 600, 3,
+                    1, 'matched', 'file_imported', 'verified')
+            """,
+            (
+                second_close_id, close["batch_id"], close["source_row_id"],
+                close["open_date"], close["close_date"], close["exchange"],
+                close["contract"], close["asset_type"], close["open_side"],
+                close["close_side"], close["open_price"], close["close_price"],
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_close_trade_links
+                (close_identity_id, close_trade_identity_id, matched_quantity,
+                 allocated_fee, status, rule_version)
+            VALUES (?, ?, 1, 3, 'matched', ?)
+            """,
+            (second_close_id, link["close_trade_identity_id"], link["rule_version"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_business_close_allocations
+                (close_identity_id, open_trade_identity_id, matched_quantity,
+                 source, business_pnl, rule_version, allocation_version,
+                 created_by)
+            VALUES (?, ?, 1, 'fact_default', 200, ?, 1, 'tester')
+            """,
+            (
+                second_close_id, allocation["open_trade_identity_id"],
+                allocation["rule_version"],
+            ),
+        )
+
+    result = trading_management.query_business_rows(
+        "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
+    )
+    close_rows = [row for row in result["items"] if row["open_close"] == "平仓"]
+
+    assert len(close_rows) == 2
+    assert sum(row["quantity"] for row in close_rows) == pytest.approx(2)
+    assert sum(row["fee"] for row in close_rows) == pytest.approx(6)
+    assert sum(row["business_pnl"] for row in close_rows) == pytest.approx(1200)
+    assert result["summary"]["record_count"] == 2
+
+
+def test_junneng_close_rows_include_auditable_settlement_amounts(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    result = trading_management.query_business_rows(
+        "junneng",
+        "closes",
+        trading_management.FactFilters(
+            start_date="20260601", end_date="20260630", page=1, page_size=20
+        ),
+    )
+
+    assert result["summary"]["net_close_pnl"] == pytest.approx(388)
+    assert result["summary"]["fund_interest"] == pytest.approx(8.44)
+    assert result["summary"]["settlement_80"] == pytest.approx(303.65)
+    assert result["summary"]["settlement_20"] == pytest.approx(75.91)
+    assert result["summary"]["fee"] == pytest.approx(12)
+    assert result["summary"]["settlement_rule_version"] == "sh_junneng_v1"
+    assert result["items"][0]["net_close_pnl"] == pytest.approx(388)
+    assert result["items"][0]["settlement_open_price"] == pytest.approx(3100)
+    assert result["items"][0]["settlement_fee"] == pytest.approx(12)
+    assert result["items"][0]["settlement_rule_version"] == "sh_junneng_v1"
+
+
+def test_unclassified_rb_hc_never_appear_in_junneng_business_ledger(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
@@ -1031,11 +1943,233 @@ def test_unclassified_rb_hc_appear_in_junneng_until_assigned_elsewhere(tmp_path,
         "junneng", "trades", trading_management.FactFilters(page=1, page_size=20)
     )
 
-    assert len(result["items"]) == 2
-    assert result["summary"]["record_count"] == 2
-    assert all(row["assignment_status"] == "unclassified" for row in result["items"])
-    assert all(row["ledger_membership"] == "candidate" for row in result["items"])
-    assert result["candidates"]["record_count"] == 2
+    assert result["items"] == []
+    assert result["summary"]["record_count"] == 0
+    assert "candidates" not in result
+
+
+def test_classified_option_enters_all_option_business_tabs(tmp_path, monkeypatch):
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    confirmed = trading_management.confirm_trading_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+    trading_management.match_imported_facts(confirmed["batch_id"])
+    subject = trading_management.create_business_subject("期货组", actor="tester")
+    with db.connect() as conn:
+        option_ids = [
+            row["identity_id"]
+            for row in conn.execute(
+                """SELECT identity_id FROM trading_trade_facts
+                   WHERE asset_type = 'option' ORDER BY id"""
+            ).fetchall()
+        ]
+    trading_management.classify_trade_identities(
+        option_ids, subject["id"], "strategic_hedging",
+        "战略套保-期权结构化套利", "", "tester",
+    )
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+
+    for tab in ("positions", "trades"):
+        result = trading_management.query_business_rows(
+            "options", tab, trading_management.FactFilters(page=1, page_size=20)
+        )
+        assert result["items"]
+        assert all(row["assignment_status"] == "classified" for row in result["items"])
+        assert all(row["business_type"] == "strategic_hedging" for row in result["items"])
+    closes = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert closes["items"] == []
+
+
+def test_option_close_exposes_only_the_classified_allocated_share(
+    tmp_path, monkeypatch
+):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE trading_trade_facts SET asset_type = 'option' WHERE contract = 'rb2610'"
+        )
+        conn.execute(
+            "UPDATE trading_close_facts SET asset_type = 'option' WHERE contract = 'rb2610'"
+        )
+        conn.execute(
+            "UPDATE trading_business_close_allocations SET matched_quantity = 1"
+        )
+
+    result = trading_management.query_business_rows(
+        "options", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert result["total_items"] == 1
+    assert result["items"][0]["matched_quantity"] == pytest.approx(1)
+    assert result["items"][0]["fact_close_pnl"] == pytest.approx(600)
+    assert result["items"][0]["matched_fee"] == pytest.approx(3)
+    assert result["summary"]["fact_close_pnl"] == pytest.approx(600)
+    assert result["summary"]["fee"] == pytest.approx(3)
+
+
+def test_classified_option_position_uses_live_quote_and_position_greeks(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trading_management, "_beijing_today", lambda: date(2026, 7, 20)
+    )
+    preview = create_preview_batch(tmp_path, monkeypatch)
+    trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
+    subject = trading_management.create_business_subject("期货组", actor="tester")
+    with db.connect() as conn:
+        option_id = conn.execute(
+            """SELECT identity_id FROM trading_trade_facts
+               WHERE asset_type = 'option' AND open_close = '开仓'"""
+        ).fetchone()["identity_id"]
+    trading_management.classify_trade_identities(
+        [option_id], subject["id"], "strategic_hedging",
+        "战略套保-期权结构化套利", "", "tester",
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            "i2609-c-700": trading_management.QuoteSnapshot(
+                last_price=5,
+                market_time="2026-07-20 14:30:00",
+                source="tqsdk",
+                multiplier=100,
+                underlying_symbol="DCE.i2609",
+                underlying_price=780,
+                expiry_date="2026-08-07",
+                iv=0.22,
+                delta=0.4,
+                gamma=0.01,
+                theta=-0.05,
+                vega=0.1,
+                rho=0.02,
+            )
+        },
+    )
+
+    result = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    item = result["items"][0]
+    assert item["market_price"] == 5
+    assert item["valuation_price"] == 5
+    assert item["valuation_source"] == "last_trade"
+    assert item["valuation_status"] == "live"
+    assert item["floating_pnl"] == pytest.approx(78.8)
+    assert item["iv"] == pytest.approx(0.22)
+    assert item["delta_exposure"] == pytest.approx(40)
+    assert item["gamma_exposure"] == pytest.approx(1)
+    assert item["theta_exposure"] == pytest.approx(-5)
+    assert item["vega_exposure"] == pytest.approx(10)
+    assert item["delta"] == pytest.approx(0.4)
+    assert item["gamma"] == pytest.approx(0.01)
+    assert item["theta"] == pytest.approx(-0.05 / 360)
+    assert item["vega"] == pytest.approx(0.001)
+    assert result["summary"]["floating_pnl"] == pytest.approx(78.8)
+    assert result["summary"]["delta"] == pytest.approx(0.4)
+    assert result["summary"]["gamma"] == pytest.approx(0.01)
+    assert result["summary"]["theta"] == pytest.approx(-0.05 / 360)
+    assert result["summary"]["vega"] == pytest.approx(0.001)
+
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            "i2609-c-700": trading_management.QuoteSnapshot(
+                settlement_price=4.8,
+                multiplier=100,
+                source="settlement_statement",
+            )
+        },
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO trading_position_snapshots
+                (identity_id,batch_id,source_row_id,snapshot_date,snapshot_time,
+                 exchange,contract,asset_type,direction,open_date,quantity,
+                 average_price,margin,valuation_price,floating_pnl,market_time,
+                 is_current,valuation_status,data_status,verification_status)
+            SELECT identity_id,batch_id,source_row_id,snapshot_date,snapshot_time,
+                   '大商所','i2609','future','买',open_date,1,
+                   680,0,680,NULL,NULL,1,'settlement_reference',
+                   data_status,verification_status
+            FROM trading_position_snapshots ORDER BY id LIMIT 1
+            """
+        )
+        conn.commit()
+    fallback = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert fallback["items"][0]["valuation_status"] == "settlement_reference"
+    assert fallback["items"][0]["underlying_symbol"] == "i2609"
+    assert fallback["items"][0]["underlying_price"] == pytest.approx(680)
+    assert fallback["items"][0]["expiry_date"] == "2026-08-18"
+    assert fallback["items"][0]["valuation_date"] == "2026-06-30"
+    assert fallback["items"][0]["iv"] is None
+    for greek in ("delta", "gamma", "theta", "vega"):
+        assert fallback["items"][0][greek] is None
+        assert fallback["summary"][greek] is None
+
+    monkeypatch.setattr(
+        trading_management, "_beijing_today", lambda: date(2026, 8, 19)
+    )
+    expired = trading_management.query_business_rows(
+        "options", "positions", trading_management.FactFilters(page=1, page_size=20)
+    )
+    expired_item = expired["items"][0]
+    assert expired_item["is_expired"] is True
+    assert expired_item["valuation_status"] == "expired"
+    assert expired_item["valuation_price"] is None
+    assert expired_item["iv"] is None
+    assert expired_item["floating_pnl"] is None
+    for greek in ("delta", "gamma", "theta", "vega"):
+        assert expired_item[greek] is None
+        assert expired["summary"][greek] is None
+    assert expired["summary"]["floating_pnl"] is None
+
+
+def test_overview_business_type_filters_assigned_fact_shares(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE trading_business_assignments
+            SET business_type = 'strategic_hedging'
+            WHERE trade_identity_id = (
+                SELECT identity_id FROM trading_trade_facts
+                WHERE contract = 'rb2610' AND open_close = '平仓'
+            )
+            """
+        )
+
+    all_rows = trading_management.build_overview(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+    basic = trading_management.build_overview(
+        trading_management.FactFilters(
+            business_type="basic_hedging", page=1, page_size=20
+        )
+    )
+    strategic = trading_management.build_overview(
+        trading_management.FactFilters(
+            business_type="strategic_hedging", page=1, page_size=20
+        )
+    )
+
+    assert all_rows["trades"]["record_count"] > basic["trades"]["record_count"]
+    assert basic["trades"]["record_count"] == 2
+    assert strategic["trades"]["record_count"] == 0
+
+
+def test_fact_filters_reject_unknown_business_type():
+    with pytest.raises(ValueError, match="未知业务类型"):
+        trading_management.FactFilters(business_type="other")
 
 
 def test_fact_trade_classification_filter_returns_assignment_metadata(tmp_path, monkeypatch):
@@ -1092,7 +2226,7 @@ def test_fact_positions_aggregate_snapshot_rows_by_contract_direction_and_asset(
     assert any(row["source_record_count"] == 2 for row in result["items"])
 
 
-def test_option_business_positions_include_unclassified_open_options(tmp_path, monkeypatch):
+def test_option_business_positions_exclude_unclassified_open_options(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
 
@@ -1100,14 +2234,14 @@ def test_option_business_positions_include_unclassified_open_options(tmp_path, m
         "options", "positions", trading_management.FactFilters(page=1, page_size=20)
     )
 
-    assert result["summary"]["record_count"] == 1
-    assert result["summary"]["quantity"] == 1
-    assert result["items"][0]["contract"] == "i2609-c-700"
-    assert result["items"][0]["average_price"] == 4.2
-    assert result["items"][0]["floating_pnl_status"] == "pending_calculation"
+    assert result["summary"]["record_count"] == 0
+    assert result["summary"]["quantity"] == 0
+    assert result["items"] == []
 
 
-def add_later_classified_open(batch_id, subject_id):
+def add_later_classified_open(
+    batch_id, subject_id, business_type="basic_hedging"
+):
     with db.connect() as conn:
         source_row_id = conn.execute(
             """
@@ -1143,11 +2277,57 @@ def add_later_classified_open(batch_id, subject_id):
             """
             INSERT INTO trading_business_assignments
                 (trade_identity_id, business_subject_id, business_type, strategy_id, assigned_by)
-            VALUES (?, ?, 'basic_hedging', ?, 'tester')
+            VALUES (?, ?, ?, ?, 'tester')
             """,
-            (identity_id, subject_id, strategy_id),
+            (identity_id, subject_id, business_type, strategy_id),
         )
     return identity_id
+
+
+def test_manual_rematch_supports_mixed_business_attribution(tmp_path, monkeypatch):
+    confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
+    trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
+    with db.connect() as conn:
+        subject_id = conn.execute(
+            "SELECT id FROM trading_business_subjects WHERE name = '上海钧能'"
+        ).fetchone()["id"]
+        close_id = conn.execute(
+            "SELECT identity_id FROM trading_close_facts"
+        ).fetchone()["identity_id"]
+        original_open_id = conn.execute(
+            "SELECT open_trade_identity_id FROM trading_business_close_allocations"
+        ).fetchone()["open_trade_identity_id"]
+    strategic_open_id = add_later_classified_open(
+        confirmed["batch_id"], subject_id, "strategic_hedging"
+    )
+
+    preview = trading_management.preview_business_rematch(
+        close_id,
+        [
+            {"open_trade_identity_id": original_open_id, "quantity": 1},
+            {"open_trade_identity_id": strategic_open_id, "quantity": 1},
+        ],
+        allocation_version=1,
+    )
+    trading_management.confirm_business_rematch(
+        close_id, preview["preview_token"], allocation_version=1, actor="tester"
+    )
+
+    closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert len(closes["items"]) == 2
+    assert {row["business_type"] for row in closes["items"]} == {
+        "basic_hedging", "strategic_hedging",
+    }
+    assert sum(row["matched_quantity"] for row in closes["items"]) == pytest.approx(2)
+    assert [row["fact_close_pnl"] for row in closes["items"]] == pytest.approx(
+        [600, 600]
+    )
+    assert closes["summary"]["fact_close_pnl"] == pytest.approx(1200)
+    assert [row["allocated_close_fee"] for row in closes["items"]] == pytest.approx(
+        [3, 3]
+    )
 
 
 def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp_path, monkeypatch):
@@ -1181,22 +2361,15 @@ def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp
         allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
         fact_allocation = conn.execute("SELECT * FROM trading_fact_close_allocations").fetchone()
         audit = conn.execute("SELECT * FROM trading_business_allocation_audit").fetchone()
-        close_assignment = conn.execute(
-            """
-            SELECT ba.*, s.name AS strategy
-            FROM trading_close_trade_links l
-            JOIN trading_business_assignments ba ON ba.trade_identity_id = l.close_trade_identity_id
-            LEFT JOIN trading_strategies s ON s.id = ba.strategy_id
-            WHERE l.close_identity_id = ?
-            """,
-            (close_id,),
-        ).fetchone()
     assert allocation["open_trade_identity_id"] == new_open_id
     assert allocation["source"] == "manual_override"
     assert fact_allocation["open_trade_identity_id"] == old_open_id
     assert audit["before_business_pnl"] == 400
     assert audit["after_business_pnl"] == 200
-    assert close_assignment["strategy"] == "晚开策略"
+    closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert closes["items"][0]["strategy"] == "晚开策略"
 
     positions = trading_management.query_business_rows(
         "junneng", "positions", trading_management.FactFilters(page=1, page_size=20)
@@ -1224,7 +2397,7 @@ def test_manual_rematch_rejects_stale_version_and_cross_contract(tmp_path, monke
         )
 
 
-def test_restore_default_business_match_reverts_allocation_and_close_inheritance(tmp_path, monkeypatch):
+def test_restore_default_business_match_reverts_allocation_attribution(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
     with db.connect() as conn:
@@ -1249,22 +2422,17 @@ def test_restore_default_business_match_reverts_allocation_and_close_inheritance
     assert restored["business_pnl"] == 400
     with db.connect() as conn:
         allocation = conn.execute("SELECT * FROM trading_business_close_allocations").fetchone()
-        close_assignment = conn.execute(
-            """
-            SELECT ba.strategy_id
-            FROM trading_close_trade_links l
-            JOIN trading_business_assignments ba ON ba.trade_identity_id = l.close_trade_identity_id
-            WHERE l.close_identity_id = ?
-            """,
-            (close_id,),
-        ).fetchone()
         open_assignment = conn.execute(
             "SELECT strategy_id FROM trading_business_assignments WHERE trade_identity_id = ?",
             (fact_open_id,),
         ).fetchone()
     assert allocation["open_trade_identity_id"] == fact_open_id
     assert allocation["source"] == "fact_default"
-    assert close_assignment["strategy_id"] == open_assignment["strategy_id"]
+    closes = trading_management.query_business_rows(
+        "junneng", "closes", trading_management.FactFilters(page=1, page_size=20)
+    )
+    assert closes["items"][0]["strategy"] == "代内部公司套保"
+    assert open_assignment["strategy_id"] is not None
 
 
 def test_fully_closed_contract_reports_business_pnl_reconciliation_difference(tmp_path, monkeypatch):
@@ -1290,6 +2458,7 @@ def test_trading_management_exposes_complete_p0_api_surface():
     expected = {
         ("/imports/preview", "POST"),
         ("/imports/{preview_batch_id}/confirm", "POST"),
+        ("/imports/jobs/{job_id}", "GET"),
         ("/config", "GET"),
         ("/business-assignments/batch-confirm", "POST"),
         ("/business/junneng/{tab}", "GET"),
@@ -1300,3 +2469,9 @@ def test_trading_management_exposes_complete_p0_api_surface():
         ("/business-closes/{close_identity_id}/restore-default", "POST"),
     }
     assert expected <= routes
+
+
+def test_trading_import_preview_schema_accepts_one_statement_file_only():
+    fields = set(trading_management.TradingImportPreviewIn.model_fields)
+
+    assert fields == {"account_id", "statement_file"}
