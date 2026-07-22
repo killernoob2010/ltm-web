@@ -45,7 +45,7 @@ MODULES = [
     ("台账管理", "subsidiary_hedging", "子公司套保台账"),
     ("台账管理", "option_trading", "期权交易台账"),
     ("交易管理", "trading_overview", "总览"),
-    ("交易管理", "trading_positions", "持仓与交易"),
+    ("交易管理", "trading_positions", "持仓与交易明细"),
     ("交易管理", "trading_sh_junneng", "上海钧能台账"),
     ("交易管理", "trading_options", "期权台账"),
     ("交易管理", "trading_export", "汇总与导出"),

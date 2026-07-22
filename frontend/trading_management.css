@@ -40,6 +40,11 @@
 
 .tm-period-bar,.tm-selection-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
 .tm-period-selection { display:flex; align-items:center; gap:8px; }
+.tm-period-selection input[type="month"],.tm-period-selection input[type="number"] { min-height:36px; border:1px solid var(--tm-border); border-radius:7px; background:#fff; color:var(--tm-text); padding:0 10px; }
+.tm-period-selection input[type="number"] { width:92px; }
+.tm-applied-range { margin:-2px 0 12px; color:var(--tm-muted); font-size:12px; }
+.tm-overview-loading { position:relative; opacity:.72; transition:opacity .12s ease; }
+.tm-overview-loading::after { content:"正在更新筛选结果…"; position:absolute; top:46px; right:0; z-index:3; padding:7px 10px; border:1px solid var(--tm-border); border-radius:7px; background:#fff; color:var(--tm-blue); font-size:12px; box-shadow:0 5px 14px rgba(15,23,42,.08); }
 .tm-selection-bar { justify-content:flex-start; padding:10px 12px; background:var(--tm-surface-soft); border:1px solid var(--tm-border); border-bottom:0; border-radius:10px 10px 0 0; }
 .tm-selection-bar + .tm-table-wrap { border-radius:0 0 10px 10px; }
 .tm-summary-band { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); background:#fff; border:1px solid var(--tm-border); border-radius:10px; overflow:hidden; }

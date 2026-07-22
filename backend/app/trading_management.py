@@ -23,6 +23,11 @@ from pydantic import BaseModel
 from . import db
 from .permissions import require_permission
 from .trading_settlement import parse_settlement_statement
+from .trading_overview import (
+    OverviewFilters,
+    build_trading_overview,
+    latest_overview_date,
+)
 from .trading_valuation import (
     QuoteRequest,
     QuoteSnapshot,
@@ -2864,6 +2869,7 @@ def list_trading_config() -> dict[str, Any]:
             latest_junneng_close["close_date"]
             if latest_junneng_close else None
         ),
+        "latest_overview_date": latest_overview_date(),
     }
 
 
@@ -4214,6 +4220,23 @@ def _api_filters(
     )
 
 
+def _api_overview_filters(
+    account_id: Optional[int] = None,
+    scope: str = "all",
+    start_date: str = "",
+    end_date: str = "",
+) -> OverviewFilters:
+    try:
+        return OverviewFilters(
+            account_id=account_id,
+            scope=scope,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
 async def trading_management_current_user(
     authorization: Optional[str] = Header(default=None),
 ) -> dict:
@@ -4228,11 +4251,11 @@ async def trading_management_current_user(
 
 @router.get("/overview")
 def get_trading_overview(
-    filters: FactFilters = Depends(_api_filters),
+    filters: OverviewFilters = Depends(_api_overview_filters),
     user=Depends(trading_management_current_user),
 ):
     require_permission(user, "trading.overview", "view")
-    return build_overview(filters)
+    return build_trading_overview(filters)
 
 
 def _get_trading_facts(

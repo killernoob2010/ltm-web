@@ -1,4 +1,5 @@
 (function() {
+  const overviewState = window.TradingOverviewState;
   function monthRangeForDate(value) {
     if (!/^\d{8}$/.test(value || "")) return { from: "", to: "" };
     const year = Number(value.slice(0, 4));
@@ -37,7 +38,10 @@
     config: null,
     overview: null,
     overviewMode: "month",
-    overviewBusinessType: "",
+    overviewScope: "all",
+    overviewAccountId: null,
+    overviewDraft: null,
+    overviewAppliedFilters: null,
     selected: new Set(),
     selectionBusy: false,
     importPreviewId: null,
@@ -53,6 +57,7 @@
   let businessQuoteRefreshTimer = null;
   let businessQuoteRefreshInFlight = false;
   let businessVisibilityObserver = null;
+  let overviewLoader = null;
 
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
@@ -85,7 +90,7 @@
 
   const VIEW_COPY = {
     trading_overview: ["交易总览", "全量文华交易的领导驾驶舱", "overview"],
-    trading_positions: ["持仓与交易", "查询、核验和归类全部真实交易事实", "positions"],
+    trading_positions: ["持仓与交易明细", "查询和核验全部成交、平仓及持仓事实", "positions"],
     trading_sh_junneng: ["上海钧能台账", "钢材套保业务的专用视图", "junneng"],
     trading_options: ["期权台账", "期权持仓、成交与风险视图", "options"],
     trading_export: ["汇总与导出", "统一预览并输出业务台账与交易模板", "export"],
@@ -128,7 +133,11 @@
       tm.businessDates.junneng.closes = monthRangeForDate(tm.config.latest_junneng_close_date);
       tm.businessDatesInitialized = true;
     }
+    if (!tm.overviewDraft) {
+      tm.overviewDraft = overviewState.defaultDraft(tm.config.latest_overview_date);
+    }
     $("#tmAccountFilter").innerHTML = '<option value="">全部账户</option>' + tm.config.accounts.map((item) => `<option value="${item.id}">${esc(item.display_name || item.account_code)}</option>`).join("");
+    $("#tmAccountFilter").value = tm.overviewAccountId == null ? "" : String(tm.overviewAccountId);
   }
 
   function switchInternalView(view) {
@@ -145,65 +154,142 @@
   }
 
   function dailyPnlChart(rows) {
-    if (!rows.length) return '<div class="tm-chart-empty">暂无平仓盈亏数据</div>';
+    const availableRows = rows.filter((row) => row.value != null);
+    if (!availableRows.length) return '<div class="tm-chart-empty">当前范围暂无盈亏数据</div>';
     const width = 760;
     const height = 250;
     const left = 52;
     const right = 18;
     const top = 18;
     const bottom = 34;
-    const values = rows.map((row) => Number(row.fact_close_pnl || 0));
+    const values = availableRows.map((row) => Number(row.value || 0));
     const minimum = Math.min(0, ...values);
     const maximum = Math.max(0, ...values);
     const span = maximum - minimum || 1;
-    const x = (index) => left + (rows.length === 1 ? (width - left - right) / 2 : index * (width - left - right) / (rows.length - 1));
+    const x = (index) => left + (availableRows.length === 1 ? (width - left - right) / 2 : index * (width - left - right) / (availableRows.length - 1));
     const y = (value) => top + (maximum - value) * (height - top - bottom) / span;
     const zeroY = y(0);
-    const labelStep = Math.max(1, Math.ceil(rows.length / 6));
-    const points = rows.map((row, index) => `${x(index)},${y(values[index])}`).join(" ");
-    const dots = rows.map((row, index) => {
+    const labelStep = Math.max(1, Math.ceil(availableRows.length / 6));
+    const points = availableRows.map((row, index) => `${x(index)},${y(values[index])}`).join(" ");
+    const dots = availableRows.map((row, index) => {
       const value = values[index];
       const tone = value >= 0 ? "positive" : "negative";
-      const label = index % labelStep === 0 || index === rows.length - 1 ? `<text class="tm-chart-label" x="${x(index)}" y="238" text-anchor="middle">${esc(row.date || "")}</text>` : "";
+      const label = index % labelStep === 0 || index === availableRows.length - 1 ? `<text class="tm-chart-label" x="${x(index)}" y="238" text-anchor="middle">${esc(row.date || "")}</text>` : "";
       return `<line class="tm-chart-stem ${tone}" x1="${x(index)}" y1="${zeroY}" x2="${x(index)}" y2="${y(value)}"></line><circle class="tm-chart-point ${tone}" cx="${x(index)}" cy="${y(value)}" r="3.5"><title>${esc(row.date || "")}：${money(value)} 元</title></circle>${label}`;
     }).join("");
     return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="逐日平仓盈亏趋势"><line class="tm-chart-zero" x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}"></line><polyline class="tm-chart-line" points="${points}"></polyline>${dots}</svg>`;
   }
 
-  function renderOverviewView(data) {
-    const summary = `<div class="tm-summary-band">
-      ${metric("期间成交", `${num(data.trades.record_count)} 笔`, `${num(data.trades.quantity)} 手 · 文华成交记录`)}
-      ${metric("期间平仓盈亏", `${money(data.closes.fact_close_pnl)} 元`, "普通平仓及期权了结盈亏", Number(data.closes.fact_close_pnl) >= 0 ? "tm-positive" : "tm-negative")}
-      ${metric("期间手续费", `${num(data.trades.fee)} 元`, "文华成交记录")}
-      ${metric("期末持仓", `${num(data.positions.record_count)} 条`, `${data.positions.snapshot_date || "—"} · 事实快照`)}
-      ${metric("期末保证金", `${num(data.positions.margin)} 元`, "文华期末持仓文件")}
-    </div>`;
-    $("#tmOverviewView").innerHTML = `
-      <div class="tm-period-bar"><div class="tm-tabs">${[["month","月"],["day","日"],["quarter","季"],["custom","自定义"]].map(([mode,label])=>`<button class="tm-tab-button ${tm.overviewMode===mode?"active":""}" data-overview-period="${mode}">${label}</button>`).join("")}</div><div class="tm-tabs">${[["","全部"],["basic_hedging","基础套保"],["strategic_hedging","战略套保"]].map(([value,label])=>`<button class="tm-tab-button ${tm.overviewBusinessType===value?"active":""}" data-overview-business="${value}">${label}</button>`).join("")}</div><div class="tm-period-selection">${tm.overviewMode === "custom" ? `<input id="tmOverviewFrom" type="date"><span>至</span><input id="tmOverviewTo" type="date"><button id="tmOverviewApply">应用</button>` : ""}<span class="tm-tag blue">事实层 · 只读</span></div></div>
-      ${summary}
-      <section class="tm-panel tm-overview-chart"><div class="tm-panel-header"><div><h2>逐日平仓盈亏趋势</h2><p class="tm-section-copy">按普通平仓及期权了结盈亏汇总</p></div><span class="tm-tag">事实口径</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_close_pnl || [])}</div></section>
-      <div class="tm-overview-mini-grid">
-        <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>导入与核验状态</small></div><div class="tm-quality-list">${qualityRow("成交记录", `${num(data.trades.record_count)} 条已读取`, "已确认", "blue")}${qualityRow("平仓与期权了结", `${num(data.closes.record_count)} 条`, "已匹配", "blue")}${qualityRow("持仓快照", data.positions.snapshot_date || "暂无快照", data.data_status.positions === "ok" ? "已确认" : "待导入", data.data_status.positions === "ok" ? "blue" : "amber")}${qualityRow("浮动盈亏", "计算口径待最终确认", "待计算", "amber")}</div></section>
-        <section class="tm-panel"><div class="tm-panel-header"><div><h2>业务归属分布</h2><p class="tm-section-copy">事实交易归类进度</p></div><button class="tm-row-button" data-go-positions>前往归类 →</button></div><div class="tm-business-list">${qualityRow("上海钧能", "RB / HC 正式归属", "业务层")}${qualityRow("期权", "默认展示全部期权", "业务层")}${qualityRow("其它与待归属", "保留事实层完整记录", "待确认", "amber")}</div></section>
-        <section class="tm-panel"><div class="tm-panel-header"><h2>活跃合约</h2><small>按当前事实范围</small></div><div class="tm-business-list">${qualityRow("成交手数", `${num(data.trades.quantity)} 手`, "全量")}${qualityRow("持仓手数", `${num(data.positions.quantity)} 手`, "期末")}${qualityRow("期权风险指标", "Delta / Gamma / Theta / Vega", "待计算", "amber")}</div></section>
-      </div>`;
-    $("[data-go-positions]")?.addEventListener("click", () => document.querySelector('.menu-item') && activateModule("trading_positions"));
-    document.querySelectorAll("[data-overview-period]").forEach((button)=>button.addEventListener("click",()=>{tm.overviewMode=button.dataset.overviewPeriod;loadOverview().catch(showError);}));
-    document.querySelectorAll("[data-overview-business]").forEach((button)=>button.addEventListener("click",()=>{tm.overviewBusinessType=button.dataset.overviewBusiness;loadOverview().catch(showError);}));
-    $("#tmOverviewApply")?.addEventListener("click",()=>{tm.dateFrom=$("#tmOverviewFrom").value.replaceAll("-","");tm.dateTo=$("#tmOverviewTo").value.replaceAll("-","");loadOverview().catch(showError);});
+  function overviewPeriodControl() {
+    const draft = tm.overviewDraft || overviewState.defaultDraft("");
+    if (tm.overviewMode === "day") {
+      return `<input id="tmOverviewDay" type="date" value="${esc(draft.day)}"><button id="tmOverviewApply" type="button">应用</button>`;
+    }
+    if (tm.overviewMode === "month") {
+      return `<input id="tmOverviewMonth" type="month" value="${esc(draft.month)}"><button id="tmOverviewApply" type="button">应用</button>`;
+    }
+    if (tm.overviewMode === "quarter") {
+      return `<input id="tmOverviewYear" type="number" min="2000" max="2100" value="${esc(draft.year)}" aria-label="年份"><select id="tmOverviewQuarter" aria-label="季度">${[1,2,3,4].map((value)=>`<option value="${value}" ${String(value)===String(draft.quarter)?"selected":""}>第 ${value} 季度</option>`).join("")}</select><button id="tmOverviewApply" type="button">应用</button>`;
+    }
+    return `<input id="tmOverviewFrom" type="date" value="${esc(draft.customFrom)}"><span>至</span><input id="tmOverviewTo" type="date" value="${esc(draft.customTo)}"><button id="tmOverviewApply" type="button">应用</button>`;
   }
 
-  async function loadOverview() {
-    const params = new URLSearchParams();
-    const dates = (tm.overview?.daily_close_pnl || []).map((row)=>row.date).filter(Boolean);
-    const latest = dates.at(-1) || tm.overview?.positions?.snapshot_date || "";
-    if (tm.overviewMode === "day" && latest) { params.set("start_date",latest); params.set("end_date",latest); }
-    if (tm.overviewMode === "month" && latest) { params.set("start_date",`${latest.slice(0,6)}01`); params.set("end_date",`${latest.slice(0,6)}31`); }
-    if (tm.overviewMode === "quarter" && latest) { const month=Number(latest.slice(4,6)); const start=String(Math.floor((month-1)/3)*3+1).padStart(2,"0"); const end=String(Number(start)+2).padStart(2,"0"); params.set("start_date",`${latest.slice(0,4)}${start}01`); params.set("end_date",`${latest.slice(0,4)}${end}31`); }
-    if (tm.overviewMode === "custom") { if (tm.dateFrom) params.set("start_date",tm.dateFrom); if (tm.dateTo) params.set("end_date",tm.dateTo); }
-    if (tm.overviewBusinessType) params.set("business_type",tm.overviewBusinessType);
-    tm.overview = await api(`/api/trading-management/overview${params.size ? `?${params}` : ""}`);
-    renderOverviewView(tm.overview);
+  function updateOverviewDraftFromControls() {
+    const draft = { ...tm.overviewDraft };
+    if (tm.overviewMode === "day") draft.day = $("#tmOverviewDay").value;
+    if (tm.overviewMode === "month") draft.month = $("#tmOverviewMonth").value;
+    if (tm.overviewMode === "quarter") {
+      draft.year = $("#tmOverviewYear").value;
+      draft.quarter = $("#tmOverviewQuarter").value;
+    }
+    if (tm.overviewMode === "custom") {
+      draft.customFrom = $("#tmOverviewFrom").value;
+      draft.customTo = $("#tmOverviewTo").value;
+    }
+    tm.overviewDraft = draft;
+  }
+
+  function overviewAccountLabel(accountId) {
+    if (accountId == null) return "全部账户";
+    const account = (tm.config?.accounts || []).find((item) => Number(item.id) === Number(accountId));
+    return account ? account.display_name || account.account_code : `账户 ${accountId}`;
+  }
+
+  function overviewSnapshotNote(positions) {
+    const dates = positions.snapshot_dates || [];
+    if (positions.snapshot_status === "missing") return "无可用持仓快照";
+    if (positions.snapshot_status === "partial") return "部分账户无可用持仓快照";
+    if (positions.snapshot_status === "mixed") return `${dates[0]} ～ ${dates.at(-1)} · 各账户最近快照`;
+    return dates[0] ? `持仓截至 ${dates[0]}` : "无可用持仓快照";
+  }
+
+  function renderOverviewView(data) {
+    const isFact = data.pnl.metric === "fact_pnl";
+    const pnlLabel = isFact ? "期间事实盈亏" : "期间业务归属盈亏";
+    const trendTitle = isFact ? "逐日事实盈亏趋势" : "逐日业务归属盈亏趋势";
+    const scopeLabel = isFact ? "事实口径" : "业务口径";
+    const positionsAvailable = data.positions.group_count != null;
+    const snapshotNote = overviewSnapshotNote(data.positions);
+    const applied = tm.overviewAppliedFilters || {
+      accountId: data.filters.account_id,
+      startDate: data.filters.start_date,
+      endDate: data.filters.end_date,
+    };
+    const appliedSummary = `统计期间：${applied.startDate} ～ ${applied.endDate}｜${snapshotNote}｜${overviewAccountLabel(applied.accountId)}`;
+    const pnlValue = data.pnl.value == null ? "—" : `${money(data.pnl.value)} 元`;
+    const pnlTone = data.pnl.value == null ? "" : Number(data.pnl.value) >= 0 ? "tm-positive" : "tm-negative";
+    const summary = `<div class="tm-summary-band">
+      ${metric("期间成交", `${num(data.trades.record_count)} 笔`, `${num(data.trades.quantity)} 手 · ${scopeLabel}`)}
+      ${metric(pnlLabel, pnlValue, isFact ? "当前有效平仓事实" : "当前业务开平关系", pnlTone)}
+      ${metric("期间手续费", `${num(data.trades.fee)} 元`, `${scopeLabel}成交记录`)}
+      ${metric("期末持仓", positionsAvailable ? `${num(data.positions.group_count)} 组` : "—", snapshotNote)}
+      ${metric("期末保证金", data.positions.margin == null ? "—" : `${num(data.positions.margin)} 元`, positionsAvailable ? `${scopeLabel}期末持仓` : "当前范围不可用")}
+    </div>`;
+    $("#tmOverviewView").innerHTML = `
+      <div class="tm-period-bar"><div class="tm-tabs">${[["month","月"],["day","日"],["quarter","季"],["custom","自定义"]].map(([mode,label])=>`<button class="tm-tab-button ${tm.overviewMode===mode?"active":""}" data-overview-period="${mode}">${label}</button>`).join("")}</div><div class="tm-tabs">${[["all","全部"],["basic_hedging","基础套保"],["strategic_hedging","战略套保"]].map(([value,label])=>`<button class="tm-tab-button ${tm.overviewScope===value?"active":""}" data-overview-business="${value}">${label}</button>`).join("")}</div><div class="tm-period-selection">${overviewPeriodControl()}<span class="tm-tag blue">${scopeLabel}</span></div></div>
+      <div class="tm-applied-range">${esc(appliedSummary)}</div>
+      ${summary}
+      <section class="tm-panel tm-overview-chart"><div class="tm-panel-header"><div><h2>${trendTitle}</h2><p class="tm-section-copy">按当前统计期间和统计范围汇总</p></div><span class="tm-tag">${scopeLabel}</span></div><div class="tm-chart-wrap">${dailyPnlChart(data.daily_pnl || [])}</div></section>
+      <div class="tm-overview-mini-grid">
+        <section class="tm-panel tm-quality-panel"><div class="tm-panel-header"><h2>数据质量</h2><small>当前账户与期间</small></div><div class="tm-quality-list">${qualityRow("成交事实", `${num(data.trades.record_count)} 笔`, "已读取", "blue")}${qualityRow("平仓事实", `${num(data.data_quality.close_record_count)} 笔`, "已读取", "blue")}${qualityRow("未归属开仓", `${num(data.data_quality.unassigned_trade_count)} 笔`, data.data_quality.unassigned_trade_count ? "待归属" : "完整", data.data_quality.unassigned_trade_count ? "amber" : "blue")}${qualityRow("未分配平仓", `${num(data.data_quality.unallocated_close_count)} 笔`, data.data_quality.unallocated_close_count ? "待处理" : "完整", data.data_quality.unallocated_close_count ? "amber" : "blue")}${qualityRow("持仓快照", snapshotNote, positionsAvailable ? "可用" : "缺失", positionsAvailable ? "blue" : "amber")}</div></section>
+        <section class="tm-panel"><div class="tm-panel-header"><div><h2>统计口径</h2><p class="tm-section-copy">当前结果只采用一种盈亏口径</p></div><button class="tm-row-button" data-go-positions>前往持仓与交易明细 →</button></div><div class="tm-business-list">${qualityRow("统计范围", data.filters.scope_label, scopeLabel, "blue")}${qualityRow("盈亏指标", pnlLabel, scopeLabel)}${qualityRow("业务持仓匹配异常", `${num(data.data_quality.unmatched_business_position_count)} 组`, data.data_quality.unmatched_business_position_count ? "待核验" : "正常", data.data_quality.unmatched_business_position_count ? "amber" : "blue")}</div></section>
+        <section class="tm-panel"><div class="tm-panel-header"><h2>当前范围</h2><small>${scopeLabel}</small></div><div class="tm-business-list">${qualityRow("成交手数", `${num(data.trades.quantity)} 手`, "期间")}${qualityRow("持仓手数", data.positions.quantity == null ? "—" : `${num(data.positions.quantity)} 手`, "期末")}${qualityRow("账户", overviewAccountLabel(data.filters.account_id), "已应用")}</div></section>
+      </div>`;
+    $("[data-go-positions]")?.addEventListener("click", () => document.querySelector('.menu-item') && activateModule("trading_positions"));
+    document.querySelectorAll("[data-overview-period]").forEach((button)=>button.addEventListener("click",()=>{tm.overviewMode=button.dataset.overviewPeriod;renderOverviewView(data);}));
+    document.querySelectorAll("[data-overview-business]").forEach((button)=>button.addEventListener("click",()=>{tm.overviewScope=button.dataset.overviewBusiness;loadOverview().catch(()=>{});}));
+    $("#tmOverviewApply")?.addEventListener("click",()=>{updateOverviewDraftFromControls();loadOverview().catch(()=>{});});
+  }
+
+  function getOverviewLoader() {
+    if (!overviewLoader) {
+      overviewLoader = overviewState.createLoader({
+        api: (url) => api(url),
+        onCommit: (data, filters) => {
+          tm.overview = data;
+          tm.overviewAppliedFilters = filters;
+          renderOverviewView(data);
+        },
+        onLoading: (loading) => {
+          const view = $("#tmOverviewView");
+          if (!view) return;
+          view.classList.toggle("tm-overview-loading", loading);
+          view.setAttribute("aria-busy", loading ? "true" : "false");
+        },
+        onError: (error) => showToast(`本次筛选未生效：${error.message || "加载失败"}`),
+      });
+    }
+    return overviewLoader;
+  }
+
+  function loadOverview() {
+    const filters = overviewState.requestFilters({
+      accountId: tm.overviewAccountId,
+      scope: tm.overviewScope,
+      mode: tm.overviewMode,
+      draft: tm.overviewDraft,
+    });
+    return getOverviewLoader().load(filters);
   }
 
   function factTabs() {
@@ -623,6 +709,12 @@
     if (tm.initialized) return; tm.initialized = true;
     $("#tmCloseDrawer").addEventListener("click", closeDrawer);
     $("#tmDrawerBackdrop").addEventListener("click", closeDrawer);
+    $("#tmAccountFilter").addEventListener("change", () => {
+      tm.overviewAccountId = $("#tmAccountFilter").value
+        ? Number($("#tmAccountFilter").value)
+        : null;
+      if (tm.view === "overview") loadOverview().catch(()=>{});
+    });
     $("#tmDataInfoButton").addEventListener("click", () => openDrawer("数据说明","当前系统口径",`<div class="tm-quality-list">${qualityRow("数据来源","交易所日结单或月结单 TXT","事实层")}${qualityRow("重叠规则","月结优先，保留来源与差异审计","自动去重")}${qualityRow("业务归属","独立业务层，不改事实","可调整")}${qualityRow("真实交易操作","系统严格禁止","只读")}</div>`));
     document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
     document.addEventListener("visibilitychange", () => {
@@ -640,6 +732,7 @@
       bind(); stopBusinessQuoteRefresh(); tm.moduleCode = moduleCode; tm.permissions = permissions;
       const [title,subtitle,view] = VIEW_COPY[moduleCode]; tm.view = view;
       $("#tmPageTitle").textContent = title; $("#tmPageSubtitle").textContent = subtitle;
+      $("#tmAccountFilter").classList.toggle("hidden", view !== "overview");
       await ensureConfig(); await refresh();
     },
     deactivate() {

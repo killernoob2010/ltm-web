@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const tradingJs = readFileSync(new URL("../frontend/trading_management.js", import.meta.url), "utf8");
+const overviewStateJs = readFileSync(new URL("../frontend/trading_overview_state.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/trading_management.css", import.meta.url), "utf8");
 
@@ -76,7 +77,7 @@ test("option lifecycle events reuse close records with one type column", () => {
 test("prototype sections replace the simplified placeholder layout", () => {
   assert.match(tradingJs, /逐日平仓盈亏趋势/);
   assert.match(tradingJs, /数据质量/);
-  assert.match(tradingJs, /业务归属分布/);
+  assert.match(tradingJs, /统计口径/);
   assert.match(tradingJs, /统一输出/);
   assert.doesNotMatch(html, /class="trading-metric-grid"/);
 });
@@ -128,10 +129,10 @@ test("business ledgers keep only the summary rows beside tabs and filters", () =
 
 test("overview chart renders real daily close pnl instead of a fixed placeholder", () => {
   assert.match(tradingJs, /function dailyPnlChart/);
-  assert.match(tradingJs, /data\.daily_close_pnl/);
-  assert.match(tradingJs, /row\.fact_close_pnl/);
+  assert.match(tradingJs, /data\.daily_pnl/);
+  assert.match(tradingJs, /row\.value/);
   assert.doesNotMatch(tradingJs, /52,125 190,125 328,125/);
-  assert.match(tradingJs, /暂无平仓盈亏数据/);
+  assert.match(tradingJs, /当前范围暂无盈亏数据/);
 });
 
 test("prototype assignment status and business pagination are functional contracts", () => {
@@ -157,9 +158,38 @@ test("overview uses one compact row for the three secondary cards and real perio
   for (const label of ["全部", "基础套保", "战略套保"]) {
     assert.match(tradingJs, new RegExp(label));
   }
-  assert.match(tradingJs, /params\.set\("business_type",tm\.overviewBusinessType\)/);
+  assert.match(tradingJs + overviewStateJs, /scope/);
   assert.match(tradingJs, /tmOverviewFrom/);
   assert.match(tradingJs, /tmOverviewTo/);
+});
+
+test("overview uses explicit controls and removes the decorative top date filter", () => {
+  assert.doesNotMatch(html, /id="tmDateFilter"/);
+  assert.match(tradingJs, /id="tmOverviewDay"/);
+  assert.match(tradingJs, /id="tmOverviewMonth"/);
+  assert.match(tradingJs, /id="tmOverviewYear"/);
+  assert.match(tradingJs, /id="tmOverviewQuarter"/);
+  assert.match(tradingJs, /overviewAppliedFilters/);
+  assert.match(tradingJs + css, /tm-overview-loading/);
+  assert.match(tradingJs, /tmAccountFilter.*classList\.toggle\("hidden", view !== "overview"\)/);
+  assert.match(html, /trading_overview_state\.js/);
+});
+
+test("overview labels fact and business pnl without showing both at once", () => {
+  for (const label of [
+    "事实口径", "业务口径", "期间事实盈亏", "期间业务归属盈亏",
+    "逐日事实盈亏趋势", "逐日业务归属盈亏趋势",
+  ]) assert.match(tradingJs, new RegExp(label));
+  assert.match(tradingJs, /data\.pnl\.metric/);
+  assert.doesNotMatch(tradingJs, /data\.closes\.fact_close_pnl/);
+  assert.match(tradingJs, /平仓事实/);
+  assert.match(tradingJs, /close_record_count/);
+});
+
+test("fact detail entry is renamed without changing its module code", () => {
+  assert.match(tradingJs, /trading_positions:\s*\["持仓与交易明细"/);
+  assert.match(tradingJs, /查询和核验全部成交、平仓及持仓事实/);
+  assert.match(appJs, /trading_positions/);
 });
 
 test("business ledgers are classified archives without candidate controls", () => {

@@ -731,7 +731,7 @@ def test_trading_management_modules_are_new_first_level_menu():
 
     assert modules == [
         ("交易管理", "trading_overview", "总览"),
-        ("交易管理", "trading_positions", "持仓与交易"),
+        ("交易管理", "trading_positions", "持仓与交易明细"),
         ("交易管理", "trading_sh_junneng", "上海钧能台账"),
         ("交易管理", "trading_options", "期权台账"),
         ("交易管理", "trading_export", "汇总与导出"),
@@ -1443,6 +1443,43 @@ def test_fact_api_routes_are_registered():
     } <= paths
 
 
+def test_overview_api_uses_dedicated_account_scope_and_date_filters(monkeypatch):
+    filters = trading_management._api_overview_filters(
+        account_id=2,
+        scope="strategic_hedging",
+        start_date="20260701",
+        end_date="20260731",
+    )
+    captured = {}
+
+    def fake_build(value):
+        captured["filters"] = value
+        return {"filters": {"scope": value.scope}}
+
+    monkeypatch.setattr(trading_management, "build_trading_overview", fake_build)
+    result = trading_management.get_trading_overview(
+        filters=filters,
+        user={"id": 1, "role": "管理员"},
+    )
+
+    assert filters.account_id == 2
+    assert filters.scope == "strategic_hedging"
+    assert filters.start_date == "20260701"
+    assert filters.end_date == "20260731"
+    assert captured["filters"] is filters
+    assert result == {"filters": {"scope": "strategic_hedging"}}
+
+
+def test_overview_api_rejects_invalid_date_range_as_client_error():
+    with pytest.raises(Exception) as error:
+        trading_management._api_overview_filters(
+            start_date="20260731", end_date="20260701"
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "开始日期不能晚于结束日期"
+
+
 def test_batch_classification_validates_active_facts_once(tmp_path, monkeypatch):
     preview = create_preview_batch(tmp_path, monkeypatch)
     trading_management.confirm_trading_import(preview["preview_batch_id"], actor="tester")
@@ -1701,6 +1738,7 @@ def test_business_config_exposes_latest_junneng_close_date(tmp_path, monkeypatch
     config = trading_management.list_trading_config()
 
     assert config["latest_junneng_close_date"] == "20260630"
+    assert config["latest_overview_date"] == "20260630"
 
 
 def test_business_views_only_show_classified_junneng_and_options(tmp_path, monkeypatch):
