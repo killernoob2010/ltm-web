@@ -2330,6 +2330,238 @@ def test_manual_rematch_supports_mixed_business_attribution(tmp_path, monkeypatc
     )
 
 
+def setup_batch_rematch_sample(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        account_id = conn.execute("SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures'").fetchone()["id"]
+        batch_id = conn.execute(
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, created_by, confirmed_by)
+            VALUES (?, '20260601', '20260731', 'active', 'tester', 'tester')
+            """,
+            (account_id,),
+        ).lastrowid
+        subject_id = conn.execute(
+            "SELECT id FROM trading_business_subjects WHERE normalized_name = '上海钧能'"
+        ).fetchone()["id"]
+        strategy_id = conn.execute(
+            "SELECT id FROM trading_strategies WHERE normalized_name = '代内部公司套保'"
+        ).fetchone()["id"]
+        row_no = 1
+
+        def source_row(source_type):
+            nonlocal row_no
+            result = conn.execute(
+                """
+                INSERT INTO trading_source_rows
+                    (batch_id, source_type, source_file, source_sheet, source_row_no, raw_hash, raw_json)
+                VALUES (?, ?, 'batch-test.xlsx', '测试', ?, ?, '{}')
+                """,
+                (batch_id, source_type, row_no, f"{source_type}-{row_no}"),
+            ).lastrowid
+            row_no += 1
+            return result
+
+        open_pools = {}
+        open_specs = [
+            ("20260703", 3060, [10, 3, 2, 2, 1, 2]),
+            ("20260701", 3065, [20]),
+            ("20260629", 3082, [20]),
+            ("20260626", 3091, [10, 3, 2, 2, 1, 82]),
+            ("20260626", 3083, [20]),
+            ("20260625", 3095, [20]),
+            ("20260603", 3171, [100]),
+        ]
+        for open_date, price, fragments in open_specs:
+            ids = []
+            for index, quantity in enumerate(fragments):
+                identity_id = conn.execute(
+                    "INSERT INTO trading_fact_identities (account_id, fact_type, stable_key) VALUES (?, 'trade', ?)",
+                    (account_id, f"open-{open_date}-{price}-{index}"),
+                ).lastrowid
+                conn.execute(
+                    """
+                    INSERT INTO trading_trade_facts
+                        (identity_id, batch_id, source_row_id, trade_date, trade_time, exchange, contract,
+                         asset_type, side, open_close_raw, open_close, quantity, price, fee, verification_status)
+                    VALUES (?, ?, ?, ?, ?, 'SHFE', 'rb2610', 'future', '买', '开', '开仓', ?, ?, 0, 'verified')
+                    """,
+                    (identity_id, batch_id, source_row("trade"), open_date, f"09:{index:02d}:00", quantity, price),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO trading_business_assignments
+                        (trade_identity_id, business_subject_id, business_type, strategy_id, assigned_by)
+                    VALUES (?, ?, 'basic_hedging', ?, 'tester')
+                    """,
+                    (identity_id, subject_id, strategy_id),
+                )
+                ids.append((identity_id, quantity))
+            open_pools[price] = ids
+
+        close_pools = {}
+        for close_date, close_price, fragments in [
+            ("20260713", 3082, [5, 15, 180]),
+            ("20260708", 3101, [100]),
+        ]:
+            ids = []
+            for index, quantity in enumerate(fragments):
+                identity_id = conn.execute(
+                    "INSERT INTO trading_fact_identities (account_id, fact_type, stable_key) VALUES (?, 'close', ?)",
+                    (account_id, f"close-{close_date}-{close_price}-{index}"),
+                ).lastrowid
+                conn.execute(
+                    """
+                    INSERT INTO trading_close_facts
+                        (identity_id, batch_id, source_row_id, open_date, close_date, exchange, contract,
+                         asset_type, open_side, close_side, quantity, open_price, close_price,
+                         fact_close_pnl, matched_fee, fee_status, verification_status)
+                    VALUES (?, ?, ?, '20260603', ?, 'SHFE', 'rb2610', 'future', '买', '卖', ?, 0, ?, 0, 0, 'matched', 'verified')
+                    """,
+                    (identity_id, batch_id, source_row("close"), close_date, quantity, close_price),
+                )
+                ids.append((identity_id, quantity))
+            close_pools[close_price] = ids
+
+        default_pairs = [
+            (close_pools[3082][0][0], open_pools[3060][0][0], 5),
+            (close_pools[3082][1][0], open_pools[3060][0][0], 5),
+            (close_pools[3082][1][0], open_pools[3060][1][0], 3),
+            (close_pools[3082][1][0], open_pools[3060][2][0], 2),
+            (close_pools[3082][1][0], open_pools[3060][3][0], 2),
+            (close_pools[3082][1][0], open_pools[3060][4][0], 1),
+            (close_pools[3082][1][0], open_pools[3060][5][0], 2),
+        ]
+        remaining_close_id = close_pools[3082][2][0]
+        for price in [3065, 3082, 3091, 3083, 3095]:
+            default_pairs.extend((remaining_close_id, open_id, quantity) for open_id, quantity in open_pools[price])
+        default_pairs.extend((close_pools[3101][0][0], open_id, quantity) for open_id, quantity in open_pools[3171])
+        for close_id, open_id, quantity in default_pairs:
+            conn.execute(
+                """
+                INSERT INTO trading_fact_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, match_rule_version)
+                VALUES (?, ?, ?, 'test-fact')
+                """,
+                (close_id, open_id, quantity),
+            )
+            open_price = conn.execute(
+                "SELECT price FROM trading_trade_facts WHERE identity_id = ?", (open_id,)
+            ).fetchone()["price"]
+            close_price = conn.execute(
+                "SELECT close_price FROM trading_close_facts WHERE identity_id = ?", (close_id,)
+            ).fetchone()["close_price"]
+            pnl = (close_price - open_price) * quantity * 10
+            conn.execute(
+                """
+                INSERT INTO trading_business_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, source,
+                     business_pnl, rule_version, allocation_version, created_by)
+                VALUES (?, ?, ?, 'fact_default', ?, 'test-business', 1, 'tester')
+                """,
+                (close_id, open_id, quantity, pnl),
+            )
+    return {
+        "batch_id": batch_id,
+        "open_pools": open_pools,
+        "close_pools": close_pools,
+        "entry_close_id": close_pools[3082][0][0],
+    }
+
+
+def test_batch_rematch_group_aggregates_fact_fragments_into_quantity_pools(tmp_path, monkeypatch):
+    sample = setup_batch_rematch_sample(tmp_path, monkeypatch)
+
+    result = trading_management.get_business_rematch_group(
+        sample["entry_close_id"], start_date="20260701", end_date="20260731"
+    )
+
+    assert result["scope"]["contract"] == "rb2610"
+    assert result["scope"]["quantity"] == 300
+    assert len(result["open_pools"]) == 7
+    assert len(result["close_pools"]) == 2
+    open_3060 = next(pool for pool in result["open_pools"] if pool["price"] == 3060)
+    close_3082 = next(pool for pool in result["close_pools"] if pool["price"] == 3082)
+    assert open_3060["quantity"] == 20
+    assert len(open_3060["fragments"]) == 6
+    assert close_3082["quantity"] == 200
+    assert [fragment["quantity"] for fragment in close_3082["fragments"]] == [5, 15, 180]
+    assert sum(sum(row.values()) for row in result["matrix"].values()) == 300
+
+
+def test_batch_rematch_atomically_swaps_two_close_pools_and_restores_default(tmp_path, monkeypatch):
+    sample = setup_batch_rematch_sample(tmp_path, monkeypatch)
+    group = trading_management.get_business_rematch_group(
+        sample["entry_close_id"], start_date="20260701", end_date="20260731"
+    )
+    targets = {open_id: dict(values) for open_id, values in group["matrix"].items()}
+    open_3091 = next(pool["id"] for pool in group["open_pools"] if pool["price"] == 3091)
+    open_3171 = next(pool["id"] for pool in group["open_pools"] if pool["price"] == 3171)
+    close_3082 = next(pool["id"] for pool in group["close_pools"] if pool["price"] == 3082)
+    close_3101 = next(pool["id"] for pool in group["close_pools"] if pool["price"] == 3101)
+    targets[open_3091] = {close_3101: 100}
+    targets[open_3171] = {close_3082: 100}
+    with db.connect() as conn:
+        fact_before = [tuple(row) for row in conn.execute(
+            "SELECT close_identity_id, open_trade_identity_id, matched_quantity FROM trading_fact_close_allocations ORDER BY id"
+        ).fetchall()]
+
+    preview = trading_management.preview_business_batch_rematch(
+        sample["entry_close_id"], targets, group["versions"], "20260701", "20260731"
+    )
+    confirmed = trading_management.confirm_business_batch_rematch(
+        sample["entry_close_id"], preview["preview_token"], group["versions"], actor="tester", reason="修正300手关系"
+    )
+
+    assert preview["unallocated_close_quantity"] == 0
+    assert preview["fact_pnl_before"] == preview["fact_pnl_after"]
+    assert confirmed["scope"]["quantity"] == 300
+    after = trading_management.get_business_rematch_group(
+        sample["entry_close_id"], start_date="20260701", end_date="20260731"
+    )
+    assert after["matrix"][open_3091] == {close_3101: 100}
+    assert after["matrix"][open_3171] == {close_3082: 100}
+    with db.connect() as conn:
+        fact_after = [tuple(row) for row in conn.execute(
+            "SELECT close_identity_id, open_trade_identity_id, matched_quantity FROM trading_fact_close_allocations ORDER BY id"
+        ).fetchall()]
+        groups = conn.execute(
+            "SELECT COUNT(DISTINCT override_group_id) AS groups FROM trading_business_close_allocations WHERE source = 'manual_override'"
+        ).fetchone()["groups"]
+    assert fact_after == fact_before
+    assert groups == 1
+
+    restored = trading_management.restore_default_business_batch(
+        sample["entry_close_id"], after["versions"], actor="tester",
+        start_date="20260701", end_date="20260731", reason="验收后恢复"
+    )
+    assert restored["matrix"][open_3091] == {close_3082: 100}
+    assert restored["matrix"][open_3171] == {close_3101: 100}
+
+
+def test_batch_rematch_rejects_incomplete_close_column_and_stale_version(tmp_path, monkeypatch):
+    sample = setup_batch_rematch_sample(tmp_path, monkeypatch)
+    group = trading_management.get_business_rematch_group(
+        sample["entry_close_id"], start_date="20260701", end_date="20260731"
+    )
+    targets = {open_id: dict(values) for open_id, values in group["matrix"].items()}
+    open_3091 = next(pool["id"] for pool in group["open_pools"] if pool["price"] == 3091)
+    close_3082 = next(pool["id"] for pool in group["close_pools"] if pool["price"] == 3082)
+    targets[open_3091][close_3082] = 99
+
+    with pytest.raises(ValueError, match="必须分配 200 手"):
+        trading_management.preview_business_batch_rematch(
+            sample["entry_close_id"], targets, group["versions"], "20260701", "20260731"
+        )
+    stale_versions = dict(group["versions"])
+    stale_versions[str(sample["entry_close_id"])] = 99
+    with pytest.raises(ValueError, match="数据已变化"):
+        trading_management.preview_business_batch_rematch(
+            sample["entry_close_id"], group["matrix"], stale_versions, "20260701", "20260731"
+        )
+
+
 def test_manual_rematch_moves_closed_and_open_business_quantities_atomically(tmp_path, monkeypatch):
     confirmed = setup_classified_business_sample(tmp_path, monkeypatch)
     trading_management.rebuild_default_business_allocations(confirmed["batch_id"])
@@ -2467,6 +2699,10 @@ def test_trading_management_exposes_complete_p0_api_surface():
         ("/business-closes/{close_identity_id}/preview", "POST"),
         ("/business-closes/{close_identity_id}/confirm", "POST"),
         ("/business-closes/{close_identity_id}/restore-default", "POST"),
+        ("/business-close-groups/{close_identity_id}", "GET"),
+        ("/business-close-groups/{close_identity_id}/preview", "POST"),
+        ("/business-close-groups/{close_identity_id}/confirm", "POST"),
+        ("/business-close-groups/{close_identity_id}/restore-default", "POST"),
     }
     assert expected <= routes
 
