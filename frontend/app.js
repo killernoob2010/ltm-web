@@ -658,6 +658,35 @@ async function loadInfoCacheStatus() {
   }
 }
 
+function innerOuterContractMonths(year, calcDate) {
+  const selectedMonth = Number(String(calcDate || "").slice(5, 7));
+  const startMonth = selectedMonth >= 1 && selectedMonth <= 12
+    ? selectedMonth
+    : new Date().getMonth() + 1;
+  return Array.from({ length: 5 }, (_, offset) => {
+    const monthIndex = startMonth - 1 + offset;
+    const contractYear = Number(year) + Math.floor(monthIndex / 12);
+    const month = String((monthIndex % 12) + 1).padStart(2, "0");
+    return { year: contractYear, month, key: `${contractYear}-${month}` };
+  });
+}
+
+function renderInnerOuterMonthValues(card) {
+  const row = card.querySelector(".inner-month-row");
+  if (!row) return;
+  const year = Number(card.querySelector(".info-year")?.value || state.infoConfig.default_year);
+  const calcDate = card.querySelector(".info-date")?.value || today();
+  row.innerHTML = `
+    <span class="value-label">今日值</span>
+    ${innerOuterContractMonths(year, calcDate).map((item) => `
+      <div class="inner-month-value">
+        <span>${Number(item.month)}月</span>
+        <strong class="today-value" data-contract-month="${item.key}">--</strong>
+      </div>
+    `).join("")}
+  `;
+}
+
 function renderInfoCards() {
   const years = Array.from({ length: 11 }, (_, index) => 2020 + index);
   const yearOptions = years.map((year) => `<option value="${year}">${year}</option>`).join("");
@@ -693,15 +722,7 @@ function renderInfoCards() {
         `;
     const values = isInnerOuter
       ? `
-        <div class="inner-month-row">
-          <span class="value-label">今日值</span>
-          ${state.infoConfig.inner_months.map((month) => `
-            <div class="inner-month-value">
-              <span>${month}月</span>
-              <strong class="today-value" data-month="${month}">--</strong>
-            </div>
-          `).join("")}
-        </div>
+        <div class="inner-month-row"></div>
       `
       : `
         <div class="legacy-values">
@@ -735,12 +756,20 @@ function renderInfoCards() {
     const month = card.querySelector(".info-month");
     const month1 = card.querySelector(".info-month1");
     const month2 = card.querySelector(".info-month2");
+    const dateInput = card.querySelector(".info-date");
+    const isInnerOuterCard = card.dataset.infoType === "内外盘差" || card.dataset.infoType === "内外盘差2";
     if (year) year.value = state.infoConfig.default_year;
     if (year1) year1.value = state.infoConfig.yuecha_defaults?.year1 || state.infoConfig.default_year;
     if (year2) year2.value = state.infoConfig.yuecha_defaults?.year2 || state.infoConfig.default_year;
     if (month) month.value = state.infoConfig.default_month;
     if (month1) month1.value = state.infoConfig.yuecha_defaults?.month1 || "09";
     if (month2) month2.value = state.infoConfig.yuecha_defaults?.month2 || "01";
+    if (isInnerOuterCard) {
+      const renderRollingMonths = () => renderInnerOuterMonthValues(card);
+      renderRollingMonths();
+      dateInput.addEventListener("change", renderRollingMonths);
+      year.addEventListener("change", renderRollingMonths);
+    }
     card.querySelector(".calculate-info-btn").addEventListener("click", () => calculateInfoCard(card));
     if (isGuest()) {
       card.querySelector(".calculate-info-btn").classList.add("hidden");
@@ -791,8 +820,8 @@ async function calculateInfoCard(card, mock = false) {
 
 function fillInfoResult(card, result) {
   if (result.month_results) {
-    for (const [month, item] of Object.entries(result.month_results)) {
-      const todayValue = card.querySelector(`.today-value[data-month="${month}"]`);
+    for (const [contractMonth, item] of Object.entries(result.month_results)) {
+      const todayValue = card.querySelector(`.today-value[data-contract-month="${contractMonth}"]`);
       if (todayValue) todayValue.textContent = money(item.today_value);
     }
     return;

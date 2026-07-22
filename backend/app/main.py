@@ -237,7 +237,7 @@ SPECIAL_MONTH_OPTIONS = {
     "螺矿比": ["01", "05", "09"],
     "盘面钢厂利润": ["01", "05", "09"],
 }
-INNER_OUTER_MONTHS = ["05", "06", "07", "08", "09"]
+INNER_OUTER_MONTH_COUNT = 5
 REALTIME_PRICES = {}
 ALERT_LAST_VALUES = {}
 ALERT_MONITOR_STARTED = False
@@ -253,6 +253,22 @@ MOCK_PRICES = {
     "FE2701": 99.0,
     "USD/CNY": 7.18,
 }
+
+
+def inner_outer_contract_months(year: int, calc_date: str) -> list[dict[str, object]]:
+    try:
+        start_month = date.fromisoformat(calc_date).month
+    except ValueError:
+        start_month = date.today().month
+    return [
+        {
+            "year": year + (start_month - 1 + offset) // 12,
+            "month": str((start_month - 1 + offset) % 12 + 1).zfill(2),
+        }
+        for offset in range(INNER_OUTER_MONTH_COUNT)
+    ]
+
+
 SH_JUNNENG_DEFAULT_VARIETY = "RB"
 
 
@@ -968,7 +984,9 @@ def realtime_dependencies_for_payload(payload: InfoCalculateIn) -> list[tuple[st
         return [("price", variety, f"{year1}{month1}"), ("price", variety, f"{year2}{month2}")]
     if payload.info_type in ["内外盘差", "内外盘差2"]:
         dependencies = []
-        for inner_month in INNER_OUTER_MONTHS:
+        for contract_month in inner_outer_contract_months(payload.year, payload.calc_date):
+            yy = two_digit_year(int(contract_month["year"]))
+            inner_month = str(contract_month["month"])
             dependencies.extend([
                 ("price", "I", f"{yy}{inner_month}"),
                 ("price", "FE", f"{yy}{inner_month}"),
@@ -1054,11 +1072,14 @@ def calculate_today_indicator(payload: InfoCalculateIn, mock: bool = False, quot
 def calculate_inner_outer_months(payload: InfoCalculateIn, mock: bool = False, quote_provider: Optional[RealtimeQuoteProvider] = None) -> dict:
     month_values = {}
     contracts = {}
-    for month in INNER_OUTER_MONTHS:
-        monthly_payload = payload.model_copy(update={"month": month})
+    for contract_month in inner_outer_contract_months(payload.year, payload.calc_date):
+        contract_year = int(contract_month["year"])
+        month = str(contract_month["month"])
+        key = f"{contract_year}-{month}"
+        monthly_payload = payload.model_copy(update={"year": contract_year, "month": month})
         result = calculate_today_indicator(monthly_payload, mock=mock, quote_provider=quote_provider)
-        month_values[month] = result["today_value"]
-        contracts[month] = result["contracts"]
+        month_values[key] = result["today_value"]
+        contracts[key] = result["contracts"]
     return {"month_values": month_values, "contracts": contracts}
 
 
@@ -2089,6 +2110,7 @@ def list_indicators(user=Depends(current_user)):
 def info_summary_config(user=Depends(current_user)):
     require_view("info_summary", user)
     defaults = default_info_contracts()
+    inner_contract_months = inner_outer_contract_months(defaults["default_year"], date.today().isoformat())
     return {
         "info_types": INFO_TYPES,
         "default_year": defaults["default_year"],
@@ -2097,7 +2119,7 @@ def info_summary_config(user=Depends(current_user)):
         "contract_months": [str(i).zfill(2) for i in range(1, 13)],
         "special_months": ["01", "05", "09"],
         "month_options_by_type": SPECIAL_MONTH_OPTIONS,
-        "inner_months": INNER_OUTER_MONTHS,
+        "inner_months": [item["month"] for item in inner_contract_months],
         "cache_counts": cache_counts(),
     }
 
@@ -2111,24 +2133,29 @@ def calculate_info_summary_payload(
     if payload.info_type in ["内外盘差", "内外盘差2"]:
         realtime = calculate_inner_outer_months(payload, mock=mock, quote_provider=quote_provider)
         month_results = {}
-        for month in INNER_OUTER_MONTHS:
-            cached = get_cached_data(payload.info_type, payload.year, month, payload.calc_date)
+        for contract_month in inner_outer_contract_months(payload.year, payload.calc_date):
+            contract_year = int(contract_month["year"])
+            month = str(contract_month["month"])
+            key = f"{contract_year}-{month}"
+            cached = get_cached_data(payload.info_type, contract_year, month, payload.calc_date)
             history_calc_date = cached.get("calc_date") if cached else None
             if not fill_missing_history and (not cached or cached.get("t_1_value") is None):
-                latest_cached = get_latest_cached_data(payload.info_type, payload.year, month, payload.calc_date)
+                latest_cached = get_latest_cached_data(payload.info_type, contract_year, month, payload.calc_date)
                 if latest_cached and latest_cached.get("calc_date") == payload.calc_date:
                     cached = latest_cached
                     history_calc_date = latest_cached.get("calc_date")
                 elif latest_cached and not cached:
                     history_calc_date = latest_cached.get("calc_date")
             history_stale = bool(history_calc_date and history_calc_date != payload.calc_date)
-            month_results[month] = {
+            month_results[key] = {
                 **(cached or {}),
+                "year": contract_year,
+                "month": month,
                 "cache_hit": cached is not None and cached.get("t_1_value") is not None,
                 "history_calc_date": history_calc_date,
                 "history_stale": history_stale,
-                "today_value": realtime["month_values"].get(month),
-                "contracts": realtime["contracts"].get(month, {}),
+                "today_value": realtime["month_values"].get(key),
+                "contracts": realtime["contracts"].get(key, {}),
             }
         return {
             "info_type": payload.info_type,
