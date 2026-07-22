@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 文档状态：业务口径与 Gate A 已确认，Staging 开发验证中
+- 文档状态：业务口径与 Gate A 已确认，Staging 已验证，待 Production Gate B
 - 适用模块：交易管理 / 总览、交易管理 / 持仓与交易（本次更名为“持仓与交易明细”）
 - 首次实施环境：`staging` 分支、Render Staging 服务 `ltm-web-staging`、Supabase `LTM WEB STAGING`
 - 关联设计：`docs/superpowers/specs/2026-07-12-trading-management-design.md`
