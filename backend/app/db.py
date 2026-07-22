@@ -507,6 +507,9 @@ def init_db() -> None:
                 finance_days INTEGER,
                 finance_status TEXT,
                 latest_shipment_date TEXT,
+                port_confirmed_date TEXT,
+                port_confirmed_by TEXT,
+                port_confirmed_at TEXT,
                 shipment_confirmed_date TEXT,
                 shipment_confirmed_by TEXT,
                 shipment_confirmed_at TEXT,
@@ -923,6 +926,9 @@ def init_db() -> None:
                 finance_days INTEGER,
                 finance_status TEXT,
                 latest_shipment_date TEXT,
+                port_confirmed_date TEXT,
+                port_confirmed_by TEXT,
+                port_confirmed_at TEXT,
                 shipment_confirmed_date TEXT,
                 shipment_confirmed_by TEXT,
                 shipment_confirmed_at TEXT,
@@ -2177,6 +2183,9 @@ def migrate_order_finance_schema(conn) -> None:
         )
     """
     columns = {
+        "port_confirmed_date": "TEXT",
+        "port_confirmed_by": "TEXT",
+        "port_confirmed_at": "TEXT",
         "shipment_confirmed_date": "TEXT",
         "shipment_confirmed_by": "TEXT",
         "shipment_confirmed_at": "TEXT",

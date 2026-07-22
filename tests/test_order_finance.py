@@ -284,7 +284,10 @@ def test_order_finance_schema_adds_manual_shipment_confirmation_columns(tmp_path
     with db.connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_finance_progress)").fetchall()}
 
-    assert {"shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at"}.issubset(columns)
+    assert {
+        "shipment_confirmed_date", "shipment_confirmed_by", "shipment_confirmed_at",
+        "port_confirmed_date", "port_confirmed_by", "port_confirmed_at",
+    }.issubset(columns)
 
 
 def test_order_finance_schema_adds_singleton_sync_status(tmp_path, monkeypatch):
@@ -502,6 +505,41 @@ def test_manual_shipment_confirmation_updates_group_and_survives_reimport(tmp_pa
     order_finance.set_shipment_confirmation("H-2026-3", confirmed=False, updated_by="pytest")
     undone = [row for row in list_order_finance_records() if json.loads(row["source_json"])["item_no"] == "H-2026-3"]
     assert {row["shipment_confirmed_date"] for row in undone} == {None}
+
+
+def test_port_confirmation_persists_across_reimport_and_can_be_undone(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    workbook = build_three_sheet_workbook(tmp_path / "order-finance.xlsx")
+    import_order_finance_directory(workbook, imported_by="pytest")
+
+    result = order_finance.set_port_confirmation(
+        "Y-2026-3",
+        confirmed=True,
+        port_confirmed_date="2026-07-20",
+        updated_by="pytest",
+    )
+    confirmed = [
+        row for row in list_order_finance_records()
+        if json.loads(row["source_json"])["item_no"] == "Y-2026-3"
+    ]
+
+    assert result == {"item_no": "Y-2026-3", "confirmed": True, "updated": 1}
+    assert {row["port_confirmed_date"] for row in confirmed} == {"2026-07-20"}
+    assert {row["port_confirmed_by"] for row in confirmed} == {"pytest"}
+
+    import_order_finance_directory(workbook, imported_by="pytest")
+    reimported = [
+        row for row in list_order_finance_records()
+        if json.loads(row["source_json"])["item_no"] == "Y-2026-3"
+    ]
+    assert {row["port_confirmed_date"] for row in reimported} == {"2026-07-20"}
+
+    order_finance.set_port_confirmation("Y-2026-3", confirmed=False, updated_by="pytest")
+    undone = [
+        row for row in list_order_finance_records()
+        if json.loads(row["source_json"])["item_no"] == "Y-2026-3"
+    ]
+    assert {row["port_confirmed_date"] for row in undone} == {None}
 
 
 def test_contract_reminder_updates_group_survives_reimport_and_clears(tmp_path, monkeypatch):

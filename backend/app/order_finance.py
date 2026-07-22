@@ -106,6 +106,9 @@ MANAGEMENT_FIELDS = {
     "next_action",
     "next_follow_up_date",
     "manager_note",
+    "port_confirmed_date",
+    "port_confirmed_by",
+    "port_confirmed_at",
     "shipment_confirmed_date",
     "shipment_confirmed_by",
     "shipment_confirmed_at",
@@ -130,6 +133,11 @@ class ManagementUpdateRequest(BaseModel):
 class ShipmentConfirmationRequest(BaseModel):
     confirmed: bool = True
     shipment_confirmed_date: Optional[str] = None
+
+
+class PortConfirmationRequest(BaseModel):
+    confirmed: bool = True
+    port_confirmed_date: Optional[str] = None
 
 
 class ContractReminderRequest(BaseModel):
@@ -1426,7 +1434,8 @@ ORDER_FINANCE_LIST_FIELDS = [
     "source_snapshot_date", "product_name", "purchase_contract_no", "system_contract_no",
     "overseas_entity", "terminal_customer", "contract_quantity_mt", "contract_currency", "contract_amount",
     "finance_bank", "finance_amount_expected", "finance_amount_actual", "finance_drawdown_date",
-    "finance_due_date", "latest_shipment_date", "shipment_confirmed_date", "shipment_confirmed_by",
+    "finance_due_date", "latest_shipment_date", "port_confirmed_date", "port_confirmed_by",
+    "port_confirmed_at", "shipment_confirmed_date", "shipment_confirmed_by",
     "shipment_confirmed_at", "vessel_voyage", "bill_of_lading_date",
     "document_submission_date", "collection_date", "actual_shipped_quantity_mt", "executor", "business_status",
     "risk_level", "planned_drawdown_date", "planned_finance_amount", "amount_adjustment_note",
@@ -1679,6 +1688,36 @@ def set_shipment_confirmation(
             "shipment_confirmed_date": None,
             "shipment_confirmed_by": None,
             "shipment_confirmed_at": None,
+        }
+    for row in matching:
+        update_management_fields(row["id"], changes, updated_by=updated_by)
+    return {"item_no": normalized_item, "confirmed": confirmed, "updated": len(matching)}
+
+
+def set_port_confirmation(
+    item_no: str,
+    confirmed: bool,
+    port_confirmed_date: Optional[str] = None,
+    updated_by: str = "",
+) -> Dict[str, Any]:
+    normalized_item = _normalize_text(item_no)
+    matching = [row for row in list_order_finance_records() if _item_no(row) == normalized_item]
+    if not matching:
+        raise KeyError(normalized_item)
+    if confirmed:
+        normalized_date = _normalize_date(port_confirmed_date or date.today().isoformat())
+        if not _parse_date(normalized_date):
+            raise ValueError("实际集港日格式不正确")
+        changes = {
+            "port_confirmed_date": normalized_date,
+            "port_confirmed_by": updated_by,
+            "port_confirmed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    else:
+        changes = {
+            "port_confirmed_date": None,
+            "port_confirmed_by": None,
+            "port_confirmed_at": None,
         }
     for row in matching:
         update_management_fields(row["id"], changes, updated_by=updated_by)
@@ -2326,6 +2365,26 @@ def order_finance_shipment_confirmation(
             item_no,
             confirmed=request.confirmed,
             shipment_confirmed_date=request.shipment_confirmed_date,
+            updated_by=user["name"],
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项次不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/order-finance/contracts/{item_no}/port-confirmation")
+def order_finance_port_confirmation(
+    item_no: str,
+    request: PortConfirmationRequest,
+    user: dict = Depends(order_finance_current_user),
+):
+    order_finance_require_edit(user)
+    try:
+        return set_port_confirmation(
+            item_no,
+            confirmed=request.confirmed,
+            port_confirmed_date=request.port_confirmed_date,
             updated_by=user["name"],
         )
     except KeyError as exc:
