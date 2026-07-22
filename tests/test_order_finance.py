@@ -653,6 +653,79 @@ def test_manual_shipment_waits_for_document_and_deadline_is_medium():
     assert "document_follow_up" in item["weekly_focus_reasons"]
 
 
+def test_port_stage_uses_two_day_shipment_boundary():
+    today = date.today()
+    records = [
+        progress_record(
+            "PORT-3", "存续", id=1,
+            port_confirmed_date=today.isoformat(),
+            latest_shipment_date=(today + timedelta(days=3)).isoformat(),
+        ),
+        progress_record(
+            "PORT-2", "存续", id=2,
+            port_confirmed_date=today.isoformat(),
+            latest_shipment_date=(today + timedelta(days=2)).isoformat(),
+        ),
+        progress_record(
+            "PORT-0", "存续", id=3,
+            port_confirmed_date=today.isoformat(),
+            latest_shipment_date=today.isoformat(),
+        ),
+        progress_record(
+            "PORT-OVERDUE", "存续", id=4,
+            port_confirmed_date=today.isoformat(),
+            latest_shipment_date=(today - timedelta(days=1)).isoformat(),
+        ),
+        progress_record(
+            "PORT-MISSING", "存续", id=5,
+            port_confirmed_date=today.isoformat(),
+            latest_shipment_date="",
+        ),
+        progress_record(
+            "WAIT-PORT", "存续", id=6,
+            latest_shipment_date=(today + timedelta(days=20)).isoformat(),
+        ),
+    ]
+
+    view = build_order_finance_progress_view(records)
+    items = {item["item_no"]: item for item in view["contracts"]}
+
+    assert {items[key]["stage"] for key in items if key.startswith("PORT-")} == {"已集港待装船"}
+    assert items["WAIT-PORT"]["stage"] == "已放款待集港"
+    assert items["PORT-3"]["risk"] == "中"
+    assert items["PORT-2"]["risk"] == "高"
+    assert items["PORT-0"]["risk"] == "高"
+    assert items["PORT-OVERDUE"]["risk"] == "高"
+    assert items["PORT-MISSING"]["risk"] == "高"
+    assert items["PORT-2"]["indicator_risks"]["shipment"] == "高"
+    assert items["PORT-2"]["next_action"] == "确认装船状态或交单状态"
+    assert items["PORT-3"]["port_confirmed_date"] == today.isoformat()
+    assert view["summary"]["financed_uncollected"] == 1
+    assert view["summary"]["collected_unshipped"] == 5
+
+
+def test_shipment_and_document_override_port_stage():
+    today = date.today().isoformat()
+    shipped = progress_record(
+        "PORT-SHIPPED", "存续",
+        port_confirmed_date=today,
+        shipment_confirmed_date=today,
+    )
+    documented = progress_record(
+        "PORT-DOCUMENTED", "存续", id=2,
+        port_confirmed_date=today,
+        document_submission_date=today,
+    )
+
+    items = {
+        item["item_no"]: item
+        for item in build_order_finance_progress_view([shipped, documented])["contracts"]
+    }
+
+    assert items["PORT-SHIPPED"]["stage"] == "已装船待交单"
+    assert items["PORT-DOCUMENTED"]["stage"] == "已交单待回款"
+
+
 def test_partial_and_complete_multi_financing_payment():
     today = date.today().isoformat()
     first = progress_record(
@@ -843,7 +916,7 @@ def test_explicit_status_and_finance_milestones_drive_lifecycle():
         "Y-1": "已回款待结案",
         "Y-2": "已完成",
         "Y-3": "已交单待回款",
-        "Y-4": "已放款待装船",
+        "Y-4": "已放款待集港",
     }
     assert view["summary"]["completed"] == 1
     assert view["summary"]["paid_unclosed"] == 1
@@ -887,8 +960,8 @@ def test_derive_business_status_for_drawdown_without_bill_of_lading():
         }
     )
 
-    assert status["business_status"] == "已放款待装船"
-    assert status["next_action"] == "跟进船期和提单"
+    assert status["business_status"] == "已放款待集港"
+    assert status["next_action"] == "跟进集港进度"
 
 
 def test_import_order_finance_directory_preserves_management_fields(tmp_path, monkeypatch):
@@ -980,7 +1053,8 @@ def test_progress_view_groups_contract_items_and_multi_financing():
     assert multi
     sample = multi[0]
     assert sample["stage"] in {
-        "待放款", "已放款待装船", "已装船待交单", "已交单待回款", "已回款待结案", "已完成",
+        "待放款", "已放款待集港", "已集港待装船", "已装船待交单",
+        "已交单待回款", "已回款待结案", "已完成",
     }
     assert len(sample["financings"]) == sample["financing_count"]
 
