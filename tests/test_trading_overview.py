@@ -640,7 +640,7 @@ def test_overview_query_count_is_bounded(tmp_path, monkeypatch):
         )
     )
 
-    assert calls <= 8
+    assert calls <= 4
     assert "items" not in result
 
 

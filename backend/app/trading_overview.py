@@ -126,7 +126,46 @@ def _query_quality(cur, filters: OverviewFilters) -> dict[str, int]:
                )
                AND (? = 0 OR b.account_id = ?)
                AND (? = '' OR cf.close_date >= ?)
-               AND (? = '' OR cf.close_date <= ?)) AS unallocated_close_count
+               AND (? = '' OR cf.close_date <= ?)) AS unallocated_close_count,
+            CASE WHEN ? = 'all' THEN (
+                SELECT COUNT(DISTINCT account_id)
+                FROM (
+                    SELECT b.account_id
+                    FROM trading_trade_facts tf
+                    JOIN trading_import_batches b
+                      ON b.id = tf.batch_id AND b.status = 'active'
+                    WHERE tf.is_current = 1
+                      AND (? = 0 OR b.account_id = ?)
+                      AND (? = '' OR tf.trade_date <= ?)
+                    UNION
+                    SELECT b.account_id
+                    FROM trading_close_facts cf
+                    JOIN trading_import_batches b
+                      ON b.id = cf.batch_id AND b.status = 'active'
+                    WHERE cf.is_current = 1
+                      AND (? = 0 OR b.account_id = ?)
+                      AND (? = '' OR cf.close_date <= ?)
+                    UNION
+                    SELECT b.account_id
+                    FROM trading_position_snapshots ps
+                    JOIN trading_import_batches b
+                      ON b.id = ps.batch_id AND b.status = 'active'
+                    WHERE ps.is_current = 1
+                      AND (? = 0 OR b.account_id = ?)
+                      AND (? = '' OR ps.snapshot_date <= ?)
+                ) applicable_fact_accounts
+            ) ELSE (
+                SELECT COUNT(DISTINCT b.account_id)
+                FROM trading_trade_facts tf
+                JOIN trading_import_batches b
+                  ON b.id = tf.batch_id AND b.status = 'active'
+                JOIN trading_business_assignments ba
+                  ON ba.trade_identity_id = tf.identity_id
+                WHERE tf.is_current = 1 AND tf.open_close = '开仓'
+                  AND ba.business_type = ?
+                  AND (? = 0 OR b.account_id = ?)
+                  AND (? = '' OR tf.trade_date <= ?)
+            ) END AS applicable_account_count
         """,
         (
             account_id, account_id,
@@ -138,75 +177,20 @@ def _query_quality(cur, filters: OverviewFilters) -> dict[str, int]:
             account_id, account_id,
             filters.start_date, filters.start_date,
             filters.end_date, filters.end_date,
+            filters.scope,
+            account_id, account_id, filters.end_date, filters.end_date,
+            account_id, account_id, filters.end_date, filters.end_date,
+            account_id, account_id, filters.end_date, filters.end_date,
+            filters.scope, account_id, account_id,
+            filters.end_date, filters.end_date,
         ),
     ).fetchone()
     return {
         "unassigned_trade_count": int(row["unassigned_trade_count"] or 0),
         "close_record_count": int(row["close_record_count"] or 0),
         "unallocated_close_count": int(row["unallocated_close_count"] or 0),
+        "applicable_account_count": int(row["applicable_account_count"] or 0),
     }
-
-
-def _query_applicable_account_count(cur, filters: OverviewFilters) -> int:
-    account_id = _account_value(filters.account_id)
-    if filters.scope == "all":
-        row = db._exec(
-            cur,
-            """
-            SELECT COUNT(DISTINCT account_id) AS account_count
-            FROM (
-                SELECT b.account_id
-                FROM trading_trade_facts tf
-                JOIN trading_import_batches b
-                  ON b.id = tf.batch_id AND b.status = 'active'
-                WHERE tf.is_current = 1
-                  AND (? = 0 OR b.account_id = ?)
-                  AND (? = '' OR tf.trade_date <= ?)
-                UNION
-                SELECT b.account_id
-                FROM trading_close_facts cf
-                JOIN trading_import_batches b
-                  ON b.id = cf.batch_id AND b.status = 'active'
-                WHERE cf.is_current = 1
-                  AND (? = 0 OR b.account_id = ?)
-                  AND (? = '' OR cf.close_date <= ?)
-                UNION
-                SELECT b.account_id
-                FROM trading_position_snapshots ps
-                JOIN trading_import_batches b
-                  ON b.id = ps.batch_id AND b.status = 'active'
-                WHERE ps.is_current = 1
-                  AND (? = 0 OR b.account_id = ?)
-                  AND (? = '' OR ps.snapshot_date <= ?)
-            ) applicable_accounts
-            """,
-            (
-                account_id, account_id, filters.end_date, filters.end_date,
-                account_id, account_id, filters.end_date, filters.end_date,
-                account_id, account_id, filters.end_date, filters.end_date,
-            ),
-        ).fetchone()
-    else:
-        row = db._exec(
-            cur,
-            """
-            SELECT COUNT(DISTINCT b.account_id) AS account_count
-            FROM trading_trade_facts tf
-            JOIN trading_import_batches b
-              ON b.id = tf.batch_id AND b.status = 'active'
-            JOIN trading_business_assignments ba
-              ON ba.trade_identity_id = tf.identity_id
-            WHERE tf.is_current = 1 AND tf.open_close = '开仓'
-              AND ba.business_type = ?
-              AND (? = 0 OR b.account_id = ?)
-              AND (? = '' OR tf.trade_date <= ?)
-            """,
-            (
-                filters.scope, account_id, account_id,
-                filters.end_date, filters.end_date,
-            ),
-        ).fetchone()
-    return int(row["account_count"] or 0)
 
 
 def _query_snapshot_groups(cur, filters: OverviewFilters) -> list[dict[str, Any]]:
@@ -323,10 +307,9 @@ def _fact_overview(cur, filters: OverviewFilters) -> dict[str, Any]:
         ),
     ).fetchall()
     quality = _query_quality(cur, filters)
-    applicable_account_count = _query_applicable_account_count(cur, filters)
     snapshot_rows = _query_snapshot_groups(cur, filters)
     snapshot_dates, snapshot_status, missing_count = _snapshot_metadata(
-        snapshot_rows, applicable_account_count
+        snapshot_rows, quality.pop("applicable_account_count")
     )
     available = snapshot_status not in {"missing", "partial"}
     nonzero_rows = [
@@ -370,9 +353,11 @@ def _fact_overview(cur, filters: OverviewFilters) -> dict[str, Any]:
     }
 
 
-def _business_trade_summary(cur, filters: OverviewFilters) -> dict[str, Any]:
+def _business_period_metrics(
+    cur, filters: OverviewFilters
+) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
     account_id = _account_value(filters.account_id)
-    row = db._exec(
+    rows = db._exec(
         cur,
         """
         WITH attributed_trades AS (
@@ -413,66 +398,67 @@ def _business_trade_summary(cur, filters: OverviewFilters) -> dict[str, Any]:
               AND (? = 0 OR b.account_id = ?)
               AND (? = '' OR tf.trade_date >= ?)
               AND (? = '' OR tf.trade_date <= ?)
-        )
-        SELECT COUNT(DISTINCT identity_id) AS record_count,
-               COALESCE(SUM(quantity), 0) AS quantity,
-               COALESCE(SUM(fee), 0) AS fee
-        FROM attributed_trades
-        """,
-        (
-            filters.scope, account_id, account_id,
-            filters.start_date, filters.start_date,
-            filters.end_date, filters.end_date,
-            filters.scope, account_id, account_id,
-            filters.start_date, filters.start_date,
-            filters.end_date, filters.end_date,
         ),
-    ).fetchone()
-    return {
-        "record_count": int(row["record_count"] or 0),
-        "quantity": float(row["quantity"] or 0),
-        "fee": float(row["fee"] or 0),
-    }
-
-
-def _business_daily_pnl(cur, filters: OverviewFilters) -> tuple[list[dict[str, Any]], int]:
-    account_id = _account_value(filters.account_id)
-    rows = db._exec(
-        cur,
-        """
-        SELECT cf.close_date AS date,
-               SUM(a.business_pnl) AS value,
-               SUM(CASE WHEN a.business_pnl IS NULL THEN 1 ELSE 0 END)
-                   AS missing_count
-        FROM trading_close_facts cf
-        JOIN trading_import_batches b
-          ON b.id = cf.batch_id AND b.status = 'active'
-        JOIN trading_business_close_allocations a
-          ON a.close_identity_id = cf.identity_id
-        JOIN trading_business_assignments ba
-          ON ba.trade_identity_id = a.open_trade_identity_id
-        WHERE cf.is_current = 1 AND ba.business_type = ?
-          AND (? = 0 OR b.account_id = ?)
-          AND (? = '' OR cf.close_date >= ?)
-          AND (? = '' OR cf.close_date <= ?)
-        GROUP BY cf.close_date
-        ORDER BY cf.close_date
+        daily_business_pnl AS (
+            SELECT cf.close_date AS date,
+                   SUM(a.business_pnl) AS value,
+                   SUM(CASE WHEN a.business_pnl IS NULL THEN 1 ELSE 0 END)
+                       AS missing_count
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b
+              ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_business_close_allocations a
+              ON a.close_identity_id = cf.identity_id
+            JOIN trading_business_assignments ba
+              ON ba.trade_identity_id = a.open_trade_identity_id
+            WHERE cf.is_current = 1 AND ba.business_type = ?
+              AND (? = 0 OR b.account_id = ?)
+              AND (? = '' OR cf.close_date >= ?)
+              AND (? = '' OR cf.close_date <= ?)
+            GROUP BY cf.close_date
+        )
+        SELECT 'summary' AS row_kind, NULL AS date,
+               COUNT(DISTINCT identity_id) AS record_count,
+               COALESCE(SUM(quantity), 0) AS quantity,
+               COALESCE(SUM(fee), 0) AS fee,
+               NULL AS value, 0 AS missing_count
+        FROM attributed_trades
+        UNION ALL
+        SELECT 'daily' AS row_kind, date, 0 AS record_count,
+               0 AS quantity, 0 AS fee, value, missing_count
+        FROM daily_business_pnl
         """,
         (
+            filters.scope, account_id, account_id,
+            filters.start_date, filters.start_date,
+            filters.end_date, filters.end_date,
+            filters.scope, account_id, account_id,
+            filters.start_date, filters.start_date,
+            filters.end_date, filters.end_date,
             filters.scope, account_id, account_id,
             filters.start_date, filters.start_date,
             filters.end_date, filters.end_date,
         ),
     ).fetchall()
-    missing_count = sum(int(row["missing_count"] or 0) for row in rows)
+    summary = next(row for row in rows if row["row_kind"] == "summary")
+    daily_rows = sorted(
+        (row for row in rows if row["row_kind"] == "daily"),
+        key=lambda row: row["date"],
+    )
+    missing_count = sum(int(row["missing_count"] or 0) for row in daily_rows)
+    trades = {
+        "record_count": int(summary["record_count"] or 0),
+        "quantity": float(summary["quantity"] or 0),
+        "fee": float(summary["fee"] or 0),
+    }
     daily = [
         {
             "date": row["date"],
             "value": float(row["value"] or 0) if not row["missing_count"] else None,
         }
-        for row in rows
+        for row in daily_rows
     ]
-    return daily, missing_count
+    return trades, daily, missing_count
 
 
 def _business_position_groups(cur, filters: OverviewFilters) -> list[dict[str, Any]]:
@@ -527,14 +513,14 @@ def _business_position_groups(cur, filters: OverviewFilters) -> list[dict[str, A
 
 
 def _business_overview(cur, filters: OverviewFilters) -> dict[str, Any]:
-    trades = _business_trade_summary(cur, filters)
-    daily_pnl, missing_business_pnl_count = _business_daily_pnl(cur, filters)
+    trades, daily_pnl, missing_business_pnl_count = _business_period_metrics(
+        cur, filters
+    )
     business_positions = _business_position_groups(cur, filters)
     quality = _query_quality(cur, filters)
-    applicable_account_count = _query_applicable_account_count(cur, filters)
     snapshot_rows = _query_snapshot_groups(cur, filters)
     snapshot_dates, snapshot_status, missing_snapshot_count = _snapshot_metadata(
-        snapshot_rows, applicable_account_count
+        snapshot_rows, quality.pop("applicable_account_count")
     )
     snapshot_by_key = {
         (
