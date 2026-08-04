@@ -179,6 +179,13 @@ def test_data_audit_run_records_requested_window(monkeypatch, tmp_path):
     assert '"collect_only": true' in row[2]
 
 
+def test_explicit_zero_disables_environment_collection_cap(monkeypatch):
+    monkeypatch.setenv("OPTION_RESEARCH_MAX_OPTIONS", "40")
+
+    assert option_backtest._resolve_collection_limit(None, "OPTION_RESEARCH_MAX_OPTIONS") == 40
+    assert option_backtest._resolve_collection_limit(0, "OPTION_RESEARCH_MAX_OPTIONS") == 0
+
+
 def test_bar_upsert_adds_settlement_to_existing_trade_row(monkeypatch, tmp_path):
     _use_temp_sqlite(monkeypatch, tmp_path)
     option_backtest.create_schema()

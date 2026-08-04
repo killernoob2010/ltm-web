@@ -35,8 +35,8 @@ _RUN_THREAD: Optional[threading.Thread] = None
 class BacktestStartIn(BaseModel):
     """Only bounded research options are exposed; no trading controls exist."""
 
-    max_options: int = Field(default=0, ge=0, le=5000)
-    max_futures: int = Field(default=0, ge=0, le=200)
+    max_options: Optional[int] = Field(default=None, ge=0, le=5000)
+    max_futures: Optional[int] = Field(default=None, ge=0, le=200)
     start_date: date = Field(default=date(2026, 1, 1))
     end_date: date = Field(default=date(2026, 6, 30))
     collect_only: bool = Field(default=True)
@@ -70,6 +70,14 @@ class Position:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_collection_limit(requested: Optional[int], env_name: str) -> int:
+    """Omitted values use the environment cap; an explicit zero means unlimited."""
+
+    if requested is not None:
+        return requested
+    return max(0, int(os.getenv(env_name, "0")))
 
 
 def _finite(value: Any, *, positive: bool = False) -> Optional[float]:
@@ -1599,8 +1607,8 @@ def start_backtest(
             return {"started": False, "run": latest}
         create_schema()
         run_key = f"a0-daily-{uuid.uuid4().hex}"
-        max_options = payload.max_options or max(0, int(os.getenv("OPTION_RESEARCH_MAX_OPTIONS", "0")))
-        max_futures = payload.max_futures or max(0, int(os.getenv("OPTION_RESEARCH_MAX_FUTURES", "0")))
+        max_options = _resolve_collection_limit(payload.max_options, "OPTION_RESEARCH_MAX_OPTIONS")
+        max_futures = _resolve_collection_limit(payload.max_futures, "OPTION_RESEARCH_MAX_FUTURES")
         _create_run(
             run_key,
             max_options,
