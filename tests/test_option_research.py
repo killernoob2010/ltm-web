@@ -84,6 +84,7 @@ def test_safe_probe_result_drops_unknown_fields_and_errors():
             "bars_count": 10,
             "username": "must-not-leak",
             "checks": {
+                "probe_version": "v2",
                 "credentials_configured": True,
                 "professional_downloader_available": True,
                 "raw": "must-not-leak",
@@ -94,6 +95,7 @@ def test_safe_probe_result_drops_unknown_fields_and_errors():
     assert safe["error_code"] == "tqsdk_probe_failed"
     assert "username" not in safe
     assert "raw" not in safe["checks"]
+    assert safe["checks"]["probe_version"] == "v2"
 
 
 def test_readiness_disabled_outside_staging(monkeypatch):
@@ -119,3 +121,18 @@ def test_missing_credentials_are_reported_without_values(monkeypatch):
     assert result["status"] == "blocked"
     assert result["error_code"] == "credentials_missing"
     assert result["checks"]["credentials_configured"] is False
+
+
+def test_probe_selects_middle_strike_instead_of_lexicographic_middle():
+    from backend.app import option_research_probe
+
+    symbol = option_research_probe._representative_option(
+        [
+            "DCE.i2609-C-1000",
+            "DCE.i2609-C-600",
+            "DCE.i2609-P-800",
+            "DCE.i2609-C-800",
+        ]
+    )
+
+    assert symbol == "DCE.i2609-C-800"

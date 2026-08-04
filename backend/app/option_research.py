@@ -26,7 +26,8 @@ OPTION_RESEARCH_TABLES = (
     "option_research_gaps",
 )
 PROBE_PREFIX = "OPTION_RESEARCH_PROBE="
-PROBE_TIMEOUT_SECONDS = 75
+PROBE_VERSION = "v2"
+PROBE_TIMEOUT_SECONDS = 180
 _DCE_IRON_ORE_OPTION_RE = re.compile(
     r"^DCE\.(?P<underlying>i\d{4})-(?P<option_class>[CP])-(?P<strike>\d+(?:\.\d+)?)$",
     re.IGNORECASE,
@@ -37,6 +38,7 @@ _KNOWN_ERROR_MESSAGES = {
     "no_iron_ore_futures": "天勤未返回铁矿石具体期货合约。",
     "no_option_contracts": "已找到铁矿石期货，但未找到对应期权合约。",
     "daily_history_unavailable": "已找到期权合约，但样本历史日线不可用。",
+    "five_minute_history_unavailable": "样本日线可读，但普通接口未返回有效的 5 分钟历史行情。",
     "downloader_unavailable": "期权合约和样本日线可读，但当前账号没有专业历史下载权限。",
     "probe_timeout": "天勤历史期权能力检查超时。",
     "probe_process_failed": "天勤历史期权能力检查进程异常结束。",
@@ -288,10 +290,28 @@ def _safe_probe_result(payload: Any) -> dict[str, Any]:
         error_code = "tqsdk_probe_failed"
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
     safe_checks = {
+        "probe_version": str(checks.get("probe_version") or ""),
         "credentials_configured": bool(checks.get("credentials_configured")),
         "iron_ore_futures_discovered": bool(checks.get("iron_ore_futures_discovered")),
         "option_contracts_discovered": bool(checks.get("option_contracts_discovered")),
         "daily_history_available": bool(checks.get("daily_history_available")),
+        "five_minute_history_available": bool(
+            checks.get("five_minute_history_available")
+        ),
+        "five_minute_full_lifecycle": bool(
+            checks.get("five_minute_full_lifecycle")
+        ),
+        "sample_five_minute_bars": max(
+            0, int(checks.get("sample_five_minute_bars") or 0)
+        ),
+        "sample_daily_first_date": str(checks.get("sample_daily_first_date") or ""),
+        "sample_daily_last_date": str(checks.get("sample_daily_last_date") or ""),
+        "sample_five_minute_first_date": str(
+            checks.get("sample_five_minute_first_date") or ""
+        ),
+        "sample_five_minute_last_date": str(
+            checks.get("sample_five_minute_last_date") or ""
+        ),
         "professional_downloader_available": bool(
             checks.get("professional_downloader_available")
         ),
@@ -374,6 +394,8 @@ def _latest_probe() -> Optional[dict[str, Any]]:
 def _probe_is_fresh(latest: Optional[dict[str, Any]]) -> bool:
     if not latest or latest.get("status") == "running":
         return bool(latest)
+    if (latest.get("checks") or {}).get("probe_version") != PROBE_VERSION:
+        return False
     finished_at = str(latest.get("finished_at") or "")
     try:
         finished = datetime.fromisoformat(finished_at)
