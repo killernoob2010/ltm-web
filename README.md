@@ -71,6 +71,18 @@ env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路
 
 期权台账的四项希腊字母固定显示四位小数。若最新 TXT 持仓快照尚未更新，而其中期权已经超过到期日，系统仍保留该行用于核对来源，但不再展示或汇总其当前估值、标的价格、IV、浮动盈亏和 Greeks，并在到期日标记“已到期”。系统不会根据过期快照自行推断行权或放弃结果；真实了结状态以后续导入的交易所结算单为准。
 
+### 历史期权研究数据门槛
+
+历史期权研究与交易事实完全隔离，使用 `option_research_contracts`、`option_research_bars`、`option_research_runs` 和 `option_research_gaps` 四张独立表。仅凭历史期货价格不得生成或宣称真实期权回测收益；期货数据只可用于压力情景或明确标注的合成机制检查。
+
+Staging 部署会使用现有 `TQSDK_USERNAME`、`TQSDK_PASSWORD` 自动执行一次有界、只读的能力探针，依次验证铁矿石具体期货发现、对应历史期权发现、样本日线读取和专业 `DataDownloader` 权限。探针只返回状态与计数，不返回认证值、行情价格或原始异常。结果可通过只读接口查看：
+
+```text
+GET /api/option-research/readiness
+```
+
+探针三项前置能力全部通过前，不启动多年分钟数据采集或策略收益回测。Production 默认禁用；需要本地测试时可显式配置 `OPTION_RESEARCH_ENABLED=true`，并用 `OPTION_RESEARCH_PROBE_REFRESH_HOURS` 调整重复检查间隔。
+
 ## 铁矿石基差 API 增量同步
 
 铁矿石期现采用“Staging 单一采集源、Production 快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许 Production 直连 Staging 数据库。
