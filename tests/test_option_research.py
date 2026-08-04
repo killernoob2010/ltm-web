@@ -173,6 +173,21 @@ def test_backtest_contract_quote_requires_static_metadata():
     assert option_backtest._parse_date(contract.expire_datetime).isoformat() == "2026-08-12"
 
 
+def test_discover_contracts_prefers_recent_expired_contracts():
+    class FakeApi:
+        def query_quotes(self, **kwargs):
+            return ["DCE.i2509", "DCE.i2606"] if kwargs["expired"] else ["DCE.i2609"]
+
+        def query_options(self, underlying):
+            return []
+
+    futures, contracts, capped = option_backtest.discover_contracts(FakeApi())
+
+    assert futures == ["DCE.i2606", "DCE.i2509", "DCE.i2609"]
+    assert contracts == []
+    assert capped is False
+
+
 def test_frame_rows_normalizes_valid_tqsdk_like_frame():
     frame = {
         "datetime": [1_700_000_000_000_000_000],
