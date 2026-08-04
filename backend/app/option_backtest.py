@@ -664,6 +664,16 @@ def simulate_daily_a0(
     filter_counts = defaultdict(int)
     risk_latched_level = 0
     delta_unknown_days = 0
+    monthly_activity: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "observed_days": 0,
+            "days_with_positions": 0,
+            "entry_quantity": 0,
+            "exit_quantity": 0,
+        }
+    )
+    entries_by_month: dict[str, int] = defaultdict(int)
+    exits_by_month: dict[str, int] = defaultdict(int)
     quantity_sequence = [100, 200, 300, 400, 500, 600]
 
     def schedule_risk_close(trading_date: str, fraction: float) -> None:
@@ -679,6 +689,8 @@ def simulate_daily_a0(
             )
 
     for index, trading_date in enumerate(all_dates):
+        month_key = trading_date[:7]
+        monthly_activity[month_key]["observed_days"] += 1
         # Execute only orders generated on the previous end-of-day observation.
         for (symbol, action_date), quantity in list(pending_close.items()):
             if action_date != trading_date:
@@ -695,6 +707,7 @@ def simulate_daily_a0(
             realized_by_month[trading_date[:7]] += _position_pnl(position, fill) * close_quantity / position.quantity
             position.quantity -= close_quantity
             total_exits += close_quantity
+            exits_by_month[trading_date[:7]] += close_quantity
             if position.quantity <= 0:
                 positions.pop(symbol, None)
             pending_close.pop((symbol, action_date), None)
@@ -854,7 +867,10 @@ def simulate_daily_a0(
                     net_delta += candidate_delta
                     tranche_index += 1
                     total_entries += int(proposed)
+                    entries_by_month[next_trading_date[:7]] += int(proposed)
 
+        if positions:
+            monthly_activity[month_key]["days_with_positions"] += 1
         daily.append(
             {
                 "trading_date": trading_date,
@@ -885,11 +901,19 @@ def simulate_daily_a0(
                 continue
             realized_by_month[settlement_date[:7]] += _position_pnl(position, fill)
             total_exits += position.quantity
+            exits_by_month[settlement_date[:7]] += position.quantity
             positions.pop(symbol, None)
 
     monthly = [
-        {"month": month, "settled_pnl": round(value, 2)}
-        for month, value in sorted(realized_by_month.items())
+        {
+            "month": month,
+            "observed_days": int(monthly_activity[month]["observed_days"]),
+            "days_with_positions": int(monthly_activity[month]["days_with_positions"]),
+            "entry_quantity": int(entries_by_month.get(month, 0)),
+            "exit_quantity": int(exits_by_month.get(month, 0)),
+            "settled_pnl": round(realized_by_month.get(month, 0.0), 2),
+        }
+        for month in sorted(monthly_activity)
     ]
     floating_values = [item["floating_pnl"] for item in daily]
     return {
