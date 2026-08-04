@@ -22,6 +22,7 @@ router = APIRouter()
 DAILY_SECONDS = 24 * 60 * 60
 MAX_RUNS = 20
 RUN_TYPE = "backtest_a0_daily"
+BACKTEST_CODE_VERSION = "a0-daily-86ea08f"
 STALE_RUN_MINUTES = max(5, int(os.getenv("OPTION_RESEARCH_BACKTEST_STALE_MINUTES", "5")))
 MAX_RUN_SECONDS = max(60, int(os.getenv("OPTION_RESEARCH_BACKTEST_MAX_SECONDS", "600")))
 BACKTEST_SCHEMA = ("option_research_results",)
@@ -1135,6 +1136,7 @@ def start_backtest(
             "started": True,
             "run_key": run_key,
             "mode": "daily_a0_screen",
+            "code_version": BACKTEST_CODE_VERSION,
             "max_options": max_options,
             "max_futures": max_futures,
         }
@@ -1144,7 +1146,11 @@ def start_backtest(
 def backtest_status(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _authorized(authorization)
     latest = _latest_run()
-    return {"enabled": option_research.is_staging_environment(), "run": latest}
+    return {
+        "enabled": option_research.is_staging_environment(),
+        "code_version": BACKTEST_CODE_VERSION,
+        "run": latest,
+    }
 
 
 @router.get("/option-research/backtest/results")
