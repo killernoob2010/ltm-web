@@ -238,7 +238,13 @@ def discover_contracts(
             expired=False,
         )
     )
-    futures = sorted({str(symbol) for symbol in expired + active if str(symbol).startswith("DCE.i")})
+    # Recent concrete contracts are the only useful first slice for a near/next-month
+    # strategy. Older expired contracts are retained for later batches, not silently
+    # mixed into the first availability check.
+    futures = sorted(
+        {str(symbol) for symbol in expired + active if str(symbol).startswith("DCE.i")},
+        reverse=True,
+    )
     if max_futures:
         futures = futures[:max_futures]
     contracts: dict[str, Contract] = {}
