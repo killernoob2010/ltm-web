@@ -490,6 +490,64 @@ def fetch_daily_rows(api: Any, symbol: str, run_key: str) -> list[dict[str, Any]
     )
 
 
+def fetch_daily_rows_batch(
+    api: Any,
+    symbols: list[str],
+    run_key: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Read a bounded symbol batch through one wait loop.
+
+    TqSdk updates all subscribed serials together. Waiting symbol-by-symbol makes
+    a batch with unavailable history take one timeout per symbol, so use one
+    bounded subscription batch and return both rows and symbols with no rows.
+    """
+
+    if not symbols:
+        return [], []
+    data_length = max(30, min(500, int(os.getenv("OPTION_RESEARCH_DAILY_BARS", "500"))))
+    timeout = max(5, min(60, int(os.getenv("OPTION_RESEARCH_SYMBOL_TIMEOUT_SECONDS", "20"))))
+    frames: dict[str, Any] = {}
+    missing = set(symbols)
+    for symbol in symbols:
+        try:
+            frames[symbol] = api.get_kline_serial(symbol, DAILY_SECONDS, data_length=data_length)
+        except Exception:
+            frames[symbol] = None
+
+    rows_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    deadline = time.time() + timeout
+    while time.time() < deadline and missing:
+        for symbol in list(missing):
+            rows = frame_rows(
+                frames[symbol],
+                symbol=symbol,
+                duration_seconds=DAILY_SECONDS,
+                run_key=run_key,
+            )
+            if rows:
+                rows_by_symbol[symbol] = rows
+                missing.remove(symbol)
+        if not missing:
+            break
+        try:
+            api.wait_update(deadline=min(deadline, time.time() + 1))
+        except Exception:
+            break
+
+    for symbol in list(missing):
+        rows = frame_rows(
+            frames[symbol],
+            symbol=symbol,
+            duration_seconds=DAILY_SECONDS,
+            run_key=run_key,
+        )
+        if rows:
+            rows_by_symbol[symbol] = rows
+            missing.remove(symbol)
+    rows = [row for symbol in symbols for row in rows_by_symbol.get(symbol, [])]
+    return rows, sorted(missing)
+
+
 def _black76_metrics(
     *,
     option_price: float,
@@ -767,17 +825,40 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
         _insert_contracts(contracts)
         symbols = futures + [contract.symbol for contract in contracts]
         seen: set[str] = set()
+        unique_symbols: list[str] = []
         for symbol in symbols:
-            if time.monotonic() - started_monotonic > MAX_RUN_SECONDS:
-                raise RuntimeError("backtest_timeout")
             if symbol in seen:
                 continue
             seen.add(symbol)
-            rows = fetch_daily_rows(api, symbol, run_key)
-            if not rows:
-                continue
-            all_rows.extend(rows)
-            _insert_bars(rows)
+            unique_symbols.append(symbol)
+        batch_size = 25
+        missing_symbols: list[str] = []
+        for start in range(0, len(unique_symbols), batch_size):
+            if time.monotonic() - started_monotonic > MAX_RUN_SECONDS:
+                raise RuntimeError("backtest_timeout")
+            batch = unique_symbols[start : start + batch_size]
+            rows, missing = fetch_daily_rows_batch(api, batch, run_key)
+            missing_symbols.extend(missing)
+            if rows:
+                all_rows.extend(rows)
+                _insert_bars(rows)
+            _update_run(
+                run_key,
+                status="running",
+                checks={
+                    "phase": "bar_fetch",
+                    "futures_count": len(futures),
+                    "options_count": len(contracts),
+                    "symbols_total": len(unique_symbols),
+                    "symbols_done": min(start + len(batch), len(unique_symbols)),
+                    "symbols_with_rows": len(unique_symbols) - len(missing_symbols),
+                    "symbols_without_rows": len(missing_symbols),
+                },
+                futures_count=len(futures),
+                options_count=len(contracts),
+                bars_count=len(all_rows),
+                message="逐合约读取日线中，已完成小批量订阅。",
+            )
         option_research.bar_quality_issues(all_rows[:10000])
         quality_issues = option_research.bar_quality_issues(all_rows)
         contract_map = {contract.symbol: contract for contract in contracts}
@@ -788,6 +869,7 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
         result["options_count"] = len(contracts)
         result["bars_count"] = len(all_rows)
         result["daily_option_symbols"] = sum(1 for symbol in contract_map if any(row["symbol"] == symbol for row in all_rows))
+        result["symbols_without_rows"] = sorted(set(missing_symbols))[:200]
         result["notes"] = [
             "这是日线真实期权初筛，不是协议要求的5分钟最终回测。",
             "由于普通K线接口和专业下载权限限制，逐合约分钟覆盖仍需单独检查。",

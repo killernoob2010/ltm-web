@@ -197,6 +197,34 @@ def test_frame_rows_normalizes_valid_tqsdk_like_frame():
     assert rows[0]["trading_date"] == "2023-11-15"
 
 
+def test_fetch_daily_rows_batch_reuses_one_update_loop():
+    frame = {
+        "datetime": [1_700_000_000_000_000_000],
+        "open": [2.0],
+        "high": [2.2],
+        "low": [1.8],
+        "close": [2.1],
+        "volume": [20],
+        "open_oi": [50],
+    }
+
+    class FakeApi:
+        def get_kline_serial(self, symbol, duration_seconds, data_length):
+            return frame
+
+        def wait_update(self, deadline):
+            return True
+
+    rows, missing = option_backtest.fetch_daily_rows_batch(
+        FakeApi(),
+        ["DCE.i2609", "DCE.i2609-P-700"],
+        "run-1",
+    )
+
+    assert len(rows) == 2
+    assert missing == []
+
+
 def test_daily_a0_screen_uses_real_option_rows_and_returns_monthly_metrics():
     contracts = [
         option_backtest.Contract(
