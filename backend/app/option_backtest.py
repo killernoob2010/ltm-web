@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -22,10 +23,11 @@ router = APIRouter()
 DAILY_SECONDS = 24 * 60 * 60
 MAX_RUNS = 20
 RUN_TYPE = "backtest_a0_daily"
-BACKTEST_CODE_VERSION = "a0-daily-a9e622a"
-STALE_RUN_MINUTES = max(5, int(os.getenv("OPTION_RESEARCH_BACKTEST_STALE_MINUTES", "5")))
-MAX_RUN_SECONDS = max(60, int(os.getenv("OPTION_RESEARCH_BACKTEST_MAX_SECONDS", "600")))
+BACKTEST_CODE_VERSION = "a0-daily-data-v2"
+STALE_RUN_MINUTES = max(5, int(os.getenv("OPTION_RESEARCH_BACKTEST_STALE_MINUTES", "30")))
+MAX_RUN_SECONDS = max(60, int(os.getenv("OPTION_RESEARCH_BACKTEST_MAX_SECONDS", "1800")))
 BACKTEST_SCHEMA = ("option_research_results",)
+_IRON_ORE_FUTURE_RE = re.compile(r"^DCE\.i(?P<year>\d{2})(?P<month>\d{2})$", re.IGNORECASE)
 _RUN_LOCK = threading.Lock()
 _RUN_THREAD: Optional[threading.Thread] = None
 
@@ -35,6 +37,9 @@ class BacktestStartIn(BaseModel):
 
     max_options: int = Field(default=0, ge=0, le=5000)
     max_futures: int = Field(default=0, ge=0, le=200)
+    start_date: date = Field(default=date(2026, 1, 1))
+    end_date: date = Field(default=date(2026, 6, 30))
+    collect_only: bool = Field(default=True)
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,8 @@ def _finite(value: Any, *, positive: bool = False) -> Optional[float]:
 
 
 def _parse_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     text = str(value or "").strip()
@@ -205,6 +212,8 @@ def parse_contract_quote(symbol: str, quote: Any) -> Optional[Contract]:
         getattr(quote, "underlying_symbol", None)
         or parsed["underlying_symbol"]
     )
+    if underlying.lower() != str(parsed["underlying_symbol"]).lower():
+        return None
     return Contract(
         symbol=str(symbol),
         underlying_symbol=underlying,
@@ -216,11 +225,282 @@ def parse_contract_quote(symbol: str, quote: Any) -> Optional[Contract]:
     )
 
 
+def _month_index(value: date) -> int:
+    return value.year * 12 + value.month - 1
+
+
+def _future_delivery_index(symbol: str) -> Optional[int]:
+    match = _IRON_ORE_FUTURE_RE.match(str(symbol or ""))
+    if not match:
+        return None
+    month = int(match.group("month"))
+    if month < 1 or month > 12:
+        return None
+    return (2000 + int(match.group("year"))) * 12 + month - 1
+
+
+def select_futures_for_option_window(
+    futures: Iterable[str],
+    *,
+    start_date: date,
+    end_date: date,
+    next_expiry_count: int = 1,
+) -> list[str]:
+    """Select exact futures behind the near and fallback option expiries.
+
+    DCE iron-ore options expire in the month before the delivery month of their
+    exact underlying future.  For a January-to-June research window, the near
+    series are therefore i2602..i2607 and one fallback expiry adds i2608.
+    Continuous/main symbols are intentionally never accepted here.
+    """
+
+    first_delivery = _month_index(start_date) + 1
+    last_delivery = _month_index(end_date) + 1 + max(0, next_expiry_count)
+    selected = {
+        str(symbol)
+        for symbol in futures
+        if (delivery := _future_delivery_index(str(symbol))) is not None
+        and first_delivery <= delivery <= last_delivery
+    }
+    return sorted(selected, key=lambda symbol: _future_delivery_index(symbol) or 0)
+
+
+def settlement_frame_rows(frame: Any, *, run_key: str) -> list[dict[str, Any]]:
+    """Normalize official daily settlement rows without inventing trade OHLC."""
+
+    if frame is None:
+        return []
+    if hasattr(frame, "to_dict"):
+        try:
+            records = frame.to_dict("records")
+        except TypeError:
+            records = []
+    elif isinstance(frame, list):
+        records = frame
+    else:
+        records = []
+    beijing = timezone(timedelta(hours=8))
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        trading_date = _parse_date(record.get("datetime"))
+        symbol = str(record.get("symbol") or "").strip()
+        settlement = _finite(record.get("settlement"), positive=True)
+        if trading_date is None or not symbol or settlement is None:
+            continue
+        timestamp = datetime(
+            trading_date.year,
+            trading_date.month,
+            trading_date.day,
+            15,
+            0,
+            tzinfo=beijing,
+        )
+        datetime_nano = int(timestamp.timestamp() * 1_000_000_000)
+        rows.append(
+            {
+                "symbol": symbol,
+                "duration_seconds": DAILY_SECONDS,
+                "datetime_nano": datetime_nano,
+                "datetime_text": timestamp.isoformat(),
+                "trading_date": trading_date.isoformat(),
+                "open_price": None,
+                "high_price": None,
+                "low_price": None,
+                "close_price": None,
+                "settlement_price": settlement,
+                "volume": None,
+                "open_interest": None,
+                "source": "tqsdk_settlement",
+                "run_key": run_key,
+            }
+        )
+    rows.sort(key=lambda row: (row["symbol"], row["datetime_nano"]))
+    return rows
+
+
+def merge_daily_rows(
+    trade_rows: list[dict[str, Any]],
+    settlement_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach settlement to traded bars and retain settlement-only dates."""
+
+    merged: dict[tuple[str, str], dict[str, Any]] = {
+        (str(row.get("symbol") or ""), str(row.get("trading_date") or "")): dict(row)
+        for row in trade_rows
+    }
+    for settlement in settlement_rows:
+        key = (
+            str(settlement.get("symbol") or ""),
+            str(settlement.get("trading_date") or ""),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = dict(settlement)
+            continue
+        value = _finite(settlement.get("settlement_price"), positive=True)
+        if value is not None:
+            existing["settlement_price"] = value
+    return sorted(
+        merged.values(),
+        key=lambda row: (
+            str(row.get("symbol") or ""),
+            str(row.get("trading_date") or ""),
+            int(row.get("datetime_nano") or 0),
+        ),
+    )
+
+
+def audit_daily_coverage(
+    *,
+    futures: list[str],
+    contracts: list[Contract],
+    bars: list[dict[str, Any]],
+    start_date: date,
+    end_date: date,
+    universe_capped: bool,
+) -> dict[str, Any]:
+    """Audit valuation coverage separately from whether a contract traded.
+
+    Exchange settlement rows are required for daily valuation.  A missing Kline
+    close with a valid settlement is a genuine no-trade day, not a data gap.
+    Expected option dates begin at the first observed settlement (the effective
+    listing boundary) and end at the option expiry or requested period end.
+    """
+
+    rows_by_symbol: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for row in bars:
+        trading_date = _parse_date(row.get("trading_date"))
+        if trading_date is None or trading_date < start_date or trading_date > end_date:
+            continue
+        rows_by_symbol[str(row.get("symbol") or "")][trading_date.isoformat()] = row
+
+    future_calendars: dict[str, list[date]] = {}
+    for symbol in futures:
+        future_calendars[symbol] = sorted(
+            parsed
+            for day, row in rows_by_symbol.get(symbol, {}).items()
+            if (parsed := _parse_date(day)) is not None
+            and (
+                _finite(row.get("settlement_price"), positive=True) is not None
+                or _finite(row.get("close_price"), positive=True) is not None
+            )
+        )
+
+    monthly: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "expected_settlement_rows": 0,
+            "settlement_rows": 0,
+            "trade_rows": 0,
+        }
+    )
+    contracts_without_settlement: list[str] = []
+    missing_underlying_series = sorted(
+        {
+            contract.underlying_symbol
+            for contract in contracts
+            if contract.underlying_symbol not in future_calendars
+            or not future_calendars[contract.underlying_symbol]
+        }
+    )
+    futures_without_options = sorted(
+        symbol
+        for symbol in futures
+        if not any(contract.underlying_symbol == symbol for contract in contracts)
+    )
+    missing_settlement_rows = 0
+    audited_contracts = 0
+    for contract in contracts:
+        expiry = _parse_date(contract.expire_datetime)
+        underlying_dates = future_calendars.get(contract.underlying_symbol, [])
+        if expiry is None or not underlying_dates:
+            contracts_without_settlement.append(contract.symbol)
+            continue
+        option_rows = rows_by_symbol.get(contract.symbol, {})
+        settlement_dates = sorted(
+            parsed
+            for day, row in option_rows.items()
+            if (parsed := _parse_date(day)) is not None
+            and parsed <= expiry
+            and _finite(row.get("settlement_price"), positive=True) is not None
+        )
+        if not settlement_dates:
+            if expiry > end_date:
+                # A strike in the fallback series may have been listed only
+                # after the requested window; it was not part of that day's
+                # tradable chain and is therefore outside this audit grain.
+                continue
+            contracts_without_settlement.append(contract.symbol)
+            continue
+        audited_contracts += 1
+        active_start = max(start_date, settlement_dates[0])
+        active_end = min(end_date, expiry)
+        expected_dates = [
+            day for day in underlying_dates if active_start <= day <= active_end
+        ]
+        actual_settlement_dates = set(settlement_dates)
+        for day in expected_dates:
+            month = day.strftime("%Y-%m")
+            monthly[month]["expected_settlement_rows"] += 1
+            row = option_rows.get(day.isoformat(), {})
+            if day in actual_settlement_dates:
+                monthly[month]["settlement_rows"] += 1
+            else:
+                missing_settlement_rows += 1
+            if _finite(row.get("close_price"), positive=True) is not None:
+                monthly[month]["trade_rows"] += 1
+
+    monthly_rows: list[dict[str, Any]] = []
+    for month in sorted(monthly):
+        values = monthly[month]
+        expected = int(values["expected_settlement_rows"])
+        settled = int(values["settlement_rows"])
+        traded = int(values["trade_rows"])
+        monthly_rows.append(
+            {
+                "month": month,
+                "expected_settlement_rows": expected,
+                "settlement_rows": settled,
+                "missing_settlement_rows": max(0, expected - settled),
+                "settlement_coverage_ratio": round(settled / expected, 4) if expected else 0.0,
+                "trade_rows": traded,
+                "no_trade_rows": max(0, settled - traded),
+            }
+        )
+
+    daily_data_complete = bool(
+        contracts
+        and not universe_capped
+        and not missing_underlying_series
+        and not futures_without_options
+        and not contracts_without_settlement
+        and missing_settlement_rows == 0
+    )
+    return {
+        "daily_data_complete": daily_data_complete,
+        "requested_start": start_date.isoformat(),
+        "requested_end": end_date.isoformat(),
+        "futures_count": len(futures),
+        "contracts_count": len(contracts),
+        "audited_contracts": audited_contracts,
+        "universe_capped": universe_capped,
+        "missing_underlying_series": missing_underlying_series,
+        "futures_without_options": futures_without_options,
+        "contracts_without_settlement_count": len(contracts_without_settlement),
+        "contracts_without_settlement": contracts_without_settlement[:100],
+        "missing_settlement_rows": missing_settlement_rows,
+        "monthly": monthly_rows,
+    }
+
+
 def discover_contracts(
     api: Any,
     *,
     max_options: int = 0,
     max_futures: int = 0,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ) -> tuple[list[str], list[Contract], bool]:
     """Discover concrete iron-ore futures and real option contracts."""
 
@@ -251,6 +531,13 @@ def discover_contracts(
         reverse=True,
     )
     futures = list(dict.fromkeys(expired_recent + active_recent))
+    if start_date is not None and end_date is not None:
+        futures = select_futures_for_option_window(
+            futures,
+            start_date=start_date,
+            end_date=end_date,
+            next_expiry_count=1,
+        )
     if max_futures:
         futures = futures[:max_futures]
     contracts: dict[str, Contract] = {}
@@ -324,7 +611,15 @@ def create_schema() -> None:
             db._secure_postgres_tables(cur, BACKTEST_SCHEMA)
 
 
-def _create_run(run_key: str, max_options: int, max_futures: int) -> None:
+def _create_run(
+    run_key: str,
+    max_options: int,
+    max_futures: int,
+    *,
+    start_date: date,
+    end_date: date,
+    collect_only: bool,
+) -> None:
     with db.connect() as conn:
         cur = conn.cursor()
         db._exec(
@@ -339,14 +634,17 @@ def _create_run(run_key: str, max_options: int, max_futures: int) -> None:
                 run_key,
                 RUN_TYPE,
                 _utc_now(),
-                "available_history",
-                "available_history",
+                start_date.isoformat(),
+                end_date.isoformat(),
                 DAILY_SECONDS,
                 json.dumps(
                     {
-                        "mode": "daily_a0_screen",
+                        "mode": "daily_data_audit" if collect_only else "daily_a0_screen",
                         "max_options": max_options,
                         "max_futures": max_futures,
+                        "start_date": start_date.isoformat(),
+                        "end_date": end_date.isoformat(),
+                        "collect_only": collect_only,
                     },
                     ensure_ascii=False,
                 ),
@@ -476,7 +774,14 @@ def _insert_bars(rows: list[dict[str, Any]]) -> None:
                  open_price, high_price, low_price, close_price, settlement_price,
                  volume, open_interest, bid_price1, ask_price1, source, run_key)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(symbol, duration_seconds, datetime_nano) DO NOTHING
+                ON CONFLICT(symbol, duration_seconds, datetime_nano) DO UPDATE SET
+                    open_price = COALESCE(excluded.open_price, option_research_bars.open_price),
+                    high_price = COALESCE(excluded.high_price, option_research_bars.high_price),
+                    low_price = COALESCE(excluded.low_price, option_research_bars.low_price),
+                    close_price = COALESCE(excluded.close_price, option_research_bars.close_price),
+                    settlement_price = COALESCE(excluded.settlement_price, option_research_bars.settlement_price),
+                    volume = COALESCE(excluded.volume, option_research_bars.volume),
+                    open_interest = COALESCE(excluded.open_interest, option_research_bars.open_interest)
                 """,
                 values[start : start + 500],
             )
@@ -584,6 +889,46 @@ def fetch_daily_rows_batch(
     return rows, sorted(missing)
 
 
+def fetch_settlement_rows_batch(
+    api: Any,
+    symbols: list[str],
+    *,
+    start_date: date,
+    end_date: date,
+    run_key: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fetch exchange daily settlement values in bounded symbol batches."""
+
+    if not symbols:
+        return [], []
+    days = max(1, (end_date - start_date).days + 1)
+    all_rows: list[dict[str, Any]] = []
+    failed: list[str] = []
+    batch_size = 100
+    for start in range(0, len(symbols), batch_size):
+        batch = symbols[start : start + batch_size]
+        try:
+            frame = api.query_symbol_settlement(
+                batch,
+                days=days,
+                start_dt=start_date,
+            )
+            rows = settlement_frame_rows(frame, run_key=run_key)
+        except Exception:
+            rows = []
+            failed.extend(batch)
+            continue
+        rows = [
+            row
+            for row in rows
+            if start_date.isoformat() <= str(row["trading_date"]) <= end_date.isoformat()
+        ]
+        returned = {str(row["symbol"]) for row in rows}
+        failed.extend(symbol for symbol in batch if symbol not in returned)
+        all_rows.extend(rows)
+    return all_rows, sorted(set(failed))
+
+
 def _black76_metrics(
     *,
     option_price: float,
@@ -644,6 +989,8 @@ def simulate_daily_a0(
     *,
     contracts: list[Contract],
     bars: list[dict[str, Any]],
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ) -> dict[str, Any]:
     """Conservative daily screening model; not the final 5-minute execution model."""
 
@@ -653,6 +1000,10 @@ def simulate_daily_a0(
     option_by_key = _row_map(option_rows)
     future_by_key = _row_map(future_rows)
     all_dates = sorted({row["trading_date"] for row in future_rows})
+    if start_date is not None:
+        all_dates = [day for day in all_dates if day >= start_date.isoformat()]
+    if end_date is not None:
+        all_dates = [day for day in all_dates if day <= end_date.isoformat()]
     next_option_date = _next_date_map(option_rows)
     positions: dict[str, Position] = {}
     pending_close: dict[tuple[str, str], int] = defaultdict(int)
@@ -915,35 +1266,6 @@ def simulate_daily_a0(
         }
         for month in sorted(monthly_activity)
     ]
-    coverage_by_month: list[dict[str, Any]] = []
-    option_symbols = set(contract_map)
-    for month in sorted(monthly_activity):
-        observed_days = int(monthly_activity[month]["observed_days"])
-        expected_rows = len(option_symbols) * observed_days
-        month_rows = [
-            row
-            for row in option_rows
-            if str(row.get("trading_date", ""))[:7] == month
-            and row.get("close_price") is not None
-        ]
-        actual_keys = {
-            (str(row["symbol"]), str(row["trading_date"]))
-            for row in month_rows
-        }
-        coverage_by_month.append(
-            {
-                "month": month,
-                "future_days": observed_days,
-                "option_symbols": len(option_symbols),
-                "option_rows": len(actual_keys),
-                "expected_rows": expected_rows,
-                "missing_rows": max(0, expected_rows - len(actual_keys)),
-                "coverage_ratio": round(
-                    len(actual_keys) / expected_rows, 4
-                ) if expected_rows else 0.0,
-                "symbols_with_rows": len({key[0] for key in actual_keys}),
-            }
-        )
     floating_values = [item["floating_pnl"] for item in daily]
     return {
         "granularity": "daily",
@@ -959,7 +1281,6 @@ def simulate_daily_a0(
         "risk_latched_level": risk_latched_level,
         "delta_unknown_days": delta_unknown_days,
         "entry_filter_counts": dict(sorted(filter_counts.items())),
-        "coverage_by_month": coverage_by_month,
         "qualified_months_400k": sum(1 for value in realized_by_month.values() if value >= 400_000),
         "target_months_500k": sum(1 for value in realized_by_month.values() if value >= 500_000),
         "monthly": monthly,
@@ -967,10 +1288,19 @@ def simulate_daily_a0(
     }
 
 
-def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
+def _run_worker(
+    run_key: str,
+    max_options: int,
+    max_futures: int,
+    start_date: date,
+    end_date: date,
+    collect_only: bool,
+) -> None:
     api = None
     all_rows: list[dict[str, Any]] = []
+    trade_rows: list[dict[str, Any]] = []
     started_monotonic = time.monotonic()
+    mode = "daily_data_audit" if collect_only else "daily_a0_screen"
     try:
         from tqsdk import TqApi, TqAuth
 
@@ -983,6 +1313,8 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
             api,
             max_options=max_options,
             max_futures=max_futures,
+            start_date=start_date,
+            end_date=end_date,
         )
         if not futures or not contracts:
             raise RuntimeError("no_option_universe")
@@ -994,6 +1326,8 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
                 "futures_count": len(futures),
                 "options_count": len(contracts),
                 "universe_capped": capped,
+                "requested_start": start_date.isoformat(),
+                "requested_end": end_date.isoformat(),
             },
             futures_count=len(futures),
             options_count=len(contracts),
@@ -1017,8 +1351,13 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
             rows, missing = fetch_daily_rows_batch(api, batch, run_key)
             missing_symbols.extend(missing)
             if rows:
-                all_rows.extend(rows)
-                _insert_bars(rows)
+                trade_rows.extend(
+                    row
+                    for row in rows
+                    if start_date.isoformat()
+                    <= str(row.get("trading_date") or "")
+                    <= end_date.isoformat()
+                )
             _update_run(
                 run_key,
                 status="running",
@@ -1033,23 +1372,86 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
                 },
                 futures_count=len(futures),
                 options_count=len(contracts),
-                bars_count=len(all_rows),
+                bars_count=len(trade_rows),
                 message="逐合约读取日线中，已完成小批量订阅。",
             )
-        option_research.bar_quality_issues(all_rows[:10000])
-        quality_issues = option_research.bar_quality_issues(all_rows)
+        _update_run(
+            run_key,
+            status="running",
+            checks={
+                "phase": "settlement_fetch",
+                "symbols_total": len(unique_symbols),
+                "trade_rows": len(trade_rows),
+            },
+            futures_count=len(futures),
+            options_count=len(contracts),
+            bars_count=len(trade_rows),
+            message="真实成交日线读取完成，开始补取交易所每日结算价。",
+        )
+        settlement_rows, missing_settlement_symbols = fetch_settlement_rows_batch(
+            api,
+            unique_symbols,
+            start_date=start_date,
+            end_date=end_date,
+            run_key=run_key,
+        )
+        all_rows = merge_daily_rows(trade_rows, settlement_rows)
+        _insert_bars(all_rows)
+        quality_issues = option_research.bar_quality_issues(trade_rows)
         contract_map = {contract.symbol: contract for contract in contracts}
-        result = simulate_daily_a0(contracts=contracts, bars=all_rows)
+        data_audit = audit_daily_coverage(
+            futures=futures,
+            contracts=contracts,
+            bars=all_rows,
+            start_date=start_date,
+            end_date=end_date,
+            universe_capped=capped,
+        )
+        option_counts_by_underlying = {
+            underlying: sum(
+                1 for contract in contracts if contract.underlying_symbol == underlying
+            )
+            for underlying in futures
+        }
+        if collect_only or not data_audit["daily_data_complete"]:
+            result = {
+                "mode": mode,
+                "granularity": "daily",
+                "final_eligible": False,
+                "daily_data_complete": bool(data_audit["daily_data_complete"]),
+                "requested_start": start_date.isoformat(),
+                "requested_end": end_date.isoformat(),
+                "monthly": [],
+            }
+        else:
+            result = simulate_daily_a0(
+                contracts=contracts,
+                bars=all_rows,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            result["daily_data_complete"] = True
+        result["data_audit"] = data_audit
         result["data_quality_issues"] = quality_issues[:100]
         result["universe_capped"] = capped
         result["futures_count"] = len(futures)
+        result["futures"] = futures
         result["options_count"] = len(contracts)
+        result["option_counts_by_underlying"] = option_counts_by_underlying
         result["bars_count"] = len(all_rows)
-        result["daily_option_symbols"] = sum(1 for symbol in contract_map if any(row["symbol"] == symbol for row in all_rows))
-        result["symbols_without_rows"] = sorted(set(missing_symbols))[:200]
+        result["trade_rows_count"] = len(trade_rows)
+        result["settlement_rows_count"] = len(settlement_rows)
+        result["daily_option_symbols"] = sum(
+            1
+            for symbol in contract_map
+            if any(row["symbol"] == symbol for row in all_rows)
+        )
+        result["symbols_without_trade_rows"] = sorted(set(missing_symbols))[:200]
+        result["symbols_without_settlement_rows"] = missing_settlement_symbols[:200]
         result["notes"] = [
-            "这是日线真实期权初筛，不是协议要求的5分钟最终回测。",
-            "由于普通K线接口和专业下载权限限制，逐合约分钟覆盖仍需单独检查。",
+            "具体期权始终映射到代码中同月份的具体铁矿石期货，不使用主力连续价格替代。",
+            "每日结算价用于估值完整性；没有成交K线但有结算价的日期记录为无成交日，不虚构成交。",
+            "这是日线数据审计或初筛，不是协议要求的5分钟最终回测。",
         ]
         with db.connect() as conn:
             cur = conn.cursor()
@@ -1063,12 +1465,24 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
                 """,
                 (run_key, json.dumps(result, ensure_ascii=False, sort_keys=True)),
             )
+        data_complete = bool(data_audit["daily_data_complete"])
+        final_status = "partial" if data_complete else "blocked"
+        if not data_complete:
+            final_error = "daily_data_incomplete"
+            final_message = "日线数据完整性门槛未通过；已保留逐月缺口，未输出收益结论。"
+        elif collect_only:
+            final_error = "daily_data_only"
+            final_message = "2026年1至6月日线数据审计已完成；等待5分钟成交数据覆盖后再运行最终回测。"
+        else:
+            final_error = "daily_screen_only"
+            final_message = "日线真实期权 A0 初筛已完成；等待5分钟逐合约覆盖检查后才能形成最终收益结论。"
         _update_run(
             run_key,
-            status="partial",
+            status=final_status,
             checks={
-                "mode": "daily_a0_screen",
+                "mode": mode,
                 "final_eligible": False,
+                "daily_data_complete": data_complete,
                 "universe_capped": capped,
                 "futures_count": len(futures),
                 "options_count": len(contracts),
@@ -1079,9 +1493,9 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
             futures_count=len(futures),
             options_count=len(contracts),
             bars_count=len(all_rows),
-            gaps_count=len(quality_issues),
-            message="日线真实期权 A0 初筛已完成；等待5分钟逐合约覆盖检查后才能形成最终收益结论。",
-            error_code="daily_screen_only",
+            gaps_count=int(data_audit["missing_settlement_rows"]) + len(quality_issues),
+            message=final_message,
+            error_code=final_error,
         )
     except Exception as exc:
         code = str(exc) if str(exc) in {
@@ -1092,9 +1506,9 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
         _update_run(
             run_key,
             status="blocked",
-            checks={"mode": "daily_a0_screen", "error": code},
+            checks={"mode": mode, "error": code},
             bars_count=len(all_rows),
-            message="历史期权 A0 回测执行被阻断，未生成收益结论。",
+            message="历史期权数据采集或 A0 回测执行被阻断，未生成收益结论。",
             error_code=code,
         )
     finally:
@@ -1120,7 +1534,7 @@ def _latest_run() -> Optional[dict[str, Any]]:
         row = db._exec(
             conn.cursor(),
             """
-            SELECT run_key, run_type, status, started_at, finished_at,
+            SELECT run_key, run_type, status, started_at, finished_at, updated_at,
                    futures_count, options_count, bars_count, gaps_count,
                    checks_json, error_code, message
               FROM option_research_runs
@@ -1138,13 +1552,13 @@ def _latest_run() -> Optional[dict[str, Any]]:
     except (TypeError, ValueError, json.JSONDecodeError):
         result["checks"] = {}
     if result.get("status") == "running":
-        started_text = str(result.get("started_at") or "")
+        updated_text = str(result.get("updated_at") or result.get("started_at") or "")
         try:
-            started_at = datetime.fromisoformat(started_text)
-            if started_at.tzinfo is None:
-                started_at = started_at.replace(tzinfo=timezone.utc)
+            updated_at = datetime.fromisoformat(updated_text)
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
             age_minutes = (
-                datetime.now(timezone.utc) - started_at
+                datetime.now(timezone.utc) - updated_at
             ).total_seconds() / 60
         except ValueError:
             age_minutes = STALE_RUN_MINUTES + 1
@@ -1174,6 +1588,10 @@ def start_backtest(
     _authorized(authorization)
     if not option_research.is_staging_environment():
         raise HTTPException(status_code=403, detail="历史期权回测只在 Staging 启用")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=422, detail="结束日期不能早于开始日期")
+    if (payload.end_date - payload.start_date).days > 370:
+        raise HTTPException(status_code=422, detail="单次数据审计最长支持370个自然日")
     global _RUN_THREAD
     with _RUN_LOCK:
         latest = _latest_run()
@@ -1183,10 +1601,24 @@ def start_backtest(
         run_key = f"a0-daily-{uuid.uuid4().hex}"
         max_options = payload.max_options or max(0, int(os.getenv("OPTION_RESEARCH_MAX_OPTIONS", "0")))
         max_futures = payload.max_futures or max(0, int(os.getenv("OPTION_RESEARCH_MAX_FUTURES", "0")))
-        _create_run(run_key, max_options, max_futures)
+        _create_run(
+            run_key,
+            max_options,
+            max_futures,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            collect_only=payload.collect_only,
+        )
         _RUN_THREAD = threading.Thread(
             target=_run_worker,
-            args=(run_key, max_options, max_futures),
+            args=(
+                run_key,
+                max_options,
+                max_futures,
+                payload.start_date,
+                payload.end_date,
+                payload.collect_only,
+            ),
             name="option-research-a0-daily",
             daemon=True,
         )
@@ -1194,10 +1626,13 @@ def start_backtest(
         return {
             "started": True,
             "run_key": run_key,
-            "mode": "daily_a0_screen",
+            "mode": "daily_data_audit" if payload.collect_only else "daily_a0_screen",
             "code_version": BACKTEST_CODE_VERSION,
             "max_options": max_options,
             "max_futures": max_futures,
+            "start_date": payload.start_date.isoformat(),
+            "end_date": payload.end_date.isoformat(),
+            "collect_only": payload.collect_only,
         }
 
 

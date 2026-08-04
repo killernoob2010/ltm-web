@@ -156,6 +156,58 @@ def test_backtest_schema_is_idempotent_and_separate(monkeypatch, tmp_path):
     assert "trading_trade_facts" not in tables
 
 
+def test_data_audit_run_records_requested_window(monkeypatch, tmp_path):
+    _use_temp_sqlite(monkeypatch, tmp_path)
+    option_backtest.create_schema()
+
+    option_backtest._create_run(
+        "run-window",
+        0,
+        0,
+        start_date=option_backtest.date(2026, 1, 1),
+        end_date=option_backtest.date(2026, 6, 30),
+        collect_only=True,
+    )
+
+    with sqlite3.connect(db.DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT requested_start, requested_end, message "
+            "FROM option_research_runs WHERE run_key = ?",
+            ("run-window",),
+        ).fetchone()
+    assert row[:2] == ("2026-01-01", "2026-06-30")
+    assert '"collect_only": true' in row[2]
+
+
+def test_bar_upsert_adds_settlement_to_existing_trade_row(monkeypatch, tmp_path):
+    _use_temp_sqlite(monkeypatch, tmp_path)
+    option_backtest.create_schema()
+    base = {
+        "symbol": "DCE.i2602-P-700",
+        "duration_seconds": 86400,
+        "datetime_nano": 1,
+        "datetime_text": "2026-01-05T15:00:00+08:00",
+        "trading_date": "2026-01-05",
+        "open_price": 1.0,
+        "high_price": 1.2,
+        "low_price": 0.9,
+        "close_price": 1.1,
+        "settlement_price": None,
+        "volume": 10,
+        "open_interest": 20,
+        "source": "tqsdk",
+        "run_key": "run-1",
+    }
+    option_backtest._insert_bars([base])
+    option_backtest._insert_bars([{**base, "settlement_price": 1.15}])
+
+    with sqlite3.connect(db.DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT close_price, settlement_price FROM option_research_bars"
+        ).fetchone()
+    assert row == (1.1, 1.15)
+
+
 def test_backtest_contract_quote_requires_static_metadata():
     quote = SimpleNamespace(
         underlying_symbol="DCE.i2609",
@@ -171,6 +223,49 @@ def test_backtest_contract_quote_requires_static_metadata():
     assert contract.strike_price == 700.0
     assert contract.volume_multiple == 100.0
     assert option_backtest._parse_date(contract.expire_datetime).isoformat() == "2026-08-12"
+
+
+def test_backtest_contract_quote_rejects_underlying_month_mismatch():
+    quote = SimpleNamespace(
+        underlying_symbol="DCE.i2609",
+        expire_datetime="2026-06-12T07:00:00+00:00",
+        volume_multiple=100,
+        price_tick=0.1,
+    )
+
+    assert option_backtest.parse_contract_quote("DCE.i2607-P-700", quote) is None
+
+
+def test_target_futures_cover_near_and_next_option_series():
+    futures = [
+        "DCE.i2601",
+        "DCE.i2602",
+        "DCE.i2603",
+        "DCE.i2604",
+        "DCE.i2605",
+        "DCE.i2606",
+        "DCE.i2607",
+        "DCE.i2608",
+        "DCE.i2609",
+        "KQ.m@DCE.i",
+    ]
+
+    selected = option_backtest.select_futures_for_option_window(
+        futures,
+        start_date=option_backtest.date(2026, 1, 1),
+        end_date=option_backtest.date(2026, 6, 30),
+        next_expiry_count=1,
+    )
+
+    assert selected == [
+        "DCE.i2602",
+        "DCE.i2603",
+        "DCE.i2604",
+        "DCE.i2605",
+        "DCE.i2606",
+        "DCE.i2607",
+        "DCE.i2608",
+    ]
 
 
 def test_discover_contracts_prefers_recent_expired_contracts():
@@ -238,6 +333,148 @@ def test_fetch_daily_rows_batch_reuses_one_update_loop():
 
     assert len(rows) == 2
     assert missing == []
+
+
+def test_settlement_rows_complete_valuation_without_inventing_trades():
+    rows = option_backtest.settlement_frame_rows(
+        [
+            {
+                "datetime": "2026-01-05",
+                "symbol": "DCE.i2602-P-700",
+                "settlement": 1.2,
+            }
+        ],
+        run_key="run-1",
+    )
+
+    assert rows == [
+        {
+            "symbol": "DCE.i2602-P-700",
+            "duration_seconds": 86400,
+            "datetime_nano": rows[0]["datetime_nano"],
+            "datetime_text": rows[0]["datetime_text"],
+            "trading_date": "2026-01-05",
+            "open_price": None,
+            "high_price": None,
+            "low_price": None,
+            "close_price": None,
+            "settlement_price": 1.2,
+            "volume": None,
+            "open_interest": None,
+            "source": "tqsdk_settlement",
+            "run_key": "run-1",
+        }
+    ]
+
+
+def test_merge_daily_rows_preserves_trade_and_adds_settlement():
+    trade = {
+        "symbol": "DCE.i2602-P-700",
+        "trading_date": "2026-01-05",
+        "close_price": 1.1,
+        "settlement_price": None,
+    }
+    settlement = {
+        "symbol": "DCE.i2602-P-700",
+        "trading_date": "2026-01-05",
+        "close_price": None,
+        "settlement_price": 1.2,
+    }
+
+    merged = option_backtest.merge_daily_rows([trade], [settlement])
+
+    assert merged == [{**trade, "settlement_price": 1.2}]
+
+
+def test_daily_coverage_uses_exact_underlying_settlement_calendar():
+    contract = option_backtest.Contract(
+        symbol="DCE.i2602-P-700",
+        underlying_symbol="DCE.i2602",
+        option_class="PUT",
+        strike_price=700.0,
+        expire_datetime="2026-01-07T07:00:00+00:00",
+        volume_multiple=100.0,
+        price_tick=0.1,
+    )
+    bars = []
+    for day in ("2026-01-05", "2026-01-06", "2026-01-07"):
+        bars.append(
+            {
+                "symbol": "DCE.i2602",
+                "trading_date": day,
+                "close_price": 800.0,
+                "settlement_price": 800.0,
+            }
+        )
+        bars.append(
+            {
+                "symbol": contract.symbol,
+                "trading_date": day,
+                "close_price": 1.0 if day == "2026-01-05" else None,
+                "settlement_price": 1.0,
+            }
+        )
+
+    audit = option_backtest.audit_daily_coverage(
+        futures=["DCE.i2602"],
+        contracts=[contract],
+        bars=bars,
+        start_date=option_backtest.date(2026, 1, 1),
+        end_date=option_backtest.date(2026, 1, 31),
+        universe_capped=False,
+    )
+
+    assert audit["daily_data_complete"] is True
+    assert audit["monthly"][0]["settlement_coverage_ratio"] == 1.0
+    assert audit["monthly"][0]["settlement_rows"] == 3
+    assert audit["monthly"][0]["trade_rows"] == 1
+    assert audit["monthly"][0]["no_trade_rows"] == 2
+
+
+def test_daily_coverage_blocks_internal_settlement_gap():
+    contract = option_backtest.Contract(
+        symbol="DCE.i2602-C-900",
+        underlying_symbol="DCE.i2602",
+        option_class="CALL",
+        strike_price=900.0,
+        expire_datetime="2026-01-07T07:00:00+00:00",
+        volume_multiple=100.0,
+        price_tick=0.1,
+    )
+    bars = [
+        {
+            "symbol": "DCE.i2602",
+            "trading_date": day,
+            "settlement_price": 800.0,
+        }
+        for day in ("2026-01-05", "2026-01-06", "2026-01-07")
+    ]
+    bars.extend(
+        [
+            {
+                "symbol": contract.symbol,
+                "trading_date": "2026-01-05",
+                "settlement_price": 1.0,
+            },
+            {
+                "symbol": contract.symbol,
+                "trading_date": "2026-01-07",
+                "settlement_price": 0.8,
+            },
+        ]
+    )
+
+    audit = option_backtest.audit_daily_coverage(
+        futures=["DCE.i2602"],
+        contracts=[contract],
+        bars=bars,
+        start_date=option_backtest.date(2026, 1, 1),
+        end_date=option_backtest.date(2026, 1, 31),
+        universe_capped=False,
+    )
+
+    assert audit["daily_data_complete"] is False
+    assert audit["missing_settlement_rows"] == 1
 
 
 def test_daily_a0_screen_uses_real_option_rows_and_returns_monthly_metrics():
