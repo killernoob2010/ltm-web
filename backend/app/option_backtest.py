@@ -59,6 +59,7 @@ class Position:
     multiplier: float
     entry_date: str
     close_pending: bool = False
+    profit_stage: int = 0
 
 
 def _utc_now() -> str:
@@ -660,7 +661,21 @@ def simulate_daily_a0(
     total_exits = 0
     risk_triggers = {"18w": 0, "24w": 0, "30w": 0}
     filter_counts = defaultdict(int)
+    risk_latched_level = 0
+    delta_unknown_days = 0
     quantity_sequence = [100, 200, 300, 400, 500, 600]
+
+    def schedule_risk_close(trading_date: str, fraction: float) -> None:
+        for symbol, position in positions.items():
+            action_date = next_option_date.get((symbol, trading_date), trading_date)
+            close_quantity = position.quantity if fraction >= 1 else max(
+                1,
+                math.ceil(position.quantity * fraction),
+            )
+            pending_close[(symbol, action_date)] = max(
+                pending_close[(symbol, action_date)],
+                close_quantity,
+            )
 
     for index, trading_date in enumerate(all_dates):
         # Execute only orders generated on the previous end-of-day observation.
@@ -707,30 +722,51 @@ def simulate_daily_a0(
             if not metrics:
                 missing_metrics += 1
             net_delta += _position_delta(position, metrics)
-            if mark <= 0.5:
-                pending_close[(symbol, next_option_date.get((symbol, trading_date), trading_date))] = max(
-                    pending_close[(symbol, next_option_date.get((symbol, trading_date), trading_date))],
-                    max(1, int(round(position.quantity / 6))),
+            action_date = next_option_date.get((symbol, trading_date), trading_date)
+            as_of = _parse_date(trading_date)
+            close_quantity = 0
+            if as_of is not None and position.expiry <= as_of:
+                close_quantity = position.quantity
+                position.profit_stage = 3
+            elif mark <= 0.3 and position.profit_stage < 3:
+                close_quantity = position.quantity
+                position.profit_stage = 3
+            elif mark <= 0.4 and position.profit_stage < 2:
+                close_quantity = max(1, math.ceil(position.quantity / 3))
+                position.profit_stage = 2
+            elif mark <= 0.5 and position.profit_stage < 1:
+                close_quantity = max(1, math.ceil(position.quantity / 3))
+                position.profit_stage = 1
+            if close_quantity:
+                pending_close[(symbol, action_date)] = max(
+                    pending_close[(symbol, action_date)],
+                    close_quantity,
                 )
-            elif mark <= 0.4:
-                pending_close[(symbol, next_option_date.get((symbol, trading_date), trading_date))] = max(
-                    pending_close[(symbol, next_option_date.get((symbol, trading_date), trading_date))],
-                    max(1, int(round(position.quantity / 3))),
-                )
-            elif mark <= 0.3:
-                pending_close[(symbol, next_option_date.get((symbol, trading_date), trading_date))] = position.quantity
 
+        if missing_metrics:
+            delta_unknown_days += 1
         if floating <= -180_000:
             risk_triggers["18w"] += 1
         if floating <= -240_000:
             risk_triggers["24w"] += 1
         if floating <= -300_000:
             risk_triggers["30w"] += 1
+        if floating <= -300_000 and risk_latched_level < 3:
+            schedule_risk_close(trading_date, 1.0)
+            risk_latched_level = 3
+        elif floating <= -240_000 and risk_latched_level < 2:
+            schedule_risk_close(trading_date, 0.5)
+            risk_latched_level = 2
+        elif floating <= -180_000 and risk_latched_level < 1:
+            schedule_risk_close(trading_date, 1 / 3)
+            risk_latched_level = 1
 
         # Daily screening entries use only the current close and fill next date.
-        if index + 1 < len(all_dates) and floating > -180_000:
+        if index + 1 < len(all_dates) and floating > -180_000 and risk_latched_level == 0:
             next_trading_date = all_dates[index + 1]
-            active_contracts: list[tuple[Contract, dict[str, Any], dict[str, Any]]] = []
+            active_contracts: list[
+                tuple[Contract, dict[str, Any], dict[str, Any], dict[str, Optional[float]]]
+            ] = []
             for contract in contracts:
                 option_row = option_by_key.get((contract.symbol, trading_date))
                 next_option_row = option_by_key.get((contract.symbol, next_trading_date))
@@ -762,8 +798,19 @@ def simulate_daily_a0(
                 if distance < 30:
                     filter_counts["distance_below_30"] += 1
                     continue
+                metrics = _black76_metrics(
+                    option_price=premium,
+                    underlying_price=underlying,
+                    strike_price=contract.strike_price,
+                    expiry=expiry,
+                    as_of=as_of,
+                    option_class=contract.option_class,
+                )
+                if metrics.get("delta") is None:
+                    filter_counts["missing_delta"] += 1
+                    continue
                 filter_counts["eligible_candidate"] += 1
-                active_contracts.append((contract, option_row, next_option_row))
+                active_contracts.append((contract, option_row, next_option_row, metrics))
             for option_class, side_sign in (("CALL", -1), ("PUT", 1)):
                 side_candidates = sorted(
                     [item for item in active_contracts if item[0].option_class == option_class],
@@ -775,7 +822,7 @@ def simulate_daily_a0(
                     if position.option_class == option_class
                 )
                 tranche_index = 0
-                for contract, option_row, next_option_row in side_candidates:
+                for contract, option_row, next_option_row, metrics in side_candidates:
                     if used >= 2500:
                         break
                     if contract.symbol in positions:
@@ -786,6 +833,10 @@ def simulate_daily_a0(
                         continue
                     expiry = _parse_date(contract.expire_datetime)
                     if expiry is None:
+                        continue
+                    candidate_delta = -float(metrics["delta"]) * proposed
+                    if abs(net_delta + candidate_delta) > 20:
+                        filter_counts["delta_limit"] += 1
                         continue
                     positions[contract.symbol] = Position(
                         symbol=contract.symbol,
@@ -799,6 +850,7 @@ def simulate_daily_a0(
                         entry_date=next_trading_date,
                     )
                     used += int(proposed)
+                    net_delta += candidate_delta
                     tranche_index += 1
                     total_entries += int(proposed)
 
@@ -812,6 +864,22 @@ def simulate_daily_a0(
                 "missing_metrics": missing_metrics,
             }
         )
+
+    # Settle any remaining open position at the last available real option mark
+    # so the monthly figure is a settled mark-to-market figure, not an omitted
+    # residual position.
+    if all_dates:
+        settlement_date = all_dates[-1]
+        for symbol, position in list(positions.items()):
+            row = option_by_key.get((symbol, settlement_date))
+            if row is None:
+                continue
+            fill = _finite(row.get("close_price"), positive=True)
+            if fill is None:
+                continue
+            realized_by_month[settlement_date[:7]] += _position_pnl(position, fill)
+            total_exits += position.quantity
+            positions.pop(symbol, None)
 
     monthly = [
         {"month": month, "settled_pnl": round(value, 2)}
@@ -829,6 +897,8 @@ def simulate_daily_a0(
         "max_floating_loss": round(min(floating_values or [0]), 2),
         "max_floating_profit": round(max(floating_values or [0]), 2),
         "risk_triggers": risk_triggers,
+        "risk_latched_level": risk_latched_level,
+        "delta_unknown_days": delta_unknown_days,
         "entry_filter_counts": dict(sorted(filter_counts.items())),
         "qualified_months_400k": sum(1 for value in realized_by_month.values() if value >= 400_000),
         "target_months_500k": sum(1 for value in realized_by_month.values() if value >= 500_000),
