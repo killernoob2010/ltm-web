@@ -915,6 +915,35 @@ def simulate_daily_a0(
         }
         for month in sorted(monthly_activity)
     ]
+    coverage_by_month: list[dict[str, Any]] = []
+    option_symbols = set(contract_map)
+    for month in sorted(monthly_activity):
+        observed_days = int(monthly_activity[month]["observed_days"])
+        expected_rows = len(option_symbols) * observed_days
+        month_rows = [
+            row
+            for row in option_rows
+            if str(row.get("trading_date", ""))[:7] == month
+            and row.get("close_price") is not None
+        ]
+        actual_keys = {
+            (str(row["symbol"]), str(row["trading_date"]))
+            for row in month_rows
+        }
+        coverage_by_month.append(
+            {
+                "month": month,
+                "future_days": observed_days,
+                "option_symbols": len(option_symbols),
+                "option_rows": len(actual_keys),
+                "expected_rows": expected_rows,
+                "missing_rows": max(0, expected_rows - len(actual_keys)),
+                "coverage_ratio": round(
+                    len(actual_keys) / expected_rows, 4
+                ) if expected_rows else 0.0,
+                "symbols_with_rows": len({key[0] for key in actual_keys}),
+            }
+        )
     floating_values = [item["floating_pnl"] for item in daily]
     return {
         "granularity": "daily",
@@ -930,6 +959,7 @@ def simulate_daily_a0(
         "risk_latched_level": risk_latched_level,
         "delta_unknown_days": delta_unknown_days,
         "entry_filter_counts": dict(sorted(filter_counts.items())),
+        "coverage_by_month": coverage_by_month,
         "qualified_months_400k": sum(1 for value in realized_by_month.values() if value >= 400_000),
         "target_months_500k": sum(1 for value in realized_by_month.values() if value >= 500_000),
         "monthly": monthly,
