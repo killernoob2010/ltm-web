@@ -252,7 +252,6 @@ def discover_contracts(
     if max_futures:
         futures = futures[:max_futures]
     contracts: dict[str, Contract] = {}
-    capped = False
     for underlying in futures:
         for raw_symbol in api.query_options(underlying):
             symbol = str(raw_symbol)
@@ -262,12 +261,43 @@ def discover_contracts(
             if contract is None:
                 continue
             contracts[symbol] = contract
-            if max_options and len(contracts) >= max_options:
-                capped = True
-                break
-        if capped:
-            break
-    return futures, sorted(contracts.values(), key=lambda item: item.symbol), capped
+    all_contracts = sorted(contracts.values(), key=lambda item: item.symbol)
+    if not max_options or len(all_contracts) <= max_options:
+        return futures, all_contracts, False
+
+    # A small capped probe must still contain both sides. Taking the first
+    # lexicographic symbols can silently produce calls-only or puts-only data.
+    grouped = {
+        "CALL": [item for item in all_contracts if item.option_class == "CALL"],
+        "PUT": [item for item in all_contracts if item.option_class == "PUT"],
+    }
+    counts = {"CALL": max_options // 2, "PUT": max_options // 2}
+    for option_class in ("CALL", "PUT"):
+        if max_options % 2 and grouped[option_class]:
+            counts[option_class] += 1
+    selected: list[Contract] = []
+    for option_class in ("CALL", "PUT"):
+        candidates = grouped[option_class]
+        take = min(counts[option_class], len(candidates))
+        center = (len(candidates) - 1) / 2
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda pair: abs(pair[0] - center),
+        )
+        selected.extend(
+            sorted(
+                [item for _, item in ranked[:take]],
+                key=lambda item: item.symbol,
+            )
+        )
+    if len(selected) < max_options:
+        selected_symbols = {item.symbol for item in selected}
+        selected.extend(
+            item for item in all_contracts
+            if item.symbol not in selected_symbols
+        )
+        selected = selected[:max_options]
+    return futures, sorted(selected, key=lambda item: item.symbol), True
 
 
 def create_schema() -> None:
@@ -629,6 +659,7 @@ def simulate_daily_a0(
     total_entries = 0
     total_exits = 0
     risk_triggers = {"18w": 0, "24w": 0, "30w": 0}
+    filter_counts = defaultdict(int)
     quantity_sequence = [100, 200, 300, 400, 500, 600]
 
     for index, trading_date in enumerate(all_dates):
@@ -704,15 +735,24 @@ def simulate_daily_a0(
                 option_row = option_by_key.get((contract.symbol, trading_date))
                 next_option_row = option_by_key.get((contract.symbol, next_trading_date))
                 underlying_row = future_by_key.get((contract.underlying_symbol, trading_date))
-                if option_row is None or next_option_row is None or underlying_row is None:
+                if option_row is None:
+                    filter_counts["missing_option_row"] += 1
+                    continue
+                if next_option_row is None:
+                    filter_counts["missing_next_option_row"] += 1
+                    continue
+                if underlying_row is None:
+                    filter_counts["missing_underlying_row"] += 1
                     continue
                 expiry = _parse_date(contract.expire_datetime)
                 as_of = _parse_date(trading_date)
                 premium = _finite(option_row.get("close_price"), positive=True)
                 underlying = _finite(underlying_row.get("close_price"), positive=True)
                 if expiry is None or as_of is None or premium is None or underlying is None:
+                    filter_counts["missing_price_or_expiry"] += 1
                     continue
                 if (expiry - as_of).days <= 10 or premium < 1:
+                    filter_counts["expiry_or_premium_filter"] += 1
                     continue
                 distance = (
                     contract.strike_price - underlying
@@ -720,7 +760,9 @@ def simulate_daily_a0(
                     else underlying - contract.strike_price
                 )
                 if distance < 30:
+                    filter_counts["distance_below_30"] += 1
                     continue
+                filter_counts["eligible_candidate"] += 1
                 active_contracts.append((contract, option_row, next_option_row))
             for option_class, side_sign in (("CALL", -1), ("PUT", 1)):
                 side_candidates = sorted(
@@ -787,6 +829,7 @@ def simulate_daily_a0(
         "max_floating_loss": round(min(floating_values or [0]), 2),
         "max_floating_profit": round(max(floating_values or [0]), 2),
         "risk_triggers": risk_triggers,
+        "entry_filter_counts": dict(sorted(filter_counts.items())),
         "qualified_months_400k": sum(1 for value in realized_by_month.values() if value >= 400_000),
         "target_months_500k": sum(1 for value in realized_by_month.values() if value >= 500_000),
         "monthly": monthly,
