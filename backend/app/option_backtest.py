@@ -870,11 +870,16 @@ def simulate_daily_a0(
     # so the monthly figure is a settled mark-to-market figure, not an omitted
     # residual position.
     if all_dates:
-        settlement_date = all_dates[-1]
         for symbol, position in list(positions.items()):
-            row = option_by_key.get((symbol, settlement_date))
-            if row is None:
+            available_rows = [
+                row
+                for row in option_rows
+                if row["symbol"] == symbol and _finite(row.get("close_price"), positive=True) is not None
+            ]
+            if not available_rows:
                 continue
+            row = max(available_rows, key=lambda item: str(item["trading_date"]))
+            settlement_date = str(row["trading_date"])
             fill = _finite(row.get("close_price"), positive=True)
             if fill is None:
                 continue
