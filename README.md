@@ -83,6 +83,16 @@ GET /api/option-research/readiness
 
 首轮回测只允许使用通过逐合约覆盖检查的近月、次月有效窗口；普通 5 分钟线未覆盖到策略所需起点时标记 `BLOCKED_DATA`。没有专业下载权限时，不做完整存续期、任意区间或逐笔级结果声明。Production 默认禁用；需要本地测试时可显式配置 `OPTION_RESEARCH_ENABLED=true`，并用 `OPTION_RESEARCH_PROBE_REFRESH_HOURS` 调整重复检查间隔。
 
+冻结协议下的第一轮回测入口为 Staging 登录后的只读研究接口：
+
+```text
+POST /api/option-research/backtest/start
+GET  /api/option-research/backtest/status
+GET  /api/option-research/backtest/results
+```
+
+第一轮固定执行真实期权日线 A0 初筛，结果明确标记为 `daily_a0_screen`，不能替代最终 5 分钟回测。接口会把合约和行情写入独立研究表，并在 `option_research_results` 保存精简结果；超过数据上限、映射错误或缺口的数据必须标记为 `BLOCKED_DATA`。接口需要已登录用户，仅在 Staging 可用，不执行下单、撤单、行权或账户操作。
+
 ## 铁矿石基差 API 增量同步
 
 铁矿石期现采用“Staging 单一采集源、Production 快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许 Production 直连 Staging 数据库。

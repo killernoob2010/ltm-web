@@ -64,6 +64,7 @@ from . import (
     iron_ore_basis,
     iron_ore_basis_snapshot_sync,
     operation_log_archive,
+    option_backtest,
     option_research,
     order_finance,
     order_finance_snapshot_sync,
@@ -134,6 +135,7 @@ app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
 app.include_router(order_finance_snapshot_sync.router, prefix="/api")
 app.include_router(option_research.router, prefix="/api")
+app.include_router(option_backtest.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
 
 
@@ -1308,6 +1310,7 @@ def startup() -> None:
             print(f"[startup] database initialization skipped: {exc}")
         try:
             option_research.ensure_schema()
+            option_backtest.ensure_schema()
             option_research.start_auto_probe()
         except Exception as exc:
             print(f"[startup] option research initialization skipped: {exc}")
