@@ -22,6 +22,8 @@ router = APIRouter()
 DAILY_SECONDS = 24 * 60 * 60
 MAX_RUNS = 20
 RUN_TYPE = "backtest_a0_daily"
+STALE_RUN_MINUTES = max(5, int(os.getenv("OPTION_RESEARCH_BACKTEST_STALE_MINUTES", "5")))
+MAX_RUN_SECONDS = max(60, int(os.getenv("OPTION_RESEARCH_BACKTEST_MAX_SECONDS", "600")))
 BACKTEST_SCHEMA = ("option_research_results",)
 _RUN_LOCK = threading.Lock()
 _RUN_THREAD: Optional[threading.Thread] = None
@@ -727,6 +729,7 @@ def simulate_daily_a0(
 def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
     api = None
     all_rows: list[dict[str, Any]] = []
+    started_monotonic = time.monotonic()
     try:
         from tqsdk import TqApi, TqAuth
 
@@ -742,10 +745,25 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
         )
         if not futures or not contracts:
             raise RuntimeError("no_option_universe")
+        _update_run(
+            run_key,
+            status="running",
+            checks={
+                "phase": "discovery_complete",
+                "futures_count": len(futures),
+                "options_count": len(contracts),
+                "universe_capped": capped,
+            },
+            futures_count=len(futures),
+            options_count=len(contracts),
+            message="合约发现完成，开始逐合约读取日线。",
+        )
         _insert_contracts(contracts)
         symbols = futures + [contract.symbol for contract in contracts]
         seen: set[str] = set()
         for symbol in symbols:
+            if time.monotonic() - started_monotonic > MAX_RUN_SECONDS:
+                raise RuntimeError("backtest_timeout")
             if symbol in seen:
                 continue
             seen.add(symbol)
@@ -801,7 +819,11 @@ def _run_worker(run_key: str, max_options: int, max_futures: int) -> None:
             error_code="daily_screen_only",
         )
     except Exception as exc:
-        code = str(exc) if str(exc) in {"credentials_missing", "no_option_universe"} else "backtest_failed"
+        code = str(exc) if str(exc) in {
+            "credentials_missing",
+            "no_option_universe",
+            "backtest_timeout",
+        } else "backtest_failed"
         _update_run(
             run_key,
             status="blocked",
@@ -850,6 +872,32 @@ def _latest_run() -> Optional[dict[str, Any]]:
         result["checks"] = json.loads(result.pop("checks_json") or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         result["checks"] = {}
+    if result.get("status") == "running":
+        started_text = str(result.get("started_at") or "")
+        try:
+            started_at = datetime.fromisoformat(started_text)
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            age_minutes = (
+                datetime.now(timezone.utc) - started_at
+            ).total_seconds() / 60
+        except ValueError:
+            age_minutes = STALE_RUN_MINUTES + 1
+        if age_minutes > STALE_RUN_MINUTES:
+            _update_run(
+                str(result["run_key"]),
+                status="blocked",
+                checks={**(result.get("checks") or {}), "stale_minutes": round(age_minutes, 2)},
+                futures_count=int(result.get("futures_count") or 0),
+                options_count=int(result.get("options_count") or 0),
+                bars_count=int(result.get("bars_count") or 0),
+                gaps_count=int(result.get("gaps_count") or 0),
+                message="回测任务超过单批等待时间，已标记为数据链路阻断；请拆分期货批次后重试。",
+                error_code="stale_run",
+            )
+            result["status"] = "blocked"
+            result["error_code"] = "stale_run"
+            result["message"] = "回测任务超过单批等待时间，已标记为数据链路阻断；请拆分期货批次后重试。"
     return result
 
 
