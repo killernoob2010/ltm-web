@@ -23,7 +23,7 @@ router = APIRouter()
 DAILY_SECONDS = 24 * 60 * 60
 MAX_RUNS = 20
 RUN_TYPE = "backtest_a0_daily"
-BACKTEST_CODE_VERSION = "a0-daily-data-v5"
+BACKTEST_CODE_VERSION = "a0-daily-data-v6"
 STALE_RUN_MINUTES = max(5, int(os.getenv("OPTION_RESEARCH_BACKTEST_STALE_MINUTES", "30")))
 MAX_RUN_SECONDS = max(60, int(os.getenv("OPTION_RESEARCH_BACKTEST_MAX_SECONDS", "1800")))
 BACKTEST_SCHEMA = ("option_research_results",)
@@ -1514,8 +1514,9 @@ def simulate_daily_v2(
 
                 for side_candidates in active_candidates.values():
                     side_candidates.sort(
-                        key=lambda item: abs(
-                            item[0].strike_price - item[3]
+                        key=lambda item: (
+                            _parse_date(item[0].expire_datetime) or date.max,
+                            abs(item[0].strike_price - item[3]),
                         )
                     )
                 used_by_side = {
