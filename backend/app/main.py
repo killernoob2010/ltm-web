@@ -1300,10 +1300,13 @@ def startup() -> None:
         try:
             db.init_db()
             data_visualization.seed_dv_data()
+        except Exception as exc:
+            print(f"[startup] database initialization skipped: {exc}")
+        try:
             start_iron_ore_basis_sync_scheduler()
             start_order_finance_sync_scheduler()
         except Exception as exc:
-            print(f"[startup] database initialization skipped: {exc}")
+            print(f"[startup] data synchronization startup skipped: {exc}")
 
     threading.Thread(target=initialize_database, daemon=True).start()
     start_alert_monitor()

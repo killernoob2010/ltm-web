@@ -493,3 +493,15 @@ def test_fastapi_startup_starts_order_finance_scheduler():
 
     assert "from .order_finance_snapshot_sync import start_order_finance_sync_scheduler" in main_source
     assert "start_order_finance_sync_scheduler()" in main_source
+
+
+def test_fastapi_startup_initializes_schemas_before_sync_schedulers():
+    main_source = (
+        Path(__file__).resolve().parents[1] / "backend" / "app" / "main.py"
+    ).read_text(encoding="utf-8")
+
+    database_ready = main_source.index("db.init_db()")
+    seed_ready = main_source.index("data_visualization.seed_dv_data()")
+    iron_scheduler = main_source.index("start_iron_ore_basis_sync_scheduler()")
+    order_scheduler = main_source.index("start_order_finance_sync_scheduler()")
+    assert database_ready < seed_ready < iron_scheduler < order_scheduler
