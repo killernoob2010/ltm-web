@@ -1173,6 +1173,10 @@ def simulate_daily_v2(
     total_entries = 0
     total_exits = 0
     delta_rebalance_count = 0
+    entries_by_side = {"CALL": 0, "PUT": 0}
+    exits_by_side = {"CALL": 0, "PUT": 0}
+    max_open_by_side = {"CALL": 0, "PUT": 0}
+    risk_events: list[dict[str, Any]] = []
     slippage_ticks = max(0.0, float(os.getenv("OPTION_RESEARCH_SLIPPAGE_TICKS", "1")))
     commission_per_contract = max(
         0.0, float(os.getenv("OPTION_RESEARCH_COMMISSION_PER_CONTRACT", "0"))
@@ -1227,6 +1231,7 @@ def simulate_daily_v2(
             transaction_costs_by_month[month_key] += commission
             position.quantity -= close_quantity
             total_exits += close_quantity
+            exits_by_side[position.option_class] += close_quantity
             exits_by_month[month_key] += close_quantity
             monthly_activity[month_key]["exit_quantity"] += close_quantity
             pending_closes.pop(symbol, None)
@@ -1272,6 +1277,7 @@ def simulate_daily_v2(
                 entry_date=trading_date,
             )
             total_entries += quantity
+            entries_by_side[contract.option_class] += quantity
             entries_by_month[month_key] += quantity
             monthly_activity[month_key]["entry_quantity"] += quantity
             remaining = int(order["quantity"]) - quantity
@@ -1340,6 +1346,25 @@ def simulate_daily_v2(
         if stress50 <= -300_000:
             stress_triggers["extreme_30w"] += 1
 
+        risk_level_today = 0
+        if floating <= -180_000 or stress30 <= -180_000:
+            risk_level_today = 1
+        if floating <= -240_000 or stress30 <= -240_000:
+            risk_level_today = 2
+        if floating <= -300_000 or stress50 <= -300_000:
+            risk_level_today = 3
+        if risk_level_today > risk_latched_level:
+            risk_latched_level = risk_level_today
+            risk_events.append(
+                {
+                    "trading_date": trading_date,
+                    "level": risk_level_today,
+                    "floating_pnl": round(floating, 2),
+                    "stress_pnl_30_iv5": round(stress30, 2),
+                    "stress_pnl_50_iv10": round(stress50, 2),
+                }
+            )
+
         dte_by_symbol = {
             symbol: (position.expiry - as_of).days
             for symbol, position in positions.items()
@@ -1380,15 +1405,6 @@ def simulate_daily_v2(
                     schedule_close(symbol, position.quantity)
                     position.profit_stage = 3
 
-            risk_level_today = 0
-            if floating <= -180_000 or stress30 <= -180_000:
-                risk_level_today = 1
-            if floating <= -240_000 or stress30 <= -240_000:
-                risk_level_today = 2
-            if floating <= -300_000 or stress50 <= -300_000:
-                risk_level_today = 3
-            if risk_level_today > risk_latched_level:
-                risk_latched_level = risk_level_today
             if risk_level_today >= 2:
                 fraction = 1.0 if risk_level_today >= 3 else 0.5
                 for symbol, position in positions.items():
@@ -1596,6 +1612,15 @@ def simulate_daily_v2(
 
         if positions:
             monthly_activity[month_key]["days_with_positions"] += 1
+        for option_class in ("CALL", "PUT"):
+            max_open_by_side[option_class] = max(
+                max_open_by_side[option_class],
+                sum(
+                    position.quantity
+                    for position in positions.values()
+                    if position.option_class == option_class
+                ),
+            )
         daily.append(
             {
                 "trading_date": trading_date,
@@ -1646,6 +1671,9 @@ def simulate_daily_v2(
         "last_date": all_dates[-1] if all_dates else None,
         "total_entries": total_entries,
         "total_exits": total_exits,
+        "entries_by_side": entries_by_side,
+        "exits_by_side": exits_by_side,
+        "max_open_by_side": max_open_by_side,
         "open_positions_end": len(positions),
         "open_short_quantity_end": sum(position.quantity for position in positions.values()),
         "unrealized_pnl_end": open_mtm,
@@ -1659,6 +1687,7 @@ def simulate_daily_v2(
         "risk_triggers": risk_triggers,
         "stress_triggers": stress_triggers,
         "risk_latched_level": risk_latched_level,
+        "risk_events": risk_events[:20],
         "delta_rebalance_count": delta_rebalance_count,
         "delta_unknown_days": delta_unknown_days,
         "stress_unknown_days": stress_unknown_days,
