@@ -1304,16 +1304,16 @@ def startup() -> None:
         try:
             db.init_db()
             data_visualization.seed_dv_data()
-            start_iron_ore_basis_sync_scheduler()
-            start_order_finance_sync_scheduler()
-        except Exception as exc:
-            print(f"[startup] database initialization skipped: {exc}")
-        try:
             option_research.ensure_schema()
             option_backtest.ensure_schema()
             option_research.start_auto_probe()
         except Exception as exc:
-            print(f"[startup] option research initialization skipped: {exc}")
+            print(f"[startup] database initialization skipped: {exc}")
+        try:
+            start_iron_ore_basis_sync_scheduler()
+            start_order_finance_sync_scheduler()
+        except Exception as exc:
+            print(f"[startup] data synchronization startup skipped: {exc}")
 
     threading.Thread(target=initialize_database, daemon=True).start()
     start_alert_monitor()

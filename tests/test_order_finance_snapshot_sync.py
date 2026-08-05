@@ -6,7 +6,7 @@ import sys
 from copy import deepcopy
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
@@ -63,6 +63,40 @@ class StaticSnapshotClient:
         return deepcopy(self.payload)
 
 
+class FakeHttpResponse:
+    def __init__(self, status_code, payload=None, headers=None):
+        self.status_code = status_code
+        self.payload = deepcopy(payload)
+        self.headers = headers or {}
+        self.json_calls = 0
+
+    def json(self):
+        self.json_calls += 1
+        return deepcopy(self.payload)
+
+
+class ConditionalSnapshotHttp:
+    def __init__(self, payload, etag):
+        self.payload = deepcopy(payload)
+        self.etag = etag
+        self.calls = []
+        self.responses = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append({"method": method, "url": url, **kwargs})
+        headers = kwargs.get("headers", {})
+        if headers.get("If-None-Match") == self.etag:
+            response = FakeHttpResponse(304, headers={"ETag": self.etag})
+        else:
+            response = FakeHttpResponse(
+                200,
+                self.payload,
+                headers={"ETag": self.etag},
+            )
+        self.responses.append(response)
+        return response
+
+
 def active_business_keys():
     return {
         row["business_key"] for row in order_finance.list_order_finance_records()
@@ -82,6 +116,186 @@ def test_snapshot_requires_matching_server_secret(monkeypatch):
     with pytest.raises(HTTPException) as wrong:
         snapshot_sync.get_order_finance_snapshot("Bearer wrong")
     assert wrong.value.status_code == 404
+
+
+def test_snapshot_secret_rejected_before_snapshot_build(monkeypatch):
+    monkeypatch.setenv(
+        "ORDER_FINANCE_SNAPSHOT_SHARED_SECRET",
+        "expected-secret-value",
+    )
+    monkeypatch.setattr(
+        snapshot_sync,
+        "build_order_finance_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("snapshot must not build")),
+    )
+
+    for authorization in (None, "Bearer wrong"):
+        with pytest.raises(HTTPException) as captured:
+            snapshot_sync.get_order_finance_snapshot(authorization)
+        assert captured.value.status_code == 404
+
+
+def test_snapshot_endpoint_returns_etag_and_empty_304_response(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    order_finance.apply_order_finance_snapshot(
+        [snapshot_record("A")],
+        sync_success_at="2026-07-16T09:02:00+08:00",
+        source_version="v20",
+        attempt_slot="2026-07-16T09:00+08:00",
+    )
+    monkeypatch.setenv(
+        "ORDER_FINANCE_SNAPSHOT_SHARED_SECRET",
+        "expected-secret-value",
+    )
+
+    first_response = Response()
+    first = snapshot_sync.get_order_finance_snapshot(
+        "Bearer expected-secret-value",
+        response=first_response,
+    )
+    etag = f'"{first["source_version"]}"'
+
+    assert first_response.headers["etag"] == etag
+
+    second_response = Response()
+    second = snapshot_sync.get_order_finance_snapshot(
+        "Bearer expected-secret-value",
+        if_none_match=etag,
+        response=second_response,
+    )
+
+    assert isinstance(second, Response)
+    assert second.status_code == 304
+    assert second.body == b""
+    assert second.headers["etag"] == etag
+
+
+def test_snapshot_client_sends_etag_and_does_not_decode_304():
+    payload = valid_snapshot_payload("A")
+    etag = f'"{payload["source_version"]}"'
+    http = ConditionalSnapshotHttp(payload, etag)
+    client = snapshot_sync.OrderFinanceSnapshotClient(
+        snapshot_sync.SnapshotFollowerConfig("https://source.invalid", "secret"),
+        http=http,
+    )
+
+    assert client.fetch_snapshot()["source_version"] == payload["source_version"]
+    client.commit_etag()
+    assert client.fetch_snapshot() is None
+    assert http.calls[0]["headers"] == {"Authorization": "Bearer secret"}
+    assert http.calls[1]["headers"]["If-None-Match"] == etag
+    assert http.responses[0].json_calls == 1
+    assert http.responses[1].json_calls == 0
+
+
+def test_follower_304_returns_without_writing(monkeypatch):
+    class NotModifiedClient:
+        def fetch_snapshot(self):
+            return None
+
+    monkeypatch.setattr(
+        order_finance,
+        "record_unchanged_order_finance_sync",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("304 must not write sync status")
+        ),
+    )
+    monkeypatch.setattr(
+        order_finance,
+        "apply_order_finance_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("304 must not write business rows")
+        ),
+    )
+
+    assert snapshot_sync.run_order_finance_snapshot_follow(
+        "2026-07-16T09:00+08:00",
+        client=NotModifiedClient(),
+    ) == {
+        "status": "not_modified",
+        "inserted": 0,
+        "updated": 0,
+        "archived": 0,
+        "changed_count": 0,
+    }
+
+
+def test_on_start_follower_stops_after_three_failures():
+    class FailingSnapshotClient:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_snapshot(self):
+            self.calls += 1
+            raise snapshot_sync.OrderFinanceSnapshotSyncError(
+                "snapshot_download", 503
+            )
+
+    client = FailingSnapshotClient()
+    sleeps = []
+    result = snapshot_sync._run_snapshot_follower_on_start(
+        client=client,
+        max_attempts=3,
+        retry_delay_seconds=0,
+        sleep_fn=lambda seconds: sleeps.append(seconds),
+    )
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 3
+    assert client.calls == 3
+    assert sleeps == [0, 0]
+
+
+def test_on_start_follower_exits_immediately_after_304():
+    class NotModifiedClient:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_snapshot(self):
+            self.calls += 1
+            return None
+
+    client = NotModifiedClient()
+    result = snapshot_sync._run_snapshot_follower_on_start(
+        client=client,
+        max_attempts=3,
+        retry_delay_seconds=0,
+        sleep_fn=lambda seconds: (_ for _ in ()).throw(
+            AssertionError(f"must not sleep after 304: {seconds}")
+        ),
+    )
+
+    assert result == {
+        "status": "not_modified",
+        "inserted": 0,
+        "updated": 0,
+        "archived": 0,
+        "changed_count": 0,
+    }
+    assert client.calls == 1
+
+
+def test_on_start_follower_retries_source_not_ready(monkeypatch):
+    calls = []
+    sleeps = []
+    monkeypatch.setattr(
+        snapshot_sync,
+        "run_order_finance_snapshot_follow",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or {"status": "deferred", "reason": "source_not_ready"},
+    )
+    result = snapshot_sync._run_snapshot_follower_on_start(
+        client=object(),
+        max_attempts=3,
+        retry_delay_seconds=0,
+        sleep_fn=lambda seconds: sleeps.append(seconds),
+    )
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 3
+    assert result["sync_stage"] == "source_not_ready"
+    assert len(calls) == 3
+    assert sleeps == [0, 0]
 
 
 def test_snapshot_returns_only_versioned_fact_fields(tmp_path, monkeypatch):
@@ -322,6 +536,25 @@ def test_snapshot_follower_mode_starts_only_follower(monkeypatch):
 
     assert snapshot_sync.start_order_finance_sync_scheduler(123) is True
     assert started == [("follower", 123)]
+
+
+def test_snapshot_follower_on_start_mode_starts_only_on_start(monkeypatch):
+    monkeypatch.setenv("ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FINANCE_SYNC_MODE", "snapshot_follower_on_start")
+    started = []
+    monkeypatch.setattr(
+        snapshot_sync,
+        "_start_snapshot_follower_on_start",
+        lambda: started.append("on_start") or True,
+    )
+    monkeypatch.setattr(
+        snapshot_sync,
+        "_start_snapshot_follower_scheduler",
+        lambda interval_seconds=300: started.append("follower") or True,
+    )
+
+    assert snapshot_sync.start_order_finance_sync_scheduler(123) is True
+    assert started == ["on_start"]
 
 
 @pytest.mark.parametrize("mode", ["", "unknown"])

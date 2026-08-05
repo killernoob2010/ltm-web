@@ -95,7 +95,7 @@ GET  /api/option-research/backtest/results
 
 ## 铁矿石基差 API 增量同步
 
-铁矿石期现采用“Staging 单一采集源、Production 快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许 Production 直连 Staging 数据库。
+铁矿石期现的目标架构是“Production 单一采集源、Staging 受保护快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许跨库直连。Gate B 前为避免提前改变正式环境，Staging 继续使用 `source` 做本次验收；角色切换和正式环境变量变更必须另行确认。
 
 两个环境均显式配置：
 
@@ -104,17 +104,17 @@ IRON_ORE_BASIS_AUTO_SYNC_ENABLED
 IRON_ORE_BASIS_SYNC_MODE
 ```
 
-Staging 使用 `IRON_ORE_BASIS_SYNC_MODE=source`，读取 `EBC_ACCOUNT`、`EBC_PASSWORD`，可选读取 `EBC_MAINBOARD`、`EBC_CPU`。凭据只保存在 Staging Render 环境变量中。启用后，Web 服务启动时补查最近数据，并按北京时间每日 09:30、10:30、21:30 检查相应时间窗。
+采集源使用 `IRON_ORE_BASIS_SYNC_MODE=source`，读取 `EBC_ACCOUNT`、`EBC_PASSWORD`，可选读取 `EBC_MAINBOARD`、`EBC_CPU`。凭据只保存在采集源 Render 环境变量中。启用后，Web 服务启动时补查最近数据，并按北京时间每日 09:30、10:30、21:30 检查相应时间窗。
 
-Production 使用 `IRON_ORE_BASIS_SYNC_MODE=snapshot_follower`，不配置 EBC 凭据，并配置：
+目标 Staging 跟随端使用 `IRON_ORE_BASIS_SYNC_MODE=snapshot_follower_on_start`，不配置 EBC 凭据，并配置：
 
 ```text
 IRON_ORE_BASIS_SNAPSHOT_UPSTREAM_URL=https://ltm-web-staging.onrender.com
 ```
 
-两个服务通过服务端 Bearer Secret 访问 `/api/internal/iron-ore-basis/snapshot`。可配置专用 `IRON_ORE_BASIS_SNAPSHOT_SHARED_SECRET`；未配置时兼容复用现有 `ORDER_FINANCE_SNAPSHOT_SHARED_SECRET`，实际值不得进入仓库、日志、接口响应或版本记录。快照仅包含 `2026-07-13` 起由 API 生成的期现结果和计算明细，不包含数据库 ID、用户、权限、日志或源站凭据。
+两个服务通过服务端 Bearer Secret 访问 `/api/internal/iron-ore-basis/snapshot`。接口用内容版本返回标准 `ETag`；跟随端发送 `If-None-Match`，版本未变化时收到 `304`，不读取 JSON 正文、不写业务数据。可配置专用 `IRON_ORE_BASIS_SNAPSHOT_SHARED_SECRET`；未配置时兼容复用现有 `ORDER_FINANCE_SNAPSHOT_SHARED_SECRET`，实际值不得进入仓库、日志、接口响应或版本记录。快照仅包含 `2026-07-13` 起由 API 生成的期现结果和计算明细，不包含数据库 ID、用户、权限、日志或源站凭据。
 
-Staging 仅在最近存在 `success` 或 `partial` 源同步批次、结果与明细一一对应且批次覆盖最新数据日期时发布内容哈希版本。Production 每 5 分钟检查一次；先校验字段、行数、最新日期、重复业务键和内容哈希，再在单一事务中只追加缺失业务键。同一业务键只要与 Production 既有结果或明细不同，整包拒绝且不覆盖历史。相同版本重复检查写入 0 行。
+采集源仅在最近存在 `success` 或 `partial` 源同步批次、结果与明细一一对应且批次覆盖最新数据日期时发布内容哈希版本。连续 `snapshot_follower` 模式保留用于分阶段兼容；`snapshot_follower_on_start` 每次唤醒最多尝试 3 次，成功或 `304` 立即退出，失败后保留上次成功数据和版本并停止。版本变化时先校验字段、行数、最新日期、重复业务键和内容哈希，再在单一事务中只追加缺失业务键。同一业务键只要与本地既有结果或明细不同，整包拒绝且不覆盖历史。
 
 `IRON_ORE_BASIS_AUTO_SYNC_ENABLED` 未显式设为 `true`，或同步模式及其必需配置不完整时，不会启动相应后台任务。
 
@@ -184,7 +184,7 @@ ORDER_FINANCE_WPS_DRIVE_ID
 ORDER_FINANCE_WPS_FILE_ID
 ```
 
-Staging 使用 `ORDER_FINANCE_SYNC_MODE=snapshot_follower`，并配置：
+目标 Staging 使用 `ORDER_FINANCE_SYNC_MODE=snapshot_follower_on_start`，并配置：
 
 ```text
 ORDER_FINANCE_SNAPSHOT_UPSTREAM_URL
@@ -192,7 +192,11 @@ ORDER_FINANCE_SNAPSHOT_UPSTREAM_URL
 
 跟随模式不会构造 WPS 客户端，也不会读取或刷新 WPS token。它只通过 HTTPS 和服务端 Bearer Secret 读取源端 `/api/internal/order-finance/snapshot`；快照仅包含当前有效 WPS 事实字段，不包含数据库 ID、用户、权限、日志或下一步、备注、人工装船确认等环境本地管理字段。Production 不配置 Staging 的数据库连接，Staging 也不配置 Production 的数据库连接。
 
-仅当 `ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED=true` 且当前模式所需配置完整时启动后台任务。两个模式都以每天北京时间 09:00 和 17:00 为业务时点，包括周末和节假日；源端只调用用户 token 刷新、文件元数据和源文件下载接口，不调用上传、修改、分享或删除接口。跟随端在源端尚未完成当前时点时每 5 分钟重试，成功后按源版本和事实哈希幂等写入自己的数据库。页面只显示最近一次成功自动同步时间和该次实际变化条数；失败保留上次成功状态并写入脱敏服务端日志。
+仅当 `ORDER_FINANCE_WPS_AUTO_SYNC_ENABLED=true` 且当前模式所需配置完整时启动后台任务。两个源模式都以每天北京时间 09:00 和 17:00 为业务时点，包括周末和节假日；源端只调用用户 token 刷新、文件元数据和源文件下载接口，不调用上传、修改、分享或删除接口。跟随端通过 `ETag`/`If-None-Match` 避免重复下载：未变化时收到 `304`、不解析 JSON、不写业务数据；变化时按源版本和事实哈希幂等写入自己的数据库。`snapshot_follower_on_start` 只比较当前时间之前最近的 09:00/17:00 源时点，最多尝试 3 次，成功或 `304` 后退出，源端尚未准备好或最终失败均保留上次成功状态。页面只显示最近一次成功自动同步时间和该次实际变化条数；日志只记录脱敏的模块、阶段、HTTP 状态、耗时、记录数和错误类型。
+
+### Render 套餐与启动成本边界
+
+Workspace Hobby、Production Standard 和 Staging Free 是不同层级的成本设置；本项目代码和 `render.yaml` 不管理 Render `plan`，也不包含自动升级或套餐变更 API。Free 休眠/冷启动是预期行为；只有在首次完整跟随、二次冷启动 `304` 零写入和资源门槛均验证通过后，才由人工决定是否降为 Free。资源测试不通过时保留现有套餐并报告证据，不自动升级。
 
 ## 测试版验证
 
