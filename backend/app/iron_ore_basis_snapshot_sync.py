@@ -10,9 +10,9 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Response
 import requests
 
 from . import db
@@ -29,6 +29,8 @@ router = APIRouter()
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_PATH = "/api/internal/iron-ore-basis/snapshot"
 REQUEST_TIMEOUT = (10, 60)
+ON_START_MAX_ATTEMPTS = 3
+ON_START_RETRY_DELAY_SECONDS = 30
 RESULT_FIELDS = tuple(RESULT_COLUMNS)
 DETAIL_FIELDS = tuple(
     column for column in DETAIL_COLUMNS if column != "result_id"
@@ -44,6 +46,19 @@ class IronOreBasisSnapshotSyncError(RuntimeError):
         self.status_code = status_code
         suffix = f" status={status_code}" if status_code is not None else ""
         super().__init__(f"iron_ore_basis_snapshot_sync_failed stage={stage}{suffix}")
+
+
+def _snapshot_etag(source_version: object) -> str:
+    return f'"{str(source_version or "").strip()}"'
+
+
+def _if_none_match_matches(value: Optional[str], etag: str) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    return any(
+        token.strip() in {"*", etag, f"W/{etag}"}
+        for token in value.split(",")
+    )
 
 
 def _snapshot_shared_secret() -> str:
@@ -75,20 +90,29 @@ class IronOreBasisSnapshotClient:
         self,
         config: SnapshotFollowerConfig,
         http: Any = requests,
+        etag: Optional[str] = None,
     ):
         self.config = config
         self.http = http
+        self.etag = etag
+        self._pending_etag: Optional[str] = None
 
     def fetch_snapshot(self) -> dict:
+        headers = {"Authorization": f"Bearer {self.config.shared_secret}"}
+        if self.etag:
+            headers["If-None-Match"] = self.etag
         try:
             response = self.http.request(
                 "GET",
                 f"{self.config.upstream_url}{SNAPSHOT_PATH}",
-                headers={"Authorization": f"Bearer {self.config.shared_secret}"},
+                headers=headers,
                 timeout=REQUEST_TIMEOUT,
             )
         except Exception as exc:
             raise IronOreBasisSnapshotSyncError("snapshot_download") from exc
+        if int(response.status_code) == 304:
+            self._pending_etag = None
+            return None
         if not 200 <= int(response.status_code) < 300:
             raise IronOreBasisSnapshotSyncError(
                 "snapshot_download", int(response.status_code)
@@ -99,7 +123,18 @@ class IronOreBasisSnapshotClient:
             raise IronOreBasisSnapshotSyncError("snapshot_decode") from exc
         if not isinstance(payload, dict):
             raise IronOreBasisSnapshotSyncError("snapshot_decode")
+        response_headers = getattr(response, "headers", {}) or {}
+        self._pending_etag = (
+            response_headers.get("ETag")
+            or response_headers.get("etag")
+            or _snapshot_etag(payload.get("source_version"))
+        )
         return payload
+
+    def commit_etag(self) -> None:
+        if self._pending_etag:
+            self.etag = str(self._pending_etag)
+        self._pending_etag = None
 
 
 def _require_snapshot_secret(authorization: Optional[str]) -> None:
@@ -126,6 +161,26 @@ def basis_snapshot_hash(records: list[dict]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _latest_local_snapshot_etag() -> Optional[str]:
+    try:
+        with db.connect() as conn:
+            row = db._exec(
+                conn.cursor(),
+                """SELECT slot_key
+                   FROM iron_ore_basis_sync_runs
+                   WHERE trigger_type = 'snapshot_follower'
+                     AND status = 'success'
+                     AND slot_key LIKE 'snapshot:%'
+                   ORDER BY finished_at DESC, id DESC
+                   LIMIT 1""",
+            ).fetchone()
+    except Exception:
+        return None
+    slot_key = str(row["slot_key"] or "") if row else ""
+    source_version = slot_key.split(":", 1)[1] if ":" in slot_key else ""
+    return _snapshot_etag(source_version) if source_version else None
 
 
 def _snapshot_records() -> list[dict]:
@@ -197,9 +252,17 @@ def build_iron_ore_basis_snapshot() -> dict:
 @router.get("/internal/iron-ore-basis/snapshot")
 def get_iron_ore_basis_snapshot(
     authorization: Optional[str] = Header(default=None),
-) -> dict:
+    if_none_match: Optional[str] = Header(default=None),
+    response: Response = None,
+):
     _require_snapshot_secret(authorization)
-    return build_iron_ore_basis_snapshot()
+    payload = build_iron_ore_basis_snapshot()
+    etag = _snapshot_etag(payload["source_version"])
+    if response is not None:
+        response.headers["ETag"] = etag
+    if _if_none_match_matches(if_none_match, etag):
+        return Response(status_code=304, headers={"ETag": etag})
+    return payload
 
 
 def _validate_snapshot_payload(payload: dict) -> list[dict]:
@@ -332,10 +395,42 @@ def run_iron_ore_basis_snapshot_follow(
         SnapshotFollowerConfig.from_env()
     )
     payload = active_client.fetch_snapshot()
+    if payload is None:
+        return {"status": "not_modified", "inserted": 0}
     records = _validate_snapshot_payload(payload)
     db.init_db()
     inserted = _apply_snapshot_records(records, payload)
+    commit_etag = getattr(active_client, "commit_etag", None)
+    if callable(commit_etag):
+        commit_etag()
     return {"status": "success", "inserted": inserted}
+
+
+def _run_snapshot_follower_on_start(
+    *,
+    client: IronOreBasisSnapshotClient,
+    slot_key: Optional[str] = None,
+    max_attempts: int = ON_START_MAX_ATTEMPTS,
+    retry_delay_seconds: float = ON_START_RETRY_DELAY_SECONDS,
+    sleep_fn: Optional[Callable[[float], None]] = None,
+) -> dict:
+    attempt_slot = slot_key or datetime.now(SHANGHAI_TZ).isoformat(timespec="minutes")
+    sleep = sleep_fn or time.sleep
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return run_iron_ore_basis_snapshot_follow(attempt_slot, client=client)
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_attempts:
+                sleep(retry_delay_seconds)
+    return {
+        "status": "failed",
+        "attempts": max_attempts,
+        "sync_stage": getattr(last_error, "stage", "unknown"),
+        "http_status": getattr(last_error, "status_code", None),
+        "error_class": type(last_error).__name__ if last_error else "UnknownError",
+    }
 
 
 def _snapshot_follower_loop(
@@ -345,10 +440,15 @@ def _snapshot_follower_loop(
     while True:
         current = datetime.now(SHANGHAI_TZ)
         try:
-            run_iron_ore_basis_snapshot_follow(
+            result = run_iron_ore_basis_snapshot_follow(
                 f"poll:{current.isoformat(timespec='minutes')}",
                 client=client,
             )
+            if result.get("status") == "not_modified":
+                logger.info(
+                    "iron_ore_basis_snapshot_not_modified",
+                    extra={"sync_status": "not_modified"},
+                )
         except Exception as exc:
             logger.error(
                 "iron_ore_basis_snapshot_follow_failed",
@@ -359,6 +459,52 @@ def _snapshot_follower_loop(
                 },
             )
         time.sleep(interval_seconds)
+
+
+def _start_snapshot_follower_on_start() -> bool:
+    global _follower_scheduler_started
+    try:
+        config = SnapshotFollowerConfig.from_env()
+    except IronOreBasisSnapshotSyncError as exc:
+        logger.error(
+            "iron_ore_basis_snapshot_scheduler_not_started",
+            extra={"sync_stage": exc.stage, "error_class": type(exc).__name__},
+        )
+        return False
+    with _follower_scheduler_start_lock:
+        if _follower_scheduler_started:
+            return False
+        client = IronOreBasisSnapshotClient(
+            config,
+            etag=_latest_local_snapshot_etag(),
+        )
+
+        def worker() -> None:
+            result = _run_snapshot_follower_on_start(client=client)
+            if result.get("status") == "failed":
+                logger.error(
+                    "iron_ore_basis_snapshot_on_start_failed",
+                    extra={
+                        "attempt_count": result.get("attempts"),
+                        "sync_stage": result.get("sync_stage"),
+                        "http_status": result.get("http_status"),
+                        "error_class": result.get("error_class"),
+                    },
+                )
+            else:
+                logger.info(
+                    "iron_ore_basis_snapshot_on_start_finished",
+                    extra={"sync_status": result.get("status")},
+                )
+
+        thread = threading.Thread(
+            target=worker,
+            name="iron-ore-basis-snapshot-on-start",
+            daemon=True,
+        )
+        thread.start()
+        _follower_scheduler_started = True
+    return True
 
 
 def _start_snapshot_follower_scheduler(interval_seconds: int = 300) -> bool:
@@ -376,7 +522,13 @@ def _start_snapshot_follower_scheduler(interval_seconds: int = 300) -> bool:
             return False
         thread = threading.Thread(
             target=_snapshot_follower_loop,
-            args=(interval_seconds, IronOreBasisSnapshotClient(config)),
+            args=(
+                interval_seconds,
+                IronOreBasisSnapshotClient(
+                    config,
+                    etag=_latest_local_snapshot_etag(),
+                ),
+            ),
             name="iron-ore-basis-snapshot-follower",
             daemon=True,
         )
@@ -393,6 +545,8 @@ def start_iron_ore_basis_sync_scheduler(interval_seconds: int = 300) -> bool:
         return start_iron_ore_basis_source_scheduler(interval_seconds)
     if mode == "snapshot_follower":
         return _start_snapshot_follower_scheduler(interval_seconds)
+    if mode == "snapshot_follower_on_start":
+        return _start_snapshot_follower_on_start()
     logger.error(
         "iron_ore_basis_sync_scheduler_not_started",
         extra={"sync_stage": "sync_mode"},

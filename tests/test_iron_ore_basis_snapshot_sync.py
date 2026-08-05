@@ -4,7 +4,7 @@ import sys
 from datetime import date
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -47,6 +47,40 @@ class StaticSnapshotClient:
 
     def fetch_snapshot(self):
         return copy.deepcopy(self.payload)
+
+
+class FakeHttpResponse:
+    def __init__(self, status_code, payload=None, headers=None):
+        self.status_code = status_code
+        self.payload = copy.deepcopy(payload)
+        self.headers = headers or {}
+        self.json_calls = 0
+
+    def json(self):
+        self.json_calls += 1
+        return copy.deepcopy(self.payload)
+
+
+class ConditionalSnapshotHttp:
+    def __init__(self, payload, etag):
+        self.payload = copy.deepcopy(payload)
+        self.etag = etag
+        self.calls = []
+        self.responses = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append({"method": method, "url": url, **kwargs})
+        headers = kwargs.get("headers", {})
+        if headers.get("If-None-Match") == self.etag:
+            response = FakeHttpResponse(304, headers={"ETag": self.etag})
+        else:
+            response = FakeHttpResponse(
+                200,
+                self.payload,
+                headers={"ETag": self.etag},
+            )
+        self.responses.append(response)
+        return response
 
 
 def use_temp_db(path, monkeypatch):
@@ -127,6 +161,139 @@ def test_snapshot_secret_hides_endpoint_and_can_reuse_existing_cross_env_secret(
     assert missing.value.status_code == 404
     assert wrong.value.status_code == 404
     snapshot_sync._require_snapshot_secret("Bearer shared-secret")
+
+
+def test_snapshot_secret_rejected_before_snapshot_build(monkeypatch):
+    monkeypatch.setenv(
+        "IRON_ORE_BASIS_SNAPSHOT_SHARED_SECRET",
+        "expected-secret-value",
+    )
+    monkeypatch.setattr(
+        snapshot_sync,
+        "build_iron_ore_basis_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("snapshot must not build")),
+    )
+
+    for authorization in (None, "Bearer wrong"):
+        with pytest.raises(HTTPException) as captured:
+            snapshot_sync.get_iron_ore_basis_snapshot(authorization)
+        assert captured.value.status_code == 404
+
+
+def test_snapshot_endpoint_returns_etag_and_empty_304_response(
+    tmp_path, monkeypatch
+):
+    payload = seed_source_snapshot(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "IRON_ORE_BASIS_SNAPSHOT_SHARED_SECRET",
+        "expected-secret-value",
+    )
+
+    first_response = Response()
+    first = snapshot_sync.get_iron_ore_basis_snapshot(
+        "Bearer expected-secret-value",
+        response=first_response,
+    )
+    etag = f'"{payload["source_version"]}"'
+
+    assert first["source_version"] == payload["source_version"]
+    assert first_response.headers["etag"] == etag
+
+    second_response = Response()
+    second = snapshot_sync.get_iron_ore_basis_snapshot(
+        "Bearer expected-secret-value",
+        if_none_match=etag,
+        response=second_response,
+    )
+
+    assert isinstance(second, Response)
+    assert second.status_code == 304
+    assert second.body == b""
+    assert second.headers["etag"] == etag
+
+
+def test_snapshot_client_sends_etag_and_does_not_decode_304(tmp_path, monkeypatch):
+    payload = seed_source_snapshot(tmp_path, monkeypatch)
+    etag = f'"{payload["source_version"]}"'
+    http = ConditionalSnapshotHttp(payload, etag)
+    client = snapshot_sync.IronOreBasisSnapshotClient(
+        snapshot_sync.SnapshotFollowerConfig("https://source.invalid", "secret"),
+        http=http,
+    )
+
+    assert client.fetch_snapshot()["source_version"] == payload["source_version"]
+    client.commit_etag()
+    assert client.fetch_snapshot() is None
+    assert http.calls[0]["headers"] == {"Authorization": "Bearer secret"}
+    assert http.calls[1]["headers"]["If-None-Match"] == etag
+    assert http.responses[0].json_calls == 1
+    assert http.responses[1].json_calls == 0
+
+
+def test_follower_304_returns_without_initializing_or_writing(monkeypatch):
+    class NotModifiedClient:
+        def fetch_snapshot(self):
+            return None
+
+    monkeypatch.setattr(
+        db,
+        "init_db",
+        lambda: (_ for _ in ()).throw(AssertionError("304 must not initialize DB")),
+    )
+
+    assert snapshot_sync.run_iron_ore_basis_snapshot_follow(
+        "startup:2026-07-17",
+        client=NotModifiedClient(),
+    ) == {"status": "not_modified", "inserted": 0}
+
+
+def test_on_start_follower_stops_after_three_failures():
+    class FailingSnapshotClient:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_snapshot(self):
+            self.calls += 1
+            raise snapshot_sync.IronOreBasisSnapshotSyncError(
+                "snapshot_download", 503
+            )
+
+    client = FailingSnapshotClient()
+    sleeps = []
+    result = snapshot_sync._run_snapshot_follower_on_start(
+        client=client,
+        max_attempts=3,
+        retry_delay_seconds=0,
+        sleep_fn=lambda seconds: sleeps.append(seconds),
+    )
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 3
+    assert client.calls == 3
+    assert sleeps == [0, 0]
+
+
+def test_on_start_follower_exits_immediately_after_304():
+    class NotModifiedClient:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_snapshot(self):
+            self.calls += 1
+            return None
+
+    client = NotModifiedClient()
+    result = snapshot_sync._run_snapshot_follower_on_start(
+        client=client,
+        max_attempts=3,
+        retry_delay_seconds=0,
+        sleep_fn=lambda seconds: (_ for _ in ()).throw(
+            AssertionError(f"must not sleep after 304: {seconds}")
+        ),
+    )
+
+    assert result == {"status": "not_modified", "inserted": 0}
+    assert client.calls == 1
 
 
 def test_source_snapshot_requires_source_mode_and_completed_source_run(
@@ -290,12 +457,19 @@ def test_scheduler_routes_only_the_configured_mode(monkeypatch):
         "_start_snapshot_follower_scheduler",
         lambda interval: calls.append(("follower", interval)) or True,
     )
+    monkeypatch.setattr(
+        snapshot_sync,
+        "_start_snapshot_follower_on_start",
+        lambda: calls.append(("on_start", None)) or True,
+    )
 
     monkeypatch.setenv("IRON_ORE_BASIS_SYNC_MODE", "source")
     assert snapshot_sync.start_iron_ore_basis_sync_scheduler(30) is True
     monkeypatch.setenv("IRON_ORE_BASIS_SYNC_MODE", "snapshot_follower")
     assert snapshot_sync.start_iron_ore_basis_sync_scheduler(45) is True
+    monkeypatch.setenv("IRON_ORE_BASIS_SYNC_MODE", "snapshot_follower_on_start")
+    assert snapshot_sync.start_iron_ore_basis_sync_scheduler(60) is True
     monkeypatch.setenv("IRON_ORE_BASIS_SYNC_MODE", "invalid")
     assert snapshot_sync.start_iron_ore_basis_sync_scheduler(60) is False
 
-    assert calls == [("source", 30), ("follower", 45)]
+    assert calls == [("source", 30), ("follower", 45), ("on_start", None)]
