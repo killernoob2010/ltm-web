@@ -23,7 +23,7 @@ router = APIRouter()
 DAILY_SECONDS = 24 * 60 * 60
 MAX_RUNS = 20
 RUN_TYPE = "backtest_a0_daily"
-BACKTEST_CODE_VERSION = "a0-daily-data-v3"
+BACKTEST_CODE_VERSION = "a0-daily-data-v4"
 STALE_RUN_MINUTES = max(5, int(os.getenv("OPTION_RESEARCH_BACKTEST_STALE_MINUTES", "30")))
 MAX_RUN_SECONDS = max(60, int(os.getenv("OPTION_RESEARCH_BACKTEST_MAX_SECONDS", "1800")))
 BACKTEST_SCHEMA = ("option_research_results",)
@@ -40,6 +40,7 @@ class BacktestStartIn(BaseModel):
     start_date: date = Field(default=date(2026, 1, 1))
     end_date: date = Field(default=date(2026, 6, 30))
     collect_only: bool = Field(default=True)
+    strategy_variant: str = Field(default="v2_naked", min_length=1, max_length=32)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class Position:
     entry_date: str
     close_pending: bool = False
     profit_stage: int = 0
+    peak_pnl: float = 0.0
 
 
 def _utc_now() -> str:
@@ -627,6 +629,7 @@ def _create_run(
     start_date: date,
     end_date: date,
     collect_only: bool,
+    strategy_variant: str = "v2_naked",
 ) -> None:
     with db.connect() as conn:
         cur = conn.cursor()
@@ -647,7 +650,8 @@ def _create_run(
                 DAILY_SECONDS,
                 json.dumps(
                     {
-                        "mode": "daily_data_audit" if collect_only else "daily_a0_screen",
+                        "mode": "daily_data_audit" if collect_only else "daily_v2_screen",
+                        "strategy_variant": strategy_variant,
                         "max_options": max_options,
                         "max_futures": max_futures,
                         "start_date": start_date.isoformat(),
@@ -993,6 +997,701 @@ def _position_delta(position: Position, metrics: dict[str, Optional[float]]) -> 
     return -float(delta) * position.quantity
 
 
+def _mark_price(row: Optional[dict[str, Any]]) -> Optional[float]:
+    """Use exchange settlement for daily marks, falling back to a real close."""
+
+    if not row:
+        return None
+    return _finite(row.get("settlement_price"), positive=True) or _finite(
+        row.get("close_price"), positive=True
+    )
+
+
+def _valuation_row_map(rows: Iterable[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Retain both traded and settlement-only rows for daily valuation."""
+
+    return {
+        (str(row["symbol"]), str(row["trading_date"])): row
+        for row in rows
+        if _mark_price(row) is not None
+    }
+
+
+def _quantity_tiers() -> list[int]:
+    """Near-to-far quantities; every individual strike remains at or below 600."""
+
+    return [100, 200, 300, 400, 400, 500, 600]
+
+
+def _scenario_option_price(
+    *,
+    underlying_price: float,
+    strike_price: float,
+    option_class: str,
+    expiry: date,
+    as_of: date,
+    volatility: float,
+) -> Optional[float]:
+    days = (expiry - as_of).days
+    if days <= 0:
+        intrinsic = (
+            max(underlying_price - strike_price, 0.0)
+            if option_class == "CALL"
+            else max(strike_price - underlying_price, 0.0)
+        )
+        return intrinsic
+    if underlying_price <= 0 or strike_price <= 0 or volatility <= 0:
+        return None
+    return float(
+        trading_valuation._black76_price(
+            underlying_price,
+            strike_price,
+            float(os.getenv("OPTION_RESEARCH_RISK_FREE_RATE", "0.02")),
+            volatility,
+            days / 360,
+            option_class,
+        )
+    )
+
+
+def _stress_portfolio(
+    *,
+    positions: Iterable[Position],
+    contexts: dict[str, tuple[float, float, dict[str, Optional[float]]]],
+    as_of: date,
+    shock_points: int,
+    iv_bump: float,
+) -> dict[str, Any]:
+    """Estimate worst daily shock PnL from actual marks, without using future rows."""
+
+    scenario_values: list[float] = []
+    unknown = 0
+    for direction in (-1, 1):
+        total = 0.0
+        for position in positions:
+            context = contexts.get(position.symbol)
+            if context is None:
+                unknown += 1
+                continue
+            _, underlying, metrics = context
+            iv = metrics.get("iv")
+            if iv is None:
+                unknown += 1
+                continue
+            stressed_price = _scenario_option_price(
+                underlying_price=max(0.01, underlying + direction * shock_points),
+                strike_price=position.strike_price,
+                option_class=position.option_class,
+                expiry=position.expiry,
+                as_of=as_of,
+                volatility=float(iv) + iv_bump,
+            )
+            if stressed_price is None:
+                unknown += 1
+                continue
+            total += _position_pnl(position, stressed_price)
+        scenario_values.append(total)
+    return {
+        "worst_pnl": round(min(scenario_values or [0.0]), 2),
+        "scenario_pnls": [round(value, 2) for value in scenario_values],
+        "unknown_positions": unknown,
+    }
+
+
+def _rolling_median(values: list[float]) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def simulate_daily_v2(
+    *,
+    contracts: list[Contract],
+    bars: list[dict[str, Any]],
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    strategy_variant: str = "v2_naked",
+) -> dict[str, Any]:
+    """Daily, no-lookahead implementation of the confirmed naked short-strangle rules.
+
+    This is a screening layer: observations use exchange settlement, orders are
+    filled only on the next available daily open, and residual positions at the
+    end of the requested window remain floating rather than being force-settled.
+    """
+
+    if strategy_variant != "v2_naked":
+        raise ValueError(f"unsupported_strategy_variant:{strategy_variant}")
+    contract_map = {contract.symbol: contract for contract in contracts}
+    option_rows = [row for row in bars if row["symbol"] in contract_map]
+    future_rows = [
+        row
+        for row in bars
+        if str(row.get("symbol") or "").startswith("DCE.i")
+        and row["symbol"] not in contract_map
+    ]
+    option_by_key = _valuation_row_map(option_rows)
+    future_by_key = _valuation_row_map(future_rows)
+    all_dates = sorted(
+        {
+            str(row["trading_date"])
+            for row in future_rows
+            if _mark_price(row) is not None
+        }
+    )
+    if start_date is not None:
+        all_dates = [day for day in all_dates if day >= start_date.isoformat()]
+    if end_date is not None:
+        all_dates = [day for day in all_dates if day <= end_date.isoformat()]
+
+    positions: dict[str, Position] = {}
+    pending_closes: dict[str, int] = defaultdict(int)
+    pending_entries: dict[str, dict[str, Any]] = {}
+    realized_by_month: dict[str, float] = defaultdict(float)
+    transaction_costs_by_month: dict[str, float] = defaultdict(float)
+    daily: list[dict[str, Any]] = []
+    monthly_activity: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "observed_days": 0,
+            "days_with_positions": 0,
+            "entry_quantity": 0,
+            "exit_quantity": 0,
+        }
+    )
+    entries_by_month: dict[str, int] = defaultdict(int)
+    exits_by_month: dict[str, int] = defaultdict(int)
+    filter_counts: dict[str, int] = defaultdict(int)
+    risk_triggers = {"18w": 0, "24w": 0, "30w": 0}
+    stress_triggers = {"ordinary_18w": 0, "extreme_30w": 0}
+    risk_latched_level = 0
+    delta_unknown_days = 0
+    stress_unknown_days = 0
+    missing_mark_days = 0
+    total_entries = 0
+    total_exits = 0
+    delta_rebalance_count = 0
+    slippage_ticks = max(0.0, float(os.getenv("OPTION_RESEARCH_SLIPPAGE_TICKS", "1")))
+    commission_per_contract = max(
+        0.0, float(os.getenv("OPTION_RESEARCH_COMMISSION_PER_CONTRACT", "0"))
+    )
+    fill_ratio = max(0.0, float(os.getenv("OPTION_RESEARCH_MAX_FILL_RATIO", "0")))
+    min_iv = max(0.0, float(os.getenv("OPTION_RESEARCH_MIN_SELL_IV", "0.30")))
+    iv_history: dict[tuple[str, str], list[float]] = defaultdict(list)
+    tiers = _quantity_tiers()
+
+    def next_date(index: int) -> Optional[str]:
+        return all_dates[index + 1] if index + 1 < len(all_dates) else None
+
+    def schedule_close(symbol: str, quantity: int) -> None:
+        position = positions.get(symbol)
+        if position is None or position.quantity <= 0 or quantity <= 0:
+            return
+        pending_closes[symbol] = max(
+            pending_closes.get(symbol, 0), min(position.quantity, int(quantity))
+        )
+        position.close_pending = True
+
+    for index, trading_date in enumerate(all_dates):
+        as_of = _parse_date(trading_date)
+        if as_of is None:
+            continue
+        month_key = trading_date[:7]
+        monthly_activity[month_key]["observed_days"] += 1
+        realized_today = 0.0
+
+        # Close orders are generated at a prior settlement and may only fill
+        # at today's real open.  A missing open leaves the order pending.
+        for symbol, quantity in list(pending_closes.items()):
+            position = positions.get(symbol)
+            row = option_by_key.get((symbol, trading_date))
+            open_price = _finite(row.get("open_price"), positive=True) if row else None
+            if position is None or position.quantity <= 0:
+                pending_closes.pop(symbol, None)
+                continue
+            if open_price is None:
+                filter_counts["close_missing_next_open"] += 1
+                continue
+            tick = next(
+                (contract.price_tick for contract in contracts if contract.symbol == symbol),
+                0.0,
+            )
+            fill = open_price + tick * slippage_ticks
+            close_quantity = min(position.quantity, int(quantity))
+            gross = _position_pnl(position, fill) * close_quantity / position.quantity
+            commission = commission_per_contract * close_quantity
+            realized_today += gross - commission
+            realized_by_month[month_key] += gross - commission
+            transaction_costs_by_month[month_key] += commission
+            position.quantity -= close_quantity
+            total_exits += close_quantity
+            exits_by_month[month_key] += close_quantity
+            monthly_activity[month_key]["exit_quantity"] += close_quantity
+            pending_closes.pop(symbol, None)
+            if position.quantity <= 0:
+                positions.pop(symbol, None)
+            else:
+                position.close_pending = False
+
+        # Entry orders are also next-open only.  Partial fills remain pending
+        # when an optional volume cap is configured.
+        for symbol, order in list(pending_entries.items()):
+            if symbol in positions:
+                pending_entries.pop(symbol, None)
+                continue
+            if str(order.get("action_date") or "") > trading_date:
+                continue
+            row = option_by_key.get((symbol, trading_date))
+            open_price = _finite(row.get("open_price"), positive=True) if row else None
+            if open_price is None:
+                filter_counts["entry_missing_next_open"] += 1
+                continue
+            contract = order["contract"]
+            quantity = int(order["quantity"])
+            if fill_ratio > 0 and _finite(row.get("volume"), positive=True) is not None:
+                available = max(0, math.floor(float(row["volume"]) * fill_ratio))
+                quantity = min(quantity, available)
+            if quantity <= 0:
+                filter_counts["entry_volume_block"] += 1
+                continue
+            fill = max(0.01, open_price - contract.price_tick * slippage_ticks)
+            commission = commission_per_contract * quantity
+            realized_by_month[month_key] -= commission
+            transaction_costs_by_month[month_key] += commission
+            positions[symbol] = Position(
+                symbol=symbol,
+                underlying_symbol=contract.underlying_symbol,
+                option_class=contract.option_class,
+                strike_price=contract.strike_price,
+                expiry=_parse_date(contract.expire_datetime) or as_of,
+                quantity=quantity,
+                entry_price=fill,
+                multiplier=contract.volume_multiple,
+                entry_date=trading_date,
+            )
+            total_entries += quantity
+            entries_by_month[month_key] += quantity
+            monthly_activity[month_key]["entry_quantity"] += quantity
+            remaining = int(order["quantity"]) - quantity
+            if remaining > 0:
+                order["quantity"] = remaining
+                order["action_date"] = next_date(index) or trading_date
+            else:
+                pending_entries.pop(symbol, None)
+
+        contexts: dict[str, tuple[float, float, dict[str, Optional[float]]]] = {}
+        floating = 0.0
+        net_delta = 0.0
+        missing_metrics = 0
+        for symbol, position in list(positions.items()):
+            row = option_by_key.get((symbol, trading_date))
+            underlying_row = future_by_key.get((position.underlying_symbol, trading_date))
+            mark = _mark_price(row)
+            underlying = _mark_price(underlying_row)
+            if mark is None or underlying is None:
+                missing_mark_days += 1
+                continue
+            metrics = _black76_metrics(
+                option_price=mark,
+                underlying_price=underlying,
+                strike_price=position.strike_price,
+                expiry=position.expiry,
+                as_of=as_of,
+                option_class=position.option_class,
+            )
+            contexts[symbol] = (mark, underlying, metrics)
+            floating += _position_pnl(position, mark)
+            if not metrics:
+                missing_metrics += 1
+            net_delta += _position_delta(position, metrics)
+            current_pnl = _position_pnl(position, mark)
+            position.peak_pnl = max(position.peak_pnl, current_pnl)
+
+        if missing_metrics:
+            delta_unknown_days += 1
+        ordinary_stress = _stress_portfolio(
+            positions=positions.values(),
+            contexts=contexts,
+            as_of=as_of,
+            shock_points=30,
+            iv_bump=0.05,
+        )
+        extreme_stress = _stress_portfolio(
+            positions=positions.values(),
+            contexts=contexts,
+            as_of=as_of,
+            shock_points=50,
+            iv_bump=0.10,
+        )
+        stress30 = float(ordinary_stress["worst_pnl"])
+        stress50 = float(extreme_stress["worst_pnl"])
+        if ordinary_stress["unknown_positions"] or extreme_stress["unknown_positions"]:
+            stress_unknown_days += 1
+        if floating <= -180_000:
+            risk_triggers["18w"] += 1
+        if floating <= -240_000:
+            risk_triggers["24w"] += 1
+        if floating <= -300_000:
+            risk_triggers["30w"] += 1
+        if stress30 <= -180_000:
+            stress_triggers["ordinary_18w"] += 1
+        if stress50 <= -300_000:
+            stress_triggers["extreme_30w"] += 1
+
+        dte_by_symbol = {
+            symbol: (position.expiry - as_of).days
+            for symbol, position in positions.items()
+        }
+        next_trading_date = next_date(index)
+        if next_trading_date is not None:
+            # Profit taking and expiry management are evaluated at the close;
+            # all resulting orders go to the next daily open.
+            for symbol, position in list(positions.items()):
+                context = contexts.get(symbol)
+                if context is None:
+                    continue
+                mark = context[0]
+                dte = dte_by_symbol.get(symbol, 0)
+                if dte <= 0 or dte <= 2:
+                    schedule_close(symbol, position.quantity)
+                    continue
+                if dte <= 3:
+                    schedule_close(symbol, max(1, math.ceil(position.quantity / 3)))
+                    continue
+                first = max(0.5, position.entry_price * 0.50)
+                second = max(0.4, position.entry_price * 0.35)
+                third = max(0.3, position.entry_price * 0.20)
+                if mark <= third and position.profit_stage < 3:
+                    schedule_close(symbol, position.quantity)
+                    position.profit_stage = 3
+                elif mark <= second and position.profit_stage < 2:
+                    schedule_close(symbol, max(1, math.ceil(position.quantity * 2 / 3)))
+                    position.profit_stage = 2
+                elif mark <= first and position.profit_stage < 1:
+                    schedule_close(symbol, max(1, math.ceil(position.quantity / 3)))
+                    position.profit_stage = 1
+                initial_risk = position.entry_price * position.quantity * position.multiplier
+                if (
+                    position.peak_pnl >= initial_risk * 0.40
+                    and _position_pnl(position, mark) <= position.peak_pnl * 0.75
+                ):
+                    schedule_close(symbol, position.quantity)
+                    position.profit_stage = 3
+
+            risk_level_today = 0
+            if floating <= -180_000 or stress30 <= -180_000:
+                risk_level_today = 1
+            if floating <= -240_000 or stress30 <= -240_000:
+                risk_level_today = 2
+            if floating <= -300_000 or stress50 <= -300_000:
+                risk_level_today = 3
+            if risk_level_today > risk_latched_level:
+                risk_latched_level = risk_level_today
+            if risk_level_today >= 2:
+                fraction = 1.0 if risk_level_today >= 3 else 0.5
+                for symbol, position in positions.items():
+                    schedule_close(
+                        symbol,
+                        position.quantity
+                        if fraction >= 1
+                        else max(1, math.ceil(position.quantity * fraction)),
+                    )
+
+            # If delta has drifted beyond the confirmed +/-20 band, reduce the
+            # positions contributing to that sign before considering new risk.
+            if abs(net_delta) > 20:
+                delta_rebalance_count += 1
+                projected_delta = net_delta
+                ordered = sorted(
+                    positions.values(),
+                    key=lambda position: abs(
+                        _position_delta(position, contexts.get(position.symbol, (0, 0, {}))[2])
+                    ),
+                    reverse=True,
+                )
+                for position in ordered:
+                    contribution = _position_delta(
+                        position, contexts.get(position.symbol, (0, 0, {}))[2]
+                    )
+                    if contribution == 0 or contribution * net_delta <= 0:
+                        continue
+                    quantity = max(1, math.ceil(position.quantity / 3))
+                    schedule_close(position.symbol, quantity)
+                    projected_delta -= contribution * quantity / position.quantity
+                    if abs(projected_delta) <= 20:
+                        break
+
+            # Any warning level blocks new shorts until the next run.  This is
+            # deliberately stricter than trying to refill a pressured leg.
+            can_open = (
+                risk_latched_level == 0
+                and floating > -180_000
+                and stress30 > -180_000
+                and stress50 > -300_000
+                and ordinary_stress["unknown_positions"] == 0
+                and extreme_stress["unknown_positions"] == 0
+                and abs(net_delta) <= 20
+            )
+            if can_open:
+                active_candidates: dict[str, list[tuple[Contract, dict[str, Any], dict[str, Optional[float]], float]]]
+                active_candidates = {"CALL": [], "PUT": []}
+                for contract in contracts:
+                    if contract.symbol in positions or contract.symbol in pending_entries:
+                        continue
+                    option_row = option_by_key.get((contract.symbol, trading_date))
+                    next_option_row = option_by_key.get((contract.symbol, next_trading_date))
+                    underlying_row = future_by_key.get((contract.underlying_symbol, trading_date))
+                    premium = _mark_price(option_row)
+                    underlying = _mark_price(underlying_row)
+                    expiry = _parse_date(contract.expire_datetime)
+                    if option_row is None or next_option_row is None:
+                        filter_counts["missing_option_row"] += 1
+                        continue
+                    if _finite(next_option_row.get("open_price"), positive=True) is None:
+                        filter_counts["missing_next_open"] += 1
+                        continue
+                    if expiry is None or premium is None or underlying is None:
+                        filter_counts["missing_price_or_expiry"] += 1
+                        continue
+                    dte = (expiry - as_of).days
+                    if dte <= 10:
+                        filter_counts["expiry_10_day_gate"] += 1
+                        continue
+                    if premium < 1:
+                        filter_counts["premium_below_1"] += 1
+                        continue
+                    distance = (
+                        contract.strike_price - underlying
+                        if contract.option_class == "CALL"
+                        else underlying - contract.strike_price
+                    )
+                    if distance < 30:
+                        filter_counts["distance_below_30"] += 1
+                        continue
+                    metrics = _black76_metrics(
+                        option_price=premium,
+                        underlying_price=underlying,
+                        strike_price=contract.strike_price,
+                        expiry=expiry,
+                        as_of=as_of,
+                        option_class=contract.option_class,
+                    )
+                    iv = metrics.get("iv")
+                    if iv is None or metrics.get("delta") is None:
+                        filter_counts["missing_iv_delta"] += 1
+                        continue
+                    history_key = (contract.underlying_symbol, contract.option_class)
+                    previous_median = _rolling_median(iv_history.get(history_key, [])[-20:])
+                    if iv < min_iv or (
+                        previous_median is not None
+                        and len(iv_history.get(history_key, [])) >= 10
+                        and iv < previous_median
+                    ):
+                        filter_counts["iv_advantage_gate"] += 1
+                        continue
+                    active_candidates[contract.option_class].append(
+                        (contract, option_row, metrics, underlying)
+                    )
+                    filter_counts["eligible_candidate"] += 1
+
+                for side_candidates in active_candidates.values():
+                    side_candidates.sort(
+                        key=lambda item: abs(
+                            item[0].strike_price - item[3]
+                        )
+                    )
+                used_by_side = {
+                    option_class: sum(
+                        position.quantity
+                        for position in positions.values()
+                        if position.option_class == option_class
+                    )
+                    + sum(
+                        int(order.get("quantity") or 0)
+                        for order in pending_entries.values()
+                        if order["contract"].option_class == option_class
+                    )
+                    for option_class in ("CALL", "PUT")
+                }
+                planned: list[Position] = []
+                planned_contexts: dict[str, tuple[float, float, dict[str, Optional[float]]]] = {}
+                planned_delta = net_delta
+                for slot in range(max(len(active_candidates["CALL"]), len(active_candidates["PUT"]))):
+                    # Alternate legs to keep the combined delta near neutral.
+                    order = ("CALL", "PUT") if planned_delta >= 0 else ("PUT", "CALL")
+                    for option_class in order:
+                        candidates = active_candidates[option_class]
+                        if slot >= len(candidates) or used_by_side[option_class] >= 2500:
+                            continue
+                        contract, option_row, metrics, underlying = candidates[slot]
+                        proposed = min(
+                            tiers[min(slot, len(tiers) - 1)],
+                            2500 - used_by_side[option_class],
+                        )
+                        candidate_delta = -float(metrics["delta"] or 0) * proposed
+                        if abs(planned_delta + candidate_delta) > 20:
+                            filter_counts["delta_limit"] += 1
+                            continue
+                        premium = _mark_price(option_row)
+                        if premium is None:
+                            continue
+                        expiry = _parse_date(contract.expire_datetime)
+                        if expiry is None:
+                            continue
+                        hypothetical = Position(
+                            symbol=contract.symbol,
+                            underlying_symbol=contract.underlying_symbol,
+                            option_class=contract.option_class,
+                            strike_price=contract.strike_price,
+                            expiry=expiry,
+                            quantity=int(proposed),
+                            entry_price=premium,
+                            multiplier=contract.volume_multiple,
+                            entry_date=next_trading_date,
+                        )
+                        stress_positions = list(positions.values()) + planned + [hypothetical]
+                        stress_contexts = {**contexts, **planned_contexts, contract.symbol: (premium, underlying, metrics)}
+                        hypothetical_ordinary = _stress_portfolio(
+                            positions=stress_positions,
+                            contexts=stress_contexts,
+                            as_of=as_of,
+                            shock_points=30,
+                            iv_bump=0.05,
+                        )
+                        hypothetical_extreme = _stress_portfolio(
+                            positions=stress_positions,
+                            contexts=stress_contexts,
+                            as_of=as_of,
+                            shock_points=50,
+                            iv_bump=0.10,
+                        )
+                        if (
+                            hypothetical_ordinary["worst_pnl"] <= -180_000
+                            or hypothetical_extreme["worst_pnl"] <= -300_000
+                        ):
+                            filter_counts["stress_limit"] += 1
+                            continue
+                        pending_entries[contract.symbol] = {
+                            "action_date": next_trading_date,
+                            "contract": contract,
+                            "quantity": int(proposed),
+                        }
+                        used_by_side[option_class] += int(proposed)
+                        planned.append(hypothetical)
+                        planned_contexts[contract.symbol] = (premium, underlying, metrics)
+                        planned_delta += candidate_delta
+
+        for history_key, values in list(iv_history.items()):
+            if len(values) > 60:
+                iv_history[history_key] = values[-60:]
+        for symbol, context in contexts.items():
+            position = positions.get(symbol)
+            if position is None:
+                continue
+            iv = context[2].get("iv")
+            if iv is not None:
+                iv_history[(position.underlying_symbol, position.option_class)].append(float(iv))
+
+        if positions:
+            monthly_activity[month_key]["days_with_positions"] += 1
+        daily.append(
+            {
+                "trading_date": trading_date,
+                "floating_pnl": round(floating, 2),
+                "realized_pnl": round(realized_today, 2),
+                "net_delta": round(net_delta, 6),
+                "stress_pnl_30_iv5": round(stress30, 2),
+                "stress_pnl_50_iv10": round(stress50, 2),
+                "open_positions": len(positions),
+                "open_short_quantity": sum(position.quantity for position in positions.values()),
+                "pending_entry_quantity": sum(int(order.get("quantity") or 0) for order in pending_entries.values()),
+                "pending_close_quantity": sum(pending_closes.values()),
+                "risk_latched_level": risk_latched_level,
+                "missing_metrics": missing_metrics,
+            }
+        )
+
+    monthly = [
+        {
+            "month": month,
+            "observed_days": int(monthly_activity[month]["observed_days"]),
+            "days_with_positions": int(monthly_activity[month]["days_with_positions"]),
+            "entry_quantity": int(entries_by_month.get(month, 0)),
+            "exit_quantity": int(exits_by_month.get(month, 0)),
+            "settled_pnl": round(realized_by_month.get(month, 0.0), 2),
+            "transaction_costs": round(transaction_costs_by_month.get(month, 0.0), 2),
+        }
+        for month in sorted(monthly_activity)
+    ]
+    floating_values = [item["floating_pnl"] for item in daily]
+    stress_values_30 = [item["stress_pnl_30_iv5"] for item in daily]
+    stress_values_50 = [item["stress_pnl_50_iv10"] for item in daily]
+    open_mtm = round(floating_values[-1], 2) if floating_values else 0.0
+    open_by_month: dict[str, float] = defaultdict(float)
+    if daily and all_dates:
+        last_date = all_dates[-1]
+        for symbol, position in positions.items():
+            row = option_by_key.get((symbol, last_date))
+            mark = _mark_price(row)
+            if mark is not None:
+                open_by_month[last_date[:7]] += _position_pnl(position, mark)
+    return {
+        "granularity": "daily",
+        "strategy_variant": strategy_variant,
+        "final_eligible": False,
+        "days": len(daily),
+        "first_date": all_dates[0] if all_dates else None,
+        "last_date": all_dates[-1] if all_dates else None,
+        "total_entries": total_entries,
+        "total_exits": total_exits,
+        "open_positions_end": len(positions),
+        "open_short_quantity_end": sum(position.quantity for position in positions.values()),
+        "unrealized_pnl_end": open_mtm,
+        "unrealized_by_mark_month": {
+            month: round(value, 2) for month, value in sorted(open_by_month.items())
+        },
+        "max_floating_loss": round(min(floating_values or [0]), 2),
+        "max_floating_profit": round(max(floating_values or [0]), 2),
+        "max_stress_loss_30_iv5": round(min(stress_values_30 or [0]), 2),
+        "max_stress_loss_50_iv10": round(min(stress_values_50 or [0]), 2),
+        "risk_triggers": risk_triggers,
+        "stress_triggers": stress_triggers,
+        "risk_latched_level": risk_latched_level,
+        "delta_rebalance_count": delta_rebalance_count,
+        "delta_unknown_days": delta_unknown_days,
+        "stress_unknown_days": stress_unknown_days,
+        "missing_mark_days": missing_mark_days,
+        "entry_filter_counts": dict(sorted(filter_counts.items())),
+        "qualified_months_400k": sum(
+            1 for value in realized_by_month.values() if value >= 400_000
+        ),
+        "target_months_500k": sum(
+            1 for value in realized_by_month.values() if value >= 500_000
+        ),
+        "monthly": monthly,
+        "daily_tail": daily[-20:],
+        "execution_assumptions": {
+            "mark_price": "settlement_price_then_close",
+            "entry_exit_fill": "next_available_daily_open",
+            "slippage_ticks": slippage_ticks,
+            "commission_per_contract": commission_per_contract,
+            "max_fill_ratio": fill_ratio,
+            "min_sell_premium": 1.0,
+            "min_sell_iv": min_iv,
+            "distance_floor": 30,
+            "dte_no_new": 10,
+            "delta_band": 20,
+            "net_sell_limit_per_side": 2500,
+            "single_strike_limit": 600,
+            "ordinary_stress": "underlying +/-30, IV +5pp, loss <= 180000",
+            "extreme_stress": "underlying +/-50, IV +10pp, loss <= 300000",
+            "monthly_metric": "realized settled PnL after configured costs; residual MTM excluded",
+        },
+    }
+
+
 def simulate_daily_a0(
     *,
     contracts: list[Contract],
@@ -1303,12 +2002,13 @@ def _run_worker(
     start_date: date,
     end_date: date,
     collect_only: bool,
+    strategy_variant: str,
 ) -> None:
     api = None
     all_rows: list[dict[str, Any]] = []
     trade_rows: list[dict[str, Any]] = []
     started_monotonic = time.monotonic()
-    mode = "daily_data_audit" if collect_only else "daily_a0_screen"
+    mode = "daily_data_audit" if collect_only else "daily_v2_screen"
     try:
         from tqsdk import TqApi, TqAuth
 
@@ -1331,6 +2031,7 @@ def _run_worker(
             status="running",
             checks={
                 "phase": "discovery_complete",
+                "strategy_variant": strategy_variant,
                 "futures_count": len(futures),
                 "options_count": len(contracts),
                 "universe_capped": capped,
@@ -1425,6 +2126,7 @@ def _run_worker(
             result = {
                 "mode": mode,
                 "granularity": "daily",
+                "strategy_variant": strategy_variant,
                 "final_eligible": False,
                 "daily_data_complete": bool(data_audit["daily_data_complete"]),
                 "requested_start": start_date.isoformat(),
@@ -1432,11 +2134,12 @@ def _run_worker(
                 "monthly": [],
             }
         else:
-            result = simulate_daily_a0(
+            result = simulate_daily_v2(
                 contracts=contracts,
                 bars=all_rows,
                 start_date=start_date,
                 end_date=end_date,
+                strategy_variant=strategy_variant,
             )
             result["daily_data_complete"] = True
         result["data_audit"] = data_audit
@@ -1459,7 +2162,8 @@ def _run_worker(
         result["notes"] = [
             "具体期权始终映射到代码中同月份的具体铁矿石期货，不使用主力连续价格替代。",
             "每日结算价用于估值完整性；没有成交K线但有结算价的日期记录为无成交日，不虚构成交。",
-            "这是日线数据审计或初筛，不是协议要求的5分钟最终回测。",
+            "日线执行使用收盘结算价生成信号、次日开盘成交；这是研究初筛，不是5分钟最终回测。",
+            "月度合格收益只统计已实现结算收益；期末未平仓头寸另列浮动盈亏，不强制结算。",
         ]
         with db.connect() as conn:
             cur = conn.cursor()
@@ -1482,13 +2186,14 @@ def _run_worker(
             final_error = "daily_data_only"
             final_message = "2026年1至6月日线数据审计已完成；等待5分钟成交数据覆盖后再运行最终回测。"
         else:
-            final_error = "daily_screen_only"
-            final_message = "日线真实期权 A0 初筛已完成；等待5分钟逐合约覆盖检查后才能形成最终收益结论。"
+            final_error = "daily_v2_screen_only"
+            final_message = "日线真实期权 V2 初筛已完成；等待5分钟逐合约覆盖检查后才能形成最终收益结论。"
         _update_run(
             run_key,
             status=final_status,
             checks={
                 "mode": mode,
+                "strategy_variant": strategy_variant,
                 "final_eligible": False,
                 "daily_data_complete": data_complete,
                 "universe_capped": capped,
@@ -1514,9 +2219,9 @@ def _run_worker(
         _update_run(
             run_key,
             status="blocked",
-            checks={"mode": mode, "error": code},
+            checks={"mode": mode, "strategy_variant": strategy_variant, "error": code},
             bars_count=len(all_rows),
-            message="历史期权数据采集或 A0 回测执行被阻断，未生成收益结论。",
+            message="历史期权数据采集或日线 V2 回测执行被阻断，未生成收益结论。",
             error_code=code,
         )
     finally:
@@ -1616,6 +2321,7 @@ def start_backtest(
             start_date=payload.start_date,
             end_date=payload.end_date,
             collect_only=payload.collect_only,
+            strategy_variant=payload.strategy_variant,
         )
         _RUN_THREAD = threading.Thread(
             target=_run_worker,
@@ -1626,6 +2332,7 @@ def start_backtest(
                 payload.start_date,
                 payload.end_date,
                 payload.collect_only,
+                payload.strategy_variant,
             ),
             name="option-research-a0-daily",
             daemon=True,
@@ -1634,13 +2341,14 @@ def start_backtest(
         return {
             "started": True,
             "run_key": run_key,
-            "mode": "daily_data_audit" if payload.collect_only else "daily_a0_screen",
+            "mode": "daily_data_audit" if payload.collect_only else "daily_v2_screen",
             "code_version": BACKTEST_CODE_VERSION,
             "max_options": max_options,
             "max_futures": max_futures,
             "start_date": payload.start_date.isoformat(),
             "end_date": payload.end_date.isoformat(),
             "collect_only": payload.collect_only,
+            "strategy_variant": payload.strategy_variant,
         }
 
 

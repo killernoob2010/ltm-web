@@ -538,3 +538,72 @@ def test_daily_a0_screen_uses_real_option_rows_and_returns_monthly_metrics():
     assert result["days"] == 3
     assert result["total_entries"] > 0
     assert isinstance(result["monthly"], list)
+
+
+def test_daily_v2_uses_settlement_for_marks_and_keeps_residual_float():
+    contracts = [
+        option_backtest.Contract(
+            symbol="DCE.i2609-C-900",
+            underlying_symbol="DCE.i2609",
+            option_class="CALL",
+            strike_price=900.0,
+            expire_datetime="2026-03-12T07:00:00+00:00",
+            volume_multiple=100.0,
+            price_tick=0.1,
+        ),
+        option_backtest.Contract(
+            symbol="DCE.i2609-P-700",
+            underlying_symbol="DCE.i2609",
+            option_class="PUT",
+            strike_price=700.0,
+            expire_datetime="2026-03-12T07:00:00+00:00",
+            volume_multiple=100.0,
+            price_tick=0.1,
+        ),
+    ]
+    bars = []
+    for day, underlying, call, put in [
+        ("2026-01-05", 800.0, 10.0, 10.0),
+        ("2026-01-06", 805.0, 9.0, 9.0),
+        ("2026-01-07", 800.0, 8.0, 8.0),
+    ]:
+        bars.append(
+            {
+                "symbol": "DCE.i2609",
+                "trading_date": day,
+                "open_price": underlying,
+                "close_price": underlying,
+                "settlement_price": underlying,
+            }
+        )
+        for symbol, price in (
+            ("DCE.i2609-C-900", call),
+            ("DCE.i2609-P-700", put),
+        ):
+            bars.append(
+                {
+                    "symbol": symbol,
+                    "trading_date": day,
+                    "open_price": price,
+                    "close_price": price + 1.0,
+                    "settlement_price": price,
+                    "volume": 10_000,
+                }
+            )
+
+    result = option_backtest.simulate_daily_v2(contracts=contracts, bars=bars)
+
+    assert result["strategy_variant"] == "v2_naked"
+    assert result["total_entries"] > 0
+    assert result["total_exits"] == 0
+    assert result["open_positions_end"] > 0
+    assert result["monthly"][0]["settled_pnl"] == 0
+    assert result["unrealized_pnl_end"] != 0
+
+
+def test_daily_v2_quantity_tiers_respect_confirmed_limits():
+    tiers = option_backtest._quantity_tiers()
+
+    assert sum(tiers) == 2500
+    assert max(tiers) == 600
+    assert min(tiers) > 0
