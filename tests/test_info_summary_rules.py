@@ -66,6 +66,25 @@ class InfoSummaryRulesTest(unittest.TestCase):
             {"year1": 2026, "month1": "09", "year2": 2027, "month2": "01"},
         )
 
+    def test_default_contracts_follow_four_stage_year_month_rule(self):
+        cases = [
+            (date(2026, 2, 28), (2026, "05"), {"year1": 2026, "month1": "05", "year2": 2026, "month2": "09"}),
+            (date(2026, 3, 23), (2026, "09"), {"year1": 2026, "month1": "09", "year2": 2027, "month2": "01"}),
+            (date(2026, 7, 23), (2027, "01"), {"year1": 2027, "month1": "01", "year2": 2027, "month2": "05"}),
+            (date(2026, 8, 6), (2027, "01"), {"year1": 2027, "month1": "01", "year2": 2027, "month2": "05"}),
+            (date(2026, 11, 19), (2027, "01"), {"year1": 2027, "month1": "01", "year2": 2027, "month2": "05"}),
+            (date(2026, 11, 20), (2027, "05"), {"year1": 2027, "month1": "05", "year2": 2027, "month2": "09"}),
+            (date(2026, 12, 1), (2027, "05"), {"year1": 2027, "month1": "05", "year2": 2027, "month2": "09"}),
+        ]
+
+        for today_value, ordinary, month_diff in cases:
+            with self.subTest(today_value=today_value):
+                defaults = default_info_contracts(today_value)
+
+                self.assertEqual((defaults["default_year"], defaults["default_month"]), ordinary)
+                self.assertEqual(defaults["yuecha_defaults"], month_diff)
+                self.assertEqual(defaults["inner_outer_default_year"], today_value.year)
+
     def test_config_adds_swap_month_diff_and_special_month_options(self):
         with patch("backend.app.main.cache_counts", return_value={}):
             config = info_summary_config(user={"id": 1, "role": "管理员"})
@@ -76,6 +95,7 @@ class InfoSummaryRulesTest(unittest.TestCase):
         )
         self.assertEqual(config["month_options_by_type"]["螺矿比"], ["01", "05", "09"])
         self.assertEqual(config["month_options_by_type"]["盘面钢厂利润"], ["01", "05", "09"])
+        self.assertEqual(config["inner_outer_default_year"], date.today().year)
 
     def test_swap_month_diff_uses_fe_contract_pair(self):
         payload = InfoCalculateIn(
