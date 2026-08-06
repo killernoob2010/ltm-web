@@ -73,7 +73,7 @@ env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路
 
 ## 铁矿石基差 API 增量同步
 
-铁矿石期现的目标架构是“Production 单一采集源、Staging 受保护快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许跨库直连。Gate B 前为避免提前改变正式环境，Staging 继续使用 `source` 做本次验收；角色切换和正式环境变量变更必须另行确认。
+铁矿石期现当前采用“Production 单一采集源、Staging 受保护快照跟随”的双库模式。两个环境仍只连接各自的 Supabase，不允许跨库直连。正式只读账号仅保存在 Production，Staging 不再单独采集。
 
 两个环境均显式配置：
 
@@ -87,7 +87,7 @@ IRON_ORE_BASIS_SYNC_MODE
 目标 Staging 跟随端使用 `IRON_ORE_BASIS_SYNC_MODE=snapshot_follower_on_start`，不配置 EBC 凭据，并配置：
 
 ```text
-IRON_ORE_BASIS_SNAPSHOT_UPSTREAM_URL=https://ltm-web-staging.onrender.com
+IRON_ORE_BASIS_SNAPSHOT_UPSTREAM_URL=https://ltm-web-gt13.onrender.com
 ```
 
 两个服务通过服务端 Bearer Secret 访问 `/api/internal/iron-ore-basis/snapshot`。接口用内容版本返回标准 `ETag`；跟随端发送 `If-None-Match`，版本未变化时收到 `304`，不读取 JSON 正文、不写业务数据。可配置专用 `IRON_ORE_BASIS_SNAPSHOT_SHARED_SECRET`；未配置时兼容复用现有 `ORDER_FINANCE_SNAPSHOT_SHARED_SECRET`，实际值不得进入仓库、日志、接口响应或版本记录。快照仅包含 `2026-07-13` 起由 API 生成的期现结果和计算明细，不包含数据库 ID、用户、权限、日志或源站凭据。
@@ -174,7 +174,7 @@ ORDER_FINANCE_SNAPSHOT_UPSTREAM_URL
 
 ### Render 套餐与启动成本边界
 
-Workspace Hobby、Production Standard 和 Staging Free 是不同层级的成本设置；本项目代码和 `render.yaml` 不管理 Render `plan`，也不包含自动升级或套餐变更 API。Free 休眠/冷启动是预期行为；只有在首次完整跟随、二次冷启动 `304` 零写入和资源门槛均验证通过后，才由人工决定是否降为 Free。资源测试不通过时保留现有套餐并报告证据，不自动升级。
+Workspace Hobby、Production Standard 和 Staging Free 是不同层级的成本设置；本项目代码和 `render.yaml` 不管理 Render `plan`，也不包含自动升级或套餐变更 API。本次已完成首次完整跟随、再次启动和空闲唤醒验收，Staging 使用 Free；Free 休眠/冷启动属于预期行为。资源测试不通过时应保留现有套餐并报告业务影响，不自动升级。
 
 ## 测试版验证
 
