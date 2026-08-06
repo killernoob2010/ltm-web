@@ -13,6 +13,14 @@ function loadInnerOuterContractMonths() {
   return Function(`${source}; return innerOuterContractMonths;`)();
 }
 
+function loadInfoSummaryDefaultYear() {
+  const start = appJs.indexOf("function infoSummaryDefaultYear(");
+  assert.notEqual(start, -1, "info summary default-year helper should exist");
+  const end = appJs.indexOf("\nfunction ", start + 1);
+  const source = appJs.slice(start, end);
+  return Function(`${source}; return infoSummaryDefaultYear;`)();
+}
+
 test("inner outer cards roll five months forward from the selected month", () => {
   const innerOuterContractMonths = loadInnerOuterContractMonths();
 
@@ -41,6 +49,16 @@ test("inner outer cards rerender rolling labels after date or year changes", () 
   assert.match(appJs, /data-contract-month="\$\{item\.key\}"/);
   assert.match(appJs, /dateInput\.addEventListener\("change", renderRollingMonths\)/);
   assert.match(appJs, /year\.addEventListener\("change", renderRollingMonths\)/);
+});
+
+test("ordinary and inner outer cards use separate default years", () => {
+  const infoSummaryDefaultYear = loadInfoSummaryDefaultYear();
+  const config = { default_year: 2027, inner_outer_default_year: 2026 };
+
+  assert.equal(infoSummaryDefaultYear("卷螺差", config), 2027);
+  assert.equal(infoSummaryDefaultYear("月差", config), 2027);
+  assert.equal(infoSummaryDefaultYear("内外盘差", config), 2026);
+  assert.equal(infoSummaryDefaultYear("内外盘差2", config), 2026);
 });
 
 test("swap month diff uses month-diff controls", () => {

@@ -47,6 +47,29 @@ class InfoSummaryBackfillTest(TempDbTestCase):
             ["卷螺差", "螺矿比", "煤矿比", "盘面钢厂利润", "月差", "掉期月差", "内外盘差", "内外盘差2"],
         )
 
+    def test_build_backfill_jobs_uses_first_month_diff_contract_year_as_parent_year(self):
+        mocked_defaults = {
+            "default_year": 2026,
+            "default_month": "01",
+            "inner_outer_default_year": 2026,
+            "yuecha_defaults": {
+                "year1": 2027,
+                "month1": "01",
+                "year2": 2027,
+                "month2": "05",
+            },
+        }
+
+        with patch("backend.app.main.default_info_contracts", return_value=mocked_defaults):
+            jobs = build_backfill_jobs(BackfillRequest(calc_date="2026-08-06"))
+
+        self.assertEqual(jobs[0].payload.year, 2026)
+        self.assertEqual(jobs[0].payload.month, "01")
+        for job in jobs[4:6]:
+            self.assertEqual(job.payload.year, 2027)
+            self.assertEqual(job.payload.year1, 2027)
+            self.assertEqual(job.payload.year2, 2027)
+
     def test_backfill_month_diff_writes_prices_and_calculated_values(self):
         provider = StaticHistoryProvider({
             "I2609": {
@@ -188,7 +211,19 @@ class InfoSummaryBackfillTest(TempDbTestCase):
             "I2701": {"2026-06-22": 775.0, "2026-06-23": 777.0},
         })
         request = BackfillRequest(info_type="月差", calc_date="2026-06-23", force=True)
-        results = run_all_info_summary_backfills(request, provider=provider)
+        mocked_defaults = {
+            "default_year": 2026,
+            "default_month": "09",
+            "inner_outer_default_year": 2026,
+            "yuecha_defaults": {
+                "year1": 2026,
+                "month1": "09",
+                "year2": 2027,
+                "month2": "01",
+            },
+        }
+        with patch("backend.app.main.default_info_contracts", return_value=mocked_defaults):
+            results = run_all_info_summary_backfills(request, provider=provider)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "success")
 

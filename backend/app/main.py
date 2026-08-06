@@ -307,6 +307,7 @@ def default_info_contracts(today_value: Optional[date] = None) -> dict:
 
     default_year = current_year
     default_month = "05"
+    inner_outer_default_year = current_year
     yuecha_year1 = current_year
     yuecha_month1 = "05"
     yuecha_year2 = current_year
@@ -317,10 +318,17 @@ def default_info_contracts(today_value: Optional[date] = None) -> dict:
         if nov_last_7th and today_value >= nov_last_7th:
             default_year = current_year + 1
             default_month = "05"
-            yuecha_year1 = current_year
+            yuecha_year1 = current_year + 1
             yuecha_month1 = "05"
-            yuecha_year2 = current_year
+            yuecha_year2 = current_year + 1
             yuecha_month2 = "09"
+        else:
+            default_year = current_year + 1
+            default_month = "01"
+            yuecha_year1 = current_year + 1
+            yuecha_month1 = "01"
+            yuecha_year2 = current_year + 1
+            yuecha_month2 = "05"
     elif current_month == 12:
         default_year = current_year + 1
         default_month = "05"
@@ -372,7 +380,7 @@ def default_info_contracts(today_value: Optional[date] = None) -> dict:
             yuecha_year2 = current_year + 1
             yuecha_month2 = "01"
     elif current_month in [8, 9, 10]:
-        default_year = current_year
+        default_year = current_year + 1
         default_month = "01"
         yuecha_year1 = current_year + 1
         yuecha_month1 = "01"
@@ -382,6 +390,7 @@ def default_info_contracts(today_value: Optional[date] = None) -> dict:
     return {
         "default_year": default_year,
         "default_month": default_month,
+        "inner_outer_default_year": inner_outer_default_year,
         "yuecha_defaults": {
             "year1": yuecha_year1,
             "month1": yuecha_month1,
@@ -2113,11 +2122,12 @@ def list_indicators(user=Depends(current_user)):
 def info_summary_config(user=Depends(current_user)):
     require_view("info_summary", user)
     defaults = default_info_contracts()
-    inner_contract_months = inner_outer_contract_months(defaults["default_year"], date.today().isoformat())
+    inner_contract_months = inner_outer_contract_months(defaults["inner_outer_default_year"], date.today().isoformat())
     return {
         "info_types": INFO_TYPES,
         "default_year": defaults["default_year"],
         "default_month": defaults["default_month"],
+        "inner_outer_default_year": defaults["inner_outer_default_year"],
         "yuecha_defaults": defaults["yuecha_defaults"],
         "contract_months": [str(i).zfill(2) for i in range(1, 13)],
         "special_months": ["01", "05", "09"],

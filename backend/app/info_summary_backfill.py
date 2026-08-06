@@ -158,7 +158,7 @@ def build_backfill_jobs(request: BackfillRequest) -> list[BackfillJob]:
             yuecha = defaults["yuecha_defaults"]
             payload = InfoCalculateIn(
                 info_type=info_type,
-                year=defaults["default_year"],
+                year=yuecha["year1"],
                 calc_date=request.calc_date,
                 year1=yuecha["year1"],
                 month1=yuecha["month1"],

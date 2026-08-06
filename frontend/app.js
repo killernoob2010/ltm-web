@@ -22,7 +22,7 @@ const state = {
   alertNotificationInFlight: false,
   lastNotificationIds: new Set(),
   midConfig: { varieties: [], contracts: [] },
-  infoConfig: { info_types: [], default_year: 2026, default_month: "09", contract_months: [], month_options_by_type: {}, inner_months: [] },
+  infoConfig: { info_types: [], default_year: 2026, default_month: "09", inner_outer_default_year: 2026, contract_months: [], month_options_by_type: {}, inner_months: [] },
   infoCacheStatus: null,
   shJunnengConfig: { contracts: [], default_contract: "", default_open_date: "" },
   shJunnengTrades: [],
@@ -671,10 +671,15 @@ function innerOuterContractMonths(year, calcDate) {
   });
 }
 
+function infoSummaryDefaultYear(infoType, config) {
+  const isInnerOuter = infoType === "内外盘差" || infoType === "内外盘差2";
+  return Number(isInnerOuter ? (config.inner_outer_default_year ?? config.default_year) : config.default_year);
+}
+
 function renderInnerOuterMonthValues(card) {
   const row = card.querySelector(".inner-month-row");
   if (!row) return;
-  const year = Number(card.querySelector(".info-year")?.value || state.infoConfig.default_year);
+  const year = Number(card.querySelector(".info-year")?.value || infoSummaryDefaultYear(card.dataset.infoType, state.infoConfig));
   const calcDate = card.querySelector(".info-date")?.value || today();
   row.innerHTML = `
     <span class="value-label">今日值</span>
@@ -758,7 +763,7 @@ function renderInfoCards() {
     const month2 = card.querySelector(".info-month2");
     const dateInput = card.querySelector(".info-date");
     const isInnerOuterCard = card.dataset.infoType === "内外盘差" || card.dataset.infoType === "内外盘差2";
-    if (year) year.value = state.infoConfig.default_year;
+    if (year) year.value = infoSummaryDefaultYear(card.dataset.infoType, state.infoConfig);
     if (year1) year1.value = state.infoConfig.yuecha_defaults?.year1 || state.infoConfig.default_year;
     if (year2) year2.value = state.infoConfig.yuecha_defaults?.year2 || state.infoConfig.default_year;
     if (month) month.value = state.infoConfig.default_month;
@@ -778,7 +783,7 @@ function renderInfoCards() {
 }
 
 function buildInfoPayload(card) {
-  const year = Number(card.querySelector(".info-year")?.value || card.querySelector(".info-year1")?.value || state.infoConfig.default_year);
+  const year = Number(card.querySelector(".info-year")?.value || card.querySelector(".info-year1")?.value || infoSummaryDefaultYear(card.dataset.infoType, state.infoConfig));
   return {
     info_type: card.dataset.infoType,
     year,
