@@ -37,13 +37,14 @@ MANAGE_RESOURCE = "platts_index.manage"
 MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 
 SERIES = (
-    ("platts_lp", "LP", "美元/吨"),
-    ("platts_61", "61%", "美元/吨"),
-    ("platts_58", "58%", "美元/吨"),
-    ("platts_65", "65%", "美元/吨"),
-    ("spread_65_62", "65/62", "美元/吨"),
-    ("spread_65_61", "65/61", "美元/吨"),
+    ("platts_lp", "Platts LP", "美元/吨"),
+    ("platts_61", "Platts 61%", "美元/吨"),
+    ("platts_58", "Platts 58%", "美元/吨"),
+    ("platts_65", "Platts 65%", "美元/吨"),
+    ("spread_65_62", "Platts 65/62", "美元/吨"),
+    ("spread_65_61", "Platts 65/61", "美元/吨"),
 )
+COUNT_KEYS = ("added", "backfilled", "same_skipped", "overwritten", "pending_review")
 
 
 class PlattsUploadIn(BaseModel):
@@ -115,6 +116,14 @@ def calculate_mtd(rows: list[dict[str, Any]]) -> dict[str, Decimal]:
     return result
 
 
+def _empty_counts() -> dict[str, int]:
+    return {key: 0 for key in COUNT_KEYS}
+
+
+def _month_key(business_date: str) -> str:
+    return str(business_date)[:7]
+
+
 def _row_with_derived(row: dict[str, Any]) -> dict[str, Any]:
     normalized = {"business_date": str(row["business_date"])}
     for field in RAW_FIELDS:
@@ -174,14 +183,63 @@ def _sql_value(value: Any) -> Any:
     return format(value, "f") if isinstance(value, Decimal) else value
 
 
-def _parsed_preview(parsed: dict[str, Any], rows: list[dict[str, Any]], conflicts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _parsed_preview(
+    parsed: dict[str, Any],
+    rows: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]] | None = None,
+    counts: dict[str, int] | None = None,
+    mtd_checks: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return json_safe_result({
         "rows": [_row_with_derived(row) for row in rows],
-        "mtd": {**parsed.get("mtd", {}), **calculate_mtd(rows)} if rows else parsed.get("mtd", {}),
+        "mtd": parsed.get("mtd", {}),
+        "calculated_mtd": calculate_mtd(rows) if rows else {},
+        "merged_mtd": (mtd_checks or {}).get("merged_month_mtd", {}),
+        "mtd_checks": mtd_checks or {},
         "issues": parsed.get("issues", []),
         "warnings": parsed.get("warnings", []),
         "conflicts": conflicts or [],
+        "counts": counts or _empty_counts(),
     })
+
+
+def _month_rows(conn, month: str) -> list[dict[str, Any]]:
+    cur = conn.cursor()
+    rows = db._exec(
+        cur,
+        "SELECT * FROM platts_index_daily WHERE business_date LIKE ? ORDER BY business_date",
+        (f"{month}-%",),
+    ).fetchall()
+    return [_db_row(row) for row in rows]
+
+
+def _available_months(conn) -> list[str]:
+    cur = conn.cursor()
+    rows = db._exec(cur, "SELECT business_date FROM platts_index_daily").fetchall()
+    return sorted({_month_key(row["business_date"]) for row in rows}, reverse=True)
+
+
+def _merged_month_rows(conn, incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not incoming:
+        return []
+    months = {_month_key(row["business_date"]) for row in incoming}
+    merged: dict[str, dict[str, Any]] = {}
+    for month in months:
+        for row in _month_rows(conn, month):
+            merged[row["business_date"]] = row
+    for row in incoming:
+        merged[row["business_date"]] = _row_with_derived(row)
+    return [merged[key] for key in sorted(merged)]
+
+
+def _mtd_matches(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if not all(field in left for field in RAW_FIELDS) or not all(field in right for field in RAW_FIELDS):
+        return False
+    return all(
+        quantize_display(parse_decimal(left[field], field), field)
+        == quantize_display(parse_decimal(right[field], field), field)
+        for field in RAW_FIELDS
+    )
 
 
 def _insert_batch(
@@ -267,9 +325,11 @@ def _update_daily(conn, row: dict[str, Any], *, batch_id: int, source_hash: str,
     )
 
 
-def _daily_conflicts(conn, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _classify_rows(conn, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
     cur = conn.cursor()
     conflicts = []
+    counts = _empty_counts()
+    month_max_dates: dict[str, str | None] = {}
     for row in rows:
         existing = db._exec(
             cur,
@@ -278,13 +338,52 @@ def _daily_conflicts(conn, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ).fetchone()
         if existing:
             stored = _db_row(existing)
-            if not _same_raw(stored, row):
+            if _same_raw(stored, row):
+                counts["same_skipped"] += 1
+            else:
                 conflicts.append({
                     "business_date": row["business_date"],
                     "existing": stored,
                     "incoming": row,
                 })
-    return conflicts
+            continue
+        month = _month_key(row["business_date"])
+        if month not in month_max_dates:
+            latest = db._exec(
+                cur,
+                "SELECT MAX(business_date) AS latest_date FROM platts_index_daily WHERE business_date LIKE ?",
+                (f"{month}-%",),
+            ).fetchone()
+            month_max_dates[month] = str(latest["latest_date"] or "") or None
+        latest_date = month_max_dates[month]
+        if latest_date and row["business_date"] < latest_date:
+            counts["backfilled"] += 1
+        else:
+            counts["added"] += 1
+    counts["pending_review"] = len(conflicts)
+    return conflicts, counts
+
+
+def _daily_conflicts(conn, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _classify_rows(conn, rows)[0]
+
+
+def _mtd_validation(conn, parsed: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    screenshot_mtd = parsed.get("mtd", {})
+    date_rows_mtd = calculate_mtd(rows) if rows else {}
+    merged_rows = _merged_month_rows(conn, rows)
+    merged_month_mtd = calculate_mtd(merged_rows) if merged_rows else {}
+    date_rows_match = _mtd_matches(screenshot_mtd, date_rows_mtd)
+    merged_month_match = _mtd_matches(screenshot_mtd, merged_month_mtd)
+    months = sorted({_month_key(row["business_date"]) for row in rows})
+    return {
+        "screenshot_mtd": screenshot_mtd,
+        "date_rows_mtd": date_rows_mtd,
+        "merged_month_mtd": merged_month_mtd,
+        "date_rows_match": date_rows_match,
+        "merged_month_match": merged_month_match,
+        "months": months,
+    }
 
 
 def _error_message(error: Exception) -> str:
@@ -293,6 +392,27 @@ def _error_message(error: Exception) -> str:
     if isinstance(error, TimeoutError):
         return "OCR 供应商超时"
     return "OCR 供应商异常"
+
+
+def _stored_counts(stored: dict[str, Any], imported_count: Any = 0, skipped_count: Any = 0) -> dict[str, int]:
+    counts = _empty_counts()
+    raw_counts = stored.get("counts") if isinstance(stored, dict) else None
+    if isinstance(raw_counts, dict):
+        for key in COUNT_KEYS:
+            try:
+                counts[key] = int(raw_counts.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                counts[key] = 0
+    if not any(counts.values()):
+        try:
+            counts["added"] = int(imported_count or 0)
+        except (TypeError, ValueError):
+            counts["added"] = 0
+        try:
+            counts["same_skipped"] = int(skipped_count or 0)
+        except (TypeError, ValueError):
+            counts["same_skipped"] = 0
+    return counts
 
 
 def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | None = None) -> dict[str, Any]:
@@ -315,12 +435,14 @@ def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | Non
         ).fetchone()
         if reused:
             stored = json.loads(reused["normalized_payload"] or "{}")
+            counts = _stored_counts(stored, reused["imported_count"], reused["skipped_count"])
             return {
                 "status": "imported",
                 "reused": True,
                 "batch_id": reused["id"],
                 "imported_count": reused["imported_count"],
                 "skipped_count": reused["skipped_count"],
+                "counts": counts,
                 "preview": stored,
             }
 
@@ -353,22 +475,40 @@ def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | Non
                 user=user,
             )
             token = _batch_token(conn, batch_id)
-        return {
-            "status": "failed",
-            "reused": False,
-            "batch_id": batch_id,
-            "draft_token": token,
-            "issues": [{"code": "provider_error", "message": _error_message(exc)}],
-        }
+            return {
+                "status": "failed",
+                "reused": False,
+                "batch_id": batch_id,
+                "draft_token": token,
+                "counts": _empty_counts(),
+                "issues": [{"code": "provider_error", "message": _error_message(exc)}],
+            }
 
     parsed = parse_table_payload(vendor_payload)
     rows = [_row_with_derived(row) for row in parsed.get("rows", [])]
-    preview = _parsed_preview(parsed, rows)
     with db.connect() as conn:
-        conflicts = _daily_conflicts(conn, rows)
-        if conflicts:
-            preview["conflicts"] = json_safe_result(conflicts)
-        requires_review = bool(parsed.get("issues") or parsed.get("warnings") or conflicts)
+        conflicts, counts = _classify_rows(conn, rows)
+        mtd_checks = _mtd_validation(conn, parsed, rows)
+        effective_issues = list(parsed.get("issues") or [])
+        if mtd_checks["merged_month_match"]:
+            effective_issues = [issue for issue in effective_issues if issue.get("code") != "mtd_mismatch"]
+        elif (
+            rows
+            and len(parsed.get("mtd", {})) == len(RAW_FIELDS)
+            and not mtd_checks["date_rows_match"]
+            and not any(issue.get("code") == "merged_mtd_mismatch" for issue in effective_issues)
+        ):
+            effective_issues.append({
+                "code": "merged_mtd_mismatch",
+                "message": "截图 MTD 与合并后的月度有效日期平均值均不一致",
+            })
+        effective_parsed = {**parsed, "issues": effective_issues}
+        requires_review = bool(effective_issues or parsed.get("warnings") or conflicts)
+        if requires_review:
+            counts["pending_review"] = len(conflicts) or max(1, len(rows))
+        else:
+            counts["pending_review"] = 0
+        preview = _parsed_preview(effective_parsed, rows, conflicts, counts, mtd_checks)
         status = "review_required" if requires_review else "imported"
         batch_id = _insert_batch(
             conn,
@@ -378,12 +518,10 @@ def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | Non
             request_id=parsed.get("request_id"),
             normalized_payload=preview,
             detected_count=len(rows),
-            error_summary=_json_text({"issues": parsed.get("issues", []), "warnings": parsed.get("warnings", []), "conflicts": conflicts}) if requires_review else None,
+            error_summary=_json_text({"issues": effective_issues, "warnings": parsed.get("warnings", []), "conflicts": conflicts}) if requires_review else None,
             user=user,
         )
         if not requires_review:
-            imported_count = 0
-            skipped_count = 0
             cur = conn.cursor()
             for row in rows:
                 existing = db._exec(
@@ -392,15 +530,19 @@ def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | Non
                     (row["business_date"],),
                 ).fetchone()
                 if existing:
-                    skipped_count += 1
                     continue
                 _insert_daily(conn, row, batch_id=batch_id, source_hash=source_hash, user=user)
-                imported_count += 1
+            imported_count = counts["added"] + counts["backfilled"]
+            skipped_count = counts["same_skipped"]
+            preview["counts"] = counts
             db._exec(
                 cur,
-                "UPDATE platts_index_import_batches SET imported_count = ?, skipped_count = ? WHERE id = ?",
-                (imported_count, skipped_count, batch_id),
+                "UPDATE platts_index_import_batches SET imported_count = ?, skipped_count = ?, normalized_payload = ? WHERE id = ?",
+                (imported_count, skipped_count, _json_text(preview), batch_id),
             )
+        else:
+            imported_count = 0
+            skipped_count = counts["same_skipped"]
         token = _batch_token(conn, batch_id)
     result = {
         "status": status,
@@ -408,8 +550,9 @@ def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | Non
         "batch_id": batch_id,
         "draft_token": token,
         "preview": preview,
-        "imported_count": 0 if requires_review else len(rows),
-        "skipped_count": 0,
+        "counts": counts,
+        "imported_count": imported_count,
+        "skipped_count": skipped_count,
     }
     return json_safe_result(result)
 
@@ -429,10 +572,10 @@ def confirm_platts_import(draft_token: str, rows: list[dict[str, Any]], *, user:
             raise ValueError("复核草稿不存在或已过期")
         if batch["status"] != "review_required":
             raise ValueError("当前草稿不是待复核状态")
-        conflicts = _daily_conflicts(conn, normalized)
-        imported_count = 0
-        skipped_count = 0
-        revision_count = 0
+        _, classified = _classify_rows(conn, normalized)
+        counts = _empty_counts()
+        counts["added"] = classified["added"]
+        counts["backfilled"] = classified["backfilled"]
         for row in normalized:
             existing = db._exec(
                 cur,
@@ -447,11 +590,10 @@ def confirm_platts_import(draft_token: str, rows: list[dict[str, Any]], *, user:
                     source_hash=batch["source_hash"],
                     user=user,
                 )
-                imported_count += 1
                 continue
             previous = _db_row(existing)
             if _same_raw(previous, row):
-                skipped_count += 1
+                counts["same_skipped"] += 1
                 continue
             db._exec(
                 cur,
@@ -476,25 +618,37 @@ def confirm_platts_import(draft_token: str, rows: list[dict[str, Any]], *, user:
                 source_hash=batch["source_hash"],
                 user=user,
             )
-            imported_count += 1
-            revision_count += 1
+            counts["overwritten"] += 1
+        counts["pending_review"] = 0
+        imported_count = counts["added"] + counts["backfilled"] + counts["overwritten"]
+        skipped_count = counts["same_skipped"]
+        stored_preview = json.loads(batch["normalized_payload"] or "{}")
+        stored_preview["counts"] = counts
+        stored_preview["review_status"] = "confirmed"
         db._exec(
             cur,
             """
             UPDATE platts_index_import_batches
-            SET status = 'imported', imported_count = ?, skipped_count = ?,
+            SET status = 'imported', imported_count = ?, skipped_count = ?, normalized_payload = ?,
                 error_summary = NULL, confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (imported_count, skipped_count, _user_id(user), batch["id"]),
+            (imported_count, skipped_count, _json_text(stored_preview), _user_id(user), batch["id"]),
         )
+        months = sorted({_month_key(row["business_date"]) for row in normalized})
+        monthly_mtd = {
+            month: calculate_mtd(_month_rows(conn, month))
+            for month in months
+        }
     return json_safe_result({
         "status": "imported",
         "batch_id": batch["id"],
+        "counts": counts,
         "imported_count": imported_count,
         "skipped_count": skipped_count,
-        "revision_count": revision_count,
-        "mtd": calculate_mtd(normalized),
+        "revision_count": counts["overwritten"],
+        "mtd": monthly_mtd[months[0]] if len(months) == 1 else {},
+        "monthly_mtd": monthly_mtd,
     })
 
 
@@ -573,10 +727,6 @@ def _summary(month: str) -> dict[str, Any]:
             "SELECT * FROM platts_index_daily WHERE business_date LIKE ? ORDER BY business_date",
             (f"{month}-%",),
         ).fetchall()
-        latest_date_row = db._exec(
-            cur,
-            "SELECT MAX(business_date) AS latest_date FROM platts_index_daily",
-        ).fetchone()
         last_success = db._exec(
             cur,
             """
@@ -587,6 +737,7 @@ def _summary(month: str) -> dict[str, Any]:
             LIMIT 1
             """,
         ).fetchone()
+        available_months = _available_months(conn)
     normalized = [_db_row(row) for row in rows]
     mtd = calculate_mtd(normalized)
     series = {}
@@ -606,7 +757,8 @@ def _summary(month: str) -> dict[str, Any]:
         }
     return {
         "month": month,
-        "latest_month": str(latest_date_row["latest_date"] or "")[:7] or None,
+        "latest_month": available_months[0] if available_months else None,
+        "available_months": available_months,
         "last_success_at": last_success["last_success_at"] if last_success else None,
         "count": len(normalized),
         "mtd": mtd,
@@ -616,6 +768,8 @@ def _summary(month: str) -> dict[str, Any]:
 
 
 def _serialize_batch(row: Any) -> dict[str, Any]:
+    stored = json.loads(row["normalized_payload"] or "{}")
+    counts = _stored_counts(stored, row["imported_count"], row["skipped_count"])
     return {
         "id": row["id"],
         "draft_token": row["draft_token"],
@@ -626,6 +780,7 @@ def _serialize_batch(row: Any) -> dict[str, Any]:
         "detected_count": row["detected_count"],
         "imported_count": row["imported_count"],
         "skipped_count": row["skipped_count"],
+        "counts": counts,
         "error_summary": row["error_summary"],
         "created_at": row["created_at"],
         "confirmed_at": row["confirmed_at"],
@@ -660,6 +815,14 @@ def get_platts_summary(month: Optional[str] = None, user=Depends(_current_user))
     require_permission(user, PLATTS_RESOURCE, "view")
     selected_month = month or date.today().strftime("%Y-%m")
     return _summary(_check_month(selected_month))
+
+
+@router.get("/platts-index/months")
+def get_platts_months(user=Depends(_current_user)):
+    require_permission(user, PLATTS_RESOURCE, "view")
+    with db.connect() as conn:
+        months = _available_months(conn)
+    return {"months": months, "latest_month": months[0] if months else None}
 
 
 @router.get("/platts-index/daily")

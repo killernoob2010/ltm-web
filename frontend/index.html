@@ -80,6 +80,7 @@
             <input id="plattsIndexUploadFile" type="file" accept="image/png,image/jpeg,.jpg,.jpeg" hidden>
             <span class="toolbar-status">来源：微信截图表格 OCR｜正常自动入库，异常人工复核</span>
             <span id="plattsIndexImportStatus" class="toolbar-status">数据状态：待加载</span>
+            <span id="plattsIndexImportCounts" class="toolbar-status">本次结果：--</span>
           </div>
 
           <section id="plattsIndexReview" class="panel hidden">
@@ -93,11 +94,11 @@
                 <thead>
                   <tr>
                     <th>日期</th>
-                    <th>LP</th>
-                    <th>61%</th>
-                    <th>58%</th>
-                    <th>65%</th>
-                    <th>过渡价差</th>
+                    <th>Platts LP</th>
+                    <th>Platts 61%</th>
+                    <th>Platts 58%</th>
+                    <th>Platts 65%</th>
+                    <th>Platts 61/62</th>
                   </tr>
                 </thead>
                 <tbody id="plattsIndexReviewTable"></tbody>
@@ -113,9 +114,15 @@
           <section class="panel platts-index-filter-panel">
             <div class="filter-grid">
               <label>
-                选择月份
-                <input id="plattsIndexMonth" type="month">
+                已有数据月份（最新优先）
+                <select id="plattsIndexMonth" aria-label="选择已有数据月份"></select>
               </label>
+              <div class="platts-month-nav" aria-label="月份切换">
+                <button id="plattsIndexPrevMonth" type="button" class="secondary">上一月</button>
+                <button id="plattsIndexNextMonth" type="button" class="secondary">下一月</button>
+                <strong id="plattsIndexMonthLabel">--年--月</strong>
+              </div>
+              <span id="plattsIndexMonthListStatus" class="toolbar-status">已有月份：--</span>
               <span id="plattsIndexMtdStatus" class="toolbar-status">MTD：--</span>
             </div>
           </section>
@@ -132,12 +139,12 @@
                 <thead>
                   <tr>
                     <th>日期</th>
-                    <th>LP</th>
-                    <th>61%</th>
-                    <th>58%</th>
-                    <th>65%</th>
-                    <th>65/62</th>
-                    <th>65/61</th>
+                    <th>Platts LP</th>
+                    <th>Platts 61%</th>
+                    <th>Platts 58%</th>
+                    <th>Platts 65%</th>
+                    <th>Platts 65/62</th>
+                    <th>Platts 65/61</th>
                   </tr>
                 </thead>
                 <tbody id="plattsIndexDailyTable"></tbody>
@@ -1383,8 +1390,8 @@
     <script src="/static/trading_overview_state.js?v=20260722a"></script>
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/platts_index_monitor.js?v=platts-index-20260807a"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=963017d"></script>
+    <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v11"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=v11"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

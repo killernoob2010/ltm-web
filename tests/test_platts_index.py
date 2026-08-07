@@ -145,6 +145,19 @@ def payload_for_month(month):
     return payload
 
 
+def partial_payload(date_value="2026-08-04"):
+    payload = sample_payload()
+    cells = []
+    for cell in payload["cells"]:
+        if cell["row"] in {0, 2, 6}:
+            cells.append(dict(cell))
+    for cell in cells:
+        if cell["row"] == 2 and cell["col"] == 0:
+            cell["text"] = date_value
+    payload["cells"] = cells
+    return payload
+
+
 def test_parser_locates_target_headers_ignores_unrelated_columns_and_blank_future_rows():
     result = parse_table_payload(sample_payload())
 
@@ -302,6 +315,7 @@ def test_month_selection_is_exact_and_backfill_stays_in_its_month(tmp_path, monk
     assert empty["count"] == 0
     assert empty["latest_month"] == "2026-09"
     assert empty["mtd"] == {}
+    assert empty["available_months"] == ["2026-09", "2026-08"]
 
     with db.connect() as conn:
         dates = [
@@ -320,6 +334,136 @@ def test_month_selection_is_exact_and_backfill_stays_in_its_month(tmp_path, monk
         "2026-09-05",
         "2026-09-06",
     ]
+
+
+def test_months_are_isolated_by_full_year_and_return_latest_first(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+
+    process_platts_import(
+        PNG_BYTES,
+        user=user,
+        provider=MockTableOCRProvider(payload_for_month("2026-08")),
+    )
+    process_platts_import(
+        PNG_BYTES + b"2027",
+        user=user,
+        provider=MockTableOCRProvider(payload_for_month("2027-08")),
+    )
+
+    assert _summary("2026-08")["available_months"] == ["2027-08", "2026-08"]
+    assert _summary("2026-08")["count"] == 4
+    assert _summary("2027-08")["count"] == 4
+    assert _summary("2026-08")["rows"][0]["business_date"] == "2026-08-03"
+    assert _summary("2027-08")["rows"][0]["business_date"] == "2027-08-03"
+
+
+def test_incremental_screenshot_can_validate_against_merged_month_mtd(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+    first = process_platts_import(
+        PNG_BYTES,
+        user=user,
+        provider=MockTableOCRProvider(sample_payload()),
+    )
+    partial = process_platts_import(
+        PNG_BYTES + b"partial",
+        user=user,
+        provider=MockTableOCRProvider(partial_payload()),
+    )
+
+    assert first["status"] == "imported"
+    assert partial["status"] == "imported"
+    assert partial["counts"] == {
+        "added": 0,
+        "backfilled": 0,
+        "same_skipped": 1,
+        "overwritten": 0,
+        "pending_review": 0,
+    }
+
+
+def test_import_counts_distinguish_added_backfilled_skipped_and_overwritten(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+    first = process_platts_import(
+        PNG_BYTES,
+        user=user,
+        provider=MockTableOCRProvider(sample_payload()),
+    )
+    assert first["counts"] == {
+        "added": 4,
+        "backfilled": 0,
+        "same_skipped": 0,
+        "overwritten": 0,
+        "pending_review": 0,
+    }
+
+    backfill_payload = sample_payload()
+    for cell in backfill_payload["cells"]:
+        if cell["row"] == 4 and cell["col"] == 0:
+            cell["text"] = "2026-08-02"
+    backfill = process_platts_import(
+        PNG_BYTES + b"backfill",
+        user=user,
+        provider=MockTableOCRProvider(backfill_payload),
+    )
+    assert backfill["counts"] == {
+        "added": 0,
+        "backfilled": 1,
+        "same_skipped": 3,
+        "overwritten": 0,
+        "pending_review": 0,
+    }
+
+    changed = sample_payload()
+    for cell in changed["cells"]:
+        if cell["row"] == 1 and cell["col"] == 5:
+            cell["text"] = "111.10"
+        if cell["row"] == 6 and cell["col"] == 5:
+            cell["text"] = "111.18"
+    conflict = process_platts_import(
+        PNG_BYTES + b"counts-conflict",
+        user=user,
+        provider=MockTableOCRProvider(changed),
+    )
+    assert conflict["status"] == "review_required"
+    assert conflict["counts"] == {
+        "added": 0,
+        "backfilled": 0,
+        "same_skipped": 3,
+        "overwritten": 0,
+        "pending_review": 1,
+    }
+
+    confirmed = confirm_platts_import(
+        conflict["draft_token"],
+        conflict["preview"]["rows"],
+        user=user,
+        reason="确认修订截图中的 2026-08-03 数值",
+    )
+    assert confirmed["counts"] == {
+        "added": 0,
+        "backfilled": 0,
+        "same_skipped": 3,
+        "overwritten": 1,
+        "pending_review": 0,
+    }
+
+
+def test_summary_series_only_contains_stored_business_dates(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+    process_platts_import(
+        PNG_BYTES + b"sparse",
+        user=user,
+        provider=MockTableOCRProvider(sample_payload()),
+    )
+    with db.connect() as conn:
+        conn.execute("DELETE FROM platts_index_daily WHERE business_date IN ('2026-08-03', '2026-08-05')")
+        conn.commit()
+    points = _summary("2026-08")["series"]["platts_61"]["points"]
+    assert [point["date"] for point in points] == ["2026-08-04", "2026-08-06"]
 
 
 def test_provider_error_and_review_never_write_daily_data(tmp_path, monkeypatch):
