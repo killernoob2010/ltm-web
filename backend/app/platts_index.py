@@ -435,13 +435,32 @@ def process_platts_import(image_bytes: bytes, *, user: dict, provider: Any | Non
         ).fetchone()
         if reused:
             stored = json.loads(reused["normalized_payload"] or "{}")
-            counts = _stored_counts(stored, reused["imported_count"], reused["skipped_count"])
+            stored_rows = [
+                _row_with_derived(row)
+                for row in stored.get("rows", [])
+                if isinstance(row, dict) and row.get("business_date")
+            ]
+            if stored_rows:
+                with db.connect() as conn:
+                    conflicts, counts = _classify_rows(conn, stored_rows)
+                counts["pending_review"] = len(conflicts)
+                stored = {
+                    **stored,
+                    "conflicts": conflicts,
+                    "counts": counts,
+                }
+                imported_count = 0
+                skipped_count = counts["same_skipped"]
+            else:
+                counts = _stored_counts(stored, reused["imported_count"], reused["skipped_count"])
+                imported_count = reused["imported_count"]
+                skipped_count = reused["skipped_count"]
             return {
                 "status": "imported",
                 "reused": True,
                 "batch_id": reused["id"],
-                "imported_count": reused["imported_count"],
-                "skipped_count": reused["skipped_count"],
+                "imported_count": imported_count,
+                "skipped_count": skipped_count,
                 "counts": counts,
                 "preview": stored,
             }

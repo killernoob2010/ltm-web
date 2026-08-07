@@ -367,7 +367,9 @@
       } else if (result.status === "imported") {
         hideReview();
         renderImportCounts(result.counts);
-        setStatus(`数据状态：本次处理完成，入库 ${result.imported_count || 0} 行`);
+        setStatus(result.reused
+          ? "数据状态：重复图片已复用，未重复入库"
+          : `数据状态：本次处理完成，入库 ${result.imported_count || 0} 行`);
         await loadSummary();
       } else {
         renderImportCounts(result.counts);
