@@ -84,12 +84,20 @@ HEADER_ALIASES = {
 
 
 class OCRProviderError(RuntimeError):
-    """A vendor failure that is safe to show as a generic import error."""
+    """A vendor failure with a secret-safe, actionable error summary."""
 
-    def __init__(self, message: str, *, retryable: bool = False, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        vendor_code: str | None = None,
+    ):
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
+        self.vendor_code = vendor_code
 
 
 class OCRProviderUnavailable(OCRProviderError):
@@ -451,6 +459,34 @@ class MockTableOCRProvider:
         return self.payload(image_bytes) if callable(self.payload) else self.payload
 
 
+def _vendor_error_details(payload: Any) -> tuple[str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    code = payload.get("Code") or payload.get("code") or payload.get("ErrorCode")
+    message = payload.get("Message") or payload.get("message") or payload.get("ErrorMessage")
+    return (
+        str(code).strip()[:120] if code else None,
+        str(message).strip()[:240] if message else None,
+    )
+
+
+def _safe_vendor_error_message(
+    fallback: str,
+    payload: Any,
+    *,
+    access_key_id: str = "",
+    access_key_secret: str = "",
+) -> tuple[str, str | None]:
+    code, message = _vendor_error_details(payload)
+    if message:
+        message = re.sub(r"[\r\n]+", " ", message)
+        for secret in (access_key_id, access_key_secret):
+            if secret:
+                message = message.replace(secret, "[已隐藏]")
+    detail = "：".join(part for part in (code, message) if part)
+    return (f"{fallback}（{detail}）" if detail else fallback), code
+
+
 class AliyunRecognizeTableOcrProvider:
     """Small HTTP adapter for Aliyun RecognizeTableOcr.
 
@@ -484,7 +520,6 @@ class AliyunRecognizeTableOcrProvider:
             "NeedRotate": "true",
             "LineLess": "false",
             "SkipDetection": "false",
-            "IsHandWriting": "false",
         }
         canonical = "&".join(f"{self._encode(key)}={self._encode(params[key])}" for key in sorted(params))
         string_to_sign = "POST&%2F&" + self._encode(canonical)
@@ -513,10 +548,37 @@ class AliyunRecognizeTableOcrProvider:
             raise OCRProviderError("OCR 供应商超时", retryable=True) from exc
         except requests.RequestException as exc:
             raise OCRProviderError("OCR 供应商连接失败", retryable=True) from exc
+        response_payload = None
+        try:
+            response_payload = response.json()
+        except (AttributeError, TypeError, ValueError):
+            pass
         if response.status_code >= 500:
-            raise OCRProviderError("OCR 供应商暂时不可用", retryable=True, status_code=response.status_code)
+            message, vendor_code = _safe_vendor_error_message(
+                "OCR 供应商暂时不可用",
+                response_payload,
+                access_key_id=self.access_key_id,
+                access_key_secret=self.access_key_secret,
+            )
+            raise OCRProviderError(
+                message,
+                retryable=True,
+                status_code=response.status_code,
+                vendor_code=vendor_code,
+            )
         if response.status_code >= 400:
-            raise OCRProviderError("OCR 供应商请求失败", retryable=False, status_code=response.status_code)
+            message, vendor_code = _safe_vendor_error_message(
+                "OCR 供应商请求失败",
+                response_payload,
+                access_key_id=self.access_key_id,
+                access_key_secret=self.access_key_secret,
+            )
+            raise OCRProviderError(
+                message,
+                retryable=False,
+                status_code=response.status_code,
+                vendor_code=vendor_code,
+            )
         content_length = (getattr(response, "headers", {}) or {}).get("Content-Length")
         try:
             if content_length and int(content_length) > MAX_OCR_RESPONSE_BYTES:
@@ -526,12 +588,22 @@ class AliyunRecognizeTableOcrProvider:
         response_content = getattr(response, "content", None)
         if response_content is not None and len(response_content) > MAX_OCR_RESPONSE_BYTES:
             raise OCRProviderError("OCR 供应商响应过大", retryable=False)
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise OCRProviderError("OCR 供应商返回无法解析", retryable=False) from exc
+        if response_payload is None:
+            try:
+                response_payload = response.json()
+            except ValueError as exc:
+                raise OCRProviderError("OCR 供应商返回无法解析", retryable=False) from exc
+        payload = response_payload
+        if not isinstance(payload, dict):
+            raise OCRProviderError("OCR 供应商返回无法解析", retryable=False)
         if payload.get("Code"):
-            raise OCRProviderError("OCR 供应商拒绝请求", retryable=False)
+            message, vendor_code = _safe_vendor_error_message(
+                "OCR 供应商拒绝请求",
+                payload,
+                access_key_id=self.access_key_id,
+                access_key_secret=self.access_key_secret,
+            )
+            raise OCRProviderError(message, retryable=False, vendor_code=vendor_code)
         return payload
 
 

@@ -31,6 +31,14 @@ test("Platts page exposes one-click upload, review state, month selection, six c
   assert.match(monitorJs, /touchstart|click/);
 });
 
+test("Platts values use one display unit and preserve an explicitly selected empty month", () => {
+  assert.doesNotMatch(monitorJs, /美元\/干吨/);
+  assert.equal((monitorJs.match(/unit: "美元\/吨"/g) || []).length, 6);
+  assert.match(monitorJs, /暂无已入库数据/);
+  assert.match(monitorJs, /最近有数据月份/);
+  assert.doesNotMatch(monitorJs, /if \(!summary\.count && summary\.latest_month/);
+});
+
 test("Platts upload controls require sensitive permission and disable duplicate submission", () => {
   assert.match(appJs, /plattsIndexUploadBtn/);
   assert.match(appJs, /platts_index_monitor/);
