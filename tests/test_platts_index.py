@@ -10,6 +10,7 @@ from app import db, permissions
 from app.platts_index import (
     SERIES,
     _summary,
+    _timestamp_to_seconds,
     calculate_derived,
     calculate_mtd,
     confirm_platts_import,
@@ -175,6 +176,11 @@ def test_parser_locates_target_headers_ignores_unrelated_columns_and_blank_futur
         "platts_65": Decimal("111.15"),
         "spread_61_62": Decimal("2.75"),
     }
+
+
+def test_platts_statistic_timestamps_are_serialized_to_seconds():
+    assert _timestamp_to_seconds("2026-08-07T08:59:09.592793+00") == "2026-08-07T08:59:09+00"
+    assert _timestamp_to_seconds("2026-08-07 08:59:09.123456") == "2026-08-07 08:59:09"
 
 
 def test_parser_handles_vendor_prefixed_columns_and_blank_date_header():

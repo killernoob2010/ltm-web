@@ -79,6 +79,16 @@
             <button id="plattsIndexUploadBtn" type="button">普氏指数监控｜一键上传微信截图 OCR</button>
             <input id="plattsIndexUploadFile" type="file" accept="image/png,image/jpeg,.jpg,.jpeg" hidden>
             <span class="toolbar-status">来源：微信截图表格 OCR｜正常自动入库，异常人工复核</span>
+            <div class="platts-month-selectors" aria-label="选择统计年月">
+              <label>
+                年份
+                <select id="plattsIndexYear" aria-label="选择年份"></select>
+              </label>
+              <label>
+                月份
+                <select id="plattsIndexMonth" aria-label="选择月份"></select>
+              </label>
+            </div>
             <span id="plattsIndexImportStatus" class="toolbar-status">数据状态：待加载</span>
             <span id="plattsIndexImportCounts" class="toolbar-status">本次结果：--</span>
           </div>
@@ -109,22 +119,6 @@
               <textarea id="plattsIndexReviewReason" rows="2" placeholder="请说明确认或修订原因"></textarea>
             </label>
             <button id="plattsIndexConfirmBtn" type="button">确认复核并入库</button>
-          </section>
-
-          <section class="panel platts-index-filter-panel">
-            <div class="filter-grid">
-              <label>
-                已有数据月份（最新优先）
-                <select id="plattsIndexMonth" aria-label="选择已有数据月份"></select>
-              </label>
-              <div class="platts-month-nav" aria-label="月份切换">
-                <button id="plattsIndexPrevMonth" type="button" class="secondary">上一月</button>
-                <button id="plattsIndexNextMonth" type="button" class="secondary">下一月</button>
-                <strong id="plattsIndexMonthLabel">--年--月</strong>
-              </div>
-              <span id="plattsIndexMonthListStatus" class="toolbar-status">已有月份：--</span>
-              <span id="plattsIndexMtdStatus" class="toolbar-status">MTD：--</span>
-            </div>
           </section>
 
           <div id="plattsIndexCharts" class="platts-chart-grid"></div>
@@ -1390,8 +1384,8 @@
     <script src="/static/trading_overview_state.js?v=20260722a"></script>
     <script src="/static/trading_management.js?v=20260722c"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
-    <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v12"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=v12"></script>
+    <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v13"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=v13"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>
