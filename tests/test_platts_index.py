@@ -510,6 +510,14 @@ def test_hash_reuse_and_same_day_revision_are_explicit(tmp_path, monkeypatch):
     assert first["status"] == "imported"
     assert second["status"] == "imported"
     assert second["reused"] is True
+    assert second["counts"] == {
+        "added": 0,
+        "backfilled": 0,
+        "same_skipped": 4,
+        "overwritten": 0,
+        "pending_review": 0,
+    }
+    assert second["imported_count"] == 0
     assert provider.calls == 1
 
     changed = sample_payload()
