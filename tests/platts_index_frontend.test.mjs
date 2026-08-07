@@ -19,8 +19,10 @@ test("Platts module is placed after realtime information summary and has a dedic
   assert.match(appJs, /canModuleSensitive\("platts_index_monitor"\)/);
 });
 
-test("Platts stylesheet changes carry a dedicated browser cache version", () => {
+test("Platts frontend assets carry one dedicated browser cache version", () => {
   assert.match(html, /styles\.css\?[^\"]*platts=styles-v14/);
+  assert.match(html, /platts_index_monitor\.js\?v=platts-index-20260807-v14/);
+  assert.match(html, /app\.js\?[^\"]*platts=v14/);
 });
 
 test("Platts page exposes one-click upload, review state, year/month selection, six charts and a data table", () => {
