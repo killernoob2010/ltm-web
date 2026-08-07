@@ -947,13 +947,23 @@ dialog::backdrop {
   margin-top: 6px;
 }
 
-.platts-index-filter-panel {
-  margin-bottom: 16px;
+.platts-month-selectors {
+  display: flex;
+  align-items: end;
+  gap: 8px;
 }
 
-.platts-index-filter-panel .filter-grid {
-  grid-template-columns: minmax(180px, 240px) auto minmax(220px, 1fr) minmax(220px, 1fr);
-  align-items: end;
+.platts-month-selectors label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  white-space: nowrap;
+}
+
+.platts-month-selectors select {
+  width: auto;
+  min-width: 84px;
 }
 
 .platts-chart-grid {
@@ -1002,18 +1012,6 @@ dialog::backdrop {
   height: 220px;
 }
 
-.platts-month-nav {
-  display: flex;
-  align-items: end;
-  gap: 8px;
-  min-height: 40px;
-}
-
-.platts-month-nav strong {
-  align-self: center;
-  white-space: nowrap;
-}
-
 .platts-chart-canvas {
   display: block;
   width: 100%;
@@ -1059,10 +1057,6 @@ dialog::backdrop {
 
 @media (max-width: 680px) {
   .platts-chart-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .platts-index-filter-panel .filter-grid {
     grid-template-columns: 1fr;
   }
 }

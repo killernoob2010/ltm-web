@@ -35,6 +35,9 @@ PLATTS_RESOURCE = "platts_index.data"
 IMPORT_RESOURCE = "platts_index.imports"
 MANAGE_RESOURCE = "platts_index.manage"
 MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
+TIMESTAMP_SECONDS_PATTERN = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})(?:\.\d+)?(.*)$"
+)
 
 SERIES = (
     ("platts_lp", "Platts LP", "美元/吨"),
@@ -45,6 +48,14 @@ SERIES = (
     ("spread_65_61", "Platts 65/61", "美元/吨"),
 )
 COUNT_KEYS = ("added", "backfilled", "same_skipped", "overwritten", "pending_review")
+
+
+def _timestamp_to_seconds(value: Any) -> Any:
+    if value is None:
+        return None
+    text = value.isoformat() if hasattr(value, "isoformat") else str(value)
+    match = TIMESTAMP_SECONDS_PATTERN.fullmatch(text.strip())
+    return f"{match.group(1)}{match.group(2)}" if match else value
 
 
 class PlattsUploadIn(BaseModel):
@@ -778,7 +789,7 @@ def _summary(month: str) -> dict[str, Any]:
         "month": month,
         "latest_month": available_months[0] if available_months else None,
         "available_months": available_months,
-        "last_success_at": last_success["last_success_at"] if last_success else None,
+        "last_success_at": _timestamp_to_seconds(last_success["last_success_at"]) if last_success else None,
         "count": len(normalized),
         "mtd": mtd,
         "series": series,
@@ -801,8 +812,8 @@ def _serialize_batch(row: Any) -> dict[str, Any]:
         "skipped_count": row["skipped_count"],
         "counts": counts,
         "error_summary": row["error_summary"],
-        "created_at": row["created_at"],
-        "confirmed_at": row["confirmed_at"],
+        "created_at": _timestamp_to_seconds(row["created_at"]),
+        "confirmed_at": _timestamp_to_seconds(row["confirmed_at"]),
     }
 
 

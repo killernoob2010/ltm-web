@@ -14,11 +14,22 @@
   let draftToken = "";
   let draftRows = [];
   let bound = false;
-  let selectedMonth = "";
-  let availableMonths = [];
+
+  function monthKeyForDate(value = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+  }
 
   function currentMonth() {
-    return new Date().toISOString().slice(0, 7);
+    return monthKeyForDate(new Date());
+  }
+
+  function formatTimestampToSecond(value) {
+    if (!value) return "";
+    const text = String(value).trim();
+    const match = /^([0-9]{4}-[0-9]{2}-[0-9]{2})[ T]([0-9]{2}:[0-9]{2}:[0-9]{2})(?:[.][0-9]+)?(.*)$/.exec(text);
+    return match ? match[1] + " " + match[2] + match[3] : text;
   }
 
   function formatValue(value, series) {
@@ -36,8 +47,9 @@
   }
 
   function getMonth() {
-    const select = document.querySelector("#plattsIndexMonth");
-    return select?.value || selectedMonth || currentMonth();
+    const year = document.querySelector("#plattsIndexYear")?.value;
+    const month = document.querySelector("#plattsIndexMonth")?.value;
+    return year && month ? year + "-" + month : currentMonth();
   }
 
   function formatMonthLabel(month) {
@@ -53,46 +65,33 @@
   }
 
   function renderMonthOptions(months, preferredMonth) {
-    const select = document.querySelector("#plattsIndexMonth");
-    const previous = preferredMonth || selectedMonth || select?.value || "";
-    availableMonths = Array.isArray(months) ? months : [];
-    if (!select) return;
-    select.replaceChildren();
-    if (!availableMonths.length) {
-      const option = document.createElement("option");
-      option.value = previous || currentMonth();
-      option.textContent = "暂无已入库月份";
-      select.appendChild(option);
-      select.disabled = true;
-      selectedMonth = option.value;
-    } else {
-      for (const month of availableMonths) {
-        const option = document.createElement("option");
-        option.value = month;
-        option.textContent = formatMonthLabel(month);
-        select.appendChild(option);
-      }
-      select.disabled = false;
-      selectedMonth = availableMonths.includes(previous) ? previous : availableMonths[0];
-      select.value = selectedMonth;
+    const yearSelect = document.querySelector("#plattsIndexYear");
+    const monthSelect = document.querySelector("#plattsIndexMonth");
+    if (!yearSelect || !monthSelect) return;
+    const candidate = /^[0-9]{4}-(?:0[1-9]|1[0-2])$/.test(String(preferredMonth || ""))
+      ? preferredMonth
+      : currentMonth();
+    const years = new Set([candidate.slice(0, 4), currentMonth().slice(0, 4)]);
+    for (const month of Array.isArray(months) ? months : []) {
+      if (/^[0-9]{4}-(?:0[1-9]|1[0-2])$/.test(String(month))) years.add(String(month).slice(0, 4));
     }
-    const label = document.querySelector("#plattsIndexMonthLabel");
-    if (label) label.textContent = formatMonthLabel(selectedMonth);
-    const listStatus = document.querySelector("#plattsIndexMonthListStatus");
-    if (listStatus) listStatus.textContent = availableMonths.length
-      ? `最近有数据月份：${availableMonths.map(formatMonthLabel).join("、")}`
-      : "最近有数据月份：暂无";
-    updateMonthButtons();
-  }
-
-  function updateMonthButtons() {
-    const index = availableMonths.indexOf(selectedMonth);
-    const previous = document.querySelector("#plattsIndexPrevMonth");
-    const next = document.querySelector("#plattsIndexNextMonth");
-    if (previous) previous.title = "上一月";
-    if (next) next.title = "下一月";
-    if (previous) previous.disabled = index < 0 || index >= availableMonths.length - 1;
-    if (next) next.disabled = index <= 0;
+    yearSelect.replaceChildren();
+    [...years].sort((left, right) => right.localeCompare(left)).forEach((year) => {
+      const option = document.createElement("option");
+      option.value = year;
+      option.textContent = year;
+      yearSelect.appendChild(option);
+    });
+    monthSelect.replaceChildren();
+    for (let month = 1; month <= 12; month += 1) {
+      const value = String(month).padStart(2, "0");
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value + "月";
+      monthSelect.appendChild(option);
+    }
+    yearSelect.value = candidate.slice(0, 4);
+    monthSelect.value = candidate.slice(5);
   }
 
   function renderReview(result) {
@@ -271,7 +270,7 @@
       const meta = document.createElement("div");
       meta.className = "platts-chart-meta";
       const latest = points[points.length - 1];
-      meta.textContent = `最新 ${latest?.date || "--"} ${latest ? formatValue(latest.value, item) : "--"}｜系统 MTD ${formatValue(series.mtd, item)}`;
+      meta.textContent = "最新 " + (latest?.date || "--") + " " + (latest ? formatValue(latest.value, item) : "--") + "｜MTD " + formatValue(series.mtd, item);
       const wrap = document.createElement("div");
       wrap.className = "platts-chart-canvas-wrap";
       const canvas = document.createElement("canvas");
@@ -305,40 +304,17 @@
     }
   }
 
-  async function moveMonth(direction) {
-    const index = availableMonths.indexOf(selectedMonth);
-    const target = availableMonths[index + direction];
-    if (!target) return;
-    selectedMonth = target;
-    const select = document.querySelector("#plattsIndexMonth");
-    if (select) select.value = target;
-    await loadSummary();
-  }
-
   async function loadSummary() {
     if (!runtime.api) return;
     const requestedMonth = getMonth();
     try {
       const summary = await runtime.api(`/api/platts-index/summary?month=${encodeURIComponent(requestedMonth)}`);
       const months = summary.available_months || [];
-      const preferredMonth = selectedMonth || (months.includes(requestedMonth) ? requestedMonth : (summary.latest_month || requestedMonth));
-      const shouldLoadLatest = preferredMonth !== requestedMonth;
-      renderMonthOptions(months, preferredMonth);
-      if (shouldLoadLatest) {
-        await loadSummary();
-        return;
-      }
+      renderMonthOptions(months, requestedMonth);
       renderCharts(summary);
       renderDaily(summary);
-      const mtdStatus = document.querySelector("#plattsIndexMtdStatus");
-      if (mtdStatus) {
-        const mtd = summary.mtd || {};
-        const latestDate = summary.rows?.[summary.rows.length - 1]?.business_date || "--";
-        const values = SERIES.map((series) => `${series.label} ${formatValue(mtd[series.key], series)}`).join("｜");
-        mtdStatus.textContent = `系统 MTD（${formatMonthLabel(summary.month)}，截至 ${latestDate}）：${values}`;
-      }
       if (!document.querySelector("#plattsIndexReview")?.classList.contains("hidden")) return;
-      const lastSuccess = summary.last_success_at ? `｜最近成功 ${summary.last_success_at}` : "";
+      const lastSuccess = summary.last_success_at ? "｜最近成功 " + formatTimestampToSecond(summary.last_success_at) : "";
       setStatus(`数据状态：${formatMonthLabel(summary.month)} 已加载 ${summary.count || 0} 个有效数据日${lastSuccess}`);
     } catch (error) {
       setStatus(`数据状态：${error.message || "读取失败"}`, true);
@@ -424,12 +400,8 @@
       event.target.value = "";
       uploadSelectedFile(file);
     });
-    document.querySelector("#plattsIndexMonth")?.addEventListener("change", (event) => {
-      selectedMonth = event.target.value;
-      loadSummary();
-    });
-    document.querySelector("#plattsIndexPrevMonth")?.addEventListener("click", () => moveMonth(1));
-    document.querySelector("#plattsIndexNextMonth")?.addEventListener("click", () => moveMonth(-1));
+    document.querySelector("#plattsIndexYear")?.addEventListener("change", loadSummary);
+    document.querySelector("#plattsIndexMonth")?.addEventListener("change", loadSummary);
     document.querySelector("#plattsIndexConfirmBtn")?.addEventListener("click", confirmReview);
   }
 
@@ -446,7 +418,7 @@
     await loadSummary();
   }
 
-  const api = { activate, calculateSeries: renderCharts };
+  const api = { activate, calculateSeries: renderCharts, monthKeyForDate, formatTimestampToSecond };
   if (global) global.PlattsIndexMonitor = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
