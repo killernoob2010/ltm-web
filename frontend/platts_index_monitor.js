@@ -2,18 +2,20 @@
   "use strict";
 
   const SERIES = [
-    { key: "platts_lp", label: "LP", unit: "美元/吨", decimals: 4, color: "#176b5d" },
-    { key: "platts_61", label: "61%", unit: "美元/吨", decimals: 2, color: "#2962a9" },
-    { key: "platts_58", label: "58%", unit: "美元/吨", decimals: 2, color: "#b05a2a" },
-    { key: "platts_65", label: "65%", unit: "美元/吨", decimals: 2, color: "#7a4b9c" },
-    { key: "spread_65_62", label: "65/62", unit: "美元/吨", decimals: 2, color: "#a23a52" },
-    { key: "spread_65_61", label: "65/61", unit: "美元/吨", decimals: 2, color: "#4e6b35" },
+    { key: "platts_lp", label: "Platts LP", unit: "美元/吨", decimals: 4, color: "#176b5d" },
+    { key: "platts_61", label: "Platts 61%", unit: "美元/吨", decimals: 2, color: "#2962a9" },
+    { key: "platts_58", label: "Platts 58%", unit: "美元/吨", decimals: 2, color: "#b05a2a" },
+    { key: "platts_65", label: "Platts 65%", unit: "美元/吨", decimals: 2, color: "#7a4b9c" },
+    { key: "spread_65_62", label: "Platts 65/62", unit: "美元/吨", decimals: 2, color: "#a23a52" },
+    { key: "spread_65_61", label: "Platts 65/61", unit: "美元/吨", decimals: 2, color: "#4e6b35" },
   ];
 
   let runtime = { api: null, canSensitive: false };
   let draftToken = "";
   let draftRows = [];
   let bound = false;
+  let selectedMonth = "";
+  let availableMonths = [];
 
   function currentMonth() {
     return new Date().toISOString().slice(0, 7);
@@ -34,8 +36,63 @@
   }
 
   function getMonth() {
-    const input = document.querySelector("#plattsIndexMonth");
-    return input?.value || currentMonth();
+    const select = document.querySelector("#plattsIndexMonth");
+    return select?.value || selectedMonth || currentMonth();
+  }
+
+  function formatMonthLabel(month) {
+    const match = /^(\d{4})-(\d{2})$/.exec(String(month || ""));
+    return match ? `${match[1]}年${match[2]}月` : "--年--月";
+  }
+
+  function renderImportCounts(counts) {
+    const target = document.querySelector("#plattsIndexImportCounts");
+    if (!target) return;
+    const values = counts || {};
+    target.textContent = `本次结果：新增 ${values.added || 0}｜补录 ${values.backfilled || 0}｜相同跳过 ${values.same_skipped || 0}｜覆盖 ${values.overwritten || 0}｜待复核 ${values.pending_review || 0}`;
+  }
+
+  function renderMonthOptions(months, preferredMonth) {
+    const select = document.querySelector("#plattsIndexMonth");
+    const previous = preferredMonth || selectedMonth || select?.value || "";
+    availableMonths = Array.isArray(months) ? months : [];
+    if (!select) return;
+    select.replaceChildren();
+    if (!availableMonths.length) {
+      const option = document.createElement("option");
+      option.value = previous || currentMonth();
+      option.textContent = "暂无已入库月份";
+      select.appendChild(option);
+      select.disabled = true;
+      selectedMonth = option.value;
+    } else {
+      for (const month of availableMonths) {
+        const option = document.createElement("option");
+        option.value = month;
+        option.textContent = formatMonthLabel(month);
+        select.appendChild(option);
+      }
+      select.disabled = false;
+      selectedMonth = availableMonths.includes(previous) ? previous : availableMonths[0];
+      select.value = selectedMonth;
+    }
+    const label = document.querySelector("#plattsIndexMonthLabel");
+    if (label) label.textContent = formatMonthLabel(selectedMonth);
+    const listStatus = document.querySelector("#plattsIndexMonthListStatus");
+    if (listStatus) listStatus.textContent = availableMonths.length
+      ? `最近有数据月份：${availableMonths.map(formatMonthLabel).join("、")}`
+      : "最近有数据月份：暂无";
+    updateMonthButtons();
+  }
+
+  function updateMonthButtons() {
+    const index = availableMonths.indexOf(selectedMonth);
+    const previous = document.querySelector("#plattsIndexPrevMonth");
+    const next = document.querySelector("#plattsIndexNextMonth");
+    if (previous) previous.title = "上一月";
+    if (next) next.title = "下一月";
+    if (previous) previous.disabled = index < 0 || index >= availableMonths.length - 1;
+    if (next) next.disabled = index <= 0;
   }
 
   function renderReview(result) {
@@ -43,6 +100,7 @@
     const table = document.querySelector("#plattsIndexReviewTable");
     const message = document.querySelector("#plattsIndexReviewMessage");
     if (!review || !table) return;
+    renderImportCounts(result.counts);
     draftToken = result.draft_token || "";
     draftRows = (result.preview?.rows || []).map((row) => ({ ...row }));
     const issues = [
@@ -164,10 +222,19 @@
       context.fill();
     });
     context.fillStyle = "#667486";
-    context.fillText(String(points[0].date || "").slice(5), padding.left, height - 8);
-    const lastDate = String(points[points.length - 1].date || "").slice(5);
-    const lastWidth = context.measureText(lastDate).width;
-    context.fillText(lastDate, width - padding.right - lastWidth, height - 8);
+    const labelIndexes = new Set([0, points.length - 1]);
+    if (points.length <= 10) {
+      points.forEach((_, index) => labelIndexes.add(index));
+    } else {
+      const step = Math.ceil((points.length - 1) / 5);
+      for (let index = step; index < points.length - 1; index += step) labelIndexes.add(index);
+    }
+    [...labelIndexes].sort((left, right) => left - right).forEach((index) => {
+      const label = String(points[index].date || "").slice(5);
+      const labelWidth = context.measureText(label).width;
+      const x = Math.min(Math.max(xAt(index) - labelWidth / 2, padding.left), width - padding.right - labelWidth);
+      context.fillText(label, x, height - 8);
+    });
     const showTooltip = (event) => {
       const point = canvasPoint(event, canvas);
       const index = Math.max(0, Math.min(points.length - 1, Math.round(((point.x - padding.left) / chartWidth) * (points.length - 1))));
@@ -178,6 +245,8 @@
       tooltip.classList.remove("hidden");
     };
     canvas.onclick = showTooltip;
+    canvas.onmousemove = showTooltip;
+    canvas.onmouseleave = () => tooltip.classList.add("hidden");
     canvas.ontouchstart = showTooltip;
   }
 
@@ -185,8 +254,11 @@
     const charts = document.querySelector("#plattsIndexCharts");
     if (!charts) return;
     charts.replaceChildren();
+    const dateSequence = (summary.rows || []).map((row) => row.business_date);
     for (const item of SERIES) {
       const series = summary.series?.[item.key] || { points: [], mtd: null };
+      const pointsByDate = new Map((series.points || []).map((point) => [point.date, point]));
+      const points = dateSequence.map((date) => pointsByDate.get(date)).filter(Boolean);
       const card = document.createElement("article");
       card.className = "platts-chart-card";
       const header = document.createElement("header");
@@ -198,7 +270,7 @@
       header.append(title, unit);
       const meta = document.createElement("div");
       meta.className = "platts-chart-meta";
-      const latest = series.points?.[series.points.length - 1];
+      const latest = points[points.length - 1];
       meta.textContent = `最新 ${latest?.date || "--"} ${latest ? formatValue(latest.value, item) : "--"}｜系统 MTD ${formatValue(series.mtd, item)}`;
       const wrap = document.createElement("div");
       wrap.className = "platts-chart-canvas-wrap";
@@ -210,7 +282,7 @@
       wrap.append(canvas, tooltip);
       card.append(header, meta, wrap);
       charts.appendChild(card);
-      drawChart(canvas, tooltip, { ...item, ...series, key: item.key });
+      drawChart(canvas, tooltip, { ...item, ...series, points, key: item.key });
     }
   }
 
@@ -233,27 +305,41 @@
     }
   }
 
+  async function moveMonth(direction) {
+    const index = availableMonths.indexOf(selectedMonth);
+    const target = availableMonths[index + direction];
+    if (!target) return;
+    selectedMonth = target;
+    const select = document.querySelector("#plattsIndexMonth");
+    if (select) select.value = target;
+    await loadSummary();
+  }
+
   async function loadSummary() {
     if (!runtime.api) return;
-    const month = getMonth();
+    const requestedMonth = getMonth();
     try {
-      const summary = await runtime.api(`/api/platts-index/summary?month=${encodeURIComponent(month)}`);
+      const summary = await runtime.api(`/api/platts-index/summary?month=${encodeURIComponent(requestedMonth)}`);
+      const months = summary.available_months || [];
+      const preferredMonth = selectedMonth || (months.includes(requestedMonth) ? requestedMonth : (summary.latest_month || requestedMonth));
+      const shouldLoadLatest = preferredMonth !== requestedMonth;
+      renderMonthOptions(months, preferredMonth);
+      if (shouldLoadLatest) {
+        await loadSummary();
+        return;
+      }
       renderCharts(summary);
       renderDaily(summary);
       const mtdStatus = document.querySelector("#plattsIndexMtdStatus");
       if (mtdStatus) {
         const mtd = summary.mtd || {};
         const latestDate = summary.rows?.[summary.rows.length - 1]?.business_date || "--";
-        mtdStatus.textContent = `系统 MTD（截至 ${latestDate}）：LP ${formatValue(mtd.platts_lp, SERIES[0])}｜61 ${formatValue(mtd.platts_61, SERIES[1])}｜58 ${formatValue(mtd.platts_58, SERIES[2])}｜65 ${formatValue(mtd.platts_65, SERIES[3])}`;
+        const values = SERIES.map((series) => `${series.label} ${formatValue(mtd[series.key], series)}`).join("｜");
+        mtdStatus.textContent = `系统 MTD（${formatMonthLabel(summary.month)}，截至 ${latestDate}）：${values}`;
       }
       if (!document.querySelector("#plattsIndexReview")?.classList.contains("hidden")) return;
       const lastSuccess = summary.last_success_at ? `｜最近成功 ${summary.last_success_at}` : "";
-      const emptyHint = !summary.count
-        ? (summary.latest_month
-          ? `；最近有数据月份：${summary.latest_month}（当前月份未切换）`
-          : "；暂无已入库数据")
-        : "";
-      setStatus(`数据状态：${month} 已加载 ${summary.count || 0} 个交易日${emptyHint}${lastSuccess}`);
+      setStatus(`数据状态：${formatMonthLabel(summary.month)} 已加载 ${summary.count || 0} 个有效数据日${lastSuccess}`);
     } catch (error) {
       setStatus(`数据状态：${error.message || "读取失败"}`, true);
     }
@@ -280,9 +366,11 @@
         setStatus("数据状态：待人工复核");
       } else if (result.status === "imported") {
         hideReview();
-        setStatus(`数据状态：已入库 ${result.imported_count || 0} 行`);
+        renderImportCounts(result.counts);
+        setStatus(`数据状态：本次处理完成，入库 ${result.imported_count || 0} 行`);
         await loadSummary();
       } else {
+        renderImportCounts(result.counts);
         setStatus(`数据状态：${result.issues?.[0]?.message || "OCR 失败"}`, true);
       }
     } catch (error) {
@@ -315,7 +403,8 @@
         body: JSON.stringify({ draft_token: draftToken, rows, reason }),
       });
       hideReview();
-      setStatus(`数据状态：复核入库 ${result.imported_count || 0} 行`);
+      renderImportCounts(result.counts);
+      setStatus(`数据状态：复核完成，入库 ${result.imported_count || 0} 行`);
       await loadSummary();
     } catch (error) {
       setStatus(`数据状态：${error.message || "复核失败"}`, true);
@@ -333,15 +422,18 @@
       event.target.value = "";
       uploadSelectedFile(file);
     });
-    document.querySelector("#plattsIndexMonth")?.addEventListener("change", loadSummary);
+    document.querySelector("#plattsIndexMonth")?.addEventListener("change", (event) => {
+      selectedMonth = event.target.value;
+      loadSummary();
+    });
+    document.querySelector("#plattsIndexPrevMonth")?.addEventListener("click", () => moveMonth(1));
+    document.querySelector("#plattsIndexNextMonth")?.addEventListener("click", () => moveMonth(-1));
     document.querySelector("#plattsIndexConfirmBtn")?.addEventListener("click", confirmReview);
   }
 
   async function activate(options = {}) {
     if (typeof document === "undefined") return;
     runtime = { ...runtime, ...options };
-    const month = document.querySelector("#plattsIndexMonth");
-    if (month && !month.value) month.value = currentMonth();
     bind();
     const uploadBtn = document.querySelector("#plattsIndexUploadBtn");
     if (!runtime.canSensitive) {
