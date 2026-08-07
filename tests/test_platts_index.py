@@ -8,12 +8,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import db, permissions
 from app.platts_index import (
+    SERIES,
+    _summary,
     calculate_derived,
     calculate_mtd,
     confirm_platts_import,
     process_platts_import,
 )
-from app.platts_ocr import MockTableOCRProvider, parse_table_payload
+from app.platts_ocr import (
+    AliyunRecognizeTableOcrProvider,
+    MockTableOCRProvider,
+    OCRProviderError,
+    parse_table_payload,
+)
 
 
 PNG_BYTES = (
@@ -79,6 +86,14 @@ def sample_payload():
         }.items()
     )
     return {"request_id": "mock-request-1", "cells": cells}
+
+
+def payload_for_month(month):
+    payload = sample_payload()
+    for cell in payload["cells"]:
+        if cell["col"] == 0 and 1 <= cell["row"] <= 4:
+            cell["text"] = f"{month}-{cell['row'] + 2:02d}"
+    return payload
 
 
 def test_parser_locates_target_headers_ignores_unrelated_columns_and_blank_future_rows():
@@ -153,6 +168,89 @@ def test_decimal_formulas_and_mtd_match_fixed_business_checksum():
     assert mtd["spread_61_62"] == Decimal("2.75")
     assert mtd["spread_65_62"] == Decimal("14.25")
     assert mtd["spread_65_61"] == Decimal("17.00")
+
+
+def test_all_platts_series_use_usd_per_ton():
+    assert [unit for _, _, unit in SERIES] == ["美元/吨"] * 6
+
+
+def test_aliyun_provider_uses_supported_parameters_and_surfaces_vendor_error(monkeypatch):
+    monkeypatch.setenv("PLATTS_OCR_ACCESS_KEY_ID", "example-id")
+    monkeypatch.setenv("PLATTS_OCR_ACCESS_KEY_SECRET", "example-secret")
+    captured = {}
+
+    class ErrorResponse:
+        status_code = 400
+        headers = {}
+        content = b'{"Code":"InvalidAccessKeyId.NotFound","Message":"The specified access key does not exist."}'
+
+        def json(self):
+            return {
+                "Code": "InvalidAccessKeyId.NotFound",
+                "Message": "The specified access key does not exist.",
+            }
+
+    def request(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return ErrorResponse()
+
+    provider = AliyunRecognizeTableOcrProvider(request_fn=request, timeout=1)
+    params = provider._signed_params()
+    assert "IsHandWriting" not in params
+    assert params["Action"] == "RecognizeTableOcr"
+
+    with pytest.raises(OCRProviderError) as error:
+        provider.recognize(PNG_BYTES)
+
+    assert "InvalidAccessKeyId.NotFound" in str(error.value)
+    assert "The specified access key does not exist." in str(error.value)
+    assert "example-secret" not in str(error.value)
+    assert error.value.status_code == 400
+    assert captured["data"] == PNG_BYTES
+
+
+def test_month_selection_is_exact_and_backfill_stays_in_its_month(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    user = {"id": 1, "name": "admin", "role": "管理员"}
+
+    august = process_platts_import(
+        PNG_BYTES,
+        user=user,
+        provider=MockTableOCRProvider(sample_payload()),
+    )
+    september = process_platts_import(
+        PNG_BYTES + b"september",
+        user=user,
+        provider=MockTableOCRProvider(payload_for_month("2026-09")),
+    )
+
+    assert august["status"] == "imported"
+    assert september["status"] == "imported"
+    assert _summary("2026-08")["count"] == 4
+    assert _summary("2026-09")["count"] == 4
+    empty = _summary("2026-07")
+    assert empty["month"] == "2026-07"
+    assert empty["count"] == 0
+    assert empty["latest_month"] == "2026-09"
+    assert empty["mtd"] == {}
+
+    with db.connect() as conn:
+        dates = [
+            row["business_date"]
+            for row in conn.execute(
+                "SELECT business_date FROM platts_index_daily ORDER BY business_date"
+            ).fetchall()
+        ]
+    assert dates == [
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-05",
+        "2026-09-06",
+    ]
 
 
 def test_provider_error_and_review_never_write_daily_data(tmp_path, monkeypatch):

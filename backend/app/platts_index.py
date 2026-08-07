@@ -37,7 +37,7 @@ MANAGE_RESOURCE = "platts_index.manage"
 MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 
 SERIES = (
-    ("platts_lp", "LP", "美元/干吨"),
+    ("platts_lp", "LP", "美元/吨"),
     ("platts_61", "61%", "美元/吨"),
     ("platts_58", "58%", "美元/吨"),
     ("platts_65", "65%", "美元/吨"),

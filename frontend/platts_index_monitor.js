@@ -2,7 +2,7 @@
   "use strict";
 
   const SERIES = [
-    { key: "platts_lp", label: "LP", unit: "美元/干吨", decimals: 4, color: "#176b5d" },
+    { key: "platts_lp", label: "LP", unit: "美元/吨", decimals: 4, color: "#176b5d" },
     { key: "platts_61", label: "61%", unit: "美元/吨", decimals: 2, color: "#2962a9" },
     { key: "platts_58", label: "58%", unit: "美元/吨", decimals: 2, color: "#b05a2a" },
     { key: "platts_65", label: "65%", unit: "美元/吨", decimals: 2, color: "#7a4b9c" },
@@ -238,11 +238,6 @@
     const month = getMonth();
     try {
       const summary = await runtime.api(`/api/platts-index/summary?month=${encodeURIComponent(month)}`);
-      if (!summary.count && summary.latest_month && summary.latest_month !== month) {
-        const monthInput = document.querySelector("#plattsIndexMonth");
-        if (monthInput) monthInput.value = summary.latest_month;
-        return loadSummary();
-      }
       renderCharts(summary);
       renderDaily(summary);
       const mtdStatus = document.querySelector("#plattsIndexMtdStatus");
@@ -253,7 +248,12 @@
       }
       if (!document.querySelector("#plattsIndexReview")?.classList.contains("hidden")) return;
       const lastSuccess = summary.last_success_at ? `｜最近成功 ${summary.last_success_at}` : "";
-      setStatus(`数据状态：已加载 ${summary.count || 0} 个交易日${lastSuccess}`);
+      const emptyHint = !summary.count
+        ? (summary.latest_month
+          ? `；最近有数据月份：${summary.latest_month}（当前月份未切换）`
+          : "；暂无已入库数据")
+        : "";
+      setStatus(`数据状态：${month} 已加载 ${summary.count || 0} 个交易日${emptyHint}${lastSuccess}`);
     } catch (error) {
       setStatus(`数据状态：${error.message || "读取失败"}`, true);
     }
