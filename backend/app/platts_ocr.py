@@ -124,7 +124,7 @@ def _header_field(value: Any) -> str | None:
         (len(_normalized_text(alias)), field)
         for field, aliases in HEADER_ALIASES.items()
         for alias in aliases
-        if _normalized_text(alias) and _normalized_text(alias) in normalized
+        if len(_normalized_text(alias)) >= 3 and _normalized_text(alias) in normalized
     ]
     return max(candidates)[1] if candidates else None
 
@@ -139,6 +139,25 @@ def _parse_date(value: Any) -> str | None:
         return date(int(matched.group(1)), int(matched.group(2)), int(matched.group(3))).isoformat()
     except ValueError:
         return None
+
+
+def _infer_business_date_column(
+    rows_by_number: dict[int, list[dict[str, Any]]],
+    header_row: int,
+) -> int | None:
+    date_counts: dict[int, int] = defaultdict(int)
+    for row_number, row_cells in rows_by_number.items():
+        if row_number <= header_row:
+            continue
+        for cell in row_cells:
+            if _parse_date(cell.get("text")):
+                _, col = _cell_coordinates(cell)
+                date_counts[col] += 1
+    if not date_counts:
+        return None
+    max_count = max(date_counts.values())
+    candidates = [col for col, count in date_counts.items() if count == max_count and count >= 2]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def parse_decimal(value: Any, field: str = "value") -> Decimal:
@@ -290,6 +309,10 @@ def parse_table_payload(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     header_fields = header_candidates[header_row]
+    if "business_date" not in header_fields:
+        inferred_date_column = _infer_business_date_column(rows_by_number, header_row)
+        if inferred_date_column is not None:
+            header_fields["business_date"] = [inferred_date_column]
     headers: dict[str, int] = {}
     for field in ("business_date", *RAW_FIELDS):
         columns = header_fields.get(field, [])
