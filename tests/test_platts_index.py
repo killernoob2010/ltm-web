@@ -88,6 +88,55 @@ def sample_payload():
     return {"request_id": "mock-request-1", "cells": cells}
 
 
+def aliyun_sheet_payload():
+    headers = [
+        "",
+        "Mysteel 62%",
+        "Platts 61%",
+        "MB 61%",
+        "Mysteel LP",
+        "Platts LP",
+        "MB 65%",
+        "Platts 65%",
+        "Mysteel Portside",
+        "Mysteel 62% LA",
+        "MB65/TSI61",
+        "Platts 58%",
+        "Platts62/61",
+    ]
+    rows = [
+        ("2026/8/3", "93.70", "0.2385", "110.75", "79.65", "2.75"),
+        ("2026/8/4", "93.20", "0.2400", "110.25", "80.05", "2.75"),
+        ("2026/8/5", "93.75", "0.2405", "110.80", "81.30", "2.75"),
+        ("2026/8/6", "95.95", "0.2405", "112.80", "82.60", "2.75"),
+    ]
+    cells = [{"row": 0, "col": col, "text": text} for col, text in enumerate(headers)]
+    for row_no, values in enumerate(rows, start=1):
+        business_date, sixty_one, lp, sixty_five, fifty_eight, spread = values
+        cells.extend(
+            [
+                {"row": row_no, "col": 0, "text": business_date},
+                {"row": row_no, "col": 2, "text": sixty_one},
+                {"row": row_no, "col": 5, "text": lp},
+                {"row": row_no, "col": 7, "text": sixty_five},
+                {"row": row_no, "col": 11, "text": fifty_eight},
+                {"row": row_no, "col": 12, "text": spread},
+            ]
+        )
+    cells.extend(
+        {"row": 5, "col": col, "text": text}
+        for col, text in {
+            0: "MTD",
+            2: "94.15",
+            5: "0.2399",
+            7: "111.15",
+            11: "80.90",
+            12: "2.75",
+        }.items()
+    )
+    return {"request_id": "aliyun-request-1", "cells": cells}
+
+
 def payload_for_month(month):
     payload = sample_payload()
     for cell in payload["cells"]:
@@ -106,6 +155,26 @@ def test_parser_locates_target_headers_ignores_unrelated_columns_and_blank_futur
         "2026-08-05",
         "2026-08-06",
     ]
+    assert result["mtd"] == {
+        "platts_lp": Decimal("0.2399"),
+        "platts_61": Decimal("94.15"),
+        "platts_58": Decimal("80.90"),
+        "platts_65": Decimal("111.15"),
+        "spread_61_62": Decimal("2.75"),
+    }
+
+
+def test_parser_handles_vendor_prefixed_columns_and_blank_date_header():
+    result = parse_table_payload(aliyun_sheet_payload())
+
+    assert result["issues"] == []
+    assert [row["business_date"] for row in result["rows"]] == [
+        "2026-08-03",
+        "2026-08-04",
+        "2026-08-05",
+        "2026-08-06",
+    ]
+    assert result["rows"][0]["platts_lp"] == Decimal("0.2385")
     assert result["mtd"] == {
         "platts_lp": Decimal("0.2399"),
         "platts_61": Decimal("94.15"),
