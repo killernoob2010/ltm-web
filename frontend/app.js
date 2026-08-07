@@ -123,9 +123,12 @@ function applyUiPermissions() {
   ["#dvImportBtn", "#dvCommitImportBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
   setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
+  setHidden("#plattsIndexUploadBtn", guest || !canModuleSensitive("platts_index_monitor"));
+  setHidden("#plattsIndexConfirmBtn", guest || !canModuleSensitive("platts_index_monitor"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
+const plattsIndexPage = document.querySelector("#plattsIndexPage");
 const midEventPage = document.querySelector("#midEventPage");
 const shJunnengPage = document.querySelector("#shJunnengPage");
 const riskAlertPage = document.querySelector("#riskAlertPage");
@@ -493,7 +496,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -536,6 +539,14 @@ async function activateModule(code, subName, subView = "") {
     showOnly(infoSummaryPage);
     await loadInfoSummary();
     startInfoSummaryAutoRefresh();
+    return;
+  }
+  if (code === "platts_index_monitor") {
+    showOnly(plattsIndexPage);
+    await window.PlattsIndexMonitor.activate({
+      api,
+      canSensitive: canModuleSensitive("platts_index_monitor"),
+    });
     return;
   }
   if (code === "mid_event_monitor") {

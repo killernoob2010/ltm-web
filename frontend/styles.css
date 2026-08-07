@@ -947,6 +947,114 @@ dialog::backdrop {
   margin-top: 6px;
 }
 
+.platts-index-filter-panel {
+  margin-bottom: 16px;
+}
+
+.platts-index-filter-panel .filter-grid {
+  grid-template-columns: minmax(180px, 240px) 1fr;
+  align-items: end;
+}
+
+.platts-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.platts-chart-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.platts-chart-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.platts-chart-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.platts-chart-unit,
+.platts-chart-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.platts-chart-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.platts-chart-canvas-wrap {
+  position: relative;
+  height: 190px;
+}
+
+.platts-chart-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
+}
+
+.platts-chart-tooltip {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  min-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 6px 18px rgba(29, 39, 51, 0.12);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.platts-review-reason {
+  display: grid;
+  gap: 6px;
+  max-width: 720px;
+  margin: 14px 16px;
+}
+
+.platts-review-reason textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+#plattsIndexReview > button {
+  margin: 0 16px 16px;
+}
+
+@media (max-width: 1100px) {
+  .platts-chart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .platts-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .platts-index-filter-panel .filter-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 900px) {
   .app-shell {
     height: auto;

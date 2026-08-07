@@ -50,6 +50,7 @@ MODULES = [
     ("交易管理", "trading_options", "期权台账"),
     ("交易管理", "trading_export", "汇总与导出"),
     ("信息预警管理", "info_summary", "实时信息汇总"),
+    ("信息预警管理", "platts_index_monitor", "普氏指数监控"),
     ("信息预警管理", "risk_alert", "风险预警"),
     ("信息预警管理", "mid_event_monitor", "事中风险监控"),
     ("数据可视化管理", "data_visualization_integration", "数据整合"),
@@ -1098,11 +1099,144 @@ def init_db() -> None:
         migrate_dv_integration_schema(conn)
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
+        migrate_platts_index_schema(conn)
 
         ensure_admin_user(cur, "管理员")
         ensure_admin_user(cur, "admin")
         sync_trading_module_permissions(cur)
+        sync_platts_index_permissions(cur)
         conn.commit()
+
+
+def migrate_platts_index_schema(conn) -> None:
+    """Create the Platts OCR import, daily data, and revision tables."""
+    if _is_pg():
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS platts_index_daily (
+                id SERIAL PRIMARY KEY,
+                business_date TEXT NOT NULL UNIQUE,
+                platts_lp NUMERIC(20, 8) NOT NULL,
+                platts_61 NUMERIC(20, 8) NOT NULL,
+                platts_58 NUMERIC(20, 8) NOT NULL,
+                platts_65 NUMERIC(20, 8) NOT NULL,
+                spread_61_62 NUMERIC(20, 8) NOT NULL,
+                source_hash TEXT,
+                import_batch_id INTEGER,
+                created_by INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_by INTEGER,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS platts_index_import_batches (
+                id SERIAL PRIMARY KEY,
+                draft_token TEXT NOT NULL UNIQUE,
+                source_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                ocr_provider TEXT NOT NULL,
+                provider_request_id TEXT,
+                normalized_payload TEXT NOT NULL,
+                detected_count INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                error_summary TEXT,
+                created_by INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                confirmed_by INTEGER,
+                confirmed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS platts_index_revisions (
+                id SERIAL PRIMARY KEY,
+                business_date TEXT NOT NULL,
+                import_batch_id INTEGER NOT NULL,
+                previous_payload TEXT NOT NULL,
+                new_payload TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                changed_by INTEGER,
+                changed_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_platts_daily_date
+                ON platts_index_daily(business_date);
+            CREATE INDEX IF NOT EXISTS idx_platts_batch_hash_status
+                ON platts_index_import_batches(source_hash, status, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_platts_batch_created
+                ON platts_index_import_batches(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_platts_revisions_date
+                ON platts_index_revisions(business_date, changed_at DESC, id DESC);
+            """
+        )
+        _secure_postgres_tables(
+            cur,
+            (
+                "platts_index_daily",
+                "platts_index_import_batches",
+                "platts_index_revisions",
+            ),
+        )
+        conn.commit()
+        return
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS platts_index_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_date TEXT NOT NULL UNIQUE,
+            platts_lp NUMERIC NOT NULL,
+            platts_61 NUMERIC NOT NULL,
+            platts_58 NUMERIC NOT NULL,
+            platts_65 NUMERIC NOT NULL,
+            spread_61_62 NUMERIC NOT NULL,
+            source_hash TEXT,
+            import_batch_id INTEGER,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_by INTEGER,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS platts_index_import_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            draft_token TEXT NOT NULL UNIQUE,
+            source_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            ocr_provider TEXT NOT NULL,
+            provider_request_id TEXT,
+            normalized_payload TEXT NOT NULL,
+            detected_count INTEGER NOT NULL DEFAULT 0,
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            error_summary TEXT,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            confirmed_by INTEGER,
+            confirmed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS platts_index_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_date TEXT NOT NULL,
+            import_batch_id INTEGER NOT NULL,
+            previous_payload TEXT NOT NULL,
+            new_payload TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            changed_by INTEGER,
+            changed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_platts_daily_date
+            ON platts_index_daily(business_date);
+        CREATE INDEX IF NOT EXISTS idx_platts_batch_hash_status
+            ON platts_index_import_batches(source_hash, status, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_platts_batch_created
+            ON platts_index_import_batches(created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_platts_revisions_date
+            ON platts_index_revisions(business_date, changed_at DESC, id DESC);
+        """
+    )
 
 
 def migrate_iron_ore_basis_schema(conn) -> None:
@@ -2093,6 +2227,37 @@ def sync_trading_module_permissions(cur) -> None:
                     """,
                     (user["id"], module_code, *permission),
                 )
+
+
+def sync_platts_index_permissions(cur) -> None:
+    """Add missing Platts permissions without overwriting explicit choices."""
+    users = _exec(cur, "SELECT id, department, role FROM users").fetchall()
+    for user in users:
+        role = user["role"]
+        department = user["department"]
+        if role in {"管理员", "admin"}:
+            permission = (1, 1, 1)
+        elif role == "领导":
+            permission = (1, 0, 0)
+        elif department in {"贸易处", "期货组", "管理部门"}:
+            permission = (1, 1, 0)
+        else:
+            continue
+        existing = _exec(
+            cur,
+            "SELECT id FROM module_permissions WHERE user_id = ? AND module_code = ?",
+            (user["id"], "platts_index_monitor"),
+        ).fetchone()
+        if not existing:
+            _exec(
+                cur,
+                """
+                INSERT INTO module_permissions
+                    (user_id, module_code, can_view, can_edit, can_sensitive)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user["id"], "platts_index_monitor", *permission),
+            )
 
 
 def ensure_admin_user(cur, name: str) -> int:

@@ -23,6 +23,9 @@ RESOURCE_MODULES = {
     "trading.config": "trading_positions",
     "sh_junneng.trades": "sh_junneng",
     "mid_event.monitor": "mid_event_monitor",
+    "platts_index.data": "platts_index_monitor",
+    "platts_index.imports": "platts_index_monitor",
+    "platts_index.manage": "platts_index_monitor",
     "users": "user_management",
     "permissions": "user_management",
     "operation_logs": "user_management",
@@ -49,6 +52,7 @@ RETIRED_MODULE_CODES = {
 }
 ACTIVE_BUSINESS_MODULES = {
     "info_summary",
+    "platts_index_monitor",
     "risk_alert",
     "mid_event_monitor",
     "data_visualization_integration",
@@ -64,11 +68,11 @@ ACTIVE_BUSINESS_MODULES = {
 }
 DEPARTMENT_MODULES = {
     "贸易处": {
-        "info_summary", "risk_alert", "mid_event_monitor",
+        "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
     },
     "期货组": {
-        "info_summary", "risk_alert", "mid_event_monitor",
+        "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
         "trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export",
     },

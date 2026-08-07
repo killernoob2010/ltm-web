@@ -64,8 +64,11 @@ from . import (
     iron_ore_basis,
     iron_ore_basis_snapshot_sync,
     operation_log_archive,
+    option_backtest,
+    option_research,
     order_finance,
     order_finance_snapshot_sync,
+    platts_index,
     trading_management,
     trading_valuation,
 )
@@ -132,6 +135,9 @@ app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
 app.include_router(order_finance_snapshot_sync.router, prefix="/api")
+app.include_router(option_research.router, prefix="/api")
+app.include_router(option_backtest.router, prefix="/api")
+app.include_router(platts_index.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
 
 
