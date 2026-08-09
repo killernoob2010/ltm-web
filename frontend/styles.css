@@ -1642,6 +1642,7 @@ dialog::backdrop {
     border-bottom: 1px solid #edf1f4;
     padding: 9px 11px;
     text-align: left;
+    white-space: normal;
     overflow-wrap: anywhere;
   }
 
