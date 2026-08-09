@@ -274,6 +274,10 @@ def test_department_and_leader_default_permission_levels():
     assert trade["info_summary"] == "operate"
     assert trade["data_visualization_chart"] == "operate"
     assert trade["order_finance_progress"] == "none"
+    assert {
+        futures[code]
+        for code in {"info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor"}
+    } == {"sensitive"}
     assert futures["sh_junneng"] == "none"
     assert finance["order_finance_progress"] == "operate"
     assert treasury["order_finance_capital"] == "operate"
@@ -289,6 +293,16 @@ def test_company_leader_is_allowed_and_keeps_leader_view_defaults():
     levels = permissions.default_permission_levels("公司领导", "领导")
     assert {code for code, level in levels.items() if level == "view"} == permissions.ACTIVE_BUSINESS_MODULES
     assert all(level in {"none", "view"} for level in levels.values())
+
+
+def test_futures_leader_keeps_sensitive_info_warning_defaults():
+    levels = permissions.default_permission_levels("期货组", "领导")
+
+    assert {
+        levels[code]
+        for code in {"info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor"}
+    } == {"sensitive"}
+    assert levels["trading_overview"] == "view"
 
 
 def test_temporary_password_policy_covers_roster_rules_and_cao_xiang_exception():

@@ -66,6 +66,12 @@ ACTIVE_BUSINESS_MODULES = {
     "trading_options",
     "trading_export",
 }
+INFO_WARNING_MODULES = {
+    "info_summary",
+    "platts_index_monitor",
+    "risk_alert",
+    "mid_event_monitor",
+}
 DEPARTMENT_MODULES = {
     "贸易处": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
@@ -98,9 +104,15 @@ def default_permission_levels(department: str, role: str) -> dict[str, str]:
     if role == "领导":
         for code in ACTIVE_BUSINESS_MODULES:
             levels[code] = "view"
+        if department == "期货组":
+            for code in INFO_WARNING_MODULES:
+                levels[code] = "sensitive"
         return levels
     for code in DEPARTMENT_MODULES.get(department, set()):
         levels[code] = "operate"
+    if department == "期货组":
+        for code in INFO_WARNING_MODULES:
+            levels[code] = "sensitive"
     return levels
 
 
