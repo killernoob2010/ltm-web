@@ -26,6 +26,12 @@ from app.order_finance import (
     update_management_fields,
     build_order_finance_capital_view,
     build_order_finance_progress_view,
+    build_order_vessel_overview,
+    import_order_vessel_snapshot,
+    list_order_vessel_snapshots,
+    parse_order_vessel_snapshot,
+    ORDER_VESSEL_HEADERS,
+    ORDER_VESSEL_SHEET,
 )
 
 
@@ -91,6 +97,30 @@ def build_three_sheet_workbook(path: Path) -> Path:
     return path
 
 
+def build_order_vessel_workbook(path: Path) -> Path:
+    book = Workbook()
+    sheet = book.active
+    sheet.title = ORDER_VESSEL_SHEET
+    sheet.append(["我司近期出口船舶汇总（2026/8/5）"])
+    sheet.append(list(ORDER_VESSEL_HEADERS.values()))
+    sheet.append([
+        "北满", "MOLYCOP SINGAPORE TRADING PTE LTD", "热轧圆钢",
+        "ELM ARROW\nIMO：9419254", 8000, "鲅鱼圈", "2026-08-10",
+        "2026-08-13", "LIRQUEN, CHILE", "2026-09-23", "未交单",
+        "2026-08-25", 32945850, None, "Y-2026-15", 11088,
+        "2026-08-15", 12, "计划靠泊+2天", "https://example.com/route",
+    ])
+    sheet.append([
+        "承德", "MOLYCOP SINGAPORE TRADING PTE LTD", "热轧圆钢", "未宣船",
+        7600, "天津港", None, None, "CALLAO, PERU", None, "未交单",
+        None, "过单不涉及融资", "过单", "B1YLD260501", None, None,
+        None, None, None,
+    ])
+    sheet.append(["总计", None, None, "2笔", 15600])
+    book.save(path)
+    return path
+
+
 def progress_record(item_no: str, status: str, **overrides):
     record = {
         "id": overrides.pop("id", 1),
@@ -124,6 +154,81 @@ def use_temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "order_finance.db")
     db.init_db()
+
+
+def test_order_vessel_parser_preserves_snapshot_values_and_non_financing_note(tmp_path):
+    workbook = build_order_vessel_workbook(tmp_path / "vessel.xlsx")
+
+    result = parse_order_vessel_snapshot(workbook)
+
+    assert result["source"]["date"] == "2026-08-05"
+    assert result["summary"] == {
+        "record_count": 2,
+        "quantity_mt": 15600.0,
+        "loan_amount": 32945850.0,
+        "non_financing_count": 1,
+    }
+    first, second = result["records"]
+    assert first["vessel"] == "ELM ARROW / IMO：9419254"
+    assert first["loading_port_arrival_date"] == "2026-08-10"
+    assert first["route_distance_nm"] == 11088.0
+    assert second["loan_amount"] is None
+    assert second["loan_amount_note"] == "过单不涉及融资"
+
+
+def test_order_vessel_snapshot_import_is_idempotent_and_isolated(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    workbook = build_order_vessel_workbook(tmp_path / "vessel.xlsx")
+
+    first = import_order_vessel_snapshot(workbook, apply=True, imported_by="pytest")
+    second = import_order_vessel_snapshot(workbook, apply=True, imported_by="pytest")
+
+    assert first["changes"] == {"inserted": 2, "updated": 0, "unchanged": 0, "deactivated": 0}
+    assert second["changes"] == {"inserted": 0, "updated": 0, "unchanged": 2, "deactivated": 0}
+    assert [row["business_no"] for row in list_order_vessel_snapshots()] == [
+        "Y-2026-15", "B1YLD260501",
+    ]
+    assert list_order_finance_records() == []
+
+
+def test_order_vessel_overview_exactly_fuses_current_finance_fields(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    workbook = build_order_vessel_workbook(tmp_path / "vessel.xlsx")
+    snapshots = parse_order_vessel_snapshot(workbook)["records"]
+    finance = progress_record(
+        "Y-2026-15",
+        "存续",
+        finance_amount_actual=33000000,
+        finance_due_date="2026-08-26",
+        document_submission_date="2026-08-20",
+        updated_at="2026-08-09T10:11:12.987654+08:00",
+    )
+
+    result = build_order_vessel_overview(snapshots, [finance])
+    by_business = {row["business_no"]: row for row in result["records"]}
+
+    assert by_business["Y-2026-15"]["finance_match"] is True
+    assert by_business["Y-2026-15"]["loan_amount"] == 33000000
+    assert by_business["Y-2026-15"]["repayment_due_date"] == "2026-08-26"
+    assert by_business["Y-2026-15"]["document_status"] == "已交单"
+    assert by_business["Y-2026-15"]["finance_updated_at"] == "2026-08-09T10:11:12+08:00"
+    assert by_business["B1YLD260501"]["finance_match"] is False
+    assert by_business["B1YLD260501"]["loan_amount_note"] == "过单不涉及融资"
+    assert result["finance_sync"]["matched_count"] == 1
+    assert result["summary"]["total_orders"] == 2
+    assert result["summary"]["financed_orders"] == 1
+
+
+def test_order_vessel_overview_route_reuses_order_finance_view_permission(monkeypatch):
+    checked = []
+    monkeypatch.setattr(order_finance, "order_finance_require_view", lambda user: checked.append(user))
+    monkeypatch.setattr(order_finance, "build_order_vessel_overview", lambda: {"records": []})
+    user = {"id": 7, "name": "pytest"}
+
+    result = order_finance.order_finance_vessel_overview(user=user)
+
+    assert checked == [user]
+    assert result == {"records": []}
 
 
 def test_parse_order_finance_directory_reads_new_workbook_all_years():

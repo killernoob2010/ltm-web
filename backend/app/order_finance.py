@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import re
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,41 @@ LOCAL_DEFAULT_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA
 ORDER_FINANCE_MODULE = "order_finance_progress"
 ORDER_FINANCE_CAPITAL_MODULE = "order_finance_capital"
 TARGET_XLSX_SHEETS = ("订单", "额度", "预警")
+ORDER_VESSEL_SHEET = "26.8.5钢材出口情况表"
+ORDER_VESSEL_EXPECTED_SHA256 = "29ac22a51a298e2e844ee97bfde42e2017926d96101f606c5d92c476d6f1e8ab"
+
+ORDER_VESSEL_HEADERS = {
+    "steel_mill": "出口方（钢厂）",
+    "export_user": "使用方（终端用户或合同签署方）",
+    "cargo": "货物",
+    "vessel": "船名（IMO）",
+    "quantity_mt": "合同量（吨）",
+    "loading_port": "装港港口",
+    "loading_port_arrival_date": "船到装港日期",
+    "planned_berth_date": "计划靠泊日期",
+    "discharge_port": "卸港港口",
+    "estimated_discharge_date": "预计到卸港日期",
+    "document_status": "单据情况",
+    "repayment_due_date": "还款到期日",
+    "loan_amount": "借款金额（元）",
+    "remark": "备注",
+    "business_no": "业务编号",
+    "route_distance_nm": "航线距离（海里）",
+    "eta_start_date": "卸港ETA起算日",
+    "estimated_speed_knots": "估算船速（节）",
+    "eta_basis": "ETA计算依据",
+    "route_source": "航线来源",
+}
+
+ORDER_VESSEL_SNAPSHOT_FIELDS = [
+    "source_version", "source_date", "source_file_name", "source_sheet_name",
+    "source_sha256", "source_row", "business_no", "steel_mill", "export_user",
+    "cargo", "vessel", "quantity_mt", "loading_port",
+    "loading_port_arrival_date", "planned_berth_date", "discharge_port",
+    "estimated_discharge_date", "document_status", "repayment_due_date",
+    "loan_amount", "loan_amount_note", "remark", "route_distance_nm",
+    "eta_start_date", "estimated_speed_knots", "eta_basis", "route_source",
+]
 
 DEFAULT_BANK_LIMITS = [
     {
@@ -1080,6 +1116,218 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     return dict(row) if row else {}
 
 
+def _normalize_order_vessel_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return " / ".join(
+        part.strip()
+        for part in re.split(r"[\r\n]+", str(value))
+        if part.strip()
+    )
+
+
+def parse_order_vessel_snapshot(path: Path | str) -> Dict[str, Any]:
+    workbook_path = Path(path)
+    if not workbook_path.exists() or not workbook_path.is_file():
+        raise ValueError(f"Excel 文件不存在：{workbook_path}")
+    if workbook_path.suffix.lower() != ".xlsx":
+        raise ValueError("订单与船舶快照仅支持 .xlsx 文件")
+
+    source_sha256 = hashlib.sha256(workbook_path.read_bytes()).hexdigest()
+    book = load_workbook(workbook_path, data_only=True, read_only=False)
+    if ORDER_VESSEL_SHEET not in book.sheetnames:
+        raise ValueError(f"Excel 缺少必需页签：{ORDER_VESSEL_SHEET}")
+    sheet = book[ORDER_VESSEL_SHEET]
+
+    title = _normalize_order_vessel_text(sheet.cell(1, 1).value)
+    title_date = re.search(r"(\d{4})[./年-](\d{1,2})[./月-](\d{1,2})", title)
+    if not title_date:
+        raise ValueError("Excel 标题缺少可识别的来源日期")
+    source_date = date(*(int(part) for part in title_date.groups())).isoformat()
+    source_version = f"{source_date}:{source_sha256[:12]}"
+
+    headers = {
+        _normalize_order_vessel_text(sheet.cell(2, column).value): column
+        for column in range(1, sheet.max_column + 1)
+        if _normalize_order_vessel_text(sheet.cell(2, column).value)
+    }
+    missing_headers = [
+        label for label in ORDER_VESSEL_HEADERS.values() if label not in headers
+    ]
+    if missing_headers:
+        raise ValueError("Excel 缺少字段：" + "、".join(missing_headers))
+
+    records: List[Dict[str, Any]] = []
+    seen_business_numbers: set[str] = set()
+    for row_number in range(3, sheet.max_row + 1):
+        raw = {
+            field: sheet.cell(row_number, headers[label]).value
+            for field, label in ORDER_VESSEL_HEADERS.items()
+        }
+        business_no = _normalize_order_vessel_text(raw["business_no"])
+        steel_mill = _normalize_order_vessel_text(raw["steel_mill"])
+        if not business_no or steel_mill == "总计":
+            continue
+        if business_no in seen_business_numbers:
+            raise ValueError(f"业务编号重复：{business_no}")
+        seen_business_numbers.add(business_no)
+
+        loan_amount = _to_float(raw["loan_amount"])
+        loan_amount_note = "" if loan_amount is not None else _normalize_order_vessel_text(raw["loan_amount"])
+        records.append({
+            "source_version": source_version,
+            "source_date": source_date,
+            "source_file_name": workbook_path.name,
+            "source_sheet_name": ORDER_VESSEL_SHEET,
+            "source_sha256": source_sha256,
+            "source_row": row_number,
+            "business_no": business_no,
+            "steel_mill": steel_mill,
+            "export_user": _normalize_order_vessel_text(raw["export_user"]),
+            "cargo": _normalize_order_vessel_text(raw["cargo"]),
+            "vessel": _normalize_order_vessel_text(raw["vessel"]),
+            "quantity_mt": _to_float(raw["quantity_mt"]),
+            "loading_port": _normalize_order_vessel_text(raw["loading_port"]),
+            "loading_port_arrival_date": _normalize_date(raw["loading_port_arrival_date"]),
+            "planned_berth_date": _normalize_date(raw["planned_berth_date"]),
+            "discharge_port": _normalize_order_vessel_text(raw["discharge_port"]),
+            "estimated_discharge_date": _normalize_date(raw["estimated_discharge_date"]),
+            "document_status": _normalize_order_vessel_text(raw["document_status"]),
+            "repayment_due_date": _normalize_date(raw["repayment_due_date"]),
+            "loan_amount": loan_amount,
+            "loan_amount_note": loan_amount_note,
+            "remark": _normalize_order_vessel_text(raw["remark"]),
+            "route_distance_nm": _to_float(raw["route_distance_nm"]),
+            "eta_start_date": _normalize_date(raw["eta_start_date"]),
+            "estimated_speed_knots": _to_float(raw["estimated_speed_knots"]),
+            "eta_basis": _normalize_order_vessel_text(raw["eta_basis"]),
+            "route_source": _normalize_order_vessel_text(raw["route_source"]),
+        })
+
+    if not records:
+        raise ValueError("Excel 中没有可导入的业务记录")
+    return {
+        "source": {
+            "date": source_date,
+            "version": source_version,
+            "file_name": workbook_path.name,
+            "sheet_name": ORDER_VESSEL_SHEET,
+            "sha256": source_sha256,
+        },
+        "records": records,
+        "summary": {
+            "record_count": len(records),
+            "quantity_mt": sum(float(row.get("quantity_mt") or 0) for row in records),
+            "loan_amount": sum(float(row.get("loan_amount") or 0) for row in records),
+            "non_financing_count": sum(1 for row in records if row.get("loan_amount_note")),
+        },
+    }
+
+
+def _order_vessel_values_equal(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    numeric_fields = {
+        "source_row", "quantity_mt", "loan_amount", "route_distance_nm",
+        "estimated_speed_knots",
+    }
+    for field in ORDER_VESSEL_SNAPSHOT_FIELDS:
+        left = existing.get(field)
+        right = incoming.get(field)
+        if field in numeric_fields:
+            left = _to_float(left)
+            right = _to_float(right)
+        else:
+            left = "" if left is None else str(left)
+            right = "" if right is None else str(right)
+        if left != right:
+            return False
+    return True
+
+
+def apply_order_vessel_snapshot(
+    records: List[Dict[str, Any]],
+    *,
+    imported_by: str = "",
+) -> Dict[str, int]:
+    if not records:
+        raise ValueError("订单与船舶快照不能为空")
+    source_versions = {_normalize_text(row.get("source_version")) for row in records}
+    if len(source_versions) != 1 or "" in source_versions:
+        raise ValueError("一次导入只能包含一个有效来源版本")
+    if len({_normalize_text(row.get("business_no")) for row in records}) != len(records):
+        raise ValueError("订单与船舶快照包含重复业务编号")
+
+    source_version = next(iter(source_versions))
+    inserted = updated = unchanged = 0
+    with db.connect() as conn:
+        cur = conn.cursor()
+        for incoming in records:
+            existing_row = db._exec(
+                cur,
+                "SELECT * FROM order_vessel_snapshots WHERE source_version = ? AND business_no = ?",
+                (source_version, incoming["business_no"]),
+            ).fetchone()
+            existing = _row_to_dict(existing_row)
+            if existing and _order_vessel_values_equal(existing, incoming) and int(existing.get("is_active") or 0) == 1:
+                unchanged += 1
+                continue
+            values = [incoming.get(field) for field in ORDER_VESSEL_SNAPSHOT_FIELDS]
+            if existing:
+                assignments = ", ".join(f"{field} = ?" for field in ORDER_VESSEL_SNAPSHOT_FIELDS)
+                db._exec(
+                    cur,
+                    f"UPDATE order_vessel_snapshots SET {assignments}, is_active = 1, imported_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    tuple(values + [imported_by, existing["id"]]),
+                )
+                updated += 1
+            else:
+                insert_fields = ORDER_VESSEL_SNAPSHOT_FIELDS + ["is_active", "imported_by"]
+                placeholders = ", ".join("?" for _ in insert_fields)
+                db._exec(
+                    cur,
+                    f"INSERT INTO order_vessel_snapshots ({', '.join(insert_fields)}) VALUES ({placeholders})",
+                    tuple(values + [1, imported_by]),
+                )
+                inserted += 1
+        deactivated = db._exec(
+            cur,
+            "UPDATE order_vessel_snapshots SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE is_active = 1 AND source_version <> ?",
+            (source_version,),
+        ).rowcount
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "unchanged": unchanged,
+        "deactivated": max(int(deactivated or 0), 0),
+    }
+
+
+def import_order_vessel_snapshot(
+    path: Path | str,
+    *,
+    apply: bool = False,
+    imported_by: str = "",
+    expected_sha256: Optional[str] = None,
+) -> Dict[str, Any]:
+    parsed = parse_order_vessel_snapshot(path)
+    actual_sha256 = parsed["source"]["sha256"]
+    if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
+        raise ValueError("Excel SHA-256 与锁定的定稿版本不一致")
+    result = {**parsed["source"], **parsed["summary"], "applied": apply}
+    if apply:
+        result["changes"] = apply_order_vessel_snapshot(parsed["records"], imported_by=imported_by)
+    return result
+
+
+def list_order_vessel_snapshots() -> List[Dict[str, Any]]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            "SELECT * FROM order_vessel_snapshots WHERE is_active = 1 ORDER BY source_date DESC, source_row, id",
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 def _serialize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(record)
     for field, empty in (
@@ -1807,6 +2055,120 @@ def _item_no(row: Dict[str, Any]) -> str:
     return _normalize_text(source.get("item_no")) or _normalize_text(row.get("purchase_contract_no")) or str(row.get("id"))
 
 
+def _business_timestamp(value: Any) -> str:
+    text = _normalize_text(value)
+    return re.sub(r"\.\d+(?=Z|[+-]\d{2}:?\d{2}|$)", "", text) if text else ""
+
+
+def _current_document_date(rows: List[Dict[str, Any]]) -> str:
+    ignored = {"", "无", "0", "-", "未交单", "无需交单"}
+    dates = sorted(
+        value
+        for row in rows
+        if (value := _normalize_text(row.get("document_submission_date"))) not in ignored
+    )
+    return dates[-1] if dates else ""
+
+
+def build_order_vessel_overview(
+    snapshots: Optional[List[Dict[str, Any]]] = None,
+    finance_records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    snapshots = snapshots if snapshots is not None else list_order_vessel_snapshots()
+    finance_records = finance_records if finance_records is not None else list_order_finance_records()
+    finance_by_business_no: Dict[str, List[Dict[str, Any]]] = {}
+    for row in finance_records:
+        business_no = _item_no(row)
+        if business_no:
+            finance_by_business_no.setdefault(business_no, []).append(row)
+
+    records = []
+    for snapshot in snapshots:
+        business_no = _normalize_text(snapshot.get("business_no"))
+        matched_rows = finance_by_business_no.get(business_no, [])
+        current_amount = sum(
+            _money_value(
+                row.get("finance_amount_actual"),
+                row.get("finance_amount_expected"),
+                row.get("planned_finance_amount"),
+            )
+            for row in matched_rows
+        )
+        due_dates = sorted(
+            value
+            for row in matched_rows
+            if (value := _normalize_text(row.get("finance_due_date"))) not in {"", "无", "0", "-"}
+        )
+        document_date = _current_document_date(matched_rows)
+        if document_date:
+            document_status = "已交单"
+        elif matched_rows:
+            document_status = _normalize_text(snapshot.get("document_status")) or "未交单"
+        else:
+            document_status = _normalize_text(snapshot.get("document_status"))
+
+        source_amount = _to_float(snapshot.get("loan_amount"))
+        loan_amount = current_amount if matched_rows and current_amount else source_amount
+        finance_updated_at = max(
+            (_business_timestamp(row.get("updated_at")) for row in matched_rows),
+            default="",
+        )
+        records.append({
+            "business_no": business_no,
+            "steel_mill": _normalize_text(snapshot.get("steel_mill")),
+            "export_user": _normalize_text(snapshot.get("export_user")),
+            "cargo": _normalize_text(snapshot.get("cargo")),
+            "vessel": _normalize_text(snapshot.get("vessel")),
+            "quantity_mt": _to_float(snapshot.get("quantity_mt")),
+            "loading_port": _normalize_text(snapshot.get("loading_port")),
+            "loading_port_arrival_date": _normalize_text(snapshot.get("loading_port_arrival_date")),
+            "planned_berth_date": _normalize_text(snapshot.get("planned_berth_date")),
+            "discharge_port": _normalize_text(snapshot.get("discharge_port")),
+            "estimated_discharge_date": _normalize_text(snapshot.get("estimated_discharge_date")),
+            "document_status": document_status,
+            "document_date": document_date,
+            "repayment_due_date": due_dates[0] if due_dates else _normalize_text(snapshot.get("repayment_due_date")),
+            "loan_amount": loan_amount,
+            "loan_amount_note": "" if loan_amount is not None else _normalize_text(snapshot.get("loan_amount_note")),
+            "remark": _normalize_text(snapshot.get("remark")),
+            "route_distance_nm": _to_float(snapshot.get("route_distance_nm")),
+            "eta_start_date": _normalize_text(snapshot.get("eta_start_date")),
+            "estimated_speed_knots": _to_float(snapshot.get("estimated_speed_knots")),
+            "eta_basis": _normalize_text(snapshot.get("eta_basis")),
+            "route_source": _normalize_text(snapshot.get("route_source")),
+            "finance_match": bool(matched_rows),
+            "finance_record_count": len(matched_rows),
+            "finance_updated_at": finance_updated_at,
+            "business_follow_source": "订单融资当前数据" if matched_rows else "船舶快照",
+        })
+
+    source_row = snapshots[0] if snapshots else {}
+    sync_status = get_order_finance_sync_status()
+    return {
+        "source": {
+            "date": _normalize_text(source_row.get("source_date")),
+            "version": _normalize_text(source_row.get("source_version")),
+            "file_name": _normalize_text(source_row.get("source_file_name")),
+            "sheet_name": _normalize_text(source_row.get("source_sheet_name")),
+            "imported_at": _business_timestamp(source_row.get("updated_at") or source_row.get("created_at")),
+        },
+        "finance_sync": {
+            "last_success_at": _business_timestamp(sync_status.get("last_success_at")),
+            "matched_count": sum(1 for row in records if row["finance_match"]),
+            "unmatched_count": sum(1 for row in records if not row["finance_match"]),
+        },
+        "summary": {
+            "total_orders": len(records),
+            "total_quantity_mt": sum(float(row.get("quantity_mt") or 0) for row in records),
+            "financed_orders": sum(1 for row in records if _to_float(row.get("loan_amount")) is not None),
+            "total_loan_amount": sum(float(row.get("loan_amount") or 0) for row in records),
+            "pending_document_count": sum(1 for row in records if row.get("document_status") == "未交单"),
+            "no_document_required_count": sum(1 for row in records if row.get("document_status") == "无需交单"),
+        },
+        "records": records,
+    }
+
+
 def _lc_info(row: Dict[str, Any]) -> Dict[str, Any]:
     items = _json_loads(row.get("sales_contracts_json"), [])
     if isinstance(items, list) and items:
@@ -2339,6 +2701,12 @@ def order_finance_records(
 def order_finance_progress(user: dict = Depends(order_finance_current_user)):
     order_finance_require_view(user)
     return build_order_finance_progress_view()
+
+
+@router.get("/order-finance/vessel-overview")
+def order_finance_vessel_overview(user: dict = Depends(order_finance_current_user)):
+    order_finance_require_view(user)
+    return build_order_vessel_overview()
 
 
 @router.get("/order-finance/capital")

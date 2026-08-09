@@ -33,6 +33,11 @@ const state = {
   orderFinanceSummary: {},
   orderFinanceFilter: "all",
   expandedOrderFinanceContracts: new Set(),
+  orderVesselRecords: [],
+  orderVesselSummary: {},
+  orderVesselSource: {},
+  orderVesselFinanceSync: {},
+  expandedOrderVesselRecords: new Set(),
   orderFinanceCapital: {},
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
@@ -136,6 +141,16 @@ const userManagementPage = document.querySelector("#userManagementPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
+const orderVesselOverviewPage = document.querySelector("#orderVesselOverviewPage");
+const orderVesselStatus = document.querySelector("#orderVesselStatus");
+const orderVesselSummary = document.querySelector("#orderVesselSummary");
+const orderVesselKeywordFilter = document.querySelector("#orderVesselKeywordFilter");
+const orderVesselSteelMillFilter = document.querySelector("#orderVesselSteelMillFilter");
+const orderVesselDocumentFilter = document.querySelector("#orderVesselDocumentFilter");
+const orderVesselResetFiltersBtn = document.querySelector("#orderVesselResetFiltersBtn");
+const orderVesselExpandAllBtn = document.querySelector("#orderVesselExpandAllBtn");
+const orderVesselCount = document.querySelector("#orderVesselCount");
+const orderVesselTableBody = document.querySelector("#orderVesselTableBody");
 const orderFinanceImportBtn = document.querySelector("#orderFinanceImportBtn");
 const orderFinanceImportFile = document.querySelector("#orderFinanceImportFile");
 const orderFinanceStatus = document.querySelector("#orderFinanceStatus");
@@ -427,6 +442,19 @@ function moduleLabel(code) {
   return { group: "", name: code };
 }
 
+function installOrderVesselOverviewModule() {
+  const group = state.modules.find((item) => item.group === "订单融资管理");
+  if (!group || group.items.some((item) => item.code === "order_finance_vessel_overview")) return;
+  const progressIndex = group.items.findIndex((item) => item.code === "order_finance_progress");
+  if (progressIndex < 0) return;
+  const progressPermission = group.items[progressIndex];
+  group.items.splice(progressIndex, 0, {
+    ...progressPermission,
+    code: "order_finance_vessel_overview",
+    name: "订单与船舶总览",
+  });
+}
+
 function renderMenu() {
   menu.innerHTML = "";
   for (const group of state.modules) {
@@ -496,7 +524,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderVesselOverviewPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -573,6 +601,11 @@ async function activateModule(code, subName, subView = "") {
     await loadUserManagement();
     return;
   }
+  if (code === "order_finance_vessel_overview") {
+    showOnly(orderVesselOverviewPage);
+    await loadOrderVesselOverview();
+    return;
+  }
   if (code === "order_finance_progress") {
     state.orderFinanceFilter = "focusRisk";
     orderFinanceKeywordFilter.value = "";
@@ -631,6 +664,7 @@ async function bootstrap() {
   try {
     state.user = await api("/api/auth/me");
     state.modules = await api("/api/auth/modules");
+    installOrderVesselOverviewModule();
   } catch {
     localStorage.removeItem("token");
     state.token = "";
@@ -2598,6 +2632,183 @@ async function downloadOperationLogArchive(archiveId, period) {
   URL.revokeObjectURL(url);
 }
 
+function orderVesselDisplay(value, suffix = "") {
+  if (value === null || value === undefined || value === "") return "—";
+  return `${value}${suffix}`;
+}
+
+function orderVesselAmount(row) {
+  if (row.loan_amount !== null && row.loan_amount !== undefined && row.loan_amount !== "") {
+    return `¥ ${money(row.loan_amount)}`;
+  }
+  return row.loan_amount_note || "—";
+}
+
+function orderVesselFilteredRecords() {
+  const keyword = orderVesselKeywordFilter.value.trim().toLowerCase();
+  const steelMill = orderVesselSteelMillFilter.value;
+  const documentStatus = orderVesselDocumentFilter.value;
+  return state.orderVesselRecords.filter((row) => {
+    if (steelMill && row.steel_mill !== steelMill) return false;
+    if (documentStatus && row.document_status !== documentStatus) return false;
+    if (!keyword) return true;
+    const searchable = [
+      row.business_no, row.steel_mill, row.export_user, row.cargo, row.vessel,
+      row.loading_port, row.discharge_port, row.document_status, row.remark,
+    ].join(" ").toLowerCase();
+    return searchable.includes(keyword);
+  });
+}
+
+function syncOrderVesselFilterOptions() {
+  const previous = orderVesselSteelMillFilter.value;
+  const steelMills = [...new Set(state.orderVesselRecords.map((row) => row.steel_mill).filter(Boolean))].sort();
+  orderVesselSteelMillFilter.innerHTML = [
+    '<option value="">全部钢厂</option>',
+    ...steelMills.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`),
+  ].join("");
+  orderVesselSteelMillFilter.value = steelMills.includes(previous) ? previous : "";
+}
+
+function renderOrderVesselSummary() {
+  const summary = state.orderVesselSummary || {};
+  const items = [
+    ["在办业务", summary.total_orders || 0],
+    ["合同量", `${money(summary.total_quantity_mt || 0)} 吨`],
+    ["涉及融资", `${summary.financed_orders || 0} 笔`],
+    ["借款金额", orderFinanceWan(summary.total_loan_amount || 0, 2)],
+    ["未交单", `${summary.pending_document_count || 0} 笔`],
+  ];
+  orderVesselSummary.innerHTML = items.map(([label, value]) => `
+    <div class="order-vessel-summary-item">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `).join("");
+}
+
+function renderOrderVesselStatus() {
+  const sourceDate = state.orderVesselSource.date || "—";
+  const syncTime = state.orderVesselFinanceSync.last_success_at
+    ? dateTimeToSecond(state.orderVesselFinanceSync.last_success_at)
+    : "暂无记录";
+  const matched = Number(state.orderVesselFinanceSync.matched_count || 0);
+  const total = Number(state.orderVesselSummary.total_orders || 0);
+  orderVesselStatus.textContent = `船舶快照：${sourceDate} · 订单融资同步：${syncTime} · 精确匹配 ${matched}/${total}`;
+}
+
+function orderVesselDetailField(label, value, extraClass = "") {
+  return `
+    <div class="order-vessel-detail-field ${extraClass}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(orderVesselDisplay(value))}</strong>
+    </div>
+  `;
+}
+
+function orderVesselSafeUrl(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function renderOrderVesselDetails(row) {
+  const routeUrl = orderVesselSafeUrl(row.route_source);
+  const financeUpdate = row.finance_updated_at ? dateTimeToSecond(row.finance_updated_at) : "—";
+  return `
+    <div class="order-vessel-detail-grid">
+      ${orderVesselDetailField("业务编号", row.business_no)}
+      ${orderVesselDetailField("货物", row.cargo)}
+      ${orderVesselDetailField("船名", row.vessel)}
+      ${orderVesselDetailField("货物量", row.quantity_mt !== null && row.quantity_mt !== undefined ? `${money(row.quantity_mt)} 吨` : "")}
+      ${orderVesselDetailField("预计到卸港日期", row.estimated_discharge_date)}
+      ${orderVesselDetailField("交单日期", row.document_date)}
+      ${orderVesselDetailField("备注", row.remark)}
+      ${orderVesselDetailField("航线距离", row.route_distance_nm !== null && row.route_distance_nm !== undefined ? `${money(row.route_distance_nm)} 海里` : "")}
+      ${orderVesselDetailField("卸港 ETA 起算日", row.eta_start_date)}
+      ${orderVesselDetailField("估算船速", row.estimated_speed_knots !== null && row.estimated_speed_knots !== undefined ? `${money(row.estimated_speed_knots)} 节` : "")}
+      ${orderVesselDetailField("ETA 计算依据", row.eta_basis, "wide")}
+      ${orderVesselDetailField("业务跟进来源", row.business_follow_source)}
+      ${orderVesselDetailField("融资数据更新时间", financeUpdate)}
+      <div class="order-vessel-detail-field wide">
+        <span>航线来源</span>
+        <strong>${routeUrl ? `<a href="${escapeHtml(routeUrl)}" target="_blank" rel="noopener noreferrer">查看航线来源</a>` : "—"}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function renderOrderVesselRow(row) {
+  const expanded = state.expandedOrderVesselRecords.has(row.business_no);
+  return `
+    <tr class="order-vessel-record-row ${expanded ? "expanded" : ""}">
+      <td data-label="钢厂">${escapeHtml(orderVesselDisplay(row.steel_mill))}</td>
+      <td data-label="出口使用方" class="order-vessel-user-cell">${escapeHtml(orderVesselDisplay(row.export_user))}</td>
+      <td data-label="装港">${escapeHtml(orderVesselDisplay(row.loading_port))}</td>
+      <td data-label="卸港" class="order-vessel-port-cell">${escapeHtml(orderVesselDisplay(row.discharge_port))}</td>
+      <td data-label="船到装港日期">${escapeHtml(orderVesselDisplay(row.loading_port_arrival_date))}</td>
+      <td data-label="计划靠泊日期">${escapeHtml(orderVesselDisplay(row.planned_berth_date))}</td>
+      <td data-label="交单情况">${escapeHtml(orderVesselDisplay(row.document_status))}</td>
+      <td data-label="还款到期日">${escapeHtml(orderVesselDisplay(row.repayment_due_date))}</td>
+      <td data-label="借款金额" class="numeric">${escapeHtml(orderVesselAmount(row))}</td>
+      <td data-label="详情" class="order-vessel-action-cell">
+        <button type="button" class="link order-vessel-detail-btn" data-business-no="${escapeHtml(row.business_no)}" aria-expanded="${expanded}">
+          ${expanded ? "收起详情" : "查看详情"}
+        </button>
+      </td>
+    </tr>
+    ${expanded ? `
+      <tr class="order-vessel-detail-row">
+        <td colspan="10">${renderOrderVesselDetails(row)}</td>
+      </tr>
+    ` : ""}
+  `;
+}
+
+function renderOrderVesselTable() {
+  const records = orderVesselFilteredRecords();
+  orderVesselCount.textContent = `当前显示 ${records.length} / ${state.orderVesselRecords.length} 条业务`;
+  const allExpanded = records.length > 0 && records.every((row) => state.expandedOrderVesselRecords.has(row.business_no));
+  orderVesselExpandAllBtn.textContent = allExpanded ? "收起全部" : "展开全部";
+  orderVesselExpandAllBtn.setAttribute("aria-expanded", String(allExpanded));
+  if (!records.length) {
+    orderVesselTableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前筛选下暂无业务。</td></tr>';
+    return;
+  }
+  orderVesselTableBody.innerHTML = records.map(renderOrderVesselRow).join("");
+  orderVesselTableBody.querySelectorAll(".order-vessel-detail-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const businessNo = button.dataset.businessNo;
+      if (state.expandedOrderVesselRecords.has(businessNo)) state.expandedOrderVesselRecords.delete(businessNo);
+      else state.expandedOrderVesselRecords.add(businessNo);
+      renderOrderVesselTable();
+    });
+  });
+}
+
+async function loadOrderVesselOverview() {
+  try {
+    orderVesselStatus.textContent = "正在加载订单与船舶总览";
+    const result = await api(`/api/order-finance/vessel-overview?ts=${Date.now()}`);
+    state.orderVesselRecords = result.records || [];
+    state.orderVesselSummary = result.summary || {};
+    state.orderVesselSource = result.source || {};
+    state.orderVesselFinanceSync = result.finance_sync || {};
+    state.expandedOrderVesselRecords.clear();
+    syncOrderVesselFilterOptions();
+    renderOrderVesselSummary();
+    renderOrderVesselStatus();
+    renderOrderVesselTable();
+  } catch (error) {
+    orderVesselStatus.textContent = error.message;
+    orderVesselTableBody.innerHTML = `<tr><td colspan="10" class="error-cell">${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
 function orderFinanceDisplayAmount(row) {
   return row.planned_finance_amount ?? row.finance_amount_actual ?? row.finance_amount_expected ?? row.contract_amount;
 }
@@ -3308,6 +3519,24 @@ orderFinanceReminderForm.addEventListener("submit", saveOrderFinanceReminder);
 orderFinanceImportBtn.addEventListener("click", () => orderFinanceImportFile.click());
 orderFinanceImportFile.addEventListener("change", () => importOrderFinanceFile(orderFinanceImportFile.files[0]));
 orderFinanceCapitalRefreshBtn.addEventListener("click", loadOrderFinanceCapital);
+orderVesselKeywordFilter.addEventListener("input", renderOrderVesselTable);
+orderVesselSteelMillFilter.addEventListener("change", renderOrderVesselTable);
+orderVesselDocumentFilter.addEventListener("change", renderOrderVesselTable);
+orderVesselResetFiltersBtn.addEventListener("click", () => {
+  orderVesselKeywordFilter.value = "";
+  orderVesselSteelMillFilter.value = "";
+  orderVesselDocumentFilter.value = "";
+  renderOrderVesselTable();
+});
+orderVesselExpandAllBtn.addEventListener("click", () => {
+  const records = orderVesselFilteredRecords();
+  const allExpanded = records.length > 0 && records.every((row) => state.expandedOrderVesselRecords.has(row.business_no));
+  records.forEach((row) => {
+    if (allExpanded) state.expandedOrderVesselRecords.delete(row.business_no);
+    else state.expandedOrderVesselRecords.add(row.business_no);
+  });
+  renderOrderVesselTable();
+});
 orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((button) => {
   button.addEventListener("click", () => {
     orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((item) => item.classList.remove("active"));

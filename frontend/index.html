@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-finance-port-status-20260722&platts=styles-v14" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-overview-20260809&platts=styles-v14" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -442,6 +442,65 @@
           <section class="panel empty-state">
             <h2 id="placeholderTitle"></h2>
             <p>该模块的 Web 页面框架已预留，后续会按迁移顺序接入具体功能。</p>
+          </section>
+        </section>
+
+        <section id="orderVesselOverviewPage" class="page hidden">
+          <div class="toolbar order-vessel-toolbar">
+            <button id="orderVesselExpandAllBtn" type="button" class="secondary" aria-expanded="false">展开全部</button>
+            <span id="orderVesselStatus" class="toolbar-status">待加载</span>
+          </div>
+
+          <section id="orderVesselSummary" class="order-vessel-summary"></section>
+
+          <section class="panel order-vessel-workbench">
+            <div class="panel-head order-vessel-panel-head">
+              <div>
+                <h2>全部在办出口订单</h2>
+                <span id="orderVesselCount">当前显示 0 条业务</span>
+              </div>
+              <div class="order-vessel-filters">
+                <label>
+                  关键词
+                  <input id="orderVesselKeywordFilter" type="search" placeholder="搜索钢厂、使用方、港口、船名或业务编号" />
+                </label>
+                <label>
+                  钢厂
+                  <select id="orderVesselSteelMillFilter"><option value="">全部钢厂</option></select>
+                </label>
+                <label>
+                  交单情况
+                  <select id="orderVesselDocumentFilter">
+                    <option value="">全部状态</option>
+                    <option value="未交单">未交单</option>
+                    <option value="已交单">已交单</option>
+                    <option value="无需交单">无需交单</option>
+                  </select>
+                </label>
+                <button id="orderVesselResetFiltersBtn" type="button" class="secondary">重置</button>
+              </div>
+            </div>
+            <div class="table-wrap order-vessel-table-wrap">
+              <table class="order-vessel-table">
+                <thead>
+                  <tr>
+                    <th>钢厂</th>
+                    <th>出口使用方</th>
+                    <th>装港</th>
+                    <th>卸港</th>
+                    <th>船到装港日期</th>
+                    <th>计划靠泊日期</th>
+                    <th>交单情况</th>
+                    <th>还款到期日</th>
+                    <th>借款金额</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody id="orderVesselTableBody">
+                  <tr><td colspan="10" class="empty-cell">待加载</td></tr>
+                </tbody>
+              </table>
+            </div>
           </section>
         </section>
 
@@ -1385,7 +1444,7 @@
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=v14"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-overview-20260809&info=default-contract-year-20260806&platts=v14"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

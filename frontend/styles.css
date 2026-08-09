@@ -1433,6 +1433,262 @@ dialog::backdrop {
   text-align: center;
 }
 
+/* ── 订单与船舶总览 ─────────────────────────────────── */
+
+.order-vessel-toolbar {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.order-vessel-toolbar .toolbar-status {
+  white-space: normal;
+}
+
+.order-vessel-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.order-vessel-summary-item {
+  min-height: 78px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 13px 14px;
+}
+
+.order-vessel-summary-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-vessel-summary-item strong {
+  display: block;
+  margin-top: 7px;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.order-vessel-workbench {
+  margin-bottom: 14px;
+}
+
+.order-vessel-panel-head {
+  align-items: end;
+}
+
+.order-vessel-panel-head h2 {
+  margin-bottom: 5px;
+}
+
+.order-vessel-filters {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.4fr) minmax(130px, 0.7fr) minmax(140px, 0.7fr) auto;
+  gap: 8px;
+  align-items: end;
+  width: min(850px, 70%);
+}
+
+.order-vessel-table-wrap {
+  border-top: 1px solid var(--line);
+}
+
+.order-vessel-table {
+  min-width: 1280px;
+}
+
+.order-vessel-table th,
+.order-vessel-table td {
+  vertical-align: middle;
+}
+
+.order-vessel-table th {
+  white-space: nowrap;
+}
+
+.order-vessel-table td {
+  line-height: 1.45;
+}
+
+.order-vessel-record-row:hover td,
+.order-vessel-record-row.expanded td {
+  background: #f7faf9;
+}
+
+.order-vessel-user-cell {
+  min-width: 230px;
+}
+
+.order-vessel-port-cell {
+  min-width: 190px;
+}
+
+.order-vessel-action-cell {
+  white-space: nowrap;
+}
+
+.order-vessel-detail-row td {
+  border-top: 0;
+  background: #f5f8fa;
+  padding: 14px 16px 16px;
+}
+
+.order-vessel-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.order-vessel-detail-field {
+  min-height: 62px;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  background: #fff;
+  padding: 9px 10px;
+}
+
+.order-vessel-detail-field.wide {
+  grid-column: span 2;
+}
+
+.order-vessel-detail-field span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-vessel-detail-field strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.order-vessel-detail-field a {
+  color: var(--primary);
+}
+
+@media (max-width: 1200px) {
+  .order-vessel-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .order-vessel-panel-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .order-vessel-filters {
+    width: 100%;
+  }
+
+  .order-vessel-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .order-vessel-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .order-vessel-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .order-vessel-table-wrap {
+    overflow: visible;
+    padding: 12px;
+  }
+
+  .order-vessel-table,
+  .order-vessel-table tbody,
+  .order-vessel-record-row,
+  .order-vessel-record-row td,
+  .order-vessel-detail-row,
+  .order-vessel-detail-row td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .order-vessel-table thead {
+    display: none;
+  }
+
+  .order-vessel-record-row {
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  .order-vessel-record-row:first-child {
+    margin-top: 0;
+  }
+
+  .order-vessel-record-row td {
+    display: grid;
+    grid-template-columns: 116px minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    border-bottom: 1px solid #edf1f4;
+    padding: 9px 11px;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+
+  .order-vessel-record-row td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .order-vessel-record-row .order-vessel-action-cell {
+    display: block;
+    border-bottom: 0;
+  }
+
+  .order-vessel-action-cell::before {
+    display: none;
+  }
+
+  .order-vessel-action-cell button {
+    width: 100%;
+  }
+
+  .order-vessel-detail-row {
+    margin-top: -1px;
+    border: 1px solid var(--line);
+    border-radius: 0 0 6px 6px;
+  }
+
+  .order-vessel-detail-row td {
+    padding: 10px;
+  }
+
+  .order-vessel-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .order-vessel-detail-field.wide {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .order-vessel-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── 订单融资管理 ───────────────────────────────────── */
 
 .order-finance-summary {

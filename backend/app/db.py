@@ -1096,6 +1096,7 @@ def init_db() -> None:
         migrate_mid_event_schema(conn)
         migrate_sh_junneng_schema(conn)
         migrate_order_finance_schema(conn)
+        migrate_order_vessel_snapshot_schema(conn)
         migrate_dv_integration_schema(conn)
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
@@ -2645,6 +2646,102 @@ def migrate_order_finance_schema(conn) -> None:
     for name, col_type in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE order_finance_progress ADD COLUMN {name} {col_type}")
+
+
+def migrate_order_vessel_snapshot_schema(conn) -> None:
+    """Create the isolated order-and-vessel snapshot table."""
+    if _is_pg():
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_vessel_snapshots (
+                id SERIAL PRIMARY KEY,
+                source_version TEXT NOT NULL,
+                source_date TEXT NOT NULL,
+                source_file_name TEXT NOT NULL,
+                source_sheet_name TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                source_row INTEGER NOT NULL,
+                business_no TEXT NOT NULL,
+                steel_mill TEXT,
+                export_user TEXT,
+                cargo TEXT,
+                vessel TEXT,
+                quantity_mt DOUBLE PRECISION,
+                loading_port TEXT,
+                loading_port_arrival_date TEXT,
+                planned_berth_date TEXT,
+                discharge_port TEXT,
+                estimated_discharge_date TEXT,
+                document_status TEXT,
+                repayment_due_date TEXT,
+                loan_amount DOUBLE PRECISION,
+                loan_amount_note TEXT,
+                remark TEXT,
+                route_distance_nm DOUBLE PRECISION,
+                eta_start_date TEXT,
+                estimated_speed_knots DOUBLE PRECISION,
+                eta_basis TEXT,
+                route_source TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                imported_by TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_version, business_no)
+            );
+            CREATE INDEX IF NOT EXISTS idx_order_vessel_snapshot_active
+                ON order_vessel_snapshots(is_active, source_date, source_row);
+            CREATE INDEX IF NOT EXISTS idx_order_vessel_snapshot_business_no
+                ON order_vessel_snapshots(business_no);
+            """
+        )
+        _secure_postgres_tables(cur, ("order_vessel_snapshots",))
+        conn.commit()
+        return
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS order_vessel_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_version TEXT NOT NULL,
+            source_date TEXT NOT NULL,
+            source_file_name TEXT NOT NULL,
+            source_sheet_name TEXT NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            source_row INTEGER NOT NULL,
+            business_no TEXT NOT NULL,
+            steel_mill TEXT,
+            export_user TEXT,
+            cargo TEXT,
+            vessel TEXT,
+            quantity_mt REAL,
+            loading_port TEXT,
+            loading_port_arrival_date TEXT,
+            planned_berth_date TEXT,
+            discharge_port TEXT,
+            estimated_discharge_date TEXT,
+            document_status TEXT,
+            repayment_due_date TEXT,
+            loan_amount REAL,
+            loan_amount_note TEXT,
+            remark TEXT,
+            route_distance_nm REAL,
+            eta_start_date TEXT,
+            estimated_speed_knots REAL,
+            eta_basis TEXT,
+            route_source TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            imported_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_version, business_no)
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_vessel_snapshot_active
+            ON order_vessel_snapshots(is_active, source_date, source_row);
+        CREATE INDEX IF NOT EXISTS idx_order_vessel_snapshot_business_no
+            ON order_vessel_snapshots(business_no);
+        """
+    )
 
 
 def migrate_sh_junneng_schema(conn) -> None:
