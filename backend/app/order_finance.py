@@ -2162,6 +2162,16 @@ def build_order_finance_progress_view(records: Optional[List[Dict[str, Any]]] = 
         item.get("item_no") or "",
     ))
     open_contracts = [item for item in contracts if item["stage"] != "已完成"]
+    completed_contracts = sorted(
+        (item for item in contracts if item["stage"] == "已完成"),
+        key=lambda item: (
+            bool(item.get("latest_due_date")),
+            item.get("latest_due_date") or "",
+            item.get("item_no") or "",
+        ),
+        reverse=True,
+    )
+    contracts = open_contracts + completed_contracts
     summary = {
         "open_contracts": len(open_contracts),
         "active_finance": sum(item["total_finance"] for item in open_contracts),
