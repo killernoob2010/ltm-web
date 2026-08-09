@@ -47,6 +47,7 @@ test("order and vessel overview exposes source freshness, filters, and mobile ca
   assert.match(indexHtml, /id="orderVesselSteelMillFilter"/);
   assert.match(indexHtml, /id="orderVesselDocumentFilter"/);
   assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-record-row td\s*\{[\s\S]*grid-template-columns: 116px minmax\(0, 1fr\)/);
+  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-record-row td\s*\{[\s\S]*height: auto;[\s\S]*min-height: 44px/);
   assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-record-row td\s*\{[\s\S]*white-space: normal/);
   assert.match(stylesCss, /\.order-vessel-detail-grid\s*\{[\s\S]*grid-template-columns: repeat\(4/);
   assert.doesNotMatch(stylesCss, /order-vessel[^}]*#fff(?:8ea|4f2|1f0)/);
@@ -221,8 +222,8 @@ test("order finance supports port confirmation and the collected-unshipped stage
   assert.match(appJs, /已确认集港：\$\{item\.port_confirmed_date\}/);
   assert.match(appJs, /\["已放款待集港", summary\.financed_uncollected \|\| 0\]/);
   assert.match(appJs, /\["已集港待装船", summary\.collected_unshipped \|\| 0\]/);
-  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-overview-20260809b/);
-  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-vessel-overview-20260809b/);
+  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-overview-20260809c/);
+  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-vessel-overview-20260809c/);
 });
 
 test("order finance shows compact automatic sync status and new payment terminology", () => {

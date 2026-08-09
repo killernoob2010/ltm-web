@@ -1638,6 +1638,8 @@ dialog::backdrop {
     display: grid;
     grid-template-columns: 116px minmax(0, 1fr);
     gap: 10px;
+    height: auto;
+    min-height: 44px;
     min-width: 0;
     border-bottom: 1px solid #edf1f4;
     padding: 9px 11px;
