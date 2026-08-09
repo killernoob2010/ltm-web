@@ -593,6 +593,58 @@ def test_schema_permissions_and_backup_contract(tmp_path, monkeypatch):
     } <= set(CORE_TABLES)
 
 
+def test_platts_permission_sync_uses_futures_sensitive_default_and_preserves_existing_choice(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        users = [
+            ("期货成员", "futures-user", "期货组", "用户"),
+            ("期货领导", "futures-leader", "期货组", "领导"),
+            ("期货例外", "futures-exception", "期货组", "用户"),
+        ]
+        user_ids = {}
+        for name, username, department, role in users:
+            cur.execute(
+                "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+                (name, username, department, db.password_hash("test-password"), role),
+            )
+            user_ids[username] = cur.lastrowid
+        cur.execute(
+            """
+            INSERT INTO module_permissions
+                (user_id, module_code, can_view, can_edit, can_sensitive)
+            VALUES (?, 'platts_index_monitor', 1, 0, 0)
+            """,
+            (user_ids["futures-exception"],),
+        )
+
+        db.sync_platts_index_permissions(cur)
+
+        rows = {
+            row["username"]: (row["can_view"], row["can_edit"], row["can_sensitive"])
+            for row in conn.execute(
+                """
+                SELECT users.username, module_permissions.can_view,
+                       module_permissions.can_edit, module_permissions.can_sensitive
+                FROM users
+                JOIN module_permissions ON module_permissions.user_id = users.id
+                WHERE module_permissions.module_code = 'platts_index_monitor'
+                  AND users.username IN ('futures-user', 'futures-leader', 'futures-exception')
+                """
+            ).fetchall()
+        }
+        futures_user = dict(
+            conn.execute("SELECT * FROM users WHERE username = 'futures-user'").fetchone()
+        )
+
+    assert rows["futures-user"] == (1, 1, 1)
+    assert rows["futures-leader"] == (1, 1, 1)
+    assert rows["futures-exception"] == (1, 0, 0)
+    assert permissions.can(futures_user, "platts_index.data", "view")
+    assert permissions.can(futures_user, "platts_index.imports", "import")
+    assert permissions.can(futures_user, "platts_index.manage", "manage")
+
+
 def test_postgres_schema_uses_idempotent_create_statements(monkeypatch):
     statements = []
 

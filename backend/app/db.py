@@ -2237,9 +2237,11 @@ def sync_platts_index_permissions(cur) -> None:
         department = user["department"]
         if role in {"管理员", "admin"}:
             permission = (1, 1, 1)
+        elif department == "期货组":
+            permission = (1, 1, 1)
         elif role == "领导":
             permission = (1, 0, 0)
-        elif department in {"贸易处", "期货组", "管理部门"}:
+        elif department in {"贸易处", "管理部门"}:
             permission = (1, 1, 0)
         else:
             continue
