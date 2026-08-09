@@ -837,6 +837,40 @@ def test_documented_missing_due_is_medium_data_issue():
     assert item["weekly_focus_reasons"] == []
 
 
+def test_completed_contracts_show_latest_due_date_first_and_missing_date_last():
+    records = [
+        progress_record("OPEN", "存续", finance_due_date="2026-08-01"),
+        progress_record(
+            "DONE-2025",
+            "结案",
+            id=2,
+            business_key="ITEM|DONE-2025|1",
+            finance_due_date="2025-08-01",
+        ),
+        progress_record(
+            "DONE-2026",
+            "结案",
+            id=3,
+            business_key="ITEM|DONE-2026|1",
+            finance_due_date="2026-08-01",
+        ),
+        progress_record(
+            "DONE-NO-DATE",
+            "结案",
+            id=4,
+            business_key="ITEM|DONE-NO-DATE|1",
+            finance_due_date="",
+        ),
+    ]
+
+    item_nos = [
+        item["item_no"]
+        for item in build_order_finance_progress_view(records)["contracts"]
+    ]
+
+    assert item_nos == ["OPEN", "DONE-2026", "DONE-2025", "DONE-NO-DATE"]
+
+
 def test_wps_date_deletion_regresses_to_preserved_manual_shipment():
     today = date.today().isoformat()
     original = progress_record(
