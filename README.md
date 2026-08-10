@@ -164,7 +164,7 @@ IRON_ORE_BASIS_SNAPSHOT_UPSTREAM_URL=https://ltm-web-staging.onrender.com
 
 ### 订单与船舶快照导入
 
-订单与船舶总览通过业务编号精确关联当前订单融资数据；不做模糊匹配。船舶字段来自独立的定稿 Excel 快照，缺失字段在页面显示为 `—`，不会写回 `order_finance_progress`。
+订单与船舶总览通过业务编号精确关联当前订单融资数据；不做模糊匹配。当前确认基线为 `2026-08-10 R1`，页面只作为预览/影子版本，不改写或替代线下 R1。汇报还款到期日来自 R1；邮件台账只用于逐业务编号核对；WPS 的 `finance_due_date` 独立显示为资金执行到期日，不能覆盖汇报日期。船舶字段缺失时页面显示为 `—`，不会写回 `order_finance_progress`。
 
 导入命令默认只校验锁定的定稿文件、来源日期、字段、业务编号唯一性和汇总值，不写数据库：
 
@@ -176,6 +176,13 @@ env -u DATABASE_URL .venv/bin/python scripts/import_order_vessel_snapshot.py /�
 
 ```bash
 .venv/bin/python scripts/import_order_vessel_snapshot.py /绝对路径/出口船舶动态定稿.xlsx --apply
+```
+
+可通过 `--email-checks-json` 同步写入已经人工确认来源的邮件核对结果。JSON 顶层为 `checks` 数组，每项必须包含 `business_no`、`email_due_dates`、`source` 和 `source_date`；业务编号必须精确命中当前活动 R1。空数组、多日期和单边缺失都会保留为核对状态，不会改写 R1 日期：
+
+```bash
+.venv/bin/python scripts/import_order_vessel_snapshot.py /绝对路径/出口船舶动态定稿.xlsx \
+  --email-checks-json /绝对路径/邮件核对结果.json --apply
 ```
 
 ### 订单融资 WPS 自动同步
