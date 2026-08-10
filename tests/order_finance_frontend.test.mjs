@@ -17,40 +17,49 @@ test("order and vessel overview is the first order-finance entry without a new p
   assert.ok(appJs.indexOf('code: "order_finance_vessel_overview"') < appJs.indexOf('if (code === "order_finance_progress")'));
 });
 
-test("order and vessel overview keeps a concise default table and expands full record details", () => {
+test("order and vessel overview replaces the existing table with one process card per business number", () => {
   const pageStart = indexHtml.indexOf('id="orderVesselOverviewPage"');
   const pageEnd = indexHtml.indexOf('id="orderFinancePage"', pageStart);
   assert.notEqual(pageStart, -1);
   assert.notEqual(pageEnd, -1);
   const pageHtml = indexHtml.slice(pageStart, pageEnd);
 
-  ["钢厂", "出口使用方", "装港", "卸港", "船到装港日期", "计划靠泊日期", "交单情况", "还款到期日", "借款金额", "详情"].forEach((label) => {
-    assert.match(pageHtml, new RegExp(`<th>${label}</th>`));
-  });
-  ["业务编号", "货物量", "货物", "船名"].forEach((label) => {
-    assert.doesNotMatch(pageHtml, new RegExp(`<th>${label}</th>`));
-  });
+  assert.match(pageHtml, /id="orderVesselCardList"/);
+  assert.doesNotMatch(pageHtml, /<table|<thead|<th>/);
   assert.match(pageHtml, /id="orderVesselExpandAllBtn"[^>]*>展开全部<\/button>/);
+  assert.match(appJs, /class="order-vessel-order-card/);
+  assert.match(appJs, /class="order-vessel-card-body"/);
+  assert.match(appJs, /order-vessel-origin/);
+  assert.match(appJs, /order-vessel-flow/);
+  assert.match(appJs, /order-vessel-destination/);
+  ["船到装港", "计划靠泊", "交单", "还款"].forEach((label) => {
+    assert.match(appJs, new RegExp(`label: "${label}"`));
+  });
   assert.match(appJs, /class="link order-vessel-detail-btn"/);
   assert.match(appJs, /\$\{expanded \? "收起详情" : "查看详情"\}/);
   assert.match(appJs, /function renderOrderVesselDetails\(/);
   assert.match(appJs, /orderVesselDisplay\(value/);
   assert.match(appJs, /return "—"/);
-  assert.doesNotMatch(pageHtml, /简要视图|完整视图/);
 });
 
-test("order and vessel overview exposes source freshness, filters, and mobile cards", () => {
+test("order and vessel overview exposes source freshness, two-layer statuses, filters, and a mobile timeline", () => {
   assert.match(appJs, /\/api\/order-finance\/vessel-overview\?ts=\$\{Date\.now\(\)\}/);
   assert.match(appJs, /船舶快照：\$\{sourceDate\}/);
   assert.match(appJs, /精确匹配 \$\{matched\}\/\$\{total\}/);
   assert.match(indexHtml, /id="orderVesselKeywordFilter"/);
   assert.match(indexHtml, /id="orderVesselSteelMillFilter"/);
-  assert.match(indexHtml, /id="orderVesselDocumentFilter"/);
-  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-record-row td\s*\{[\s\S]*grid-template-columns: 116px minmax\(0, 1fr\)/);
-  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-record-row td\s*\{[\s\S]*height: auto;[\s\S]*min-height: 44px/);
-  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-record-row td\s*\{[\s\S]*white-space: normal/);
+  assert.match(indexHtml, /id="orderVesselStatusFilter"/);
+  ["完成", "当前", "待处理", "异常", "缺失", "不涉及融资"].forEach((label) => {
+    assert.match(indexHtml, new RegExp(`>${label}<`));
+  });
+  assert.match(indexHtml, /class="order-vessel-status-legend"/);
+  assert.match(appJs, /node\.base_status/);
+  assert.match(appJs, /node\.alerts/);
+  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-card-body\s*\{[\s\S]*flex-direction: column/);
+  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-flow\s*\{[\s\S]*grid-template-columns: 1fr/);
+  assert.match(stylesCss, /@media \(max-width: 760px\)[\s\S]*\.order-vessel-flow-step:not\(:last-child\)::after/);
+  assert.match(stylesCss, /button\.order-vessel-detail-btn\s*\{[\s\S]*min-height: 44px/);
   assert.match(stylesCss, /\.order-vessel-detail-grid\s*\{[\s\S]*grid-template-columns: repeat\(4/);
-  assert.doesNotMatch(stylesCss, /order-vessel[^}]*#fff(?:8ea|4f2|1f0)/);
 });
 
 test("order finance page switch hides capital monitor before showing progress", () => {
@@ -222,8 +231,8 @@ test("order finance supports port confirmation and the collected-unshipped stage
   assert.match(appJs, /已确认集港：\$\{item\.port_confirmed_date\}/);
   assert.match(appJs, /\["已放款待集港", summary\.financed_uncollected \|\| 0\]/);
   assert.match(appJs, /\["已集港待装船", summary\.collected_unshipped \|\| 0\]/);
-  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-overview-20260809c/);
-  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-vessel-overview-20260809c/);
+  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-flow-cards-20260810a/);
+  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-vessel-flow-cards-20260810a/);
 });
 
 test("order finance shows compact automatic sync status and new payment terminology", () => {

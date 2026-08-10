@@ -2070,12 +2070,232 @@ def _current_document_date(rows: List[Dict[str, Any]]) -> str:
     return dates[-1] if dates else ""
 
 
+ORDER_VESSEL_PROCESS_STATUS_TEXT = {
+    "complete": "完成",
+    "current": "当前",
+    "pending": "待处理",
+    "na": "不涉及融资",
+}
+
+
+def _order_vessel_exporter(business_no: str, rows: List[Dict[str, Any]]) -> str:
+    exporters = []
+    for row in rows:
+        value = _normalize_text(row.get("overseas_entity"))
+        if value and value not in exporters:
+            exporters.append(value)
+    if exporters:
+        return " / ".join(exporters)
+    return _xlsx_entity(business_no) if business_no else ""
+
+
+def _order_vessel_process_node(
+    key: str,
+    label: str,
+    base_status: str,
+    value: str,
+    *,
+    status_text: str = "",
+    alerts: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "base_status": base_status,
+        "value": value,
+        "status_text": status_text or ORDER_VESSEL_PROCESS_STATUS_TEXT[base_status],
+        "alerts": alerts or [],
+    }
+
+
+def _build_order_vessel_process(
+    record: Dict[str, Any],
+    matched_rows: List[Dict[str, Any]],
+    current_date: date,
+) -> Dict[str, Any]:
+    document_status = _normalize_text(record.get("document_status"))
+    document_date = _normalize_text(record.get("document_date"))
+    due_date_text = _normalize_text(record.get("repayment_due_date"))
+    due_date = _parse_date(due_date_text)
+    arrival_date_text = _normalize_text(record.get("loading_port_arrival_date"))
+    arrival_date = _parse_date(arrival_date_text)
+    berth_date_text = _normalize_text(record.get("planned_berth_date"))
+    berth_date = _parse_date(berth_date_text)
+    repayment_dates = sorted(
+        value
+        for row in matched_rows
+        if (value := _normalize_text(row.get("tail_payment_date")))
+    )
+    paid_count = sum(1 for row in matched_rows if _normalize_text(row.get("tail_payment_date")))
+    all_paid = bool(matched_rows) and paid_count == len(matched_rows)
+    payment_started = paid_count > 0
+    non_financing = "不涉及融资" in _normalize_text(record.get("loan_amount_note"))
+    document_complete = bool(document_date) or document_status in {"已交单", "无需交单"}
+    prior_flow_complete = document_complete or payment_started
+
+    arrival_alerts: List[Dict[str, str]] = []
+    if not arrival_date_text:
+        arrival_alerts.append({"kind": "missing", "text": "日期缺失"})
+    if prior_flow_complete or (arrival_date and arrival_date < current_date):
+        arrival_base = "complete"
+        arrival_status = "完成"
+    else:
+        arrival_base = "current"
+        arrival_status = "当前 · 待确认" if arrival_date_text else "当前 · 待补资料"
+
+    berth_alerts: List[Dict[str, str]] = []
+    if not berth_date_text:
+        berth_alerts.append({"kind": "missing", "text": "日期缺失"})
+    if prior_flow_complete:
+        berth_base = "complete"
+        berth_status = "完成 · 流程已推进"
+    elif arrival_base == "complete":
+        berth_base = "current"
+        berth_status = "当前 · 待确认"
+        if berth_date and berth_date < current_date:
+            berth_alerts.append({"kind": "abnormal", "text": "计划日已过，待确认"})
+    else:
+        berth_base = "pending"
+        berth_status = "待处理"
+
+    document_alerts: List[Dict[str, str]] = []
+    if document_status == "无需交单":
+        document_base = "complete"
+        document_value = "无需交单"
+        document_status_text = "完成 · 无需交单"
+    elif document_complete or payment_started:
+        document_base = "complete"
+        document_value = document_date or "已交单"
+        document_status_text = "完成"
+        if not document_date:
+            document_alerts.append({"kind": "missing", "text": "交单日期缺失"})
+    else:
+        document_base = "pending"
+        document_value = "尚未交单" if document_status else "状态未提供"
+        document_status_text = "待处理"
+        document_deadline = due_date - timedelta(days=15) if due_date else None
+        if document_deadline and document_deadline <= current_date and not non_financing:
+            document_alerts.append({
+                "kind": "abnormal",
+                "text": f"交单节点已到（{document_deadline.isoformat()}）",
+            })
+
+    repayment_alerts: List[Dict[str, str]] = []
+    if non_financing:
+        repayment_base = "na"
+        repayment_value = "不适用"
+        repayment_status = "不涉及融资"
+    elif all_paid:
+        repayment_base = "complete"
+        repayment_value = repayment_dates[-1] if repayment_dates else "已回款"
+        repayment_status = "完成"
+    elif document_complete or payment_started:
+        repayment_base = "current"
+        repayment_value = f"到期 {due_date_text}" if due_date_text else "到期日未提供"
+        repayment_status = "当前 · 待回款" if not paid_count else f"当前 · 已回款 {paid_count}/{len(matched_rows)} 笔"
+    else:
+        repayment_base = "pending"
+        repayment_value = f"到期 {due_date_text}" if due_date_text else "到期日未提供"
+        repayment_status = "待处理"
+    if not non_financing and not all_paid:
+        if not due_date_text:
+            repayment_alerts.append({"kind": "missing", "text": "到期日缺失"})
+        elif due_date and due_date < current_date:
+            repayment_alerts.append({"kind": "abnormal", "text": "已超过融资到期日"})
+
+    nodes = [
+        _order_vessel_process_node(
+            "arrival", "船到装港", arrival_base,
+            arrival_date_text or "日期未提供",
+            status_text=arrival_status,
+            alerts=arrival_alerts,
+        ),
+        _order_vessel_process_node(
+            "berth", "计划靠泊", berth_base,
+            berth_date_text or "日期未提供",
+            status_text=berth_status,
+            alerts=berth_alerts,
+        ),
+        _order_vessel_process_node(
+            "document", "交单", document_base, document_value,
+            status_text=document_status_text,
+            alerts=document_alerts,
+        ),
+        _order_vessel_process_node(
+            "repayment", "还款", repayment_base, repayment_value,
+            status_text=repayment_status,
+            alerts=repayment_alerts,
+        ),
+    ]
+
+    missing_fields = []
+    for field, label in (
+        ("exporter", "出口方"),
+        ("steel_mill", "钢厂"),
+        ("loading_port", "装港"),
+        ("discharge_port", "卸港"),
+        ("export_user", "出口使用方"),
+    ):
+        if not _normalize_text(record.get(field)):
+            missing_fields.append(label)
+    for node, label in zip(nodes, ("船到装港日期", "计划靠泊日期", "交单日期", "还款到期日")):
+        if any(alert["kind"] == "missing" for alert in node["alerts"]):
+            missing_fields.append(label)
+    missing_fields = list(dict.fromkeys(missing_fields))
+    abnormal_count = sum(
+        1 for node in nodes for alert in node["alerts"] if alert["kind"] == "abnormal"
+    )
+    status_set = {node["base_status"] for node in nodes}
+    status_set.update(alert["kind"] for node in nodes for alert in node["alerts"])
+    if missing_fields:
+        status_set.add("missing")
+    status_order = ("complete", "current", "pending", "abnormal", "missing", "na")
+    status_values = [value for value in status_order if value in status_set]
+    current_node = next((node for node in nodes if node["base_status"] == "current"), None)
+
+    if non_financing:
+        overall_tone = "na"
+        overall_label = "融资：不涉及"
+        if abnormal_count:
+            overall_label += f" · 异常 {abnormal_count}"
+        elif missing_fields:
+            overall_label += f" · 缺失 {len(missing_fields)}"
+    elif abnormal_count:
+        overall_tone = "abnormal"
+        prefix = f"当前：{current_node['label']}" if current_node else "流程"
+        overall_label = f"{prefix} · 异常 {abnormal_count}"
+    elif missing_fields:
+        overall_tone = "missing"
+        prefix = f"当前：{current_node['label']}" if current_node else "流程"
+        overall_label = f"{prefix} · 缺失 {len(missing_fields)}"
+    elif current_node:
+        overall_tone = "current"
+        overall_label = f"当前：{current_node['label']}"
+    else:
+        overall_tone = "complete"
+        overall_label = "流程完成"
+
+    return {
+        "nodes": nodes,
+        "status_values": status_values,
+        "missing_fields": missing_fields,
+        "abnormal_count": abnormal_count,
+        "overall": {
+            "tone": overall_tone,
+            "label": overall_label,
+            "current_key": current_node["key"] if current_node else "",
+        },
+    }
+
+
 def build_order_vessel_overview(
     snapshots: Optional[List[Dict[str, Any]]] = None,
     finance_records: Optional[List[Dict[str, Any]]] = None,
+    today: Optional[date] = None,
 ) -> Dict[str, Any]:
     snapshots = snapshots if snapshots is not None else list_order_vessel_snapshots()
     finance_records = finance_records if finance_records is not None else list_order_finance_records()
+    current_date = today or date.today()
     finance_by_business_no: Dict[str, List[Dict[str, Any]]] = {}
     for row in finance_records:
         business_no = _item_no(row)
@@ -2113,8 +2333,10 @@ def build_order_vessel_overview(
             (_business_timestamp(row.get("updated_at")) for row in matched_rows),
             default="",
         )
-        records.append({
+        exporter = _order_vessel_exporter(business_no, matched_rows)
+        record = {
             "business_no": business_no,
+            "exporter": exporter,
             "steel_mill": _normalize_text(snapshot.get("steel_mill")),
             "export_user": _normalize_text(snapshot.get("export_user")),
             "cargo": _normalize_text(snapshot.get("cargo")),
@@ -2140,7 +2362,9 @@ def build_order_vessel_overview(
             "finance_record_count": len(matched_rows),
             "finance_updated_at": finance_updated_at,
             "business_follow_source": "订单融资当前数据" if matched_rows else "船舶快照",
-        })
+        }
+        record["process"] = _build_order_vessel_process(record, matched_rows, current_date)
+        records.append(record)
 
     source_row = snapshots[0] if snapshots else {}
     sync_status = get_order_finance_sync_status()

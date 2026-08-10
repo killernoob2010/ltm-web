@@ -146,11 +146,11 @@ const orderVesselStatus = document.querySelector("#orderVesselStatus");
 const orderVesselSummary = document.querySelector("#orderVesselSummary");
 const orderVesselKeywordFilter = document.querySelector("#orderVesselKeywordFilter");
 const orderVesselSteelMillFilter = document.querySelector("#orderVesselSteelMillFilter");
-const orderVesselDocumentFilter = document.querySelector("#orderVesselDocumentFilter");
+const orderVesselStatusFilter = document.querySelector("#orderVesselStatusFilter");
 const orderVesselResetFiltersBtn = document.querySelector("#orderVesselResetFiltersBtn");
 const orderVesselExpandAllBtn = document.querySelector("#orderVesselExpandAllBtn");
 const orderVesselCount = document.querySelector("#orderVesselCount");
-const orderVesselTableBody = document.querySelector("#orderVesselTableBody");
+const orderVesselCardList = document.querySelector("#orderVesselCardList");
 const orderFinanceImportBtn = document.querySelector("#orderFinanceImportBtn");
 const orderFinanceImportFile = document.querySelector("#orderFinanceImportFile");
 const orderFinanceStatus = document.querySelector("#orderFinanceStatus");
@@ -2644,17 +2644,47 @@ function orderVesselAmount(row) {
   return row.loan_amount_note || "—";
 }
 
+const ORDER_VESSEL_FLOW_NODES = [
+  { key: "arrival", label: "船到装港" },
+  { key: "berth", label: "计划靠泊" },
+  { key: "document", label: "交单" },
+  { key: "repayment", label: "还款" },
+];
+
+const ORDER_VESSEL_STATUS_MARKS = {
+  complete: "✓",
+  current: "●",
+  pending: "○",
+  abnormal: "!",
+  missing: "?",
+  na: "—",
+};
+
+function orderVesselProcessNodes(row) {
+  if (Array.isArray(row.process?.nodes) && row.process.nodes.length === 4) return row.process.nodes;
+  return ORDER_VESSEL_FLOW_NODES.map((node) => ({
+    ...node,
+    base_status: "pending",
+    value: "状态未提供",
+    status_text: "待处理",
+    alerts: [{ kind: "missing", text: "流程状态缺失" }],
+  }));
+}
+
 function orderVesselFilteredRecords() {
   const keyword = orderVesselKeywordFilter.value.trim().toLowerCase();
   const steelMill = orderVesselSteelMillFilter.value;
-  const documentStatus = orderVesselDocumentFilter.value;
+  const processStatus = orderVesselStatusFilter.value;
   return state.orderVesselRecords.filter((row) => {
     if (steelMill && row.steel_mill !== steelMill) return false;
-    if (documentStatus && row.document_status !== documentStatus) return false;
+    if (processStatus && !row.process?.status_values?.includes(processStatus)) return false;
     if (!keyword) return true;
+    const processText = orderVesselProcessNodes(row)
+      .flatMap((node) => [node.label, node.value, node.status_text, ...(node.alerts || []).map((alert) => alert.text)])
+      .join(" ");
     const searchable = [
-      row.business_no, row.steel_mill, row.export_user, row.cargo, row.vessel,
-      row.loading_port, row.discharge_port, row.document_status, row.remark,
+      row.business_no, row.exporter, row.steel_mill, row.export_user, row.cargo, row.vessel,
+      row.loading_port, row.discharge_port, row.document_status, row.remark, processText,
     ].join(" ").toLowerCase();
     return searchable.includes(keyword);
   });
@@ -2673,17 +2703,17 @@ function syncOrderVesselFilterOptions() {
 function renderOrderVesselSummary() {
   const summary = state.orderVesselSummary || {};
   const items = [
-    ["在办业务", summary.total_orders || 0],
-    ["合同量", `${money(summary.total_quantity_mt || 0)} 吨`],
-    ["涉及融资", `${summary.financed_orders || 0} 笔`],
+    ["在办", summary.total_orders || 0],
+    ["合同量", `${money(summary.total_quantity_mt || 0)}吨`],
+    ["融资", `${summary.financed_orders || 0}笔`],
     ["借款金额", orderFinanceWan(summary.total_loan_amount || 0, 2)],
-    ["未交单", `${summary.pending_document_count || 0} 笔`],
+    ["未交单", `${summary.pending_document_count || 0}笔`],
   ];
   orderVesselSummary.innerHTML = items.map(([label, value]) => `
-    <div class="order-vessel-summary-item">
-      <span>${escapeHtml(label)}</span>
+    <span class="order-vessel-summary-item">
+      <small>${escapeHtml(label)}</small>
       <strong>${escapeHtml(value)}</strong>
-    </div>
+    </span>
   `).join("");
 }
 
@@ -2722,9 +2752,13 @@ function renderOrderVesselDetails(row) {
   return `
     <div class="order-vessel-detail-grid">
       ${orderVesselDetailField("业务编号", row.business_no)}
+      ${orderVesselDetailField("出口方", row.exporter)}
       ${orderVesselDetailField("货物", row.cargo)}
       ${orderVesselDetailField("船名", row.vessel)}
       ${orderVesselDetailField("货物量", row.quantity_mt !== null && row.quantity_mt !== undefined ? `${money(row.quantity_mt)} 吨` : "")}
+      ${orderVesselDetailField("交单状态", row.document_status)}
+      ${orderVesselDetailField("还款到期日", row.repayment_due_date)}
+      ${orderVesselDetailField("借款金额", orderVesselAmount(row))}
       ${orderVesselDetailField("预计到卸港日期", row.estimated_discharge_date)}
       ${orderVesselDetailField("交单日期", row.document_date)}
       ${orderVesselDetailField("备注", row.remark)}
@@ -2742,50 +2776,109 @@ function renderOrderVesselDetails(row) {
   `;
 }
 
-function renderOrderVesselRow(row) {
-  const expanded = state.expandedOrderVesselRecords.has(row.business_no);
+function orderVesselSideField(row, label, value) {
+  const missing = row.process?.missing_fields?.includes(label) || !value;
   return `
-    <tr class="order-vessel-record-row ${expanded ? "expanded" : ""}">
-      <td data-label="钢厂">${escapeHtml(orderVesselDisplay(row.steel_mill))}</td>
-      <td data-label="出口使用方" class="order-vessel-user-cell">${escapeHtml(orderVesselDisplay(row.export_user))}</td>
-      <td data-label="装港">${escapeHtml(orderVesselDisplay(row.loading_port))}</td>
-      <td data-label="卸港" class="order-vessel-port-cell">${escapeHtml(orderVesselDisplay(row.discharge_port))}</td>
-      <td data-label="船到装港日期">${escapeHtml(orderVesselDisplay(row.loading_port_arrival_date))}</td>
-      <td data-label="计划靠泊日期">${escapeHtml(orderVesselDisplay(row.planned_berth_date))}</td>
-      <td data-label="交单情况">${escapeHtml(orderVesselDisplay(row.document_status))}</td>
-      <td data-label="还款到期日">${escapeHtml(orderVesselDisplay(row.repayment_due_date))}</td>
-      <td data-label="借款金额" class="numeric">${escapeHtml(orderVesselAmount(row))}</td>
-      <td data-label="详情" class="order-vessel-action-cell">
-        <button type="button" class="link order-vessel-detail-btn" data-business-no="${escapeHtml(row.business_no)}" aria-expanded="${expanded}">
-          ${expanded ? "收起详情" : "查看详情"}
-        </button>
-      </td>
-    </tr>
-    ${expanded ? `
-      <tr class="order-vessel-detail-row">
-        <td colspan="10">${renderOrderVesselDetails(row)}</td>
-      </tr>
-    ` : ""}
+    <div>
+      <dt>${escapeHtml(label)}</dt>
+      <dd class="${missing ? "missing" : ""}">
+        ${escapeHtml(orderVesselDisplay(value))}
+        ${missing ? '<span class="order-vessel-inline-alert missing">? 缺失</span>' : ""}
+      </dd>
+    </div>
   `;
 }
 
-function renderOrderVesselTable() {
+function renderOrderVesselFlowNode(node) {
+  const baseStatus = ORDER_VESSEL_STATUS_MARKS[node.base_status] ? node.base_status : "pending";
+  const alerts = Array.isArray(node.alerts) ? node.alerts : [];
+  return `
+    <div class="order-vessel-flow-step ${escapeHtml(baseStatus)}" data-base-status="${escapeHtml(baseStatus)}">
+      <span class="order-vessel-status-mark" aria-hidden="true">${escapeHtml(ORDER_VESSEL_STATUS_MARKS[baseStatus])}</span>
+      <strong>${escapeHtml(node.label)}</strong>
+      <span class="order-vessel-flow-value">${escapeHtml(orderVesselDisplay(node.value))}</span>
+      <span class="order-vessel-flow-status">${escapeHtml(orderVesselDisplay(node.status_text))}</span>
+      ${alerts.map((alert) => `
+        <span class="order-vessel-node-alert ${escapeHtml(alert.kind)}">
+          ${escapeHtml(ORDER_VESSEL_STATUS_MARKS[alert.kind] || "!")} ${escapeHtml(alert.text)}
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function orderVesselDomId(value) {
+  return `order-vessel-${String(value || "unknown").replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+}
+
+function renderOrderVesselCard(row) {
+  const expanded = state.expandedOrderVesselRecords.has(row.business_no);
+  const overall = row.process?.overall || { tone: "missing", label: "流程状态缺失" };
+  const overallTone = ORDER_VESSEL_STATUS_MARKS[overall.tone] ? overall.tone : "missing";
+  const detailId = orderVesselDomId(row.business_no);
+  const caption = [
+    row.cargo,
+    row.quantity_mt !== null && row.quantity_mt !== undefined ? `${money(row.quantity_mt)} 吨` : "",
+    row.vessel,
+  ].filter(Boolean).join(" · ") || "业务资料待补充";
+  return `
+    <article class="order-vessel-order-card ${expanded ? "expanded" : ""}" data-business-no="${escapeHtml(row.business_no)}">
+      <header class="order-vessel-card-head">
+        <div class="order-vessel-card-identity">
+          <div class="order-vessel-id-line">
+            <strong class="order-vessel-business-no">${escapeHtml(orderVesselDisplay(row.business_no))}</strong>
+            <span class="order-vessel-overall ${escapeHtml(overallTone)}">
+              ${escapeHtml(ORDER_VESSEL_STATUS_MARKS[overallTone])} ${escapeHtml(overall.label)}
+            </span>
+          </div>
+          <p>${escapeHtml(caption)}</p>
+        </div>
+        <button type="button" class="link order-vessel-detail-btn" data-business-no="${escapeHtml(row.business_no)}" aria-controls="${escapeHtml(detailId)}" aria-expanded="${expanded}">
+          ${expanded ? "收起详情" : "查看详情"}
+        </button>
+      </header>
+      <div class="order-vessel-card-body">
+        <section class="order-vessel-side order-vessel-origin" aria-label="业务起点">
+          <h3><span aria-hidden="true">↗</span>业务起点</h3>
+          <dl>
+            ${orderVesselSideField(row, "出口方", row.exporter)}
+            ${orderVesselSideField(row, "钢厂", row.steel_mill)}
+            ${orderVesselSideField(row, "装港", row.loading_port)}
+          </dl>
+        </section>
+        <section class="order-vessel-flow" aria-label="订单流程">
+          ${orderVesselProcessNodes(row).map(renderOrderVesselFlowNode).join("")}
+        </section>
+        <section class="order-vessel-side order-vessel-destination" aria-label="业务去向">
+          <h3><span aria-hidden="true">⌁</span>业务去向</h3>
+          <dl>
+            ${orderVesselSideField(row, "卸港", row.discharge_port)}
+            ${orderVesselSideField(row, "出口使用方", row.export_user)}
+          </dl>
+        </section>
+      </div>
+      ${expanded ? `<section id="${escapeHtml(detailId)}" class="order-vessel-detail">${renderOrderVesselDetails(row)}</section>` : ""}
+    </article>
+  `;
+}
+
+function renderOrderVesselCards() {
   const records = orderVesselFilteredRecords();
   orderVesselCount.textContent = `当前显示 ${records.length} / ${state.orderVesselRecords.length} 条业务`;
   const allExpanded = records.length > 0 && records.every((row) => state.expandedOrderVesselRecords.has(row.business_no));
   orderVesselExpandAllBtn.textContent = allExpanded ? "收起全部" : "展开全部";
   orderVesselExpandAllBtn.setAttribute("aria-expanded", String(allExpanded));
   if (!records.length) {
-    orderVesselTableBody.innerHTML = '<tr><td colspan="10" class="empty-cell">当前筛选下暂无业务。</td></tr>';
+    orderVesselCardList.innerHTML = '<div class="order-vessel-empty-state">当前筛选下暂无业务。</div>';
     return;
   }
-  orderVesselTableBody.innerHTML = records.map(renderOrderVesselRow).join("");
-  orderVesselTableBody.querySelectorAll(".order-vessel-detail-btn").forEach((button) => {
+  orderVesselCardList.innerHTML = records.map(renderOrderVesselCard).join("");
+  orderVesselCardList.querySelectorAll(".order-vessel-detail-btn").forEach((button) => {
     button.addEventListener("click", () => {
       const businessNo = button.dataset.businessNo;
       if (state.expandedOrderVesselRecords.has(businessNo)) state.expandedOrderVesselRecords.delete(businessNo);
       else state.expandedOrderVesselRecords.add(businessNo);
-      renderOrderVesselTable();
+      renderOrderVesselCards();
     });
   });
 }
@@ -2802,10 +2895,10 @@ async function loadOrderVesselOverview() {
     syncOrderVesselFilterOptions();
     renderOrderVesselSummary();
     renderOrderVesselStatus();
-    renderOrderVesselTable();
+    renderOrderVesselCards();
   } catch (error) {
     orderVesselStatus.textContent = error.message;
-    orderVesselTableBody.innerHTML = `<tr><td colspan="10" class="error-cell">${escapeHtml(error.message)}</td></tr>`;
+    orderVesselCardList.innerHTML = `<div class="order-vessel-empty-state error-cell">${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -3519,14 +3612,14 @@ orderFinanceReminderForm.addEventListener("submit", saveOrderFinanceReminder);
 orderFinanceImportBtn.addEventListener("click", () => orderFinanceImportFile.click());
 orderFinanceImportFile.addEventListener("change", () => importOrderFinanceFile(orderFinanceImportFile.files[0]));
 orderFinanceCapitalRefreshBtn.addEventListener("click", loadOrderFinanceCapital);
-orderVesselKeywordFilter.addEventListener("input", renderOrderVesselTable);
-orderVesselSteelMillFilter.addEventListener("change", renderOrderVesselTable);
-orderVesselDocumentFilter.addEventListener("change", renderOrderVesselTable);
+orderVesselKeywordFilter.addEventListener("input", renderOrderVesselCards);
+orderVesselSteelMillFilter.addEventListener("change", renderOrderVesselCards);
+orderVesselStatusFilter.addEventListener("change", renderOrderVesselCards);
 orderVesselResetFiltersBtn.addEventListener("click", () => {
   orderVesselKeywordFilter.value = "";
   orderVesselSteelMillFilter.value = "";
-  orderVesselDocumentFilter.value = "";
-  renderOrderVesselTable();
+  orderVesselStatusFilter.value = "";
+  renderOrderVesselCards();
 });
 orderVesselExpandAllBtn.addEventListener("click", () => {
   const records = orderVesselFilteredRecords();
@@ -3535,7 +3628,7 @@ orderVesselExpandAllBtn.addEventListener("click", () => {
     if (allExpanded) state.expandedOrderVesselRecords.delete(row.business_no);
     else state.expandedOrderVesselRecords.add(row.business_no);
   });
-  renderOrderVesselTable();
+  renderOrderVesselCards();
 });
 orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((button) => {
   button.addEventListener("click", () => {

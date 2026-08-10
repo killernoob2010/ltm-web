@@ -204,10 +204,11 @@ def test_order_vessel_overview_exactly_fuses_current_finance_fields(tmp_path, mo
         updated_at="2026-08-09T10:11:12.987654+08:00",
     )
 
-    result = build_order_vessel_overview(snapshots, [finance])
+    result = build_order_vessel_overview(snapshots, [finance], today=date(2026, 8, 10))
     by_business = {row["business_no"]: row for row in result["records"]}
 
     assert by_business["Y-2026-15"]["finance_match"] is True
+    assert by_business["Y-2026-15"]["exporter"] == "YOLANDA"
     assert by_business["Y-2026-15"]["loan_amount"] == 33000000
     assert by_business["Y-2026-15"]["repayment_due_date"] == "2026-08-26"
     assert by_business["Y-2026-15"]["document_status"] == "已交单"
@@ -217,6 +218,106 @@ def test_order_vessel_overview_exactly_fuses_current_finance_fields(tmp_path, mo
     assert result["finance_sync"]["matched_count"] == 1
     assert result["summary"]["total_orders"] == 2
     assert result["summary"]["financed_orders"] == 1
+
+
+def test_order_vessel_process_keeps_one_current_base_state_and_layers_alerts(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]
+    snapshot = dict(snapshots[0], loading_port_arrival_date="2026-08-06", planned_berth_date="2026-08-09")
+    finance = progress_record(
+        "Y-2026-15",
+        "存续",
+        overseas_entity="YOLANDA",
+        finance_due_date="2026-08-14",
+    )
+
+    row = build_order_vessel_overview([snapshot], [finance], today=date(2026, 8, 10))["records"][0]
+    nodes = {node["key"]: node for node in row["process"]["nodes"]}
+
+    assert [node["base_status"] for node in row["process"]["nodes"]].count("current") == 1
+    assert nodes["arrival"]["base_status"] == "complete"
+    assert nodes["berth"]["base_status"] == "current"
+    assert nodes["document"]["base_status"] == "pending"
+    assert nodes["repayment"]["base_status"] == "pending"
+    assert any(alert["kind"] == "abnormal" for alert in nodes["berth"]["alerts"])
+    assert any(alert["kind"] == "abnormal" for alert in nodes["document"]["alerts"])
+    assert {"complete", "current", "pending", "abnormal"} <= set(row["process"]["status_values"])
+
+
+def test_order_vessel_process_treats_missing_as_overlay_and_plan_as_not_complete(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]
+    snapshot = dict(
+        snapshots[0],
+        loading_port="",
+        discharge_port="",
+        loading_port_arrival_date="",
+        planned_berth_date="2026-08-13",
+    )
+    finance = progress_record("Y-2026-15", "存续", overseas_entity="YOLANDA", finance_due_date="2026-08-25")
+
+    row = build_order_vessel_overview([snapshot], [finance], today=date(2026, 8, 10))["records"][0]
+    nodes = {node["key"]: node for node in row["process"]["nodes"]}
+
+    assert nodes["arrival"]["base_status"] == "current"
+    assert any(alert["kind"] == "missing" for alert in nodes["arrival"]["alerts"])
+    assert nodes["berth"]["base_status"] == "pending"
+    assert nodes["berth"]["value"] == "2026-08-13"
+    assert "missing" in row["process"]["status_values"]
+    assert {"装港", "卸港", "船到装港日期"} <= set(row["process"]["missing_fields"])
+
+
+def test_order_vessel_process_only_marks_repayment_not_applicable_for_non_financing(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]
+    snapshot = snapshots[1]
+
+    row = build_order_vessel_overview([snapshot], [], today=date(2026, 8, 10))["records"][0]
+    nodes = {node["key"]: node for node in row["process"]["nodes"]}
+
+    assert row["exporter"] == "YOLANDA"
+    assert nodes["document"]["base_status"] == "pending"
+    assert nodes["repayment"]["base_status"] == "na"
+    assert nodes["repayment"]["status_text"] == "不涉及融资"
+    assert row["process"]["overall"]["tone"] == "na"
+
+
+def test_order_vessel_process_does_not_treat_no_document_required_as_non_financing(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]
+    snapshot = dict(snapshots[0], document_status="无需交单", loading_port_arrival_date="", planned_berth_date="")
+    finance = progress_record("Y-2026-15", "存续", overseas_entity="YOLANDA")
+
+    row = build_order_vessel_overview([snapshot], [finance], today=date(2026, 8, 10))["records"][0]
+    nodes = {node["key"]: node for node in row["process"]["nodes"]}
+
+    assert nodes["arrival"]["base_status"] == "complete"
+    assert nodes["berth"]["base_status"] == "complete"
+    assert nodes["document"]["base_status"] == "complete"
+    assert nodes["document"]["status_text"] == "完成 · 无需交单"
+    assert nodes["repayment"]["base_status"] == "current"
+    assert "na" not in row["process"]["status_values"]
+
+
+def test_order_vessel_process_can_be_complete_with_a_missing_document_date_overlay(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]
+    finance = progress_record(
+        "Y-2026-15",
+        "存续",
+        overseas_entity="YOLANDA",
+        document_submission_date="",
+        tail_payment_date="2026-08-09",
+    )
+
+    row = build_order_vessel_overview([snapshots[0]], [finance], today=date(2026, 8, 10))["records"][0]
+    nodes = {node["key"]: node for node in row["process"]["nodes"]}
+
+    assert [node["base_status"] for node in row["process"]["nodes"]] == [
+        "complete", "complete", "complete", "complete",
+    ]
+    assert any(alert["kind"] == "missing" for alert in nodes["document"]["alerts"])
+    assert "missing" in row["process"]["status_values"]
 
 
 def test_order_vessel_overview_route_reuses_order_finance_view_permission(monkeypatch):
