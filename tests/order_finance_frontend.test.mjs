@@ -44,8 +44,8 @@ test("order and vessel overview replaces the existing table with one process car
 
 test("order and vessel overview exposes source freshness, two-layer statuses, filters, and a mobile timeline", () => {
   assert.match(appJs, /\/api\/order-finance\/vessel-overview\?ts=\$\{Date\.now\(\)\}/);
-  assert.match(appJs, /船舶快照：\$\{sourceDate\}/);
-  assert.match(appJs, /精确匹配 \$\{matched\}\/\$\{total\}/);
+  assert.match(appJs, /当前确认R1：\$\{sourceDate\}/);
+  assert.match(appJs, /业务编号精确匹配 \$\{matched\}\/\$\{total\}/);
   assert.match(indexHtml, /id="orderVesselKeywordFilter"/);
   assert.match(indexHtml, /id="orderVesselSteelMillFilter"/);
   assert.match(indexHtml, /id="orderVesselStatusFilter"/);
@@ -231,8 +231,20 @@ test("order finance supports port confirmation and the collected-unshipped stage
   assert.match(appJs, /已确认集港：\$\{item\.port_confirmed_date\}/);
   assert.match(appJs, /\["已放款待集港", summary\.financed_uncollected \|\| 0\]/);
   assert.match(appJs, /\["已集港待装船", summary\.collected_unshipped \|\| 0\]/);
-  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-flow-cards-20260810a/);
-  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-vessel-flow-cards-20260810a/);
+  assert.match(indexHtml, /app\.js\?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a/);
+  assert.match(indexHtml, /styles\.css\?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a/);
+});
+
+test("order vessel overview separates R1 reporting dates, email checks, WPS execution dates, and shadow status", () => {
+  assert.match(appJs, /在线预览\/影子版本/);
+  assert.match(appJs, /业务编号精确匹配/);
+  assert.match(appJs, /最终业务去向\/终端客户/);
+  assert.match(appJs, /汇报还款到期日/);
+  assert.match(appJs, /邮件台账还款日（仅核对）/);
+  assert.match(appJs, /资金执行到期日（WPS）/);
+  assert.match(appJs, /R1与邮件不一致，保持R1并待确认/);
+  assert.match(appJs, /还款风险状态/);
+  assert.doesNotMatch(appJs, /orderVesselSideField\(row, "出口使用方"/);
 });
 
 test("order finance shows compact automatic sync status and new payment terminology", () => {

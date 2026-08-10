@@ -28,8 +28,10 @@ from app.order_finance import (
     build_order_finance_progress_view,
     build_order_vessel_overview,
     import_order_vessel_snapshot,
+    apply_order_vessel_email_due_checks,
     list_order_vessel_snapshots,
     parse_order_vessel_snapshot,
+    _classify_due_date_comparison,
     ORDER_VESSEL_HEADERS,
     ORDER_VESSEL_SHEET,
 )
@@ -191,6 +193,32 @@ def test_order_vessel_snapshot_import_is_idempotent_and_isolated(tmp_path, monke
     assert list_order_finance_records() == []
 
 
+def test_order_vessel_email_checks_update_only_exact_active_business_number(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    workbook = build_order_vessel_workbook(tmp_path / "vessel.xlsx")
+    import_order_vessel_snapshot(workbook, apply=True, imported_by="pytest")
+
+    result = apply_order_vessel_email_due_checks([{
+        "business_no": "Y-2026-15",
+        "email_due_dates": ["2026-08-25", "2026-09-01"],
+        "source": "邮件台账",
+        "source_date": "2026-08-09",
+    }])
+
+    assert result == {"updated": 1, "unchanged": 0}
+    row = {item["business_no"]: item for item in list_order_vessel_snapshots()}["Y-2026-15"]
+    assert json.loads(row["email_due_values_json"]) == ["2026-08-25", "2026-09-01"]
+    assert row["email_due_source"] == "邮件台账"
+    assert row["email_due_source_date"] == "2026-08-09"
+    with pytest.raises(ValueError, match="未命中当前R1"):
+        apply_order_vessel_email_due_checks([{
+            "business_no": "Y-2026",
+            "email_due_dates": ["2026-08-25"],
+            "source": "邮件台账",
+            "source_date": "2026-08-09",
+        }])
+
+
 def test_order_vessel_overview_exactly_fuses_current_finance_fields(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     workbook = build_order_vessel_workbook(tmp_path / "vessel.xlsx")
@@ -210,7 +238,9 @@ def test_order_vessel_overview_exactly_fuses_current_finance_fields(tmp_path, mo
     assert by_business["Y-2026-15"]["finance_match"] is True
     assert by_business["Y-2026-15"]["exporter"] == "YOLANDA"
     assert by_business["Y-2026-15"]["loan_amount"] == 33000000
-    assert by_business["Y-2026-15"]["repayment_due_date"] == "2026-08-26"
+    assert by_business["Y-2026-15"]["repayment_due_date"] == "2026-08-25"
+    assert by_business["Y-2026-15"]["reporting_repayment_due_date"] == "2026-08-25"
+    assert by_business["Y-2026-15"]["funding_execution_due_dates"] == ["2026-08-26"]
     assert by_business["Y-2026-15"]["document_status"] == "已交单"
     assert by_business["Y-2026-15"]["finance_updated_at"] == "2026-08-09T10:11:12+08:00"
     assert by_business["B1YLD260501"]["finance_match"] is False
@@ -218,6 +248,130 @@ def test_order_vessel_overview_exactly_fuses_current_finance_fields(tmp_path, mo
     assert result["finance_sync"]["matched_count"] == 1
     assert result["summary"]["total_orders"] == 2
     assert result["summary"]["financed_orders"] == 1
+
+
+def test_order_vessel_overview_keeps_r1_reporting_due_date_separate_from_multiple_wps_dates(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]
+    snapshot = dict(
+        snapshots[0],
+        repayment_due_date="2026-09-01",
+        reporting_due_date_source="当前确认R1",
+        email_due_values_json=json.dumps(["2026-09-01"], ensure_ascii=False),
+        email_due_source="2026-08-09邮件台账",
+        email_due_source_date="2026-08-09",
+    )
+    financings = [
+        progress_record("Y-2026-15", "存续", id=1, finance_due_date="2026-08-11"),
+        progress_record("Y-2026-15", "存续", id=2, finance_due_date="2026-08-25"),
+    ]
+
+    row = build_order_vessel_overview([snapshot], financings, today=date(2026, 8, 10))["records"][0]
+
+    assert row["reporting_repayment_due_date"] == "2026-09-01"
+    assert row["repayment_due_date"] == "2026-09-01"
+    assert row["reporting_due_date_source"] == "当前确认R1"
+    assert row["email_reporting_due_dates"] == ["2026-09-01"]
+    assert row["due_date_comparison_status"] == "consistent"
+    assert row["funding_execution_due_dates"] == ["2026-08-11", "2026-08-25"]
+    assert row["funding_execution_due_date"] == "2026-08-11"
+    assert row["preview_status"] == "shadow"
+
+
+@pytest.mark.parametrize(
+    ("r1_value", "email_values", "expected"),
+    [
+        ("2026-09-01", ["2026-09-01"], "consistent"),
+        ("2026-09-01", ["2026-08-01"], "conflict"),
+        ("", [], "missing_both"),
+        ("", ["2026-09-01"], "missing_r1"),
+        ("2026-09-01", [], "missing_email"),
+        ("2026-09-01", ["2026-08-01", "2026-09-01"], "multiple_email_dates"),
+    ],
+)
+def test_reporting_due_date_comparison_classifies_all_required_source_cases(r1_value, email_values, expected):
+    assert _classify_due_date_comparison(r1_value, email_values) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw_destination", "expected_value", "expected_status"),
+    [
+        ("JIANLONG UAE", "JIANLONG MIDDLE EAST STEEL TRADING-L.L.C", "confirmed"),
+        ("JIANLONG MIDDLE EAST STEEL TRADING-L.L.C", "JIANLONG MIDDLE EAST STEEL TRADING-L.L.C", "confirmed"),
+        ("MOLYCOP SG", "MOLYCOP SINGAPORE TRADING PTE LTD", "confirmed"),
+        ("SAMSUNG C&T CORPORATION", "SAMSUNG C AND T CORPORATION", "confirmed"),
+        ("SINGAPORE YOLANDA PTE. LTD.", "待确认", "pending"),
+        ("天津建龙", "待确认", "pending"),
+        ("建龙国贸", "待确认", "pending"),
+        ("YOLANDA INDUSTRIAL CO., LTD.", "待确认", "pending"),
+        ("UNKNOWN TRADING CO., LTD.", "待确认", "pending"),
+        ("", "待确认", "pending"),
+    ],
+)
+def test_final_destination_normalizes_aliases_and_never_falls_back_to_middle_parties(
+    tmp_path, monkeypatch, raw_destination, expected_value, expected_status,
+):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshot = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"][0]
+    snapshot = dict(snapshot, export_user=raw_destination)
+
+    row = build_order_vessel_overview([snapshot], [], today=date(2026, 8, 10))["records"][0]
+
+    assert row["final_business_destination"] == expected_value
+    assert row["export_user"] == expected_value
+    assert row["final_destination_status"] == expected_status
+    expected_source = "当前确认R1" if expected_status == "confirmed" else "待业务确认"
+    assert row["final_destination_source"] == expected_source
+
+
+def test_terminal_customer_uses_last_actual_party_in_contract_chain():
+    children = [
+        {"buyer": "SINGAPORE YOLANDA PTE. LTD."},
+        {"buyer": "MOLYCOP SG"},
+        {"buyer": "SAMSUNG C&T CORPORATION"},
+    ]
+
+    assert order_finance._terminal_customer(children, "天津建龙") == "SAMSUNG C&T CORPORATION"
+
+
+@pytest.mark.parametrize(
+    ("arrival", "berth", "report_due", "email_values", "tail_payment", "expected_states"),
+    [
+        ("", "", "2026-09-01", ["2026-09-01"], "", {"no_schedule_comparison"}),
+        ("2026-09-10", "", "2026-09-01", ["2026-09-01"], "", {"shipping_schedule_conflict"}),
+        ("", "2026-09-10", "2026-09-01", ["2026-09-01"], "", {"shipping_schedule_conflict"}),
+        ("2026-09-10", "2026-09-12", "2026-08-01", ["2026-08-01"], "", {"actual_overdue", "shipping_schedule_conflict"}),
+        ("2026-08-05", "2026-08-06", "", [], "", {"date_missing"}),
+        ("2026-08-05", "2026-08-06", "2026-09-01", ["2026-08-01"], "", {"source_conflict", "normal"}),
+        ("2026-08-05", "2026-08-06", "2026-09-01", ["2026-09-01"], "", {"normal"}),
+        ("2026-08-05", "2026-08-06", "2026-09-01", ["2026-09-01"], "2026-08-09", {"repaid"}),
+    ],
+)
+def test_repayment_risk_states_cover_schedule_source_and_overdue_combinations(
+    tmp_path, monkeypatch, arrival, berth, report_due, email_values, tail_payment, expected_states,
+):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshot = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"][0]
+    snapshot = dict(
+        snapshot,
+        loading_port_arrival_date=arrival,
+        planned_berth_date=berth,
+        repayment_due_date=report_due,
+        email_due_values_json=json.dumps(email_values, ensure_ascii=False),
+        email_due_source="2026-08-09邮件台账",
+        email_due_source_date="2026-08-09",
+        document_status="已交单",
+    )
+    finance = progress_record("Y-2026-15", "存续", finance_due_date="2026-08-25", tail_payment_date=tail_payment)
+
+    row = build_order_vessel_overview([snapshot], [finance], today=date(2026, 8, 10))["records"][0]
+
+    assert expected_states <= set(row["repayment_risk_states"])
+    if "actual_overdue" in expected_states and "shipping_schedule_conflict" in expected_states:
+        repayment = next(node for node in row["process"]["nodes"] if node["key"] == "repayment")
+        alert_texts = {alert["text"] for alert in repayment["alerts"]}
+        assert any("实际逾期" in text for text in alert_texts)
+        assert any("预计船期冲突" in text for text in alert_texts)
 
 
 def test_order_vessel_process_keeps_one_current_base_state_and_layers_alerts(tmp_path, monkeypatch):

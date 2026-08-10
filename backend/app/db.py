@@ -2683,6 +2683,13 @@ def migrate_order_vessel_snapshot_schema(conn) -> None:
                 estimated_speed_knots DOUBLE PRECISION,
                 eta_basis TEXT,
                 route_source TEXT,
+                final_destination_status TEXT,
+                final_destination_source TEXT,
+                reporting_due_date_source TEXT,
+                email_due_values_json TEXT DEFAULT '[]',
+                email_due_source TEXT,
+                email_due_source_date TEXT,
+                preview_status TEXT DEFAULT 'shadow',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 imported_by TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -2695,6 +2702,18 @@ def migrate_order_vessel_snapshot_schema(conn) -> None:
                 ON order_vessel_snapshots(business_no);
             """
         )
+        for name, definition in {
+            "final_destination_status": "TEXT",
+            "final_destination_source": "TEXT",
+            "reporting_due_date_source": "TEXT",
+            "email_due_values_json": "TEXT DEFAULT '[]'",
+            "email_due_source": "TEXT",
+            "email_due_source_date": "TEXT",
+            "preview_status": "TEXT DEFAULT 'shadow'",
+        }.items():
+            cur.execute(
+                f"ALTER TABLE order_vessel_snapshots ADD COLUMN IF NOT EXISTS {name} {definition}"
+            )
         _secure_postgres_tables(cur, ("order_vessel_snapshots",))
         conn.commit()
         return
@@ -2730,6 +2749,13 @@ def migrate_order_vessel_snapshot_schema(conn) -> None:
             estimated_speed_knots REAL,
             eta_basis TEXT,
             route_source TEXT,
+            final_destination_status TEXT,
+            final_destination_source TEXT,
+            reporting_due_date_source TEXT,
+            email_due_values_json TEXT DEFAULT '[]',
+            email_due_source TEXT,
+            email_due_source_date TEXT,
+            preview_status TEXT DEFAULT 'shadow',
             is_active INTEGER NOT NULL DEFAULT 1,
             imported_by TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -2742,6 +2768,21 @@ def migrate_order_vessel_snapshot_schema(conn) -> None:
             ON order_vessel_snapshots(business_no);
         """
     )
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(order_vessel_snapshots)").fetchall()
+    }
+    for name, definition in {
+        "final_destination_status": "TEXT",
+        "final_destination_source": "TEXT",
+        "reporting_due_date_source": "TEXT",
+        "email_due_values_json": "TEXT DEFAULT '[]'",
+        "email_due_source": "TEXT",
+        "email_due_source_date": "TEXT",
+        "preview_status": "TEXT DEFAULT 'shadow'",
+    }.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE order_vessel_snapshots ADD COLUMN {name} {definition}")
 
 
 def migrate_sh_junneng_schema(conn) -> None:

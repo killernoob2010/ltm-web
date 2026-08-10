@@ -2660,6 +2660,15 @@ const ORDER_VESSEL_STATUS_MARKS = {
   na: "—",
 };
 
+const ORDER_VESSEL_DUE_COMPARISON_LABELS = {
+  consistent: "R1与邮件一致",
+  conflict: "R1与邮件不一致，保持R1并待确认",
+  missing_both: "R1与邮件均缺失",
+  missing_r1: "R1缺失、邮件有值",
+  missing_email: "R1有值、邮件缺失",
+  multiple_email_dates: "邮件出现多个日期",
+};
+
 function orderVesselProcessNodes(row) {
   if (Array.isArray(row.process?.nodes) && row.process.nodes.length === 4) return row.process.nodes;
   return ORDER_VESSEL_FLOW_NODES.map((node) => ({
@@ -2683,8 +2692,9 @@ function orderVesselFilteredRecords() {
       .flatMap((node) => [node.label, node.value, node.status_text, ...(node.alerts || []).map((alert) => alert.text)])
       .join(" ");
     const searchable = [
-      row.business_no, row.exporter, row.steel_mill, row.export_user, row.cargo, row.vessel,
-      row.loading_port, row.discharge_port, row.document_status, row.remark, processText,
+      row.business_no, row.exporter, row.steel_mill, row.final_business_destination, row.cargo, row.vessel,
+      row.loading_port, row.discharge_port, row.document_status, row.remark,
+      ...(row.repayment_risk_labels || []), processText,
     ].join(" ").toLowerCase();
     return searchable.includes(keyword);
   });
@@ -2724,7 +2734,7 @@ function renderOrderVesselStatus() {
     : "暂无记录";
   const matched = Number(state.orderVesselFinanceSync.matched_count || 0);
   const total = Number(state.orderVesselSummary.total_orders || 0);
-  orderVesselStatus.textContent = `船舶快照：${sourceDate} · 订单融资同步：${syncTime} · 精确匹配 ${matched}/${total}`;
+  orderVesselStatus.textContent = `在线预览/影子版本 · 当前确认R1：${sourceDate} · 订单融资同步：${syncTime} · 业务编号精确匹配 ${matched}/${total}`;
 }
 
 function orderVesselDetailField(label, value, extraClass = "") {
@@ -2749,6 +2759,11 @@ function orderVesselSafeUrl(value) {
 function renderOrderVesselDetails(row) {
   const routeUrl = orderVesselSafeUrl(row.route_source);
   const financeUpdate = row.finance_updated_at ? dateTimeToSecond(row.finance_updated_at) : "—";
+  const emailDueDates = Array.isArray(row.email_reporting_due_dates) ? row.email_reporting_due_dates.join(" / ") : "";
+  const emailSource = [row.email_due_date_source, row.email_due_date_source_date].filter(Boolean).join(" · ");
+  const fundingDueDates = Array.isArray(row.funding_execution_due_dates) ? row.funding_execution_due_dates.join(" / ") : row.funding_execution_due_date;
+  const repaymentRisks = Array.isArray(row.repayment_risk_labels) ? row.repayment_risk_labels.join(" / ") : "";
+  const comparisonLabel = ORDER_VESSEL_DUE_COMPARISON_LABELS[row.due_date_comparison_status] || row.due_date_comparison_status;
   return `
     <div class="order-vessel-detail-grid">
       ${orderVesselDetailField("业务编号", row.business_no)}
@@ -2757,7 +2772,17 @@ function renderOrderVesselDetails(row) {
       ${orderVesselDetailField("船名", row.vessel)}
       ${orderVesselDetailField("货物量", row.quantity_mt !== null && row.quantity_mt !== undefined ? `${money(row.quantity_mt)} 吨` : "")}
       ${orderVesselDetailField("交单状态", row.document_status)}
-      ${orderVesselDetailField("还款到期日", row.repayment_due_date)}
+      ${orderVesselDetailField("最终业务去向/终端客户", row.final_business_destination)}
+      ${orderVesselDetailField("终端客户确认状态", row.final_destination_status === "confirmed" ? "已确认" : "待确认")}
+      ${orderVesselDetailField("终端客户来源", row.final_destination_source)}
+      ${orderVesselDetailField("汇报还款到期日", row.reporting_repayment_due_date)}
+      ${orderVesselDetailField("汇报日期来源", row.reporting_due_date_source)}
+      ${orderVesselDetailField("邮件台账还款日（仅核对）", emailDueDates)}
+      ${orderVesselDetailField("邮件来源/日期", emailSource)}
+      ${orderVesselDetailField("汇报日期核对结果", comparisonLabel, row.due_date_comparison_status === "consistent" ? "" : "source-alert")}
+      ${orderVesselDetailField("资金执行到期日（WPS）", fundingDueDates)}
+      ${orderVesselDetailField("还款风险状态", repaymentRisks)}
+      ${orderVesselDetailField("版本用途", "在线预览/影子版本，不替代线下R1", "wide")}
       ${orderVesselDetailField("借款金额", orderVesselAmount(row))}
       ${orderVesselDetailField("预计到卸港日期", row.estimated_discharge_date)}
       ${orderVesselDetailField("交单日期", row.document_date)}
@@ -2853,7 +2878,7 @@ function renderOrderVesselCard(row) {
           <h3><span aria-hidden="true">⌁</span>业务去向</h3>
           <dl>
             ${orderVesselSideField(row, "卸港", row.discharge_port)}
-            ${orderVesselSideField(row, "出口使用方", row.export_user)}
+            ${orderVesselSideField(row, "最终业务去向/终端客户", row.final_business_destination)}
           </dl>
         </section>
       </div>

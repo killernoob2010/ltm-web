@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app import db
 from app.order_finance import (
     ORDER_VESSEL_EXPECTED_SHA256,
+    apply_order_vessel_email_due_checks,
     import_order_vessel_snapshot,
 )
 
@@ -37,6 +38,11 @@ def main() -> int:
         help="Write the locked snapshot to the current local or Staging database.",
     )
     parser.add_argument("--imported-by", default="codex-staging-import")
+    parser.add_argument(
+        "--email-checks-json",
+        type=Path,
+        help="Optional exact business-number email due-date checks to apply after the R1 snapshot.",
+    )
     args = parser.parse_args()
 
     try:
@@ -48,6 +54,18 @@ def main() -> int:
             imported_by=args.imported_by,
             expected_sha256=ORDER_VESSEL_EXPECTED_SHA256,
         )
+        if args.email_checks_json:
+            payload = json.loads(args.email_checks_json.read_text(encoding="utf-8"))
+            checks = payload.get("checks") if isinstance(payload, dict) else None
+            if not isinstance(checks, list):
+                raise ValueError("邮件核对 JSON 顶层必须包含 checks 数组")
+            if not args.apply:
+                result["email_checks"] = {"validated": len(checks), "applied": False}
+            else:
+                result["email_checks"] = {
+                    **apply_order_vessel_email_due_checks(checks),
+                    "applied": True,
+                }
     except (ValueError, RuntimeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":")))
         return 1
