@@ -374,6 +374,18 @@ def test_repayment_risk_states_cover_schedule_source_and_overdue_combinations(
         assert any("预计船期冲突" in text for text in alert_texts)
 
 
+def test_order_vessel_r1_non_financing_wording_stays_not_applicable(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    snapshot = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"][1]
+    snapshot = dict(snapshot, loan_amount_note="不涉及", repayment_due_date="不涉及")
+
+    row = build_order_vessel_overview([snapshot], [], today=date(2026, 8, 10))["records"][0]
+
+    assert row["repayment_risk_states"] == ["not_applicable"]
+    assert row["process"]["nodes"][-1]["base_status"] == "na"
+    assert row["process"]["nodes"][-1]["status_text"] == "不涉及融资"
+
+
 def test_order_vessel_process_keeps_one_current_base_state_and_layers_alerts(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     snapshots = parse_order_vessel_snapshot(build_order_vessel_workbook(tmp_path / "vessel.xlsx"))["records"]

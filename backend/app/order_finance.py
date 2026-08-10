@@ -2283,7 +2283,7 @@ def _order_vessel_repayment_risks(
     matched_rows: List[Dict[str, Any]],
     current_date: date,
 ) -> List[str]:
-    if "不涉及融资" in _normalize_text(record.get("loan_amount_note")):
+    if "不涉及" in _normalize_text(record.get("loan_amount_note")):
         return ["not_applicable"]
     paid_count = sum(1 for row in matched_rows if _normalize_text(row.get("tail_payment_date")))
     if matched_rows and paid_count == len(matched_rows):
@@ -2360,7 +2360,7 @@ def _build_order_vessel_process(
     paid_count = sum(1 for row in matched_rows if _normalize_text(row.get("tail_payment_date")))
     all_paid = bool(matched_rows) and paid_count == len(matched_rows)
     payment_started = paid_count > 0
-    non_financing = "不涉及融资" in _normalize_text(record.get("loan_amount_note"))
+    non_financing = "不涉及" in _normalize_text(record.get("loan_amount_note"))
     document_complete = bool(document_date) or document_status in {"已交单", "无需交单"}
     prior_flow_complete = document_complete or payment_started
 
