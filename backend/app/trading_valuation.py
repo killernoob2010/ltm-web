@@ -474,6 +474,36 @@ def normalize_kline_rows(
     return rows
 
 
+def normalize_main_contract_mapping(
+    frame: Any,
+    *,
+    requested_symbol: str,
+) -> list[dict[str, str]]:
+    if frame is None or "date" not in frame or requested_symbol not in frame:
+        return []
+    mapping: list[dict[str, str]] = []
+    previous = ""
+    for index in range(len(frame["date"])):
+        actual_symbol = str(
+            _frame_value(frame, requested_symbol, index) or ""
+        ).strip()
+        if not actual_symbol or actual_symbol.lower() == "nan" or actual_symbol == previous:
+            continue
+        raw_date = _frame_value(frame, "date", index)
+        try:
+            effective_date = raw_date.date().isoformat()
+        except AttributeError:
+            effective_date = str(raw_date)[:10]
+        if len(effective_date) != 10:
+            continue
+        mapping.append({
+            "effective_date": effective_date,
+            "symbol": actual_symbol,
+        })
+        previous = actual_symbol
+    return mapping
+
+
 class TqSdkQuoteProvider:
     """One market-data session without a live brokerage account or order calls."""
 
@@ -640,7 +670,7 @@ class TqSdkQuoteProvider:
         symbol: str,
         duration_seconds: int,
         data_length: int,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         future = self._executor.submit(
             self._fetch_klines,
             symbol,
@@ -658,7 +688,7 @@ class TqSdkQuoteProvider:
         symbol: str,
         duration_seconds: int,
         data_length: int,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         frame = self._api.get_kline_serial(
             symbol,
             duration_seconds,
@@ -671,7 +701,15 @@ class TqSdkQuoteProvider:
             if not self._api.wait_update(deadline=deadline):
                 break
             rows = normalize_kline_rows(frame, requested_symbol=symbol)
-        return rows
+        mapping_frame = self._api.query_his_cont_quotes(
+            symbol,
+            n=min(max(data_length, 200), 2_000),
+        )
+        mapping = normalize_main_contract_mapping(
+            mapping_frame,
+            requested_symbol=symbol,
+        )
+        return {"bars": rows, "main_contract_mapping": mapping}
 
     def close(self) -> None:
         try:
@@ -773,7 +811,7 @@ class MarketDataService:
         symbol: str,
         duration_seconds: int,
         data_length: int,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         with self._fetch_lock:
             self._ensure_provider(time.monotonic())
             fetch_klines = getattr(self.provider, "fetch_klines", None)
@@ -811,11 +849,11 @@ def get_quote_snapshots(
     return _market_data_service.get_quotes(requests)
 
 
-def get_kline_bars(
+def get_kline_data(
     symbol: str,
     duration_seconds: int,
     data_length: int,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     global _market_data_service
     if _market_data_service is None:
         with _service_lock:

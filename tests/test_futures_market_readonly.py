@@ -31,6 +31,16 @@ def _bars():
     ]
 
 
+def _market_data():
+    return {
+        "bars": _bars(),
+        "main_contract_mapping": [
+            {"effective_date": "2026-08-10", "symbol": "DCE.i2609"},
+            {"effective_date": "2026-08-11", "symbol": "DCE.i2610"},
+        ],
+    }
+
+
 def test_readonly_endpoint_requires_dedicated_secret(monkeypatch):
     monkeypatch.setenv("FUTURES_MARKET_READONLY_SHARED_SECRET", "expected")
 
@@ -49,8 +59,8 @@ def test_readonly_endpoint_returns_only_market_bars(monkeypatch):
     monkeypatch.setenv("FUTURES_MARKET_READONLY_SHARED_SECRET", "expected")
     monkeypatch.setattr(
         futures_market_readonly,
-        "get_kline_bars",
-        lambda symbol, duration_seconds, data_length: _bars(),
+        "get_kline_data",
+        lambda symbol, duration_seconds, data_length: _market_data(),
     )
 
     payload = futures_market_readonly.get_futures_market_klines(
@@ -63,10 +73,7 @@ def test_readonly_endpoint_returns_only_market_bars(monkeypatch):
     assert payload["read_only"] is True
     assert payload["source"] == "tqsdk"
     assert payload["bars_count"] == 2
-    assert payload["main_contract_mapping"] == [
-        {"effective_from": _bars()[0]["datetime"], "symbol": "DCE.i2609"},
-        {"effective_from": _bars()[1]["datetime"], "symbol": "DCE.i2610"},
-    ]
+    assert payload["main_contract_mapping"] == _market_data()["main_contract_mapping"]
     assert set(payload["bars"][0]) == {
         "datetime",
         "datetime_nano",
@@ -100,8 +107,11 @@ def test_readonly_endpoint_fails_closed_without_market_rows(monkeypatch):
     monkeypatch.setenv("FUTURES_MARKET_READONLY_SHARED_SECRET", "expected")
     monkeypatch.setattr(
         futures_market_readonly,
-        "get_kline_bars",
-        lambda symbol, duration_seconds, data_length: [],
+        "get_kline_data",
+        lambda symbol, duration_seconds, data_length: {
+            "bars": [],
+            "main_contract_mapping": [],
+        },
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -157,6 +167,13 @@ def test_tqsdk_provider_normalizes_kline_rows_in_its_existing_session(monkeypatc
         def wait_update(self, deadline):
             return True
 
+        def query_his_cont_quotes(self, symbol, n):
+            assert (symbol, n) == ("KQ.m@DCE.i", 200)
+            return {
+                "date": ["2023-11-15"],
+                "KQ.m@DCE.i": ["DCE.i2401"],
+            }
+
         def close(self):
             return None
 
@@ -167,10 +184,12 @@ def test_tqsdk_provider_normalizes_kline_rows_in_its_existing_session(monkeypatc
     )
     provider = trading_valuation.TqSdkQuoteProvider("user", "password")
     try:
-        rows = provider.fetch_klines("KQ.m@DCE.i", 86400, 20)
+        data = provider.fetch_klines("KQ.m@DCE.i", 86400, 20)
     finally:
         provider.close()
 
-    assert rows[0]["symbol"] == "DCE.i2401"
-    assert rows[0]["close"] == 805.0
-
+    assert data["bars"][0]["symbol"] == "DCE.i2401"
+    assert data["bars"][0]["close"] == 805.0
+    assert data["main_contract_mapping"] == [
+        {"effective_date": "2023-11-15", "symbol": "DCE.i2401"}
+    ]

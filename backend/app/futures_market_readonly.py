@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
-from .trading_valuation import get_kline_bars
+from .trading_valuation import get_kline_data
 
 
 router = APIRouter()
@@ -37,20 +37,6 @@ def _require_readonly_secret(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
-def _main_contract_mapping(rows: list[dict]) -> list[dict[str, str]]:
-    mapping: list[dict[str, str]] = []
-    previous = ""
-    for row in rows:
-        actual_symbol = str(row.get("symbol") or "").strip()
-        if actual_symbol and actual_symbol != previous:
-            mapping.append({
-                "effective_from": str(row["datetime"]),
-                "symbol": actual_symbol,
-            })
-            previous = actual_symbol
-    return mapping
-
-
 @router.get("/internal/futures-market/klines")
 def get_futures_market_klines(
     symbol: str = Query(...),
@@ -62,10 +48,12 @@ def get_futures_market_klines(
     if symbol not in ALLOWED_SYMBOLS or duration_seconds not in ALLOWED_DURATIONS:
         raise HTTPException(status_code=422, detail="Unsupported market data request")
     try:
-        rows = get_kline_bars(symbol, duration_seconds, data_length)
+        data = get_kline_data(symbol, duration_seconds, data_length)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Market data unavailable") from exc
-    if not rows:
+    rows = data.get("bars") or []
+    mapping = data.get("main_contract_mapping") or []
+    if not rows or not mapping:
         raise HTTPException(status_code=503, detail="Market data unavailable")
     return {
         "schema_version": SCHEMA_VERSION,
@@ -76,6 +64,6 @@ def get_futures_market_klines(
         "bars_count": len(rows),
         "first_datetime": rows[0]["datetime"],
         "last_datetime": rows[-1]["datetime"],
-        "main_contract_mapping": _main_contract_mapping(rows),
+        "main_contract_mapping": mapping,
         "bars": rows,
     }
