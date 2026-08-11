@@ -389,7 +389,13 @@ def test_market_data_service_retries_provider_initialization():
 
 def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():
     source = inspect.getsource(TqSdkQuoteProvider)
-    for forbidden in ("TqAccount", "insert_order", "cancel_order"):
+    for forbidden in (
+        "TqAccount",
+        "get_account",
+        "get_position",
+        "insert_order",
+        "cancel_order",
+    ):
         assert forbidden not in source
 
 

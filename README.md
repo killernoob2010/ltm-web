@@ -71,6 +71,12 @@ env -u DATABASE_URL .venv/bin/python scripts/import_iron_ore_basis.py /绝对路
 
 期权台账的四项希腊字母固定显示四位小数。若最新 TXT 持仓快照尚未更新，而其中期权已经超过到期日，系统仍保留该行用于核对来源，但不再展示或汇总其当前估值、标的价格、IV、浮动盈亏和 Greeks，并在到期日标记“已到期”。系统不会根据过期快照自行推断行权或放弃结果；真实了结状态以后续导入的交易所结算单为准。
 
+### CZSC Gate A 纯行情只读通道
+
+Staging 可通过受保护的 `GET /api/internal/futures-market/klines` 向个人工作台可行性测试提供纯行情 K 线。服务端继续复用同一 TqSdk 行情提供器，只接受铁矿石、螺纹钢、热卷主连，以及 30 分钟、60 分钟、日线三个周期；响应仅包含合约、时间、开高低收、成交量和主力合约映射，不查询交易业务台账、资金或持仓，也不提供任何写入方法。
+
+通道使用独立的 `FUTURES_MARKET_READONLY_SHARED_SECRET` Bearer Secret。该值只配置在 Render Staging 和本机受保护凭据存储中，不得写入仓库、日志、接口响应或版本记录。认证缺失或错误时接口返回 404；TqSdk 或行情缺失时返回 503，不使用结算单或模拟数据冒充真实 K 线。Production 默认不配置该变量。
+
 ### 历史期权研究数据门槛
 
 历史期权研究与交易事实完全隔离，使用 `option_research_contracts`、`option_research_bars`、`option_research_runs` 和 `option_research_gaps` 四张独立表。仅凭历史期货价格不得生成或宣称真实期权回测收益；期货数据只可用于压力情景或明确标注的合成机制检查。

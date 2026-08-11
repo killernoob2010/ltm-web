@@ -61,6 +61,7 @@ from .order_finance_snapshot_sync import start_order_finance_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
+    futures_market_readonly,
     iron_ore_basis,
     iron_ore_basis_snapshot_sync,
     operation_log_archive,
@@ -131,6 +132,7 @@ USER_SESSION_TTL_HOURS = int(os.getenv("USER_SESSION_TTL_HOURS", str(24 * 7)))
 GUEST_SESSION_TTL_HOURS = int(os.getenv("GUEST_SESSION_TTL_HOURS", "8"))
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
+app.include_router(futures_market_readonly.router, prefix="/api")
 app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
