@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
+import tempfile
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1003,32 +1006,32 @@ def _serialize_business(row: Any, children: dict[str, list[dict[str, Any]]], ano
 
 
 def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
-    clauses = ["is_cancelled = 0"]
+    clauses = ["b.is_cancelled = 0"]
     params: list[Any] = []
     if filters.get("business_type"):
-        clauses.append("business_type = ?")
+        clauses.append("b.business_type = ?")
         params.append(filters["business_type"])
     if filters.get("risk_level"):
-        clauses.append("risk_level = ?")
+        clauses.append("b.risk_level = ?")
         params.append(filters["risk_level"])
     if filters.get("status"):
-        clauses.append("status = ?")
+        clauses.append("b.status = ?")
         params.append(filters["status"])
     if filters.get("fcr") in {"FCR", "非FCR"}:
-        clauses.append("fcr = ?")
+        clauses.append("b.fcr = ?")
         params.append(1 if filters["fcr"] == "FCR" else 0)
     keyword = _normalize_text(filters.get("keyword"))
     if keyword:
         like = f"%{keyword.lower()}%"
-        clauses.append("LOWER(REPLACE(REPLACE(COALESCE(business_no, '') || COALESCE(product_name, '') || COALESCE(terminal_customer, '') || COALESCE(supplier_steel_mill, ''), ' ', ''), '-', '')) LIKE ?")
+        clauses.append("LOWER(REPLACE(REPLACE(COALESCE(b.business_no, '') || COALESCE(b.product_name, '') || COALESCE(b.terminal_customer, '') || COALESCE(b.supplier_steel_mill, ''), ' ', ''), '-', '')) LIKE ?")
         params.append(like.replace(" ", "").replace("-", ""))
     where = " AND ".join(clauses)
     page = max(int(filters.get("page") or 1), 1)
     page_size = min(max(int(filters.get("page_size") or 20), 1), 100)
     with db.connect() as conn:
         cur = conn.cursor()
-        total = db._exec(cur, f"SELECT COUNT(*) AS c FROM order_lifecycle_businesses WHERE {where}", params).fetchone()["c"]
-        all_rows = db._exec(cur, f"SELECT * FROM order_lifecycle_businesses WHERE {where}", params).fetchall()
+        total = db._exec(cur, f"SELECT COUNT(*) AS c FROM order_lifecycle_businesses b WHERE {where}", params).fetchone()["c"]
+        all_rows = db._exec(cur, f"SELECT b.* FROM order_lifecycle_businesses b WHERE {where}", params).fetchall()
         risk_order = {"高风险": 0, "中风险": 1, "低风险": 2}
         grouped: dict[tuple[int, int], list[Any]] = defaultdict(list)
         for row in all_rows:
@@ -1100,6 +1103,16 @@ class NodeConfirmationRequest(BaseModel):
 class LocalImportRequest(BaseModel):
     path: str = Field(min_length=1)
     source_type: str = Field(pattern="^(wps|email)$")
+
+
+class LifecycleUploadFile(BaseModel):
+    file_name: str
+    file_data: str
+
+
+class LifecycleUploadRequest(BaseModel):
+    source_type: str = Field(pattern="^(wps|email)$")
+    files: list[LifecycleUploadFile] = Field(min_length=1, max_length=6)
 
 
 @router.get("/order-lifecycle/progress")
@@ -1185,3 +1198,52 @@ def order_lifecycle_import_local(request: LocalImportRequest, user: dict = Depen
         return apply_source_batch(batch, imported_by=user.get("name") or "user")
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/order-lifecycle/import-upload")
+def order_lifecycle_import_upload(request: LifecycleUploadRequest, user: dict = Depends(_lifecycle_user)):
+    """Import a controlled WPS workbook or complete six-file mail snapshot in Staging."""
+    require_permission(user, PERMISSION_RESOURCE, "manage")
+    if request.source_type == "wps" and len(request.files) != 1:
+        raise HTTPException(status_code=400, detail="WPS 快照只能上传一个 .xlsx 文件")
+    if request.source_type == "email" and len(request.files) < len(MAIL_MILLS):
+        raise HTTPException(status_code=400, detail="邮件台账必须一次上传六个钢厂附件")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="order-lifecycle-upload-"))
+    paths: list[Path] = []
+    try:
+        seen_names: set[str] = set()
+        for item in request.files:
+            name = Path(item.file_name or "").name
+            suffix = Path(name).suffix.lower()
+            if not name or name in seen_names:
+                raise HTTPException(status_code=400, detail="上传文件名为空或重复")
+            if suffix not in {".xls", ".xlsx"}:
+                raise HTTPException(status_code=400, detail=f"不支持的文件格式：{name}")
+            if request.source_type == "wps" and suffix != ".xlsx":
+                raise HTTPException(status_code=400, detail="WPS 快照仅支持 .xlsx 文件")
+            try:
+                content = base64.b64decode(item.file_data, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"文件内容无效：{name}") from exc
+            if not content:
+                raise HTTPException(status_code=400, detail=f"文件为空：{name}")
+            if len(content) > 30 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail=f"文件超过 30MB：{name}")
+            target = temp_dir / name
+            target.write_bytes(content)
+            paths.append(target)
+            seen_names.add(name)
+
+        batch = parse_wps_workbook(paths[0]) if request.source_type == "wps" else parse_email_batch(temp_dir)
+        batch["source_locator"] = f"staging-upload://{request.source_type}"
+        result = apply_source_batch(batch, imported_by=user.get("name") or "user")
+        return {"status": "success", "source_type": request.source_type, **result}
+    except HTTPException:
+        raise
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        for path in paths:
+            path.unlink(missing_ok=True)
+        temp_dir.rmdir()
