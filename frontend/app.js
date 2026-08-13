@@ -34,6 +34,12 @@ const state = {
   orderFinanceFilter: "all",
   expandedOrderFinanceContracts: new Set(),
   orderFinanceCapital: {},
+  orderLifecycleRecords: [],
+  orderLifecycleSummary: {},
+  orderLifecyclePage: 1,
+  orderLifecyclePageSize: 20,
+  orderLifecycleTotal: 0,
+  orderLifecycleExpanded: new Set(),
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
@@ -133,6 +139,7 @@ const userManagementPage = document.querySelector("#userManagementPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
+const orderLifecyclePage = document.querySelector("#orderLifecyclePage");
 const orderFinanceImportBtn = document.querySelector("#orderFinanceImportBtn");
 const orderFinanceImportFile = document.querySelector("#orderFinanceImportFile");
 const orderFinanceStatus = document.querySelector("#orderFinanceStatus");
@@ -145,6 +152,20 @@ const orderFinanceStageFilters = document.querySelector("#orderFinanceStageFilte
 const orderFinanceCapitalPage = document.querySelector("#orderFinanceCapitalPage");
 const tradingManagementPage = document.querySelector("#tradingManagementPage");
 const orderFinanceCapitalRefreshBtn = document.querySelector("#orderFinanceCapitalRefreshBtn");
+const orderLifecycleSyncStatus = document.querySelector("#orderLifecycleSyncStatus");
+const orderLifecycleSummary = document.querySelector("#orderLifecycleSummary");
+const orderLifecycleCount = document.querySelector("#orderLifecycleCount");
+const orderLifecycleKeyword = document.querySelector("#orderLifecycleKeyword");
+const orderLifecycleTypeFilter = document.querySelector("#orderLifecycleTypeFilter");
+const orderLifecycleRiskFilter = document.querySelector("#orderLifecycleRiskFilter");
+const orderLifecycleStatusFilter = document.querySelector("#orderLifecycleStatusFilter");
+const orderLifecycleFcrFilter = document.querySelector("#orderLifecycleFcrFilter");
+const orderLifecycleResetBtn = document.querySelector("#orderLifecycleResetBtn");
+const orderLifecycleCards = document.querySelector("#orderLifecycleCards");
+const orderLifecyclePrevBtn = document.querySelector("#orderLifecyclePrevBtn");
+const orderLifecycleNextBtn = document.querySelector("#orderLifecycleNextBtn");
+const orderLifecyclePageInfo = document.querySelector("#orderLifecyclePageInfo");
+const orderLifecyclePageSize = document.querySelector("#orderLifecyclePageSize");
 const orderFinanceCapitalStatus = document.querySelector("#orderFinanceCapitalStatus");
 const orderFinanceCapitalSummary = document.querySelector("#orderFinanceCapitalSummary");
 const orderFinanceBankList = document.querySelector("#orderFinanceBankList");
@@ -493,7 +514,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -568,6 +589,11 @@ async function activateModule(code, subName, subView = "") {
     orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("active", item.dataset.filter === "focusRisk"));
     showOnly(orderFinancePage);
     await loadOrderFinanceProgress();
+    return;
+  }
+  if (code === "order_lifecycle_progress") {
+    showOnly(orderLifecyclePage);
+    await loadOrderLifecycleProgress();
     return;
   }
   if (code === "order_finance_capital") {
@@ -2930,6 +2956,164 @@ async function loadOrderFinanceProgress() {
   }
 }
 
+function lifecycleMoney(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return "-";
+  return amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
+
+function lifecycleRiskClass(value) {
+  if (value === "高风险") return "risk-high";
+  if (value === "中风险") return "risk-mid";
+  if (value === "已完结") return "risk-done";
+  return "risk-low";
+}
+
+function lifecycleChildText(item) {
+  const financings = item.financings || [];
+  const receipts = item.customer_receipts || [];
+  const nextDue = financings
+    .filter((row) => !row.repayment_date && !String(row.repayment_status || "").includes("已还"))
+    .map((row) => row.extended_due_date || row.original_due_date)
+    .filter(Boolean)
+    .sort()[0];
+  const parts = [];
+  if (financings.length) parts.push(`${financings.length} 笔融资 / ${lifecycleMoney(financings.reduce((sum, row) => sum + Number(row.amount || 0), 0))}`);
+  if (receipts.length) parts.push(`客户回款 ${receipts.length} 笔`);
+  if (nextDue) parts.push(`最近到期 ${nextDue}`);
+  return parts.join(" · ") || "暂无子记录";
+}
+
+function renderOrderLifecycleSummary() {
+  const summary = state.orderLifecycleSummary || {};
+  const items = [
+    ["存续融资金额", lifecycleMoney(summary["存续融资金额"])],
+    ["高风险业务数", summary["高风险业务数"] || 0],
+    ["中风险业务数", summary["中风险业务数"] || 0],
+    ["低风险业务数", summary["低风险业务数"] || 0],
+    ["已完结业务数", summary["已完结业务数"] || 0],
+    ["数据异常数", summary["数据异常数"] || 0],
+    ["更新异常数", summary["更新异常数"] || 0],
+  ];
+  orderLifecycleSummary.innerHTML = items.map(([label, value]) => `<div class="order-finance-summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("");
+}
+
+function renderOrderLifecycleCard(item) {
+  const expanded = state.orderLifecycleExpanded.has(item.id);
+  const riskClass = lifecycleRiskClass(item.risk_level);
+  const anomalyText = (item.anomalies || []).map((anomaly) => `${anomaly.anomaly_type}：${anomaly.description}`).join("；");
+  const canSensitive = Boolean(item.can_sensitive) && !isGuest();
+  const nodeActions = canSensitive ? `
+    <button class="secondary order-lifecycle-node-btn" type="button" data-id="${item.id}" data-node="集港" data-confirmed="${item.port_status !== "已集港"}">${item.port_status === "已集港" ? "撤销集港" : "确认集港"}</button>
+    <button class="secondary order-lifecycle-node-btn" type="button" data-id="${item.id}" data-node="装船" data-confirmed="${item.shipment_status !== "已装船"}">${item.shipment_status === "已装船" ? "撤销装船" : "确认装船"}</button>
+  ` : "";
+  return `
+    <article class="order-lifecycle-card ${expanded ? "expanded" : ""}">
+      <div class="order-lifecycle-card-head">
+        <div>
+          <div class="row-badges">
+            <span>${escapeHtml(item.business_type || "-")}</span>
+            <span>${escapeHtml(item.status || "待确认")}</span>
+            <span class="${riskClass}">${escapeHtml(item.risk_level || "低风险")}</span>
+            ${item.fcr ? "<span>FCR</span>" : ""}
+            ${item.financings?.length > 1 ? "<span>多笔融资</span>" : ""}
+            ${item.anomalies?.length ? `<span class="risk-high">异常 ${item.anomalies.length}</span>` : ""}
+          </div>
+          <h3>${escapeHtml(item.business_no || "-")}</h3>
+          <p>${escapeHtml([item.trade_entity, item.supplier_steel_mill, item.product_name, item.terminal_customer].filter(Boolean).join(" / ") || "必要字段待补充")}</p>
+        </div>
+        <div class="order-lifecycle-card-actions">
+          ${nodeActions}
+          ${canSensitive ? `<button class="secondary order-lifecycle-fcr-btn" type="button" data-id="${item.id}" data-enabled="${item.fcr ? "false" : "true"}">${item.fcr ? "取消 FCR" : "手动选 FCR"}</button>` : ""}
+          <button class="secondary order-lifecycle-expand-btn" type="button" data-id="${item.id}">${expanded ? "收起明细" : "查看明细"}</button>
+        </div>
+      </div>
+      <div class="order-finance-field-strip">
+        <div class="order-finance-field"><span>合同数量</span><strong>${escapeHtml(item.contract_quantity_mt == null ? "-" : `${item.contract_quantity_mt} 吨`)}</strong></div>
+        <div class="order-finance-field"><span>执行节点</span><strong>${escapeHtml(`${item.port_status || "待确认"} / ${item.shipment_status || "待确认"}`)}</strong></div>
+        <div class="order-finance-field"><span>融资/子记录</span><strong>${escapeHtml(lifecycleChildText(item))}</strong></div>
+        <div class="order-finance-field wide"><span>下一步</span><strong>${escapeHtml(item.next_action || "-")}</strong></div>
+        <div class="order-finance-field wide"><span>数据异常</span><strong>${escapeHtml(anomalyText || "无")}</strong></div>
+      </div>
+      ${expanded ? `<div class="order-lifecycle-detail"><div><b>合同 ${item.contracts?.length || 0} 条</b> · 船舶 ${item.vessels?.length || 0} 条 · 交单 ${item.documents?.length || 0} 条 · 客户回款 ${item.customer_receipts?.length || 0} 条</div><div>风险原因：${escapeHtml((item.risk_reasons || []).join("；") || "无")}</div><div class="order-lifecycle-detail-list">${(item.financings || []).map((row) => `<span>${escapeHtml(row.bank || "银行待补充")} / ${escapeHtml(lifecycleMoney(row.amount))} / ${escapeHtml(row.financing_date || "融资日期待补充")} / ${escapeHtml(row.repayment_date || row.repayment_status || "未还款")}</span>`).join("") || "无融资明细"}</div></div>` : ""}
+    </article>
+  `;
+}
+
+function renderOrderLifecycleCards() {
+  const totalPages = Math.max(1, Math.ceil(state.orderLifecycleTotal / state.orderLifecyclePageSize));
+  orderLifecycleCount.textContent = `${state.orderLifecycleTotal} 笔当前筛选结果`;
+  orderLifecyclePageInfo.textContent = `第 ${state.orderLifecyclePage} / ${totalPages} 页`;
+  orderLifecyclePrevBtn.disabled = state.orderLifecyclePage <= 1;
+  orderLifecycleNextBtn.disabled = state.orderLifecyclePage >= totalPages;
+  if (!state.orderLifecycleRecords.length) {
+    orderLifecycleCards.innerHTML = '<div class="empty-cell">当前筛选下暂无业务。</div>';
+    return;
+  }
+  orderLifecycleCards.innerHTML = state.orderLifecycleRecords.map(renderOrderLifecycleCard).join("");
+  orderLifecycleCards.querySelectorAll(".order-lifecycle-expand-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = Number(button.dataset.id);
+      if (state.orderLifecycleExpanded.has(id)) state.orderLifecycleExpanded.delete(id);
+      else state.orderLifecycleExpanded.add(id);
+      renderOrderLifecycleCards();
+    });
+  });
+  orderLifecycleCards.querySelectorAll(".order-lifecycle-fcr-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/order-lifecycle/businesses/${button.dataset.id}/fcr`, { method: "POST", body: JSON.stringify({ enabled: button.dataset.enabled === "true" }) });
+        await loadOrderLifecycleProgress();
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.message);
+      }
+    });
+  });
+  orderLifecycleCards.querySelectorAll(".order-lifecycle-node-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/order-lifecycle/businesses/${button.dataset.id}/node-confirmation`, { method: "PATCH", body: JSON.stringify({ node: button.dataset.node, confirmed: button.dataset.confirmed === "true", date: button.dataset.confirmed === "true" ? today() : "" }) });
+        await loadOrderLifecycleProgress();
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.message);
+      }
+    });
+  });
+}
+
+async function loadOrderLifecycleProgress() {
+  try {
+    const params = new URLSearchParams({
+      keyword: orderLifecycleKeyword?.value || "",
+      business_type: orderLifecycleTypeFilter?.value || "",
+      risk_level: orderLifecycleRiskFilter?.value || "",
+      status: orderLifecycleStatusFilter?.value || "",
+      fcr: orderLifecycleFcrFilter?.value || "",
+      page: String(state.orderLifecyclePage),
+      page_size: String(state.orderLifecyclePageSize),
+      ts: String(Date.now()),
+    });
+    const result = await api(`/api/order-lifecycle/progress?${params.toString()}`);
+    state.orderLifecycleRecords = result.records || [];
+    state.orderLifecyclePage = Number(result.page || state.orderLifecyclePage);
+    state.orderLifecyclePageSize = Number(result.page_size || state.orderLifecyclePageSize);
+    state.orderLifecycleTotal = Number(result.total || 0);
+    state.orderLifecycleSummary = result.summary || {};
+    renderOrderLifecycleSummary();
+    renderOrderLifecycleCards();
+    const sync = result.sync_status || {};
+    const parts = [sync.wps_last_success_at ? `WPS 最近成功：${orderFinanceSyncTime(sync.wps_last_success_at)}` : "WPS 尚无成功更新", sync.email_last_success_at ? `邮件台账最近成功：${orderFinanceSyncTime(sync.email_last_success_at)}` : "邮件台账尚无成功更新"];
+    orderLifecycleSyncStatus.textContent = parts.join(" · ");
+  } catch (error) {
+    orderLifecycleSyncStatus.textContent = error.message;
+    orderLifecycleCards.innerHTML = `<div class="error-cell">${escapeHtml(error.message)}</div>`;
+  }
+}
+
 function orderFinanceSyncTime(value) {
   return value ? String(value).replace("T", " ").slice(0, 16) : "-";
 }
@@ -3306,6 +3490,31 @@ orderFinanceResetFiltersBtn.addEventListener("click", () => {
   orderFinanceKeywordFilter.value = "";
   orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("active", item.dataset.filter === "all"));
   renderOrderFinanceContracts();
+});
+orderLifecycleKeyword.addEventListener("input", () => { state.orderLifecyclePage = 1; loadOrderLifecycleProgress(); });
+[orderLifecycleTypeFilter, orderLifecycleRiskFilter, orderLifecycleStatusFilter, orderLifecycleFcrFilter].forEach((element) => {
+  element.addEventListener("change", () => { state.orderLifecyclePage = 1; loadOrderLifecycleProgress(); });
+});
+orderLifecycleResetBtn.addEventListener("click", () => {
+  orderLifecycleKeyword.value = "";
+  orderLifecycleTypeFilter.value = "";
+  orderLifecycleRiskFilter.value = "";
+  orderLifecycleStatusFilter.value = "";
+  orderLifecycleFcrFilter.value = "";
+  state.orderLifecyclePage = 1;
+  loadOrderLifecycleProgress();
+});
+orderLifecyclePageSize.addEventListener("change", () => {
+  state.orderLifecyclePageSize = Number(orderLifecyclePageSize.value || 20);
+  state.orderLifecyclePage = 1;
+  loadOrderLifecycleProgress();
+});
+orderLifecyclePrevBtn.addEventListener("click", () => {
+  if (state.orderLifecyclePage > 1) { state.orderLifecyclePage -= 1; loadOrderLifecycleProgress(); }
+});
+orderLifecycleNextBtn.addEventListener("click", () => {
+  const totalPages = Math.max(1, Math.ceil(state.orderLifecycleTotal / state.orderLifecyclePageSize));
+  if (state.orderLifecyclePage < totalPages) { state.orderLifecyclePage += 1; loadOrderLifecycleProgress(); }
 });
 
 // ═══════════════════════════════════════════════════════════════

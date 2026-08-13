@@ -58,6 +58,7 @@ from .info_summary_backfill import (
 from .iron_ore_basis_snapshot_sync import start_iron_ore_basis_sync_scheduler
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .order_finance_snapshot_sync import start_order_finance_sync_scheduler
+from .order_lifecycle_sync import start_order_lifecycle_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
@@ -65,6 +66,7 @@ from . import (
     iron_ore_basis_snapshot_sync,
     operation_log_archive,
     order_finance,
+    order_lifecycle,
     order_finance_snapshot_sync,
     trading_management,
     trading_valuation,
@@ -131,6 +133,7 @@ app.include_router(data_visualization.router, prefix="/api")
 app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
+app.include_router(order_lifecycle.router, prefix="/api")
 app.include_router(order_finance_snapshot_sync.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
 
@@ -1302,6 +1305,7 @@ def startup() -> None:
             data_visualization.seed_dv_data()
             start_iron_ore_basis_sync_scheduler()
             start_order_finance_sync_scheduler()
+            start_order_lifecycle_sync_scheduler()
         except Exception as exc:
             print(f"[startup] database initialization skipped: {exc}")
 
