@@ -14,6 +14,7 @@ test("订单全流程测试版页面使用独立模块和分页 API", () => {
   assert.match(appJs, /order-lifecycle-node-btn/);
   assert.match(appJs, /api\/order-lifecycle\/businesses/);
   assert.match(appJs, /api\/order-lifecycle\/import-upload/);
+  assert.match(appJs, /result\.record_count \?\? result\.imported_records/);
   assert.match(indexHtml, /id="orderLifecycleWpsImportBtn"/);
   assert.match(indexHtml, /id="orderLifecycleEmailImportFiles"/);
 });

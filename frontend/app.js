@@ -3144,7 +3144,7 @@ async function importOrderLifecycleFiles(sourceType, fileList, button) {
       method: "POST",
       body: JSON.stringify({ source_type: sourceType, files: encoded }),
     });
-    orderLifecycleSyncStatus.textContent = `${sourceType === "wps" ? "WPS" : "邮件台账"} 已导入：${Number(result.imported_records || 0)} 条记录`;
+    orderLifecycleSyncStatus.textContent = `${sourceType === "wps" ? "WPS" : "邮件台账"} 已导入：${Number(result.record_count ?? result.imported_records ?? 0)} 条记录`;
     state.orderLifecyclePage = 1;
     await loadOrderLifecycleProgress();
     showToast("测试快照导入成功");
