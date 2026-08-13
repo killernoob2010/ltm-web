@@ -5,16 +5,31 @@ import { test } from "node:test";
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 
-test("订单全流程测试版页面使用独立模块和分页 API", () => {
+test("订单全流程页面使用独立模块、冻结原型筛选和详情 API", () => {
   assert.match(indexHtml, /id="orderLifecyclePage"/);
   assert.match(indexHtml, /id="orderLifecyclePageSize"/);
   assert.match(appJs, /code === "order_lifecycle_progress"/);
   assert.match(appJs, /api\/order-lifecycle\/progress/);
   assert.match(appJs, /page_size: String\(state\.orderLifecyclePageSize\)/);
-  assert.match(appJs, /order-lifecycle-node-btn/);
+  assert.match(appJs, /order-lifecycle-detail-btn/);
+  assert.doesNotMatch(appJs, /order-lifecycle-node-btn/);
+  assert.match(appJs, /orderLifecycleOverviewTab/);
+  assert.match(appJs, /orderLifecycleFocusTab/);
+  assert.match(appJs, /business_types:/);
+  assert.match(appJs, /anomaly_types:/);
+  assert.match(appJs, /order-lifecycle-edit-child/);
+  assert.match(appJs, /child-record/);
+  assert.match(appJs, /child-override/);
+  assert.match(appJs, /来源版本/);
+  assert.match(appJs, /内部记录ID/);
+  assert.match(indexHtml, /id="orderLifecycleDetailView"/);
+  assert.match(indexHtml, /data-filter-group="statuses"/);
+  assert.match(indexHtml, /type="checkbox"/);
   assert.match(appJs, /api\/order-lifecycle\/businesses/);
-  assert.match(appJs, /api\/order-lifecycle\/import-upload/);
-  assert.match(appJs, /result\.record_count \?\? result\.imported_records/);
-  assert.match(indexHtml, /id="orderLifecycleWpsImportBtn"/);
-  assert.match(indexHtml, /id="orderLifecycleEmailImportFiles"/);
+  assert.doesNotMatch(appJs, /api\/order-lifecycle\/import-upload/);
+  assert.doesNotMatch(indexHtml, /导入 WPS 测试快照|导入邮件六附件/);
+  assert.doesNotMatch(indexHtml, /id="orderLifecycleWpsImportBtn"|id="orderLifecycleEmailImportFiles"/);
+  const fcrFilter = indexHtml.match(/<fieldset[^>]*id="orderLifecycleFcrFilter"[\s\S]*?<\/fieldset>/)?.[0] || "";
+  assert.match(fcrFilter, /data-filter-group="fcr"/);
+  assert.doesNotMatch(fcrFilter, /data-filter-action=/);
 });

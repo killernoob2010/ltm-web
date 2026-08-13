@@ -540,15 +540,12 @@
         </section>
 
         <section id="orderLifecyclePage" class="page hidden">
+          <div id="orderLifecycleListView">
           <div class="toolbar order-lifecycle-toolbar">
-            <span class="toolbar-status">订单全流程管理（测试版）</span>
-            <button id="orderLifecycleWpsImportBtn" type="button" class="secondary">导入 WPS 测试快照</button>
-            <input id="orderLifecycleWpsImportFile" class="hidden" type="file" accept=".xlsx" />
-            <button id="orderLifecycleEmailImportBtn" type="button" class="secondary">导入邮件六附件</button>
-            <input id="orderLifecycleEmailImportFiles" class="hidden" type="file" accept=".xls,.xlsx" multiple />
+            <span class="toolbar-status">订单全流程管理</span>
             <span id="orderLifecycleSyncStatus" class="toolbar-status">来源更新时间读取中</span>
           </div>
-          <p class="order-lifecycle-source-note">融资以 WPS 为主、过单以邮件台账为主；本页面只展示当前已成功入库结果。尚未完成首批 WPS 或邮件台账导入时，业务主卡会为空；本页面不提供立即更新、整卡新建或普通删除。</p>
+          <p class="order-lifecycle-source-note">WPS：<span id="orderLifecycleWpsSuccessAt">尚无成功获取</span> · 邮件台账：<span id="orderLifecycleEmailSuccessAt">尚无成功获取</span></p>
           <section class="order-lifecycle-summary" id="orderLifecycleSummary"></section>
           <section class="panel order-lifecycle-workbench">
             <div class="panel-head">
@@ -556,25 +553,17 @@
                 <h2>业务主卡</h2>
                 <span id="orderLifecycleCount"></span>
               </div>
-              <label class="order-finance-search">
-                <input id="orderLifecycleKeyword" type="search" placeholder="搜索业务编号、客户、钢厂、品名" />
-              </label>
+              <label class="order-finance-search"><select id="orderLifecycleSearchField" aria-label="搜索字段"><option value="business_no">业务编号</option><option value="contract_no">合同号</option><option value="trade_entity">贸易主体</option><option value="supplier_steel_mill">供应钢厂</option><option value="terminal_customer">终端客户</option><option value="product_name">货物品名</option><option value="bank">融资银行</option><option value="date">日期</option><option value="amount">金额</option></select><input id="orderLifecycleKeyword" type="search" placeholder="输入内容" /></label>
             </div>
             <div class="order-lifecycle-filters" id="orderLifecycleFilters">
-              <select id="orderLifecycleTypeFilter" aria-label="业务类型">
-                <option value="">全部业务类型</option><option value="融资">融资业务</option><option value="过单">过单业务</option>
-              </select>
-              <select id="orderLifecycleRiskFilter" aria-label="风险等级">
-                <option value="">全部风险</option><option value="高风险">高风险</option><option value="中风险">中风险</option><option value="低风险">低风险</option>
-              </select>
-              <select id="orderLifecycleStatusFilter" aria-label="当前状态">
-                <option value="">全部状态</option><option value="已放款">已放款</option><option value="已集港">已集港</option><option value="已装船">已装船</option><option value="已交单">已交单</option><option value="待收汇">待收汇</option><option value="客户已回款">客户已回款</option><option value="订单执行中">订单执行中</option><option value="已完结">已完结</option><option value="待确认">待确认</option>
-              </select>
-              <select id="orderLifecycleFcrFilter" aria-label="FCR">
-                <option value="">FCR/非FCR</option><option value="FCR">FCR</option><option value="非FCR">非FCR</option>
-              </select>
+              <fieldset class="order-lifecycle-check-group" id="orderLifecycleTypeFilter" data-filter-group="business_types"><legend><span>业务类型</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="融资" checked>融资类业务</label><label><input type="checkbox" value="过单" checked>过单类业务</label></fieldset>
+              <fieldset class="order-lifecycle-check-group" id="orderLifecycleRiskFilter" data-filter-group="risk_levels"><legend><span>风险等级</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="高风险" checked>高风险</label><label><input type="checkbox" value="中风险" checked>中风险</label><label><input type="checkbox" value="低风险" checked>低风险</label></fieldset>
+              <fieldset class="order-lifecycle-check-group wide" id="orderLifecycleAnomalyFilter" data-filter-group="anomaly_types"><legend><span>异常类型</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="数据缺失" checked>字段缺失</label><label><input type="checkbox" value="来源冲突" checked>来源冲突</label><label><input type="checkbox" value="节点矛盾" checked>节点矛盾</label><label><input type="checkbox" value="日期异常" checked>未来日期</label><label><input type="checkbox" value="无异常" checked>无异常</label></fieldset>
+              <fieldset class="order-lifecycle-check-group" id="orderLifecycleFcrFilter" data-filter-group="fcr"><legend><span>FCR / 非 FCR</span></legend><label><input type="checkbox" value="FCR" checked>FCR</label><label><input type="checkbox" value="非FCR" checked>非 FCR</label></fieldset>
+              <fieldset class="order-lifecycle-check-group status-group wide" id="orderLifecycleStatusFilter" data-filter-group="statuses"><legend><span>当前状态</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="已放款" checked>已放款</label><label><input type="checkbox" value="已集港" checked>已集港</label><label><input type="checkbox" value="已装船" checked>已装船</label><label><input type="checkbox" value="已交单" checked>已交单</label><label><input type="checkbox" value="待收汇" checked>待收汇</label><label><input type="checkbox" value="订单执行中" checked>订单执行中</label><label><input type="checkbox" value="已回款" checked>已回款</label><label><input type="checkbox" value="已结算" checked>已结算</label><label><input type="checkbox" value="已完结" checked>已完结</label><label><input type="checkbox" value="待确认" checked>待确认</label></fieldset>
               <button id="orderLifecycleResetBtn" class="secondary" type="button">清空筛选</button>
             </div>
+            <div class="order-lifecycle-view-tabs"><button id="orderLifecycleOverviewTab" type="button" class="active">总览</button><button id="orderLifecycleFocusTab" type="button">本周关注重点</button></div>
             <div id="orderLifecycleCards" class="order-lifecycle-cards"></div>
             <div class="order-lifecycle-pagination">
               <button id="orderLifecyclePrevBtn" class="secondary" type="button">上一页</button>
@@ -583,6 +572,8 @@
               <button id="orderLifecycleNextBtn" class="secondary" type="button">下一页</button>
             </div>
           </section>
+          </div>
+          <div id="orderLifecycleDetailView" class="hidden"></div>
         </section>
 
         <section id="orderFinanceCapitalPage" class="page hidden">
