@@ -542,6 +542,10 @@
         <section id="orderLifecyclePage" class="page hidden">
           <div class="toolbar order-lifecycle-toolbar">
             <span class="toolbar-status">订单全流程管理（测试版）</span>
+            <button id="orderLifecycleWpsImportBtn" type="button" class="secondary">导入 WPS 测试快照</button>
+            <input id="orderLifecycleWpsImportFile" class="hidden" type="file" accept=".xlsx" />
+            <button id="orderLifecycleEmailImportBtn" type="button" class="secondary">导入邮件六附件</button>
+            <input id="orderLifecycleEmailImportFiles" class="hidden" type="file" accept=".xls,.xlsx" multiple />
             <span id="orderLifecycleSyncStatus" class="toolbar-status">来源更新时间读取中</span>
           </div>
           <p class="order-lifecycle-source-note">融资以 WPS 为主、过单以邮件台账为主；本页面只展示当前已成功入库结果。尚未完成首批 WPS 或邮件台账导入时，业务主卡会为空；本页面不提供立即更新、整卡新建或普通删除。</p>

@@ -45,6 +45,7 @@ const state = {
   orderLifecyclePageSize: 20,
   orderLifecycleTotal: 0,
   orderLifecycleExpanded: new Set(),
+  orderLifecycleRequestSeq: 0,
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
@@ -136,6 +137,8 @@ function applyUiPermissions() {
   setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
   setHidden("#plattsIndexUploadBtn", guest || !canModuleSensitive("platts_index_monitor"));
   setHidden("#plattsIndexConfirmBtn", guest || !canModuleSensitive("platts_index_monitor"));
+  ["#orderLifecycleWpsImportBtn", "#orderLifecycleEmailImportBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleSensitive("order_lifecycle_progress")));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -171,6 +174,10 @@ const orderFinanceCapitalPage = document.querySelector("#orderFinanceCapitalPage
 const tradingManagementPage = document.querySelector("#tradingManagementPage");
 const orderFinanceCapitalRefreshBtn = document.querySelector("#orderFinanceCapitalRefreshBtn");
 const orderLifecycleSyncStatus = document.querySelector("#orderLifecycleSyncStatus");
+const orderLifecycleWpsImportBtn = document.querySelector("#orderLifecycleWpsImportBtn");
+const orderLifecycleWpsImportFile = document.querySelector("#orderLifecycleWpsImportFile");
+const orderLifecycleEmailImportBtn = document.querySelector("#orderLifecycleEmailImportBtn");
+const orderLifecycleEmailImportFiles = document.querySelector("#orderLifecycleEmailImportFiles");
 const orderLifecycleSummary = document.querySelector("#orderLifecycleSummary");
 const orderLifecycleCount = document.querySelector("#orderLifecycleCount");
 const orderLifecycleKeyword = document.querySelector("#orderLifecycleKeyword");
@@ -3431,6 +3438,7 @@ function renderOrderLifecycleCards() {
 }
 
 async function loadOrderLifecycleProgress() {
+  const requestSeq = ++state.orderLifecycleRequestSeq;
   try {
     const params = new URLSearchParams({
       keyword: orderLifecycleKeyword?.value || "",
@@ -3443,6 +3451,7 @@ async function loadOrderLifecycleProgress() {
       ts: String(Date.now()),
     });
     const result = await api(`/api/order-lifecycle/progress?${params.toString()}`);
+    if (requestSeq !== state.orderLifecycleRequestSeq) return;
     state.orderLifecycleRecords = result.records || [];
     state.orderLifecyclePage = Number(result.page || state.orderLifecyclePage);
     state.orderLifecyclePageSize = Number(result.page_size || state.orderLifecyclePageSize);
@@ -3454,8 +3463,41 @@ async function loadOrderLifecycleProgress() {
     const parts = [sync.wps_last_success_at ? `WPS 最近成功：${orderFinanceSyncTime(sync.wps_last_success_at)}` : "WPS 尚无成功更新", sync.email_last_success_at ? `邮件台账最近成功：${orderFinanceSyncTime(sync.email_last_success_at)}` : "邮件台账尚无成功更新"];
     orderLifecycleSyncStatus.textContent = parts.join(" · ");
   } catch (error) {
+    if (requestSeq !== state.orderLifecycleRequestSeq) return;
     orderLifecycleSyncStatus.textContent = error.message;
     orderLifecycleCards.innerHTML = `<div class="error-cell">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function readLifecycleFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",", 2)[1] || "");
+    reader.onerror = () => reject(new Error(`读取文件失败：${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function importOrderLifecycleFiles(sourceType, fileList, button) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  button.disabled = true;
+  orderLifecycleSyncStatus.textContent = sourceType === "wps" ? "正在导入 WPS 测试快照" : "正在导入邮件台账六附件";
+  try {
+    const encoded = await Promise.all(files.map(async (file) => ({ file_name: file.name, file_data: await readLifecycleFile(file) })));
+    const result = await api("/api/order-lifecycle/import-upload", {
+      method: "POST",
+      body: JSON.stringify({ source_type: sourceType, files: encoded }),
+    });
+    orderLifecycleSyncStatus.textContent = `${sourceType === "wps" ? "WPS" : "邮件台账"} 已导入：${Number(result.imported_records || 0)} 条记录`;
+    state.orderLifecyclePage = 1;
+    await loadOrderLifecycleProgress();
+    showToast("测试快照导入成功");
+  } catch (error) {
+    orderLifecycleSyncStatus.textContent = error.message;
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -3853,6 +3895,16 @@ orderFinanceResetFiltersBtn.addEventListener("click", () => {
   orderFinanceKeywordFilter.value = "";
   orderFinanceStageFilters.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("active", item.dataset.filter === "all"));
   renderOrderFinanceContracts();
+});
+orderLifecycleWpsImportBtn.addEventListener("click", () => orderLifecycleWpsImportFile.click());
+orderLifecycleWpsImportFile.addEventListener("change", () => {
+  importOrderLifecycleFiles("wps", orderLifecycleWpsImportFile.files, orderLifecycleWpsImportBtn);
+  orderLifecycleWpsImportFile.value = "";
+});
+orderLifecycleEmailImportBtn.addEventListener("click", () => orderLifecycleEmailImportFiles.click());
+orderLifecycleEmailImportFiles.addEventListener("change", () => {
+  importOrderLifecycleFiles("email", orderLifecycleEmailImportFiles.files, orderLifecycleEmailImportBtn);
+  orderLifecycleEmailImportFiles.value = "";
 });
 orderLifecycleKeyword.addEventListener("input", () => { state.orderLifecyclePage = 1; loadOrderLifecycleProgress(); });
 [orderLifecycleTypeFilter, orderLifecycleRiskFilter, orderLifecycleStatusFilter, orderLifecycleFcrFilter].forEach((element) => {

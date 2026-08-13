@@ -1,4 +1,5 @@
 from pathlib import Path
+import base64
 
 import pytest
 
@@ -12,6 +13,9 @@ from backend.app.order_lifecycle import (
     parse_wps_workbook,
     order_lifecycle_node_confirmation,
     NodeConfirmationRequest,
+    LifecycleUploadRequest,
+    LifecycleUploadFile,
+    order_lifecycle_import_upload,
 )
 
 
@@ -119,6 +123,25 @@ def test_sensitive_node_confirmation_advances_main_status(lifecycle_db):
     assert list_businesses({"page": 1, "page_size": 20})["records"][0]["port_status"] == "已集港"
 
 
+def test_status_filter_qualifies_business_status_in_anomaly_summary(lifecycle_db):
+    record = _record(
+        business_type="融资",
+        financings=[{
+            "bank": "中信唐山",
+            "amount": 1000,
+            "financing_date": "2026-07-01",
+            "original_due_date": "2026-08-20",
+            "repayment_date": "2026-08-12",
+            "repayment_status": "已还款",
+            "source_key": "f1",
+        }],
+    )
+    apply_source_batch(_batch([record]))
+    result = list_businesses({"status": "已完结", "page": 1, "page_size": 20})
+    assert result["total"] == 1
+    assert result["summary"]["已完结业务数"] == 1
+
+
 def test_real_wps_and_mail_fixtures_are_readable():
     wps = Path("/Users/wangjingze/Downloads/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
     mail = Path("/Users/wangjingze/Documents/订单融资进度监控/data/raw/2026-07-05")
@@ -129,3 +152,17 @@ def test_real_wps_and_mail_fixtures_are_readable():
     assert wps_result["summary"]["record_count"] > 0
     assert mail_result["summary"]["files_read"] == 6
     assert mail_result["summary"]["record_count"] > 0
+
+
+def test_upload_import_accepts_wps_snapshot_in_staging_db(lifecycle_db):
+    wps = Path("/Users/wangjingze/Downloads/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
+    if not wps.exists():
+        pytest.skip("本机真实样例未挂载")
+    request = LifecycleUploadRequest(
+        source_type="wps",
+        files=[LifecycleUploadFile(file_name=wps.name, file_data=base64.b64encode(wps.read_bytes()).decode())],
+    )
+    result = order_lifecycle_import_upload(request, {"id": 1, "role": "管理员", "name": "管理员"})
+    assert result["status"] == "success"
+    assert result["source_type"] == "wps"
+    assert list_businesses({"page": 1, "page_size": 20})["total"] > 0
