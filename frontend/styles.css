@@ -2560,6 +2560,88 @@ button.order-vessel-detail-btn {
   }
 }
 
+.order-lifecycle-source-note {
+  margin: -8px 0 16px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.order-lifecycle-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.order-lifecycle-filters select {
+  min-width: 130px;
+}
+
+.order-lifecycle-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.order-lifecycle-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  background: #fff;
+}
+
+.order-lifecycle-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.order-lifecycle-card-head h3 {
+  margin: 8px 0 4px;
+}
+
+.order-lifecycle-card-head p {
+  margin: 0;
+  color: #64748b;
+}
+
+.order-lifecycle-card-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.order-lifecycle-detail {
+  border-top: 1px solid #e2e8f0;
+  margin-top: 12px;
+  padding-top: 12px;
+  color: #475569;
+  font-size: 13px;
+}
+
+.order-lifecycle-detail-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.order-lifecycle-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 760px) {
+  .order-lifecycle-card-head {
+    flex-direction: column;
+  }
+  .order-lifecycle-card-actions {
+    align-items: center;
+  }
+}
+
 @media (max-width: 860px) {
   .capital-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));

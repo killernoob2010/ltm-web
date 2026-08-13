@@ -14,6 +14,7 @@ RESOURCE_MODULES = {
     "data_visualization.integrated_points": "data_visualization_integration",
     "order_finance.records": "order_finance_progress",
     "order_finance.capital": "order_finance_capital",
+    "order_lifecycle.records": "order_lifecycle_progress",
     "trading.overview": "trading_overview",
     "trading.facts": "trading_positions",
     "trading.junneng": "trading_sh_junneng",
@@ -60,6 +61,7 @@ ACTIVE_BUSINESS_MODULES = {
     "data_visualization_chart",
     "order_finance_progress",
     "order_finance_capital",
+    "order_lifecycle_progress",
     "trading_overview",
     "trading_positions",
     "trading_sh_junneng",
@@ -85,10 +87,12 @@ DEPARTMENT_MODULES = {
     "财企处": {
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
         "order_finance_progress", "order_finance_capital",
+        "order_lifecycle_progress",
     },
     "资金处": {
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
         "order_finance_progress", "order_finance_capital",
+        "order_lifecycle_progress",
     },
     "管理部门": set(ACTIVE_BUSINESS_MODULES),
 }
