@@ -3493,11 +3493,13 @@ function clearOrderLifecycleDetailHash() {
 }
 
 async function loadOrderLifecycleDetail(id) {
+  const loadStartedAt = performance.now();
   try {
     state.orderLifecycleDetail = await api(`/api/order-lifecycle/businesses/${id}`);
     orderLifecycleListView.classList.add("hidden");
     orderLifecycleDetailView.classList.remove("hidden");
     orderLifecycleDetailView.innerHTML = renderOrderLifecycleDetail(state.orderLifecycleDetail);
+    orderLifecycleDetailView.dataset.lastLoadMs = String(Math.round(performance.now() - loadStartedAt));
     const pageScroller = orderLifecycleScrollContainer();
     if (pageScroller) pageScroller.scrollTop = 0;
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -3841,6 +3843,7 @@ function submitOrderLifecycleSearch() {
 }
 
 async function loadOrderLifecycleProgress() {
+  const loadStartedAt = performance.now();
   const requestSeq = ++state.orderLifecycleRequestSeq;
   restoreOrderLifecycleViewState();
   saveOrderLifecycleViewState();
@@ -3886,6 +3889,9 @@ async function loadOrderLifecycleProgress() {
   } finally {
     clearTimeout(state.orderLifecycleLoadingTimer);
     orderLifecycleCards.removeAttribute("aria-busy");
+    if (requestSeq === state.orderLifecycleRequestSeq) {
+      orderLifecycleCards.dataset.lastLoadMs = String(Math.round(performance.now() - loadStartedAt));
+    }
   }
 }
 
