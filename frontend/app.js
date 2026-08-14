@@ -3471,9 +3471,9 @@ function bindOrderLifecycleDetailNavigation(detailRoot, pageScroller) {
       if (pageScroller) {
         const scrollerRect = pageScroller.getBoundingClientRect();
         const targetTop = target.getBoundingClientRect().top - scrollerRect.top + pageScroller.scrollTop - detailNav.offsetHeight - 8;
-        pageScroller.scrollTo({ top: Math.max(targetTop, 0), behavior: "smooth" });
+        pageScroller.scrollTo({ top: Math.max(targetTop, 0), behavior: "auto" });
       } else {
-        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        target.scrollIntoView({ behavior: "auto", block: "start" });
       }
       history.replaceState(null, "", targetSelector);
     });
