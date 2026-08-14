@@ -1502,6 +1502,8 @@ dialog::backdrop {
 }
 
 .order-lifecycle-record-table-wrap {
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   overflow-x: auto;
   border: 1px solid #e2e8f0;
@@ -3637,6 +3639,12 @@ button.order-vessel-detail-btn {
   font-size: 11px;
 }
 
+#orderLifecycleDetailView {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+}
+
 .order-lifecycle-detail-shell {
   gap: 18px;
   width: 100%;
@@ -3646,6 +3654,8 @@ button.order-vessel-detail-btn {
 }
 
 .order-lifecycle-detail-hero {
+  min-width: 0;
+  max-width: 100%;
   padding: 18px 0;
   border-bottom: 0;
 }
@@ -3656,6 +3666,7 @@ button.order-vessel-detail-btn {
 
 .order-lifecycle-detail-hero-main {
   min-width: 0;
+  max-width: 100%;
 }
 
 .order-lifecycle-detail-hero-facts {
@@ -3761,6 +3772,7 @@ button.order-vessel-detail-btn {
   display: grid;
   gap: 14px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .detail-section-number {
@@ -3771,6 +3783,8 @@ button.order-vessel-detail-btn {
 }
 
 .order-lifecycle-detail-section.detail-section {
+  min-width: 0;
+  max-width: 100%;
   scroll-margin-top: 76px;
   padding: 18px;
 }

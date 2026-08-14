@@ -38,7 +38,7 @@ test("订单全流程页面使用独立模块、冻结原型筛选和详情 API"
 test("订单全流程前端资源使用新的缓存一致性版本", () => {
   assert.match(
     indexHtml,
-    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-performance-v4"/,
+    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-performance-v5"/,
   );
 });
 
@@ -129,6 +129,9 @@ test("订单全流程详情头、实心横向导航和滚动恢复符合冻结�
   assert.ok(finalNavRules.some((rule) => /background:\s*(?:#fff|var\(--surface\))/.test(rule)));
   assert.ok(finalNavRules.some((rule) => /overflow-x:\s*auto/.test(rule)));
   assert.match(stylesCss, /\.order-lifecycle-detail-shell\s*\{[^}]*max-width:\s*100%/);
+  assert.match(stylesCss, /#orderLifecycleDetailView\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+  assert.match(stylesCss, /\.order-lifecycle-detail-content\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+  assert.match(stylesCss, /\.order-lifecycle-detail-section\.detail-section\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
   assert.match(stylesCss, /\.order-lifecycle-record-table-wrap\s*\{[^}]*overflow-x:\s*auto/);
   assert.match(appJs, /scrollTop:\s*orderLifecycleCurrentScrollTop\(\)/);
   assert.match(appJs, /requestAnimationFrame\([\s\S]*?window\.scrollTo/);
