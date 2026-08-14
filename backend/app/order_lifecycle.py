@@ -2038,31 +2038,29 @@ def _seconds_text(value: Any) -> Any:
 
 def _load_business_children(cur, business_id: int) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {}
-    parent = db._exec(cur, "SELECT business_key FROM order_lifecycle_businesses WHERE id = ?", (business_id,)).fetchone()
     source_meta: dict[tuple[str, str], dict[str, Any]] = {}
-    if parent:
-        source_rows = db._exec(
-            cur,
-            "SELECT r.source_type, r.source_key, r.normalized_json, b.source_version AS batch_source_version, b.snapshot_date AS batch_snapshot_date, b.completed_at, r.created_at FROM order_lifecycle_source_records r LEFT JOIN order_lifecycle_source_batches b ON b.id = r.batch_id WHERE r.business_key = ? ORDER BY r.id DESC",
-            (parent["business_key"],),
-        ).fetchall()
-        for source_row in source_rows:
-            normalized = _safe_json(source_row["normalized_json"], {})
-            if not isinstance(normalized, dict):
-                continue
-            metadata = {
-                "source": normalized.get("source_type") or source_row["source_type"],
-                "source_type": normalized.get("source_type") or source_row["source_type"],
-                "source_record_key": source_row["source_key"],
-                "source_version": normalized.get("source_version") or source_row["batch_source_version"],
-                "source_snapshot_date": normalized.get("source_snapshot_date") or source_row["batch_snapshot_date"],
-                "source_updated_at": _seconds_text(source_row["completed_at"] or source_row["created_at"]),
-            }
-            for collection, kind in (("contracts", "contract"), ("financings", "financing"), ("vessels", "vessel"), ("documents", "document"), ("customer_receipts", "receipt"), ("bank_repayments", "bank_repayment")):
-                for child in normalized.get(collection, []):
-                    child_key = _source_child_key(kind, child)
-                    if child_key:
-                        source_meta.setdefault((collection, child_key), metadata)
+    source_rows = db._exec(
+        cur,
+        "SELECT r.source_type, r.source_key, r.normalized_json, sb.source_version AS batch_source_version, sb.snapshot_date AS batch_snapshot_date, sb.completed_at, r.created_at FROM order_lifecycle_businesses ob JOIN order_lifecycle_source_records r ON r.business_key = ob.business_key LEFT JOIN order_lifecycle_source_batches sb ON sb.id = r.batch_id WHERE ob.id = ? ORDER BY r.id DESC",
+        (business_id,),
+    ).fetchall()
+    for source_row in source_rows:
+        normalized = _safe_json(source_row["normalized_json"], {})
+        if not isinstance(normalized, dict):
+            continue
+        metadata = {
+            "source": normalized.get("source_type") or source_row["source_type"],
+            "source_type": normalized.get("source_type") or source_row["source_type"],
+            "source_record_key": source_row["source_key"],
+            "source_version": normalized.get("source_version") or source_row["batch_source_version"],
+            "source_snapshot_date": normalized.get("source_snapshot_date") or source_row["batch_snapshot_date"],
+            "source_updated_at": _seconds_text(source_row["completed_at"] or source_row["created_at"]),
+        }
+        for collection, kind in (("contracts", "contract"), ("financings", "financing"), ("vessels", "vessel"), ("documents", "document"), ("customer_receipts", "receipt"), ("bank_repayments", "bank_repayment")):
+            for child in normalized.get(collection, []):
+                child_key = _source_child_key(kind, child)
+                if child_key:
+                    source_meta.setdefault((collection, child_key), metadata)
     override_rows = db._exec(
         cur,
         "SELECT collection, source_key, field_name, value_json FROM order_lifecycle_child_overrides WHERE business_id = ? AND is_active = 1",
@@ -2070,6 +2068,13 @@ def _load_business_children(cur, business_id: int) -> dict[str, list[dict[str, A
     ).fetchall()
     overrides = {(row["collection"], row["source_key"], row["field_name"]): _safe_json(row["value_json"], None) for row in override_rows}
     override_keys = {(row["collection"], row["source_key"], row["field_name"]) for row in override_rows}
+    manual_rows_by_collection: dict[str, list[Any]] = defaultdict(list)
+    for manual in db._exec(
+        cur,
+        "SELECT collection, source_key, record_json, modified_by, modified_at, note FROM order_lifecycle_manual_child_records WHERE business_id = ? AND is_active = 1 ORDER BY collection, id",
+        (business_id,),
+    ).fetchall():
+        manual_rows_by_collection[manual["collection"]].append(manual)
     for key, table in CHILD_TABLES.items():
         rows = [_row_json(item) for item in db._exec(cur, f"SELECT * FROM {table} WHERE business_id = ? ORDER BY id", (business_id,)).fetchall()]
         for item in rows:
@@ -2087,12 +2092,7 @@ def _load_business_children(cur, business_id: int) -> dict[str, list[dict[str, A
                 for field, value in metadata.items():
                     if value not in (None, ""):
                         item[field] = value
-        manual_rows = db._exec(
-            cur,
-            "SELECT source_key, record_json, modified_by, modified_at, note FROM order_lifecycle_manual_child_records WHERE business_id = ? AND collection = ? AND is_active = 1 ORDER BY id",
-            (business_id, key),
-        ).fetchall()
-        for manual in manual_rows:
+        for manual in manual_rows_by_collection.get(key, []):
             item = _safe_json(manual["record_json"], {})
             if not isinstance(item, dict):
                 item = {}

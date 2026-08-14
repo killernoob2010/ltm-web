@@ -447,6 +447,25 @@ def test_list_uses_bounded_batch_queries_and_returns_only_requested_page(lifecyc
     assert select_count <= 20
 
 
+def test_detail_children_use_bounded_queries(lifecycle_db, monkeypatch):
+    apply_source_batch(_batch([_record()]))
+    with db.connect() as conn:
+        business_id = conn.execute("SELECT id FROM order_lifecycle_businesses").fetchone()["id"]
+        original_exec = db._exec
+        statements = []
+
+        def tracing_exec(cur, sql, params=None):
+            statements.append(sql)
+            return original_exec(cur, sql, params)
+
+        monkeypatch.setattr(db, "_exec", tracing_exec)
+        children = lifecycle_module._load_business_children(conn.cursor(), business_id)
+
+    select_count = sum(1 for statement in statements if statement.lstrip().upper().startswith("SELECT"))
+    assert children["contracts"][0]["contract_no"] == "C1"
+    assert select_count <= 9
+
+
 def test_overview_loads_child_rows_only_for_requested_page(lifecycle_db, monkeypatch):
     records = []
     for index in range(200):
