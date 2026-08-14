@@ -37,7 +37,6 @@ from app.order_finance import (
 )
 
 
-LEDGER_DIR = Path("/Users/wangjingze/建龙/贸易处/订单融资合同汇总")
 NEW_LEDGER_WORKBOOK = Path("/Users/wangjingze/建龙/贸易处/YOLANDA和香港建龙出口钢材信用证台账.xlsx")
 
 
@@ -1363,11 +1362,28 @@ def test_derive_business_status_for_drawdown_without_bill_of_lading():
             "bill_of_lading_date": "",
             "collection_date": "",
             "remark": "",
-        }
+        },
+        today=date(2026, 7, 1),
     )
 
     assert status["business_status"] == "已放款待集港"
     assert status["next_action"] == "跟进集港进度"
+
+
+def test_derive_business_status_uses_explicit_business_date_at_due_date():
+    status = derive_business_status(
+        {
+            "finance_drawdown_date": "2026-06-15",
+            "finance_due_date": "2026-07-30",
+            "bill_of_lading_date": "",
+            "collection_date": "",
+            "remark": "",
+        },
+        today=date(2026, 7, 30),
+    )
+
+    assert status["business_status"] == "需展期确认"
+    assert status["risk_level"] == "高"
 
 
 def test_import_order_finance_directory_preserves_management_fields(tmp_path, monkeypatch):
@@ -1411,16 +1427,60 @@ def test_imported_record_list_keeps_overseas_entity_for_existing_card_header(tmp
 
 def test_import_new_workbook_archives_previous_excel_source_records(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
-    old_import = import_order_finance_directory(LEDGER_DIR, imported_by="pytest")
-    assert old_import["summary"]["record_count"] >= 25
-    assert len(list_order_finance_records()) == old_import["summary"]["record_count"]
+    old_source = "副本近期船舶到港情况(1).xlsx"
+    old_import = order_finance.apply_order_finance_snapshot([
+        progress_record("OLD-1", "存续", source_file=old_source),
+        progress_record(
+            "OLD-2", "存续", id=2, business_key="ITEM|OLD-2|1", source_file=old_source,
+        ),
+    ], imported_by="pytest")
+    assert old_import == {"inserted": 2, "updated": 0, "archived": 0, "changed_count": 2}
+    assert len(list_order_finance_records()) == 2
 
-    new_import = import_order_finance_directory(NEW_LEDGER_WORKBOOK, imported_by="pytest")
+    new_workbook = build_three_sheet_workbook(tmp_path / "new.xlsx")
+    new_import = import_order_finance_directory(new_workbook, imported_by="pytest")
     records = list_order_finance_records()
 
-    assert new_import["summary"]["record_count"] == 70
-    assert len(records) == 70
-    assert {record["source_file"] for record in records} == {NEW_LEDGER_WORKBOOK.name}
+    assert new_import["summary"]["record_count"] == 4
+    assert new_import["summary"]["archived"] == 2
+    assert len(records) == 4
+    assert {record["source_file"] for record in records} == {"new.xlsx"}
+    with db.connect() as conn:
+        archived = conn.execute(
+            "SELECT is_archived FROM order_finance_progress WHERE source_file = ? ORDER BY id",
+            (old_source,),
+        ).fetchall()
+    assert [row["is_archived"] for row in archived] == [1, 1]
+
+
+def test_empty_order_finance_directory_fails_closed_without_archiving(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    old_source = "历史订单台账.xlsx"
+    order_finance.apply_order_finance_snapshot([
+        progress_record("KEEP", "存续", source_file=old_source),
+    ], imported_by="pytest")
+    empty_directory = tmp_path / "empty"
+    empty_directory.mkdir()
+
+    with pytest.raises(ValueError, match="没有可导入的 Excel 工作簿"):
+        import_order_finance_directory(empty_directory, imported_by="pytest")
+
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT source_file, is_archived FROM order_finance_progress ORDER BY id",
+        ).fetchall()
+    assert [(row["source_file"], row["is_archived"]) for row in rows] == [(old_source, 0)]
+
+
+def test_empty_order_finance_snapshot_is_rejected_before_database_write(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="快照不能为空"):
+        order_finance.apply_order_finance_snapshot([])
+
+    with db.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS count FROM order_finance_progress").fetchone()["count"]
+    assert count == 0
 
 
 def test_upload_import_preserves_original_file_name(tmp_path, monkeypatch):

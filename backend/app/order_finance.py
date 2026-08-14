@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 from openpyxl.utils.datetime import from_excel
@@ -36,6 +37,11 @@ TARGET_XLSX_SHEETS = ("订单", "额度", "预警")
 ORDER_VESSEL_SHEET = "26.8.5钢材出口情况表"
 ORDER_VESSEL_CURRENT_R1_SHEET = "26.8.10钢材出口情况表"
 ORDER_VESSEL_EXPECTED_SHA256 = "53b9a51aa2febe5118980cc32ba50a4821b2e02959394e47a74c17ce70a3e247"
+BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _business_today() -> date:
+    return datetime.now(BUSINESS_TIMEZONE).date()
 
 ORDER_VESSEL_HEADERS = {
     "steel_mill": "出口方（钢厂）",
@@ -475,13 +481,13 @@ def _data_quality_warning_count(records: List[Dict[str, Any]]) -> int:
     )
 
 
-def derive_business_status(record: Dict[str, Any]) -> Dict[str, str]:
+def derive_business_status(record: Dict[str, Any], today: Optional[date] = None) -> Dict[str, str]:
     remark = _normalize_text(record.get("remark"))
     drawdown = _normalize_date(record.get("finance_drawdown_date"))
     due = _parse_date(record.get("finance_due_date"))
     bill = _normalize_date(record.get("bill_of_lading_date"))
     collection = _normalize_date(record.get("collection_date"))
-    today = date.today()
+    today = today or _business_today()
 
     if "已结算" in remark:
         return {"business_status": "已结算", "risk_level": "低", "next_action": "无"}
@@ -549,7 +555,7 @@ def parse_order_finance_workbook(path: Path) -> Dict[str, Any]:
     rows = [_row_values(book, sheet, row_idx) for row_idx in range(sheet.nrows)]
     cols = _columns(headers)
     subsidiary = _subsidiary_from_filename(path.name)
-    snapshot_date = date.today().isoformat()
+    snapshot_date = _business_today().isoformat()
 
     primary_indices = []
     for row_idx, row in enumerate(rows[2:], start=2):
@@ -727,7 +733,7 @@ def _xlsx_row_record(path: Path, sheet_name: str, headers: List[str], values: tu
     elif "-2026-" in item_no:
         source_date = "2026-01-01"
     else:
-        source_date = date.today().isoformat()
+        source_date = _business_today().isoformat()
     record = {
         "subsidiary": subsidiary,
         "source_file": path.name,
@@ -963,7 +969,7 @@ def _order_sheet_record(
     latest_shipment_date = _normalize_xlsx_date(_row_alias(row, "最迟装船日", "最晚装船日"))
     bill_date = _normalize_xlsx_date(_row_alias(row, "提单日", "提单日期"))
     document_date = _normalize_xlsx_date(_row_alias(row, "交单日", "交单日期", "银行交单日"))
-    source_date = f"{item_no.split('-')[1]}-01-01" if len(item_no.split("-")) > 2 and item_no.split("-")[1].isdigit() else date.today().isoformat()
+    source_date = f"{item_no.split('-')[1]}-01-01" if len(item_no.split("-")) > 2 and item_no.split("-")[1].isdigit() else _business_today().isoformat()
     source_meta = {
         "item_no": item_no,
         "headers": [str(header or "") for header in headers],
@@ -1098,6 +1104,8 @@ def parse_order_finance_directory(directory: Path | str) -> Dict[str, Any]:
             path for path in base.iterdir()
             if path.suffix.lower() in {".xls", ".xlsx"} and not path.name.startswith("~$")
         )
+        if not files:
+            raise ValueError("目录中没有可导入的 Excel 工作簿")
     records: List[Dict[str, Any]] = []
     file_results = []
     for path in files:
@@ -1112,6 +1120,8 @@ def parse_order_finance_directory(directory: Path | str) -> Dict[str, Any]:
             "sheets": result.get("sheets"),
             **result["summary"],
         })
+    if not records:
+        raise ValueError("未解析到有效订单记录")
     return {
         "records": records,
         "files": file_results,
@@ -1567,6 +1577,11 @@ def apply_order_finance_snapshot(
     source_version: Optional[str] = None,
     attempt_slot: Optional[str] = None,
 ) -> Dict[str, int]:
+    if not records and not (sync_success_at and source_version):
+        raise ValueError("订单融资快照不能为空")
+    if not records:
+        record_unchanged_order_finance_sync(sync_success_at, source_version, attempt_slot)
+        return {"inserted": 0, "updated": 0, "archived": 0, "changed_count": 0}
     del imported_by
     inserted = 0
     updated = 0
@@ -1913,7 +1928,7 @@ def create_manual_order_finance_record(payload: Dict[str, Any], created_by: str 
             "source_sheet": "",
             "source_row_start": None,
             "source_row_end": None,
-            "source_snapshot_date": date.today().isoformat(),
+            "source_snapshot_date": _business_today().isoformat(),
             "purchase_contract_no": _normalize_text(record.get("purchase_contract_no")),
             "system_contract_no": _normalize_text(record.get("system_contract_no")),
             "terminal_customer": _normalize_text(record.get("terminal_customer")),
@@ -2024,7 +2039,7 @@ def set_shipment_confirmation(
     if not matching:
         raise KeyError(normalized_item)
     if confirmed:
-        normalized_date = _normalize_date(shipment_confirmed_date or date.today().isoformat())
+        normalized_date = _normalize_date(shipment_confirmed_date or _business_today().isoformat())
         if not _parse_date(normalized_date):
             raise ValueError("实际装船日格式不正确")
         changes = {
@@ -2054,7 +2069,7 @@ def set_port_confirmation(
     if not matching:
         raise KeyError(normalized_item)
     if confirmed:
-        normalized_date = _normalize_date(port_confirmed_date or date.today().isoformat())
+        normalized_date = _normalize_date(port_confirmed_date or _business_today().isoformat())
         if not _parse_date(normalized_date):
             raise ValueError("实际集港日格式不正确")
         changes = {
@@ -2102,7 +2117,7 @@ def set_contract_reminder(
 def summarize_order_finance(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     active = [row for row in records if _normalize_text(row.get("business_status")) not in {"结案", "已完成", "已结算"}]
     due_soon = 0
-    today = date.today()
+    today = _business_today()
     for row in active:
         due = _parse_date(row.get("finance_due_date"))
         if due and 0 <= (due - today).days <= 30:
@@ -2554,7 +2569,7 @@ def build_order_vessel_overview(
 ) -> Dict[str, Any]:
     snapshots = snapshots if snapshots is not None else list_order_vessel_snapshots()
     finance_records = finance_records if finance_records is not None else list_order_finance_records()
-    current_date = today or date.today()
+    current_date = today or _business_today()
     finance_by_business_no: Dict[str, List[Dict[str, Any]]] = {}
     for row in finance_records:
         business_no = _item_no(row)
@@ -2733,11 +2748,11 @@ def _group_stage(rows: List[Dict[str, Any]]) -> str:
     return "已放款待集港" if has_loan else "待放款"
 
 
-def _days_to(value: Any) -> Optional[int]:
+def _days_to(value: Any, today: Optional[date] = None) -> Optional[int]:
     parsed = _parse_date(value)
     if not parsed:
         return None
-    return (parsed - date.today()).days
+    return (parsed - (today or _business_today())).days
 
 
 def _warning_indicator(warning: Dict[str, Any]) -> str:
