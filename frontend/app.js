@@ -3480,6 +3480,12 @@ function bindOrderLifecycleDetailNavigation(detailRoot, pageScroller) {
   });
 }
 
+function clearOrderLifecycleDetailHash() {
+  if (location.hash.startsWith("#lifecycle-section-")) {
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+  }
+}
+
 async function loadOrderLifecycleDetail(id) {
   try {
     state.orderLifecycleDetail = await api(`/api/order-lifecycle/businesses/${id}`);
@@ -3493,6 +3499,7 @@ async function loadOrderLifecycleDetail(id) {
       state.orderLifecycleDetail = null;
       orderLifecycleDetailView.classList.add("hidden");
       orderLifecycleListView.classList.remove("hidden");
+      clearOrderLifecycleDetailHash();
       loadOrderLifecycleProgress();
     });
     const detailRoot = orderLifecycleDetailView.querySelector(".order-lifecycle-detail-shell");
@@ -3807,11 +3814,16 @@ function restoreOrderLifecycleScrollPosition() {
   const pending = state.orderLifecyclePendingScroll;
   if (!pending || pending.queryKey !== orderLifecycleQueryKey()) return;
   state.orderLifecyclePendingScroll = null;
+  clearOrderLifecycleDetailHash();
   requestAnimationFrame(() => {
     const scrollTop = Math.max(Number(pending.scrollTop) || 0, 0);
     const pageScroller = orderLifecycleScrollContainer();
-    if (pageScroller) pageScroller.scrollTop = scrollTop;
-    else window.scrollTo({ top: scrollTop, behavior: "auto" });
+    if (pageScroller) {
+      pageScroller.scrollTop = scrollTop;
+      window.scrollTo({ top: 0, behavior: "auto" });
+    } else {
+      window.scrollTo({ top: scrollTop, behavior: "auto" });
+    }
   });
 }
 

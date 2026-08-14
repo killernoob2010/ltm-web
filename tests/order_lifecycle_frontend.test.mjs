@@ -38,7 +38,7 @@ test("订单全流程页面使用独立模块、冻结原型筛选和详情 API"
 test("订单全流程前端资源使用新的缓存一致性版本", () => {
   assert.match(
     indexHtml,
-    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-performance-v6"/,
+    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-performance-v7"/,
   );
 });
 
@@ -136,6 +136,8 @@ test("订单全流程详情头、实心横向导航和滚动恢复符合冻结�
   assert.match(appJs, /scrollTop:\s*orderLifecycleCurrentScrollTop\(\)/);
   assert.match(appJs, /bindOrderLifecycleDetailNavigation[\s\S]*?event\.preventDefault\(\)[\s\S]*?pageScroller\.scrollTo/);
   assert.match(appJs, /requestAnimationFrame\([\s\S]*?pageScroller\.scrollTop\s*=\s*scrollTop/);
-  assert.match(appJs, /if \(pageScroller\) pageScroller\.scrollTop = scrollTop;\s*else window\.scrollTo/);
+  assert.match(appJs, /if \(pageScroller\) \{[\s\S]*?pageScroller\.scrollTop = scrollTop;[\s\S]*?\} else \{[\s\S]*?window\.scrollTo/);
+  assert.match(appJs, /clearOrderLifecycleDetailHash\(\)/);
+  assert.match(appJs, /pageScroller\.scrollTop = scrollTop;[\s\S]*?window\.scrollTo\(\{ top: 0/);
   assert.match(appJs, /orderLifecyclePendingScroll[^\n]*queryKey/);
 });
