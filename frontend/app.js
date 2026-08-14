@@ -51,6 +51,7 @@ const state = {
   orderLifecycleSearchTimer: null,
   orderLifecycleLoadingTimer: null,
   orderLifecycleStateRestored: false,
+  orderLifecyclePendingScroll: null,
   selectedOrderFinanceBank: "",
   settledOverview: { trades: [], totals: {}, contracts: [] },
   collapsedMenuGroups: new Set(),
@@ -3388,7 +3389,7 @@ function lifecycleDisplayValue(value) {
 
 function lifecycleBusinessTypeLabel(value, surface = "card") {
   if (value === "融资") return "融资类业务";
-  if (value === "过单") return surface === "filter" ? "过单类业务" : "过单";
+  if (value === "过单") return surface === "card" ? "过单" : "过单类业务";
   return lifecycleDisplayValue(value);
 }
 
@@ -3429,6 +3430,8 @@ function lifecycleChildFormMarkup(collection, row = {}, newRecord = false) {
   return `<form class="order-lifecycle-child-form" data-collection="${escapeHtml(collection)}" data-source-key="${escapeHtml(sourceKey)}" data-new-record="${newRecord ? "true" : "false"}">${newRecord ? `<label>人工记录标识<input name="source_key" value="${escapeHtml(sourceKey)}" required></label>` : ""}${fields.map(([label, field]) => { const type = lifecycleInputType(field); const value = row[field]; return `<label>${escapeHtml(label)}<input name="${escapeHtml(field)}" type="${type}" ${type === "checkbox" ? (value ? "checked" : "") : `value="${escapeHtml(value == null ? "" : String(value))}"`}></label>`; }).join("")}<label class="wide-field">备注<input name="note" maxlength="500" placeholder="人工记录备注（选填）"></label><div class="order-lifecycle-edit-form-actions"><button type="submit">保存</button><button type="button" class="secondary order-lifecycle-cancel-child">取消</button></div></form>`;
 }
 
+const ORDER_LIFECYCLE_DETAIL_SECTIONS = ["业务基本信息", "合同明细", "融资明细与银行还款", "执行进度 / 船舶明细", "单据 / 交单明细", "客户回款明细", "当前风险原因", "数据异常与人工修改记录"];
+
 function renderOrderLifecycleDetail(detail) {
   const financingFields = [["银行", "bank"], ["金额", "amount"], ["币种", "currency"], ["融资日期", "financing_date"], ["原到期日", "original_due_date"], ["展期天数", "extension_days"], ["当前到期日", "current_due_date"], ["新到期日", "extended_due_date"], ["还款日", "repayment_date"], ["还款状态", "repayment_status"]];
   const repaymentFields = [["关联融资", "financing_id"], ["还款日期", "repayment_date"], ["还款金额", "amount"], ["币种", "currency"], ["明确完成", "completion_explicit"]];
@@ -3438,10 +3441,13 @@ function renderOrderLifecycleDetail(detail) {
   const receiptFields = [["回款日期", "receipt_date"], ["金额", "amount"], ["币种", "currency"], ["全部到账", "fully_received"], ["适用范围", "applicable_scope"]];
   const editable = Boolean(detail.can_sensitive) && !isGuest();
   const childAction = (collection, label) => editable ? `<button class="secondary order-lifecycle-add-child" data-collection="${collection}" type="button">${label}</button>` : "";
+  const latestAudit = detail.audit?.[0] || detail.manual_overrides?.[0] || {};
+  const sourceUpdate = detail.source_updated_at || detail.source_snapshot_date || detail.updated_at;
+  const identitySummary = [detail.trade_entity, detail.supplier_steel_mill, detail.product_name, detail.terminal_customer].filter(Boolean).join(" / ") || "待来源回读";
   return `<section class="order-lifecycle-detail-page order-lifecycle-detail-shell">
-    <div class="order-lifecycle-detail-top order-lifecycle-detail-hero"><button id="orderLifecycleBackBtn" class="secondary" type="button">返回主列表</button><div><span class="row-badges"><span class="order-lifecycle-business-type-badge">${escapeHtml(lifecycleBusinessTypeLabel(detail.business_type, "detail"))}</span>${lifecycleStatusBadge(detail.status)}<span class="${lifecycleRiskClass(detail.risk_level)}">${escapeHtml(detail.risk_level)}</span></span><h2>${escapeHtml(detail.business_no)}</h2><p>${escapeHtml([detail.trade_entity, detail.supplier_steel_mill, detail.product_name, detail.terminal_customer].filter(Boolean).join(" / "))}</p></div><div class="order-lifecycle-detail-actions">${editable ? `<button id="orderLifecycleEditBtn" class="secondary order-lifecycle-edit-all" type="button">编辑全部字段</button><button id="orderLifecycleSpecialBtn" class="secondary" type="button">${detail.guo_danlei_special ? "取消专项标记" : "标记郭丹蕾专项"}</button>` : ""}${editable && detail.business_type === "过单" ? `<button id="orderLifecycleSettlementBtn" class="secondary" type="button">${detail.settlement_status === "已结算" ? "撤销结算" : "确认结算"}</button>` : ""}</div></div>
+    <div class="order-lifecycle-detail-top order-lifecycle-detail-hero"><button id="orderLifecycleBackBtn" class="secondary" type="button">返回主列表</button><div class="order-lifecycle-detail-hero-main"><span class="row-badges"><span class="order-lifecycle-business-type-badge ${detail.business_type === "融资" ? "type-financing" : "type-pass"}">${escapeHtml(lifecycleBusinessTypeLabel(detail.business_type, "detail"))}</span>${lifecycleStatusBadge(detail.status)}<span class="${lifecycleRiskClass(detail.risk_level)}">${escapeHtml(detail.risk_level)}</span></span><h2>${escapeHtml(detail.business_no)}</h2><p>${escapeHtml(identitySummary)}</p><div class="order-lifecycle-detail-hero-facts"><div><span>FCR</span><strong>${detail.fcr ? "是" : "否"}</strong></div><div><span>融资笔数</span><strong>${detail.business_type === "融资" ? `${detail.financings?.length || 0} 笔` : "不适用"}</strong></div><div><span>下一步</span><strong>${escapeHtml(detail.next_action || "人工确认下一步")}</strong></div><div><span>来源摘要</span><strong>${escapeHtml([detail.source_type, detail.source_version].filter(Boolean).join(" / ") || "待来源回读")}</strong></div><div><span>来源更新</span><strong>${escapeHtml(lifecycleDisplayValue(sourceUpdate))}</strong></div><div><span>最后修改人</span><strong>${escapeHtml(lifecycleDisplayValue(latestAudit.operator || latestAudit.modified_by || "来源同步"))}</strong></div><div><span>最后修改时间</span><strong>${escapeHtml(lifecycleDisplayValue(latestAudit.changed_at || latestAudit.modified_at || detail.updated_at))}</strong></div></div></div><div class="order-lifecycle-detail-actions">${editable ? `<button id="orderLifecycleEditBtn" class="secondary order-lifecycle-edit-all" type="button">编辑全部字段</button><button id="orderLifecycleSpecialBtn" class="secondary" type="button">${detail.guo_danlei_special ? "取消专项标记" : "标记郭丹蕾专项"}</button>` : ""}${editable && detail.business_type === "过单" ? `<button id="orderLifecycleSettlementBtn" class="secondary" type="button">${detail.settlement_status === "已结算" ? "撤销结算" : "确认结算"}</button>` : ""}</div></div>
     <div class="order-lifecycle-edit-policy">人工值优先；来源冲突保留待确认；状态、风险和完结日由事实重算。</div>
-    <div class="order-lifecycle-detail-layout"><nav class="order-lifecycle-section-nav order-lifecycle-detail-nav" aria-label="详情分段导航">${(detail.sections || []).map((section, index) => `<a href="#lifecycle-section-${index + 1}"><span class="detail-section-number">${String(index + 1).padStart(2, "0")}</span>${escapeHtml(section)}</a>`).join("")}</nav><div class="order-lifecycle-detail-content">
+    <div class="order-lifecycle-detail-layout"><nav class="order-lifecycle-section-nav order-lifecycle-detail-nav" aria-label="详情分段导航">${ORDER_LIFECYCLE_DETAIL_SECTIONS.map((section, index) => `<a href="#lifecycle-section-${index + 1}"><span class="detail-section-number">${String(index + 1).padStart(2, "0")}</span>${escapeHtml(section)}</a>`).join("")}</nav><div class="order-lifecycle-detail-content">
     <section id="lifecycle-section-1" class="order-lifecycle-detail-section detail-section"><h3><span class="detail-section-number">01</span>业务基本信息</h3><div class="order-lifecycle-detail-grid">${[["真实业务编号", detail.business_no], ["业务类型", lifecycleBusinessTypeLabel(detail.business_type, "detail")], ["主要合同号", detail.contracts?.[0]?.contract_no || detail.contracts?.[0]?.purchase_contract_no], ["贸易主体", detail.trade_entity], ["供应钢厂", detail.supplier_steel_mill], ["货物品名", detail.product_name], ["合同数量", detail.contract_quantity_mt], ["终端客户", detail.terminal_customer], ["当前状态", detail.status], ["风险等级", detail.risk_level], ["FCR", detail.fcr ? "是" : "否"], ["完结日", detail.completed_date], ["下一次跟进日", detail.next_follow_up_date], ["来源", detail.source_type], ["来源版本", detail.source_version], ["来源快照日期", detail.source_snapshot_date], ["来源记录键", detail.source_record_key], ["内部记录ID", detail.id], ["创建时间", detail.created_at], ["修改时间", detail.updated_at]].map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(lifecycleDisplayValue(value))}</strong></div>`).join("")}</div>${editable ? `<form id="orderLifecycleEditForm" class="order-lifecycle-edit-form hidden"><label>业务编号<input name="business_no" value="${escapeHtml(detail.business_no || "")}"></label><label>业务类型<select name="business_type"><option value="融资" ${detail.business_type === "融资" ? "selected" : ""}>融资类业务</option><option value="过单" ${detail.business_type === "过单" ? "selected" : ""}>过单类业务</option></select></label><label>贸易主体<input name="trade_entity" value="${escapeHtml(detail.trade_entity || "")}"></label><label>供应钢厂<input name="supplier_steel_mill" value="${escapeHtml(detail.supplier_steel_mill || "")}"></label><label>货物品名<input name="product_name" value="${escapeHtml(detail.product_name || "")}"></label><label>合同数量<input name="contract_quantity_mt" type="number" step="0.01" value="${escapeHtml(detail.contract_quantity_mt ?? "")}"></label><label>终端客户<input name="terminal_customer" value="${escapeHtml(detail.terminal_customer || "")}"></label><label>集港事实<select name="port_status"><option value="待确认" ${detail.port_status === "待确认" ? "selected" : ""}>待确认</option><option value="已集港" ${detail.port_status === "已集港" ? "selected" : ""}>已集港</option></select></label><label>集港日期<input name="port_confirmed_date" type="date" value="${escapeHtml(detail.port_confirmed_date || "")}"></label><label>装船事实<select name="shipment_status"><option value="待确认" ${detail.shipment_status === "待确认" ? "selected" : ""}>待确认</option><option value="已装船" ${detail.shipment_status === "已装船" ? "selected" : ""}>已装船</select></label><label>装船日期<input name="shipment_confirmed_date" type="date" value="${escapeHtml(detail.shipment_confirmed_date || "")}"></label><label>最迟跟进日<input name="next_follow_up_date" type="date" value="${escapeHtml(detail.next_follow_up_date || "")}"></label><label class="wide-field">备注<input name="note" maxlength="500" placeholder="人工修改备注（选填）"></label><div class="order-lifecycle-edit-form-actions"><button type="submit">保存业务事实</button><button id="orderLifecycleCancelEditBtn" class="secondary" type="button">取消</button></div></form>` : ""}</section>
     <section id="lifecycle-section-2" class="order-lifecycle-detail-section detail-section"><h3><span class="detail-section-number">02</span>合同明细 ${childAction("contracts", "新增人工合同记录")}</h3>${renderLifecycleRows(detail.contracts, contractFields, "contracts", editable)}</section>
     <section id="lifecycle-section-3" class="order-lifecycle-detail-section detail-section"><h3><span class="detail-section-number">03</span>融资明细与银行还款 ${childAction("financings", "新增人工融资记录")} ${childAction("bank_repayments", "新增人工还款记录")}</h3>${detail.business_type === "过单" ? '<div class="order-lifecycle-empty-detail">过单类业务不适用融资和银行还款。</div>' : `${renderLifecycleRows(detail.financings, financingFields, "financings", editable)}${renderLifecycleRows(detail.bank_repayments, repaymentFields, "bank_repayments", editable)}`}</section>
@@ -3460,6 +3466,9 @@ async function loadOrderLifecycleDetail(id) {
     orderLifecycleListView.classList.add("hidden");
     orderLifecycleDetailView.classList.remove("hidden");
     orderLifecycleDetailView.innerHTML = renderOrderLifecycleDetail(state.orderLifecycleDetail);
+    const pageScroller = orderLifecycleListView?.closest(".page");
+    if (pageScroller) pageScroller.scrollTop = 0;
+    window.scrollTo({ top: 0, behavior: "auto" });
     document.querySelector("#orderLifecycleBackBtn")?.addEventListener("click", () => {
       state.orderLifecycleDetail = null;
       orderLifecycleDetailView.classList.add("hidden");
@@ -3557,36 +3566,96 @@ function bindLifecycleChildForm(businessId, form) {
   });
 }
 
+function lifecycleRiskFactTone(riskFact) {
+  if (riskFact?.level === "high") return "fact-danger";
+  if (riskFact?.level === "medium") return "fact-warning";
+  return "";
+}
+
+function lifecycleCardFact(label, value, riskFact = null) {
+  const reason = riskFact?.reason || "";
+  return `<div class="order-lifecycle-card-fact ${lifecycleRiskFactTone(riskFact)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value == null || value === "" ? "待来源回读" : String(value))}</strong>${reason ? `<small>${escapeHtml(reason)}</small>` : ""}</div>`;
+}
+
+function renderOrderLifecycleFinancingCardBody(item) {
+  const repayment = item.repayment_progress || { repaid_financing_count: 0, total_financing_count: 0 };
+  const progress = item.customer_receipt_progress || { received_count: 0, total_count: 0 };
+  const dueDays = item.due_days;
+  const dueText = item.current_due_date
+    ? `${item.current_due_date} · ${dueDays < 0 ? `已逾期 ${Math.abs(dueDays)} 天` : `${dueDays} 天后到期`}${item.extension_days ? ` · 展期 ${item.extension_days} 天` : ""}`
+    : "待来源回读";
+  return `
+    <section class="order-lifecycle-card-section order-lifecycle-card-finance">
+      <h4>融资汇总</h4>
+      <div class="order-lifecycle-card-facts">
+        ${lifecycleCardFact("贷款行", (item.financing_banks || []).join(" / ") || "待来源回读")}
+        ${lifecycleCardFact("存续融资金额", lifecycleWan(item.outstanding_financing_amount))}
+        ${lifecycleCardFact("融资笔数", `${item.financing_count || 0} 笔`)}
+        ${lifecycleCardFact("放款情况", item.drawdown_display || "待来源回读")}
+      </div>
+    </section>
+    <section class="order-lifecycle-card-section order-lifecycle-card-execution">
+      <h4>执行事实与风险来源</h4>
+      <div class="order-lifecycle-card-facts order-lifecycle-execution-facts">
+        ${lifecycleCardFact("集港", item.port_status || "待确认")}
+        ${lifecycleCardFact("装船 / 最迟装船日", `${item.shipment_status || "待确认"} / ${item.latest_shipment_date || "待来源回读"}`, item.risk_facts?.shipment)}
+        ${lifecycleCardFact("交单", item.document_count ? `${item.document_count} 条交单事实` : "待交单", item.risk_facts?.document)}
+        ${lifecycleCardFact("当前到期", dueText, item.risk_facts?.due)}
+        ${lifecycleCardFact("客户回款", `${progress.received_count}/${progress.total_count} 笔`, item.risk_facts?.customer_receipt)}
+        ${lifecycleCardFact("银行还款", `${repayment.repaid_financing_count || 0}/${repayment.total_financing_count || 0} 笔已还`, item.risk_facts?.bank_repayment)}
+        ${lifecycleCardFact("数据状态", item.anomaly_count ? `异常 ${item.anomaly_count} 条` : "无异常", item.risk_facts?.data_status)}
+      </div>
+    </section>`;
+}
+
+function renderOrderLifecyclePassCardBody(item) {
+  const progress = item.customer_receipt_progress || { received_count: 0, total_count: 0 };
+  return `
+    <section class="order-lifecycle-card-section order-lifecycle-card-pass">
+      <h4>过单执行事实</h4>
+      <div class="order-lifecycle-card-facts order-lifecycle-pass-facts">
+        ${lifecycleCardFact("执行状态", item.status || "订单执行中")}
+        ${lifecycleCardFact("客户回款", `${progress.received_count}/${progress.total_count} 笔`, item.risk_facts?.customer_receipt)}
+        ${lifecycleCardFact("结算状态", item.settlement_status || "待结算")}
+        ${lifecycleCardFact("当前风险原因", (item.risk_reasons || []).join("；") || "无")}
+        ${lifecycleCardFact("数据状态", item.anomaly_count ? `异常 ${item.anomaly_count} 条` : "无异常", item.risk_facts?.data_status)}
+      </div>
+    </section>`;
+}
+
+function lifecycleBusinessTypeBadge(item) {
+  if (item.business_type === "融资") {
+    return `<span class="order-lifecycle-business-type-badge type-financing">融资类业务</span>`;
+  }
+  return `<span class="order-lifecycle-business-type-badge type-pass" aria-label="过单类业务">过单</span>`;
+}
+
 function renderOrderLifecycleCard(item) {
   const riskClass = lifecycleRiskClass(item.risk_level);
   const canSensitive = Boolean(item.can_sensitive) && !isGuest();
   const childrenLoaded = Boolean(item.children_loaded);
   const contractNo = (item.contract_numbers || []).join(" / ") || "待来源回读";
-  const outstanding = item.business_type === "融资" ? lifecycleWan(item.outstanding_financing_amount) : "-";
-  const repayment = item.repayment_progress || { repaid_financing_count: 0, total_financing_count: 0, bank_repayment_count: 0 };
-  const dueDays = item.due_days;
-  const dueText = item.current_due_date
-    ? `${item.current_due_date} · ${dueDays < 0 ? `已逾期 ${Math.abs(dueDays)} 天` : `${dueDays} 天后到期`}${item.extension_days ? ` · 展期 ${item.extension_days} 天` : ""}`
-    : "待来源回读";
-  const shipmentRisk = (item.risk_reasons || []).some((reason) => String(reason).includes("最迟装船"));
-  const riskTone = item.risk_level === "高风险" ? "risk-danger" : item.risk_level === "中风险" ? "risk-warning" : "";
-  const shipmentFactTone = shipmentRisk ? (item.risk_level === "高风险" ? "fact-danger" : "fact-warning") : "";
-  const progress = item.customer_receipt_progress || { received_count: 0, total_count: 0 };
-  const fact = (label, value, tone = "") => `<div class="order-lifecycle-card-fact ${tone}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value == null || value === "" ? "待来源回读" : String(value))}</strong></div>`;
+  const identityFacts = [
+    ["合同号", contractNo],
+    ["贸易主体", item.trade_entity],
+    ["供应钢厂", item.supplier_steel_mill],
+    ["货物品名", item.product_name],
+    ["合同数量", item.contract_quantity_mt == null ? "待来源回读" : `${item.contract_quantity_mt} 吨`],
+    ["终端客户", item.terminal_customer],
+  ];
   return `
-    <article class="order-lifecycle-card order-lifecycle-wide-card">
+    <article class="order-lifecycle-card order-lifecycle-wide-card card-${riskClass}">
       <div class="order-lifecycle-card-head">
         <div class="order-lifecycle-card-identity">
           <div class="row-badges">
-            <span class="order-lifecycle-business-type-badge">${escapeHtml(lifecycleBusinessTypeLabel(item.business_type, "card"))}</span>
+            ${lifecycleBusinessTypeBadge(item)}
             ${lifecycleStatusBadge(item.status)}
             <span class="${riskClass}">${escapeHtml(item.risk_level || "低风险")}</span>
             ${item.fcr ? "<span>FCR</span>" : ""}
             ${item.anomaly_count ? `<span class="risk-high">异常 ${item.anomaly_count}</span>` : ""}
           </div>
           <h3>${escapeHtml(item.business_no || "-")}</h3>
-          <p class="order-lifecycle-card-subtitle">${escapeHtml([item.trade_entity, item.supplier_steel_mill, item.product_name, item.terminal_customer].filter(Boolean).join(" / ") || "必要字段待补充")}</p>
-          <p class="order-lifecycle-card-contract">合同：${escapeHtml(contractNo)}</p>
+          <div class="order-lifecycle-card-identity-fields">${identityFacts.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "待来源回读")}</strong></div>`).join("")}</div>
         </div>
         <div class="order-lifecycle-card-actions">
           ${canSensitive ? `<button class="secondary order-lifecycle-fcr-btn" type="button" data-id="${item.id}" data-enabled="${item.fcr ? "false" : "true"}">${item.fcr ? "取消 FCR" : "手动选 FCR"}</button>` : ""}
@@ -3594,30 +3663,7 @@ function renderOrderLifecycleCard(item) {
         </div>
       </div>
       <div class="order-lifecycle-card-body">
-        <section class="order-lifecycle-card-section order-lifecycle-card-finance">
-          <h4>融资金额</h4>
-          <div class="order-lifecycle-card-facts">
-            ${fact("合同数量", item.contract_quantity_mt == null ? "待来源回读" : `${item.contract_quantity_mt} 吨`)}
-            ${item.business_type === "融资" ? `${fact("融资银行", (item.financing_banks || []).join(" / ") || "待来源回读")}${fact("存续融资", outstanding)}${fact("融资笔数", `${item.financing_count || 0} 笔`)}` : `<div class="order-lifecycle-card-fact order-lifecycle-not-applicable"><span>融资金额</span><strong>过单业务不适用</strong></div>`}
-          </div>
-        </section>
-        <section class="order-lifecycle-card-section order-lifecycle-card-execution">
-          <h4>执行进度</h4>
-          <div class="order-lifecycle-card-facts">
-            ${fact("集港 / 装船", `${item.port_status || "待确认"} / ${item.shipment_status || "待确认"}`)}
-            ${fact("船舶 / 交单", `${item.vessel_count || 0} 条 / ${item.document_count || 0} 条`)}
-            ${fact("最迟装船日", item.latest_shipment_date || "待来源回读", shipmentFactTone)}
-            ${fact("下一执行节点", item.next_action || "人工确认下一步", shipmentFactTone)}
-          </div>
-        </section>
-        <section class="order-lifecycle-card-section order-lifecycle-card-risk ${riskTone}">
-          <h4>风险及回款</h4>
-          <div class="order-lifecycle-card-facts">
-            ${item.business_type === "融资" ? `${fact("当前到期", dueText, riskTone === "risk-danger" ? "fact-danger" : riskTone === "risk-warning" ? "fact-warning" : "")}${fact("银行还款", `${repayment.repaid_financing_count || 0}/${repayment.total_financing_count || 0} 笔已还`, riskTone === "risk-danger" ? "fact-danger" : riskTone === "risk-warning" ? "fact-warning" : "")}` : ""}
-            ${fact("客户回款", `${progress.received_count}/${progress.total_count} 笔`, riskTone === "risk-danger" ? "fact-danger" : riskTone === "risk-warning" ? "fact-warning" : "")}
-            ${fact("数据状态", item.anomaly_count ? `异常 ${item.anomaly_count} 条` : "无异常", item.anomaly_count ? "fact-warning" : "")}
-          </div>
-        </section>
+        ${item.business_type === "融资" ? renderOrderLifecycleFinancingCardBody(item) : renderOrderLifecyclePassCardBody(item)}
       </div>
       <div class="order-lifecycle-card-footer">
         <div><span>下一步</span><strong>${escapeHtml(item.next_action || "人工确认下一步")}</strong></div>
@@ -3639,7 +3685,10 @@ function renderOrderLifecycleCards() {
   }
   orderLifecycleCards.innerHTML = state.orderLifecycleRecords.map(renderOrderLifecycleCard).join("");
   orderLifecycleCards.querySelectorAll(".order-lifecycle-detail-btn").forEach((button) => {
-    button.addEventListener("click", () => loadOrderLifecycleDetail(Number(button.dataset.id)));
+    button.addEventListener("click", () => {
+      saveOrderLifecycleViewState(true);
+      loadOrderLifecycleDetail(Number(button.dataset.id));
+    });
   });
   orderLifecycleCards.querySelectorAll(".order-lifecycle-fcr-btn").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -3657,19 +3706,42 @@ function renderOrderLifecycleCards() {
 
 const ORDER_LIFECYCLE_SESSION_KEY = "order-lifecycle-view-state-v2";
 
-function saveOrderLifecycleViewState() {
+function orderLifecycleFilterState() {
+  return Object.fromEntries([...document.querySelectorAll("#orderLifecycleFilters [data-filter-group]")].map((group) => [
+    group.dataset.filterGroup,
+    [...group.querySelectorAll("input[type=checkbox]")].map((input) => ({ value: input.value, checked: input.checked })),
+  ]));
+}
+
+function orderLifecycleQueryKey() {
+  return JSON.stringify({
+    keyword: orderLifecycleKeyword?.value || "",
+    searchField: orderLifecycleSearchField?.value || "business_no",
+    view: state.orderLifecycleView,
+    page: state.orderLifecyclePage,
+    pageSize: state.orderLifecyclePageSize,
+    filters: orderLifecycleFilterState(),
+  });
+}
+
+function orderLifecycleCurrentScrollTop() {
+  return Math.max(window.scrollY || 0, orderLifecycleListView?.closest(".page")?.scrollTop || 0);
+}
+
+function saveOrderLifecycleViewState(preserveForReturn = false) {
   try {
-    sessionStorage.setItem(ORDER_LIFECYCLE_SESSION_KEY, JSON.stringify({
+    const viewState = {
       keyword: orderLifecycleKeyword?.value || "",
       searchField: orderLifecycleSearchField?.value || "business_no",
       view: state.orderLifecycleView,
       page: state.orderLifecyclePage,
       pageSize: state.orderLifecyclePageSize,
-      filters: Object.fromEntries([...document.querySelectorAll("#orderLifecycleFilters [data-filter-group]")].map((group) => [
-        group.dataset.filterGroup,
-        [...group.querySelectorAll("input[type=checkbox]")].map((input) => ({ value: input.value, checked: input.checked })),
-      ])),
-    }));
+      filters: orderLifecycleFilterState(),
+      queryKey: orderLifecycleQueryKey(),
+      scrollTop: orderLifecycleCurrentScrollTop(),
+    };
+    sessionStorage.setItem(ORDER_LIFECYCLE_SESSION_KEY, JSON.stringify(viewState));
+    if (preserveForReturn) state.orderLifecyclePendingScroll = { scrollTop: viewState.scrollTop, queryKey: viewState.queryKey };
   } catch (_error) {
     // Private browsing or disabled storage must not block the business page.
   }
@@ -3697,9 +3769,24 @@ function restoreOrderLifecycleViewState() {
     });
     orderLifecycleOverviewTab.classList.toggle("active", state.orderLifecycleView === "overview");
     orderLifecycleFocusTab.classList.toggle("active", state.orderLifecycleView === "focus");
+    if (Number.isFinite(Number(saved.scrollTop)) && saved.queryKey) {
+      state.orderLifecyclePendingScroll = { scrollTop: Math.max(Number(saved.scrollTop), 0), queryKey: saved.queryKey };
+    }
   } catch (_error) {
     // Ignore malformed session state and use the audited defaults.
   }
+}
+
+function restoreOrderLifecycleScrollPosition() {
+  const pending = state.orderLifecyclePendingScroll;
+  if (!pending || pending.queryKey !== orderLifecycleQueryKey()) return;
+  state.orderLifecyclePendingScroll = null;
+  requestAnimationFrame(() => {
+    const scrollTop = Math.max(Number(pending.scrollTop) || 0, 0);
+    const pageScroller = orderLifecycleListView?.closest(".page");
+    if (pageScroller) pageScroller.scrollTop = scrollTop;
+    window.scrollTo({ top: scrollTop, behavior: "auto" });
+  });
 }
 
 function submitOrderLifecycleSearch() {
@@ -3743,6 +3830,7 @@ async function loadOrderLifecycleProgress() {
     renderOrderLifecycleSummary();
     renderOrderLifecycleCards();
     saveOrderLifecycleViewState();
+    restoreOrderLifecycleScrollPosition();
     const sync = result.sync_status || {};
     orderLifecycleWpsSuccessAt.textContent = sync.wps_last_success_at ? dateTimeToSecond(sync.wps_last_success_at) : "尚无成功获取";
     orderLifecycleEmailSuccessAt.textContent = sync.email_last_success_at ? dateTimeToSecond(sync.email_last_success_at) : "尚无成功获取";

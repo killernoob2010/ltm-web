@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-prototype-rebuild-v3&upload-count=20260813" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v4&upload-count=20260813" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -546,22 +546,15 @@
             <span id="orderLifecycleSyncStatus" class="toolbar-status">来源更新时间读取中</span>
           </div>
           <p class="order-lifecycle-source-note"><span><strong>WPS 最近获取成功</strong>：<span id="orderLifecycleWpsSuccessAt">尚无成功获取</span></span><span><strong>邮件台账最近获取成功</strong>：<span id="orderLifecycleEmailSuccessAt">尚无成功获取</span></span></p>
-          <section class="order-lifecycle-summary" id="orderLifecycleSummary" aria-label="订单全流程汇总"><div class="order-lifecycle-primary-summary" hidden></div><div class="order-lifecycle-operational-summary" hidden></div></section>
-          <section class="panel order-lifecycle-workbench order-lifecycle-search-panel">
-            <div class="order-lifecycle-filter-footer order-lifecycle-filter-footer-top">
-              <div class="persistence">搜索、筛选、页码和每页条数已在本次登录中保存</div>
-              <button id="orderLifecycleResetBtn" class="secondary" type="button">清空筛选</button>
-            </div>
-            <div class="panel-head order-lifecycle-search-row">
-              <div>
-                <h2>业务主卡</h2>
-                <span id="orderLifecycleCount"></span>
-              </div>
-              <div class="order-lifecycle-search-form" role="search">
-                <label><span>搜索字段</span><select id="orderLifecycleSearchField" aria-label="搜索字段"><option value="business_no">业务编号</option><option value="contract_no">合同号</option><option value="trade_entity">贸易主体</option><option value="supplier_steel_mill">供应钢厂</option><option value="terminal_customer">终端客户</option><option value="product_name">货物品名</option><option value="bank">融资银行</option><option value="date">日期</option><option value="amount">金额</option></select></label>
-                <label class="order-lifecycle-search-input"><span>业务编号 / 输出内容</span><input id="orderLifecycleKeyword" type="search" placeholder="输入内容后点击搜索" /></label>
-                <button id="orderLifecycleSearchBtn" type="button">搜索</button>
-              </div>
+	          <section class="order-lifecycle-summary" id="orderLifecycleSummary" aria-label="订单全流程汇总"><div class="order-lifecycle-primary-summary" hidden></div><div class="order-lifecycle-operational-summary" hidden></div></section>
+	          <section class="panel order-lifecycle-workbench order-lifecycle-search-panel">
+	            <div class="order-lifecycle-search-row">
+	              <h2>精确字段搜索</h2>
+	              <div class="order-lifecycle-search-form" role="search">
+	                <label><span>搜索字段</span><select id="orderLifecycleSearchField" aria-label="搜索字段"><option value="business_no">业务编号</option><option value="contract_no">合同号</option><option value="trade_entity">贸易主体</option><option value="supplier_steel_mill">供应钢厂</option><option value="terminal_customer">终端客户</option><option value="product_name">货物品名</option><option value="bank">融资银行</option><option value="date">日期</option><option value="amount">金额</option></select></label>
+	                <label class="order-lifecycle-search-input"><span>搜索内容</span><input id="orderLifecycleKeyword" type="search" placeholder="输入完整或部分内容" /></label>
+	                <button id="orderLifecycleSearchBtn" type="button">搜索</button>
+	              </div>
             </div>
             <div class="order-lifecycle-filters order-lifecycle-filter-grid" id="orderLifecycleFilters">
               <div class="order-lifecycle-filter-groups" id="orderLifecycleFilterGroups">
@@ -570,12 +563,17 @@
                 <fieldset class="order-lifecycle-check-group" id="orderLifecycleAnomalyFilter" data-filter-group="anomaly_types"><legend><span>异常类型</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="数据缺失" checked>字段缺失</label><label><input type="checkbox" value="来源冲突" checked>来源冲突</label><label><input type="checkbox" value="节点矛盾" checked>节点矛盾</label><label><input type="checkbox" value="日期异常" checked>未来日期</label><label><input type="checkbox" value="无异常" checked>无异常</label></fieldset>
                 <fieldset class="order-lifecycle-check-group" id="orderLifecycleFcrFilter" data-filter-group="fcr"><legend><span>FCR / 非 FCR</span></legend><label><input type="checkbox" value="FCR" checked>FCR</label><label><input type="checkbox" value="非FCR" checked>非 FCR</label></fieldset>
               </div>
-              <div class="order-lifecycle-status-row" id="orderLifecycleStatusRow">
+	              <div class="order-lifecycle-status-row" id="orderLifecycleStatusRow">
                 <fieldset class="order-lifecycle-check-group status-group" id="orderLifecycleStatusFilter" data-filter-group="statuses"><legend><span>当前状态</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="已放款" checked>已放款</label><label><input type="checkbox" value="已集港" checked>已集港</label><label><input type="checkbox" value="已装船" checked>已装船</label><label><input type="checkbox" value="已交单" checked>已交单</label><label><input type="checkbox" value="待收汇" checked>待收汇</label><label><input type="checkbox" value="订单执行中" checked>订单执行中</label><label><input type="checkbox" value="已回款" checked>已回款</label><label><input type="checkbox" value="已结算" checked>已结算</label><label><input type="checkbox" value="已完结" checked>已完结</label><label><input type="checkbox" value="待确认" checked>待确认</label></fieldset>
-              </div>
-            </div>
-            <div class="order-lifecycle-view-tabs"><button id="orderLifecycleOverviewTab" type="button" class="active">总览</button><button id="orderLifecycleFocusTab" type="button">本周关注重点</button></div>
-            <div id="orderLifecycleCards" class="order-lifecycle-cards order-lifecycle-card-list" aria-live="polite"></div>
+	              </div>
+	            </div>
+	            <div class="order-lifecycle-filter-footer">
+	              <div class="persistence">搜索、筛选、视图、页码和每页条数已在本次登录中保存</div>
+	              <button id="orderLifecycleResetBtn" class="secondary" type="button">清空筛选</button>
+	            </div>
+	            <div class="order-lifecycle-view-tabs"><button id="orderLifecycleOverviewTab" type="button" class="active">总览</button><button id="orderLifecycleFocusTab" type="button">本周关注重点</button></div>
+	            <div class="order-lifecycle-result-heading"><strong id="orderLifecycleCount"></strong><span>当前搜索与筛选结果</span></div>
+	            <div id="orderLifecycleCards" class="order-lifecycle-cards order-lifecycle-card-list" aria-live="polite"></div>
             <div class="order-lifecycle-pagination">
               <button id="orderLifecyclePrevBtn" class="secondary" type="button">上一页</button>
               <span id="orderLifecyclePageInfo" class="toolbar-status"></span>
@@ -1490,7 +1488,7 @@
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260814-order-lifecycle-prototype-rebuild-v3&upload-count=20260813&cache=20260814-order-lifecycle-prototype-rebuild-v3"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v4&upload-count=20260813&cache=20260814-order-lifecycle-fidelity-performance-v4"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

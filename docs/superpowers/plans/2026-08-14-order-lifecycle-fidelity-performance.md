@@ -106,7 +106,7 @@ git commit -m "docs: freeze order lifecycle fidelity contract"
 - `_is_legacy_mill_row_business_no(value)` remains the guard for legacy steel-mill/row labels.
 - Any preview/mapping helper must return `{legacy_business_no, source_type, source_record_key, candidate_business_ids, authoritative_business_no, decision}` and must not write by default.
 
-- [ ] **Step 1: Add failing identifier tests.**
+- [x] **Step 1: Add failing identifier tests.**
 
 Add tests with these exact assertions:
 
@@ -136,15 +136,15 @@ pytest -q tests/test_order_lifecycle.py -k 'temporary_parent or legacy_identifie
 
 Expected: the new reason assertion fails against the current XYZ wording before implementation.
 
-- [ ] **Step 2: Change only the source guard and error contract.**
+- [x] **Step 2: Change only the source guard and error contract.**
 
 Keep `_normalize_business_no()` as normalization only. Keep missing-financing-ID records in candidates. Change the WPS legacy reason to say that the real WPS business number must be read back and that no replacement number is generated. Do not use steel mill, filename, sheet, row, sequence, or random values for `business_no`.
 
-- [ ] **Step 3: Add a read-only legacy mapping preview.**
+- [x] **Step 3: Add a read-only legacy mapping preview.**
 
 Implement a pure helper in `backend/app/order_lifecycle.py` that reads current legacy cards and their saved source/contracts, proposes only exact unique WPS matches, and returns `decision` values `unique`, `conflict`, or `no_evidence`. It must not update rows. Add tests for all three decisions. Do not add a broad string-replace migration.
 
-- [ ] **Step 4: Re-run identifier and import regressions.**
+- [x] **Step 4: Re-run identifier and import regressions.**
 
 ```bash
 pytest -q tests/test_order_lifecycle.py -k 'identifier or candidate or import'
@@ -166,7 +166,7 @@ Expected: no new parent is created without a source-authoritative identifier; no
 - Financing cards return `financing_banks`, `outstanding_financing_amount`, `financing_count`, `repayment_progress`, and a source-backed `drawdown_display` or `待来源回读`; never synthesize `1/1` from the existence of one row.
 - Over-order cards return `settlement_status`, `risk_reasons`, `customer_receipt_progress`, and `next_action`, without financing aggregates.
 
-- [ ] **Step 1: Add failing risk-fact tests.**
+- [x] **Step 1: Add failing risk-fact tests.**
 
 Add tests for:
 
@@ -192,15 +192,15 @@ def test_over_order_card_has_settlement_and_no_financing_payload(lifecycle_db):
 
 Run the tests and confirm the missing shipment fact and over-order payload fail before implementation.
 
-- [ ] **Step 2: Separate anomaly and risk derivation.**
+- [x] **Step 2: Separate anomaly and risk derivation.**
 
 Retain the anomaly row `missing:latest_shipment_date` for data-quality filtering and detail audit, but also derive a shipment fact risk when the current business node makes shipment risk decision-relevant. Preserve the overall `risk_reasons` list and do not duplicate the words “高风险” or “中风险” inside fact values.
 
-- [ ] **Step 3: Add type-specific card aggregates.**
+- [x] **Step 3: Add type-specific card aggregates.**
 
 Keep financing-only calculations behind `business_type == "融资"`. For `过单`, serialize settlement, customer receipts, risk reasons, data status, and next action only. Use `待来源回读` when a source fact is absent; never use an example value.
 
-- [ ] **Step 4: Run backend regression.**
+- [x] **Step 4: Run backend regression.**
 
 ```bash
 pytest -q tests/test_order_lifecycle.py tests/test_order_finance.py
@@ -221,7 +221,7 @@ Expected: the existing status, repayment, FCR, source-conflict, and import behav
 - Summary is computed over all filtered matches; child rows are loaded only for the current page in overview mode.
 - Focus mode uses a lightweight projection/aggregate and does not deserialize all six child collections for every matching business.
 
-- [ ] **Step 1: Add a 200-row query-bound test.**
+- [x] **Step 1: Add a 200-row query-bound test.**
 
 Extend the existing bounded-query test with 200 parent records and page size 20. Assert:
 
@@ -235,15 +235,15 @@ assert select_count <= 20
 
 Add a focus-mode assertion that `_load_business_children_batch` is not called with all 200 IDs.
 
-- [ ] **Step 2: Implement summary aggregates without full child serialization.**
+- [x] **Step 2: Implement summary aggregates without full child serialization.**
 
 Keep parent filtering and deterministic ordering intact. Replace all-match full financing/repayment row loading used only for the summary with grouped aggregate queries keyed by `business_id`. Use the filtered ID set only for summary aggregates, then use the page ID set for card child facts. Do not return full source JSON, complete child arrays, or audit history from the list endpoint.
 
-- [ ] **Step 3: Add/verify supporting indexes.**
+- [x] **Step 3: Add/verify supporting indexes.**
 
 Use the existing schema migration pattern to verify indexes on `business_type/status/risk_level/business_no`, every child table `business_id`, open anomalies `(business_id,status,anomaly_type)`, and source business keys. Add only missing indexes and test migration idempotence for SQLite/PostgreSQL compatibility.
 
-- [ ] **Step 4: Verify summary and page-size invariants.**
+- [x] **Step 4: Verify summary and page-size invariants.**
 
 ```bash
 pytest -q tests/test_order_lifecycle.py -k 'summary or bounded or page or focus'
@@ -266,7 +266,7 @@ Expected: 20, 50, and 100 page sizes return consistent totals and summaries, whi
 - `renderOrderLifecycleCard(item)` renders one of two semantic templates: financing or over-order. It must not render hidden/empty financing placeholders for over-order.
 - `risk_facts` controls fact-level classes; `risk_level` controls only the overall badge and card edge.
 
-- [ ] **Step 1: Add failing frontend contracts.**
+- [x] **Step 1: Add failing frontend contracts.**
 
 Add Node assertions that the lifecycle block contains the four first-row filter groups, a distinct status row, type-specific card templates, settlement markup for over-order, and no `过单业务不适用` placeholder. Add assertions that the type badge has financing/pass CSS classes with backgrounds and that risk classes are attached to individual facts rather than the entire risk section.
 
@@ -278,23 +278,23 @@ node --test tests/order_lifecycle_frontend.test.mjs
 
 Expected: the new semantic assertions fail against the current renderer/CSS.
 
-- [ ] **Step 2: Fix filter DOM and grid rules.**
+- [x] **Step 2: Fix filter DOM and grid rules.**
 
 Keep search on its own row. Put business type, risk, anomaly, and FCR in one explicit four-column grid. Put status in a separate full-width row. Give search, clear, mini-action, and checkbox controls one height/typography contract. Remove or override every legacy `grid-column: span 3/6` selector that still matches nested lifecycle fieldsets.
 
-- [ ] **Step 3: Render compact identity and type badges.**
+- [x] **Step 3: Render compact identity and type badges.**
 
 Use labeled identity fields in the prototype order: contract, trade entity, supplier steel mill, product, quantity, terminal customer. Add background classes for financing and pass-through badges. Use `融资类业务` for financing and the approved short `过单` label on the main card, with an accessible full classification.
 
-- [ ] **Step 4: Render type-specific card bodies.**
+- [x] **Step 4: Render type-specific card bodies.**
 
 Financing card sections must show source-backed bank, outstanding amount, financing count, drawdown display, port status, shipment/latest-shipment facts, document status, due/extension, customer receipt, bank repayment, next step. Over-order cards must show execution, customer receipts, settlement status, risk reason/data status, and next step only.
 
-- [ ] **Step 5: Apply field-level risk tones.**
+- [x] **Step 5: Apply field-level risk tones.**
 
 Use `risk_facts.shipment`, `risk_facts.document`, `risk_facts.due`, `risk_facts.bank_repayment`, `risk_facts.customer_receipt`, and `risk_facts.data_status` to add `fact-danger`/`fact-warning`. Remove the whole-section `risk-danger`/`risk-warning` tint. Unaffected facts retain the neutral background.
 
-- [ ] **Step 6: Run frontend contracts and a page-start smoke.**
+- [x] **Step 6: Run frontend contracts and a page-start smoke.**
 
 ```bash
 node --test tests/order_lifecycle_frontend.test.mjs
@@ -317,27 +317,27 @@ Expected: all lifecycle structural/semantic tests pass and the page still boots 
 - The 01–08 nav remains a top horizontal `nav` with eight links and uses a solid background; it may internally scroll on narrow desktop widths, but the page itself must not clip.
 - `saveOrderLifecycleViewState()` stores `scrollTop`; `restoreOrderLifecycleViewState()` restores it only after the list has rendered and the saved query state matches.
 
-- [ ] **Step 1: Add failing detail/state assertions.**
+- [x] **Step 1: Add failing detail/state assertions.**
 
 Require eight nav anchors, hero FCR/financing-count/next-step/source labels, a solid nav background declaration, and a saved/restored scroll value. Keep the existing assertion that no per-node confirmation controls are rendered.
 
-- [ ] **Step 2: Complete the detail hero.**
+- [x] **Step 2: Complete the detail hero.**
 
 Move the required summary facts into the hero without duplicating contradictory status text. Keep the unified edit entry and existing sensitive-operation permission checks. Keep full child/source/audit rows lazy-loaded in sections.
 
-- [ ] **Step 3: Fix horizontal overflow boundaries.**
+- [x] **Step 3: Fix horizontal overflow boundaries.**
 
 Allow the detail page to occupy the available content width. Give wide tables their own `overflow-x: auto` wrapper. Make long cell values wrap where appropriate. Do not hide the entire workspace overflow. Keep return control and the top nav visible.
 
-- [ ] **Step 4: Fix sticky nav.**
+- [x] **Step 4: Fix sticky nav.**
 
 Set the nav top offset to the actual workspace topbar height, use an opaque surface background, a bottom border/shadow, and a higher z-index than detail content. Keep all eight items in one horizontal row at the approved desktop viewport; use internal horizontal scrolling only if a smaller desktop width requires it.
 
-- [ ] **Step 5: Restore list position.**
+- [x] **Step 5: Restore list position.**
 
 Capture `window.scrollY` before opening detail and write it into session state. After returning and rendering the list, restore the saved value on the next animation frame. Preserve keyword, filters, view, page, and page size as before.
 
-- [ ] **Step 6: Run detail contracts.**
+- [x] **Step 6: Run detail contracts.**
 
 ```bash
 node --test tests/order_lifecycle_frontend.test.mjs
@@ -359,19 +359,19 @@ Expected: all eight sections, hero fields, solid nav, no page-level clipping con
 - A mapping can be applied only when exactly one WPS authoritative number is proven and there is no target collision.
 - Conflicts, missing evidence, and duplicate target numbers remain pending; no page-level placeholder or generated replacement is allowed.
 
-- [ ] **Step 1: Capture a recoverable Staging recovery point.**
+- [x] **Step 1: Capture a recoverable Staging recovery point.**
 
 Record the backup/snapshot identifier and the pre-change counts for parent cards, contracts, financings, vessels, documents, receipts, repayments, anomalies, and audit records. Do not access Production.
 
-- [ ] **Step 2: Run the legacy preview.**
+- [x] **Step 2: Run the legacy preview.**
 
 Review every legacy `钢厂-行号` card, its source keys, contracts, WPS candidates, and conflicts. Do not apply a mapping merely because the steel mill or row number looks similar.
 
-- [ ] **Step 3: Apply only uniquely evidenced corrections, if any.**
+- [x] **Step 3: Apply only uniquely evidenced corrections, if any.**
 
 Use one transaction per approved mapping, preserve the old/new number, source evidence, operator, timestamp, and result in the existing audit path, and re-run status/risk calculation. If no unique mapping exists, leave the record pending and report it; do not invent a value.
 
-- [ ] **Step 4: Verify data invariants.**
+- [x] **Step 4: Verify data invariants.**
 
 Confirm parent count, duplicate authoritative numbers, all child-row counts, and audit-row counts match the recovery-point comparison. If any invariant fails, restore the recovery point and stop.
 
@@ -386,7 +386,7 @@ Confirm parent count, duplicate authoritative numbers, all child-row counts, and
 
 - Produces the tested commit, Staging URL/version identity, automated results, browser evidence, timing evidence, and rollback point required for AIO-20260809-002.
 
-- [ ] **Step 1: Run the targeted gate.**
+- [x] **Step 1: Run the targeted gate.**
 
 ```bash
 pytest -q tests/test_order_lifecycle.py tests/test_order_finance.py
@@ -395,7 +395,7 @@ python3 -m compileall backend/app
 git diff --check
 ```
 
-- [ ] **Step 2: Run the full local gate.**
+- [x] **Step 2: Run the full local gate.**
 
 ```bash
 pytest -q
@@ -403,7 +403,7 @@ pytest -q
 
 Expected: no unrelated regression; the two previously identified order-finance failures remain resolved with fixture-safe behavior.
 
-- [ ] **Step 3: Review the final diff and commit the implementation.**
+- [x] **Step 3: Review the final diff and commit the implementation.**
 
 Verify only the approved files changed, no secrets/Production URLs entered source or records, and no generated business-number path exists. Commit on `codex/aio-20260809-002-order-lifecycle-v1`.
 

@@ -433,6 +433,7 @@ def initialize_schema(conn) -> None:
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_ol_business_type_status ON order_lifecycle_businesses(business_type, status)",
         "CREATE INDEX IF NOT EXISTS idx_ol_business_risk ON order_lifecycle_businesses(risk_level)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_business_filter_sort ON order_lifecycle_businesses(source_active, is_cancelled, business_type, status, risk_level, business_no)",
         "CREATE INDEX IF NOT EXISTS idx_ol_business_source ON order_lifecycle_businesses(source_type, source_record_key)",
         "CREATE INDEX IF NOT EXISTS idx_ol_contract_business ON order_lifecycle_contracts(business_id)",
         "CREATE INDEX IF NOT EXISTS idx_ol_financing_business ON order_lifecycle_financings(business_id)",
@@ -441,9 +442,12 @@ def initialize_schema(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_ol_receipt_business ON order_lifecycle_customer_receipts(business_id)",
         "CREATE INDEX IF NOT EXISTS idx_ol_repayment_business ON order_lifecycle_bank_repayments(business_id)",
         "CREATE INDEX IF NOT EXISTS idx_ol_source_record_business ON order_lifecycle_source_records(business_key, source_type)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_source_record_type_key ON order_lifecycle_source_records(source_type, source_key, business_key)",
         "CREATE INDEX IF NOT EXISTS idx_ol_business_source_membership ON order_lifecycle_business_sources(business_id, source_active)",
         "CREATE INDEX IF NOT EXISTS idx_ol_source_membership_active ON order_lifecycle_business_sources(source_type, source_active)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_source_membership_business_key ON order_lifecycle_business_sources(source_type, source_business_key, source_active)",
         "CREATE INDEX IF NOT EXISTS idx_ol_anomaly_business_status ON order_lifecycle_data_anomalies(business_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_anomaly_business_status_type ON order_lifecycle_data_anomalies(business_id, status, anomaly_type)",
         "CREATE INDEX IF NOT EXISTS idx_ol_child_override_business ON order_lifecycle_child_overrides(business_id, collection, source_key)",
         "CREATE INDEX IF NOT EXISTS idx_ol_manual_child_business ON order_lifecycle_manual_child_records(business_id, collection, is_active)",
         "CREATE INDEX IF NOT EXISTS idx_ol_audit_business_time ON order_lifecycle_audit(business_id, changed_at DESC)",
@@ -1647,6 +1651,84 @@ def _match_source_record(
     return {"status": "unmatched", "candidate_ids": [], "reason": "未找到精确对应主卡"}
 
 
+def preview_legacy_business_number_mappings() -> list[dict[str, Any]]:
+    """Return conservative, read-only WPS mapping evidence for legacy cards."""
+    with db.connect() as conn:
+        cur = conn.cursor()
+        business_rows = [
+            _row_json(row)
+            for row in db._exec(
+                cur,
+                "SELECT id, business_no, business_type, source_type, source_record_key FROM order_lifecycle_businesses WHERE is_cancelled = 0 ORDER BY id",
+            ).fetchall()
+        ]
+        authoritative_parent_ids: dict[str, list[int]] = defaultdict(list)
+        for row in business_rows:
+            business_no = _normalize_business_no(row.get("business_no"))
+            if business_no and not _is_legacy_mill_row_business_no(business_no):
+                authoritative_parent_ids[business_no].append(row["id"])
+
+        wps_evidence: list[tuple[str, set[str]]] = []
+        source_rows = db._exec(
+            cur,
+            "SELECT normalized_json FROM order_lifecycle_source_records WHERE LOWER(source_type) = 'wps' ORDER BY id",
+        ).fetchall()
+        for source_row in source_rows:
+            normalized = _safe_json(source_row["normalized_json"], {})
+            if not isinstance(normalized, dict):
+                continue
+            business_no = _normalize_business_no(normalized.get("business_no"))
+            if not business_no or _is_legacy_mill_row_business_no(business_no):
+                continue
+            contract_tokens = {
+                token
+                for token in _record_match_tokens(normalized)
+                if token.startswith("contract:") or token.startswith("chain:")
+            }
+            if contract_tokens:
+                wps_evidence.append((business_no, contract_tokens))
+
+        preview: list[dict[str, Any]] = []
+        for row in business_rows:
+            legacy_business_no = _normalize_business_no(row.get("business_no"))
+            if not _is_legacy_mill_row_business_no(legacy_business_no):
+                continue
+            contracts = [
+                _row_json(contract)
+                for contract in db._exec(
+                    cur,
+                    "SELECT contract_no, purchase_contract_no, system_contract_no FROM order_lifecycle_contracts WHERE business_id = ? ORDER BY id",
+                    (row["id"],),
+                ).fetchall()
+            ]
+            legacy_tokens = {
+                token
+                for token in _parent_match_tokens(row, {"contracts": contracts})
+                if token.startswith("contract:") or token.startswith("chain:")
+            }
+            authoritative_numbers = sorted({
+                business_no
+                for business_no, candidate_tokens in wps_evidence
+                if legacy_tokens & candidate_tokens
+            })
+            candidate_ids = sorted({
+                business_id
+                for business_no in authoritative_numbers
+                for business_id in authoritative_parent_ids.get(business_no, [])
+                if business_id != row["id"]
+            })
+            unique_without_collision = len(authoritative_numbers) == 1 and not candidate_ids
+            preview.append({
+                "legacy_business_no": row.get("business_no") or legacy_business_no,
+                "source_type": row.get("source_type") or "",
+                "source_record_key": row.get("source_record_key") or "",
+                "candidate_business_ids": candidate_ids,
+                "authoritative_business_no": authoritative_numbers[0] if unique_without_collision else "",
+                "decision": "unique" if unique_without_collision else "conflict" if authoritative_numbers else "no_evidence",
+            })
+        return preview
+
+
 def _canonical_business_key(record: dict[str, Any], parent: Optional[dict[str, Any]] = None) -> str:
     if parent:
         source_type = _normalize_text(record.get("source_type")).lower()
@@ -1791,7 +1873,7 @@ def apply_source_batch(batch: dict[str, Any], imported_by: str = "system", compl
                 _save_match_candidate(
                     cur,
                     record,
-                    "WPS业务编号仅为钢厂+行号，禁止生成业务主卡；请回读 XYZ-年份-序号格式的真实编号",
+                    "WPS业务编号仅为钢厂+行号，禁止生成业务主卡或替代编号；请回读真实 WPS 业务编号",
                     [],
                     parents,
                 )
@@ -2174,9 +2256,6 @@ def _serialize_business_card(row: Any, children: dict[str, list[dict[str, Any]]]
         )
         if value
     ]
-    item["financing_banks"] = [
-        value for value in dict.fromkeys(_normalize_text(child.get("bank")) for child in children.get("financings", [])) if value
-    ]
     item["vessel_count"] = len(children.get("vessels", []))
     item["document_count"] = len(children.get("documents", []))
     shipment_dates = [
@@ -2185,6 +2264,71 @@ def _serialize_business_card(row: Any, children: dict[str, list[dict[str, Any]]]
         if child.get("latest_shipment_date")
     ]
     item["latest_shipment_date"] = min((value for value in shipment_dates if value), default=None)
+    risk_facts = {
+        key: {"level": "none", "reason": ""}
+        for key in ("shipment", "document", "due", "bank_repayment", "customer_receipt", "data_status")
+    }
+
+    def set_risk_fact(key: str, level: str, reason: str) -> None:
+        priorities = {"none": 0, "low": 1, "medium": 2, "high": 3}
+        current = risk_facts[key]
+        if reason and priorities[level] >= priorities[current["level"]]:
+            current["level"] = level
+            current["reason"] = reason
+
+    for anomaly in anomaly_rows:
+        anomaly_key = _normalize_text(anomaly.get("anomaly_key") or anomaly.get("key"))
+        description = _normalize_text(anomaly.get("description"))
+        if anomaly_key == "missing:latest_shipment_date":
+            set_risk_fact("shipment", "high", description)
+        elif "receipt_without_document" in anomaly_key:
+            set_risk_fact("document", "high", description)
+        elif "repayment" in anomaly_key:
+            set_risk_fact("bank_repayment", "high", description)
+        elif "receipt" in anomaly_key:
+            set_risk_fact("customer_receipt", "high", description)
+    if anomaly_rows:
+        set_risk_fact("data_status", "high", f"{len(anomaly_rows)} 项数据异常待处理")
+
+    for reason in item.get("risk_reasons", []):
+        reason_text = _normalize_text(reason)
+        if "装船" in reason_text:
+            level = "high" if "逾期" in reason_text or "临近" in reason_text else "medium"
+            set_risk_fact("shipment", level, reason_text)
+
+    if item.get("business_type") == "融资":
+        item["financing_banks"] = [
+            value for value in dict.fromkeys(_normalize_text(child.get("bank")) for child in children.get("financings", [])) if value
+        ]
+        financing_rows = children.get("financings", [])
+        recorded_drawdowns = sum(1 for child in financing_rows if _normalize_date(child.get("financing_date")))
+        item["drawdown_display"] = (
+            f"{recorded_drawdowns} 笔已记录放款日期"
+            if recorded_drawdowns
+            else "待来源回读"
+        )
+        due_days = item.get("due_days")
+        if due_days is None and item.get("outstanding_financing_amount", 0) > 0:
+            set_risk_fact("due", "medium", "融资到期日缺失或无法计算")
+        elif due_days is not None and due_days <= 7:
+            set_risk_fact("due", "high", f"最近融资到期日距今天 {due_days} 天")
+        elif due_days is not None and due_days <= 30:
+            set_risk_fact("due", "medium", f"最近融资到期日距今天 {due_days} 天")
+        if item.get("status") == "已回款" and item.get("outstanding_financing_amount", 0) > 0:
+            set_risk_fact("bank_repayment", "medium", "客户已回款，银行融资尚未完成还款")
+    else:
+        for key in (
+            "financing_count",
+            "bank_repayment_count",
+            "financing_amount",
+            "outstanding_financing_amount",
+            "current_due_date",
+            "due_days",
+            "extension_days",
+            "repayment_progress",
+        ):
+            item.pop(key, None)
+    item["risk_facts"] = risk_facts
     for collection in CHILD_TABLES:
         item.pop(collection, None)
     item["children_loaded"] = False
@@ -2239,6 +2383,50 @@ def _load_open_anomaly_counts_batch(cur, business_ids: list[int]) -> dict[int, i
     for row in rows:
         result[row["business_id"]] = int(row["anomaly_count"] or 0)
     return result
+
+
+def _load_weekly_focus_projection(cur, business_ids: list[int]) -> dict[int, dict[str, Any]]:
+    result = {
+        business_id: {"latest_shipment_date": None, "current_due_date": None, "has_documents": False}
+        for business_id in business_ids
+    }
+    if not business_ids:
+        return result
+    placeholders = ", ".join("?" for _ in business_ids)
+    for row in db._exec(
+        cur,
+        f"SELECT business_id, latest_shipment_date FROM order_lifecycle_vessels WHERE business_id IN ({placeholders}) AND latest_shipment_date IS NOT NULL",
+        business_ids,
+    ).fetchall():
+        value = _normalize_date(row["latest_shipment_date"])
+        current = result[row["business_id"]]["latest_shipment_date"]
+        if value and (not current or value < current):
+            result[row["business_id"]]["latest_shipment_date"] = value
+    for row in db._exec(
+        cur,
+        f"SELECT business_id, original_due_date, extended_due_date FROM order_lifecycle_financings WHERE business_id IN ({placeholders})",
+        business_ids,
+    ).fetchall():
+        value = _normalize_date(row["extended_due_date"] or row["original_due_date"])
+        current = result[row["business_id"]]["current_due_date"]
+        if value and (not current or value < current):
+            result[row["business_id"]]["current_due_date"] = value
+    for row in db._exec(
+        cur,
+        f"SELECT business_id, COUNT(*) AS document_count FROM order_lifecycle_documents WHERE business_id IN ({placeholders}) GROUP BY business_id",
+        business_ids,
+    ).fetchall():
+        result[row["business_id"]]["has_documents"] = bool(row["document_count"])
+    return result
+
+
+def _weekly_focus_reasons_from_projection(row: Any, projection: dict[str, Any], outstanding_amount: float) -> list[str]:
+    item = _row_json(row)
+    item["vessels"] = ([{"latest_shipment_date": projection.get("latest_shipment_date")}] if projection.get("latest_shipment_date") else [])
+    item["financings"] = ([{"original_due_date": projection.get("current_due_date")}] if projection.get("current_due_date") else [])
+    item["documents"] = ([{}] if projection.get("has_documents") else [])
+    item["outstanding_financing_amount"] = outstanding_amount
+    return _weekly_focus_reasons(item)
 
 
 def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
@@ -2332,30 +2520,33 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
         outstanding_by_business = _load_financing_outstanding_batch(cur, business_ids)
         anomaly_counts = _load_open_anomaly_counts_batch(cur, business_ids)
         if view == "focus":
-            # Focus reasons depend on due dates, vessel dates and document presence;
-            # keep the exceptional view correct while the default overview stays page-only.
-            children_by_business = _load_business_children_batch(cur, business_ids)
-            anomalies_by_business = _load_open_anomalies_batch(cur, business_ids)
-            all_cards = [
+            focus_projection = _load_weekly_focus_projection(cur, business_ids)
+            focus_reasons = {
+                row["id"]: _weekly_focus_reasons_from_projection(
+                    row,
+                    focus_projection.get(row["id"], {}),
+                    outstanding_by_business.get(row["id"], 0),
+                )
+                for row in all_rows
+            }
+            summary_rows = [row for row in all_rows if focus_reasons.get(row["id"])]
+            total = len(summary_rows)
+            card_rows = summary_rows[(page - 1) * page_size: page * page_size]
+            page_ids = [row["id"] for row in card_rows]
+            children_by_business = _load_business_children_batch(cur, page_ids)
+            anomalies_by_business = _load_open_anomalies_batch(cur, page_ids)
+            cards = [
                 _serialize_business_card(
                     row,
                     children_by_business.get(row["id"], {collection: [] for collection in CHILD_TABLES}),
                     anomalies_by_business.get(row["id"], []),
                     bool(filters.get("can_sensitive")),
                 )
-                for row in all_rows
+                for row in card_rows
             ]
-            for item in all_cards:
-                item["weekly_focus_reasons"] = _weekly_focus_reasons(
-                    {
-                        **item,
-                        **children_by_business.get(item["id"], {}),
-                    }
-                )
-            all_cards = [item for item in all_cards if item.get("weekly_focus_reasons")]
-            card_rows = None
+            for item in cards:
+                item["weekly_focus_reasons"] = focus_reasons.get(item["id"], [])
         else:
-            all_cards = None
             card_rows = all_rows[(page - 1) * page_size: page * page_size]
             page_ids = [row["id"] for row in card_rows]
             children_by_business = _load_business_children_batch(cur, page_ids)
@@ -2376,11 +2567,6 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
                         **children_by_business.get(item["id"], {}),
                     }
                 )
-        if all_cards is not None:
-            total = len(all_cards)
-            cards = all_cards[(page - 1) * page_size: page * page_size]
-            summary_rows = [item for item in all_cards]
-        else:
             total = len(all_rows)
             summary_rows = all_rows
         summary = {
@@ -2405,11 +2591,7 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
                 summary["已完结"] += 1
             else:
                 summary["存续业务"] += 1
-                summary["存续融资金额"] += float(
-                    outstanding_by_business.get(business_id, 0)
-                    if all_cards is None
-                    else row.get("outstanding_financing_amount") or 0
-                )
+                summary["存续融资金额"] += float(outstanding_by_business.get(business_id, 0))
                 if status != "待确认":
                     summary["其中进行中"] += 1
                 if risk_level in {"高风险", "中风险", "低风险"}:

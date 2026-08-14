@@ -38,7 +38,7 @@ test("订单全流程页面使用独立模块、冻结原型筛选和详情 API"
 test("订单全流程前端资源使用新的缓存一致性版本", () => {
   assert.match(
     indexHtml,
-    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-prototype-rebuild-v3"/,
+    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-performance-v4"/,
   );
 });
 
@@ -82,6 +82,10 @@ test("订单全流程页面落实原型的搜索、筛选和来源状态布局",
   assert.match(lifecycleBlock, /邮件台账最近获取成功/);
   assert.match(appJs, /function submitOrderLifecycleSearch\(/);
   assert.match(appJs, /orderLifecycleSearchBtn\.addEventListener/);
+  const firstRowGroups = lifecycleBlock.match(/<div class="order-lifecycle-filter-groups"[\s\S]*?<\/div>\s*<div class="order-lifecycle-status-row"/)?.[0] || "";
+  assert.equal((firstRowGroups.match(/<fieldset/g) || []).length, 4);
+  assert.match(stylesCss, /\.order-lifecycle-filter-groups\s*\{[\s\S]*?grid-template-columns:\s*repeat\(4,/);
+  assert.doesNotMatch(stylesCss, /#orderLifecycleTypeFilter[^{}]*grid-column:\s*span/);
 });
 
 test("订单全流程卡片和详情使用原型的信息层级与风险事实单元", () => {
@@ -93,6 +97,15 @@ test("订单全流程卡片和详情使用原型的信息层级与风险事实�
   assert.match(stylesCss, /order-lifecycle-card-body/);
   assert.match(stylesCss, /order-lifecycle-card-fact\.fact-danger/);
   assert.match(stylesCss, /order-lifecycle-card-fact\.fact-warning/);
+  assert.match(appJs, /function renderOrderLifecycleFinancingCardBody\(/);
+  assert.match(appJs, /function renderOrderLifecyclePassCardBody\(/);
+  assert.doesNotMatch(appJs, /过单业务不适用/);
+  assert.match(appJs, /order-lifecycle-business-type-badge type-financing/);
+  assert.match(appJs, /order-lifecycle-business-type-badge type-pass/);
+  assert.match(stylesCss, /\.order-lifecycle-business-type-badge\.type-financing\s*\{[^}]*background:/);
+  assert.match(stylesCss, /\.order-lifecycle-business-type-badge\.type-pass\s*\{[^}]*background:/);
+  assert.match(appJs, /lifecycleCardFact\([^\n]*item\.risk_facts\?\.shipment\)/);
+  assert.doesNotMatch(appJs, /order-lifecycle-card-section order-lifecycle-card-risk \$\{riskTone\}/);
 });
 
 test("订单全流程详情将 01-08 导航放在内容顶部", () => {
@@ -101,4 +114,23 @@ test("订单全流程详情将 01-08 导航放在内容顶部", () => {
   const navRules = stylesCss.match(/\.order-lifecycle-detail-layout \.order-lifecycle-detail-nav\s*\{[^}]*\}/g) || [];
   assert.ok(navRules.length > 0);
   assert.ok(navRules.every((rule) => !/grid-template-columns:\s*1fr\s*;/.test(rule)));
+});
+
+test("订单全流程详情头、实心横向导航和滚动恢复符合冻结契约", () => {
+  const detailRenderer = appJs.match(/function renderOrderLifecycleDetail\(detail\)[\s\S]*?async function loadOrderLifecycleDetail/)?.[0] || "";
+  const sectionLabels = appJs.match(/const ORDER_LIFECYCLE_DETAIL_SECTIONS = \[([\s\S]*?)\];/)?.[1] || "";
+  assert.equal((sectionLabels.match(/"[^"]+"/g) || []).length, 8);
+  assert.match(detailRenderer, /ORDER_LIFECYCLE_DETAIL_SECTIONS\.map/);
+  for (const label of ["FCR", "融资笔数", "下一步", "来源摘要", "来源更新", "最后修改人", "最后修改时间"]) {
+    assert.match(detailRenderer, new RegExp(label));
+  }
+  const finalNavRules = stylesCss.match(/\.order-lifecycle-detail-layout \.order-lifecycle-detail-nav\s*\{[^}]*\}/g) || [];
+  assert.ok(finalNavRules.some((rule) => /top:\s*0/.test(rule)));
+  assert.ok(finalNavRules.some((rule) => /background:\s*(?:#fff|var\(--surface\))/.test(rule)));
+  assert.ok(finalNavRules.some((rule) => /overflow-x:\s*auto/.test(rule)));
+  assert.match(stylesCss, /\.order-lifecycle-detail-shell\s*\{[^}]*max-width:\s*100%/);
+  assert.match(stylesCss, /\.order-lifecycle-record-table-wrap\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(appJs, /scrollTop:\s*orderLifecycleCurrentScrollTop\(\)/);
+  assert.match(appJs, /requestAnimationFrame\([\s\S]*?window\.scrollTo/);
+  assert.match(appJs, /orderLifecyclePendingScroll[^\n]*queryKey/);
 });

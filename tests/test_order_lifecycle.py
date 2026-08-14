@@ -1,5 +1,6 @@
 from pathlib import Path
 import base64
+import json
 from datetime import date, timedelta
 
 import pytest
@@ -139,6 +140,30 @@ def _email_record(purchase_contract_no, *, business_type="融资", source_record
         "bank_repayments": [],
         "raw": {"file": "脱敏邮件台账.xls", "sheet": "Sheet1", "row_no": 3},
     }
+
+
+def _insert_wps_preview_evidence(conn, business_no, purchase_contract_no, source_record_key):
+    batch_id = conn.execute(
+        "INSERT INTO order_lifecycle_source_batches (source_type, source_locator, source_version, snapshot_date, source_hash, source_key_set_hash, status, record_count, completed_at) VALUES (?, ?, ?, ?, ?, ?, 'success', 1, CURRENT_TIMESTAMP)",
+        ("wps", "fixture", f"preview-{business_no}", "2026-08-13", f"hash-{business_no}", f"keys-{business_no}"),
+    ).lastrowid
+    normalized = _wps_record(business_no, purchase_contract_no, f"SYS-{business_no}")
+    normalized["source_record_key"] = source_record_key
+    conn.execute(
+        "INSERT INTO order_lifecycle_source_records (batch_id, source_type, source_key, business_key, source_file, source_sheet, source_row, raw_json, normalized_json, raw_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            batch_id,
+            "wps",
+            source_record_key,
+            f"business:wps:{business_no}",
+            "fixture.xlsx",
+            "YOLANDA",
+            2,
+            "{}",
+            json.dumps(normalized, ensure_ascii=False),
+            f"raw-{business_no}",
+        ),
+    )
 
 
 def test_pass_through_all_receipts_complete_but_missing_document_is_anomaly():
@@ -316,6 +341,14 @@ def test_unmatched_financing_mail_does_not_create_temporary_parent(lifecycle_db)
         assert conn.execute("SELECT COUNT(*) AS c FROM order_lifecycle_match_candidates WHERE status = 'open'").fetchone()["c"] == 1
 
 
+def test_financing_without_wps_business_no_never_creates_temporary_parent(lifecycle_db):
+    result = apply_source_batch({**_batch([_email_record("P-UNMATCHED", business_type="融资")]), "source_type": "email"})
+
+    assert result["created_businesses"] == 0
+    assert result["pending_match_candidates"] == 1
+    assert list_businesses({"page": 1, "page_size": 20})["total"] == 0
+
+
 def test_summary_exposes_business_counts_over_filtered_result_set(lifecycle_db):
     active = _record("email:summary-active")
     active["business_no"] = "G-101"
@@ -363,9 +396,32 @@ def test_summary_exposes_business_counts_over_filtered_result_set(lifecycle_db):
     assert result["summary"]["存续融资金额"] == 1000
 
 
+def test_missing_latest_shipment_date_is_exposed_as_shipment_risk_fact(lifecycle_db):
+    record = _wps_record("Y-2026-16", "P-016", "SYS-016")
+    record["vessels"] = [{"vessel_name": "V1", "latest_shipment_date": "", "source_key": "v1"}]
+    apply_source_batch({**_batch([record]), "source_type": "wps"})
+
+    card = list_businesses({"page": 1, "page_size": 20})["records"][0]
+
+    assert card["risk_facts"]["shipment"]["level"] == "high"
+    assert "最迟装船日" in card["risk_facts"]["shipment"]["reason"]
+    assert card["risk_facts"]["due"]["level"] == "none"
+
+
+def test_over_order_card_has_settlement_and_no_financing_payload(lifecycle_db):
+    apply_source_batch(_batch([_record(business_type="过单")]))
+
+    card = list_businesses({"page": 1, "page_size": 20})["records"][0]
+
+    assert card["business_type"] == "过单"
+    assert "settlement_status" in card
+    assert "financing_banks" not in card
+    assert "outstanding_financing_amount" not in card
+
+
 def test_list_uses_bounded_batch_queries_and_returns_only_requested_page(lifecycle_db, monkeypatch):
     records = []
-    for index in range(25):
+    for index in range(200):
         record = _record(f"email:perf-{index}")
         record["business_no"] = f"G-{index + 1}"
         record["source_record_key"] = f"email:G-{index + 1}"
@@ -381,18 +437,19 @@ def test_list_uses_bounded_batch_queries_and_returns_only_requested_page(lifecyc
         return original_exec(cur, sql, params)
 
     monkeypatch.setattr(db, "_exec", tracing_exec)
-    result = list_businesses({"page": 2, "page_size": 5})
+    result = list_businesses({"page": 2, "page_size": 20})
 
     select_count = sum(1 for statement in statements if statement.lstrip().upper().startswith("SELECT"))
-    assert result["total"] == 25
-    assert len(result["records"]) == 5
+    assert result["total"] == 200
+    assert len(result["records"]) == 20
     assert result["page"] == 2
+    assert result["summary"]["存续业务"] == 200
     assert select_count <= 20
 
 
 def test_overview_loads_child_rows_only_for_requested_page(lifecycle_db, monkeypatch):
     records = []
-    for index in range(25):
+    for index in range(200):
         record = _record(f"email:page-only-{index}")
         record["business_no"] = f"G-{index + 1}"
         record["source_record_key"] = f"email:G-{index + 1}"
@@ -408,15 +465,75 @@ def test_overview_loads_child_rows_only_for_requested_page(lifecycle_db, monkeyp
         return original_loader(cur, business_ids)
 
     monkeypatch.setattr(lifecycle_module, "_load_business_children_batch", tracing_loader)
-    result = list_businesses({"page": 2, "page_size": 5})
+    result = list_businesses({"page": 2, "page_size": 20})
 
-    assert result["total"] == 25
-    assert len(result["records"]) == 5
+    assert result["total"] == 200
+    assert len(result["records"]) == 20
     assert child_loads
-    assert all(len(batch) <= 5 for batch in child_loads)
+    assert all(len(batch) <= 20 for batch in child_loads)
 
 
-def test_wps_steel_mill_row_number_is_held_for_matching_instead_of_creating_parent(lifecycle_db):
+def test_focus_view_never_loads_all_matching_business_children(lifecycle_db, monkeypatch):
+    records = []
+    for index in range(200):
+        record = _record(f"email:focus-{index}")
+        record["business_no"] = f"G-{index + 1}"
+        record["source_record_key"] = f"email:G-{index + 1}"
+        record["contracts"] = [{"contract_no": f"C-FOCUS-{index + 1}", "source_key": f"c-focus-{index + 1}"}]
+        records.append(record)
+    apply_source_batch(_batch(records, "focus-v1"))
+
+    child_loads = []
+    original_loader = lifecycle_module._load_business_children_batch
+
+    def tracing_loader(cur, business_ids):
+        child_loads.append(list(business_ids))
+        return original_loader(cur, business_ids)
+
+    monkeypatch.setattr(lifecycle_module, "_load_business_children_batch", tracing_loader)
+    result = list_businesses({"view": "focus", "page": 1, "page_size": 20})
+
+    assert result["total"] == 0
+    assert all(len(batch) <= 20 for batch in child_loads)
+
+
+def test_schema_initialization_adds_required_order_lifecycle_indexes_idempotently(lifecycle_db):
+    with db.connect() as conn:
+        initialize_schema(conn)
+        initialize_schema(conn)
+        index_names = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_ol_%'"
+            ).fetchall()
+        }
+
+    assert {
+        "idx_ol_business_filter_sort",
+        "idx_ol_anomaly_business_status_type",
+        "idx_ol_source_record_type_key",
+        "idx_ol_source_membership_business_key",
+    } <= index_names
+
+
+def test_page_sizes_keep_totals_and_summaries_consistent(lifecycle_db):
+    records = []
+    for index in range(120):
+        record = _record(f"email:page-size-{index}")
+        record["business_no"] = f"G-{index + 1}"
+        record["source_record_key"] = f"email:G-{index + 1}"
+        record["contracts"] = [{"contract_no": f"C-SIZE-{index + 1}", "source_key": f"c-size-{index + 1}"}]
+        records.append(record)
+    apply_source_batch(_batch(records, "page-size-v1"))
+
+    results = [list_businesses({"page": 1, "page_size": page_size}) for page_size in (20, 50, 100)]
+
+    assert [len(result["records"]) for result in results] == [20, 50, 100]
+    assert {result["total"] for result in results} == {120}
+    assert {result["summary"]["存续业务"] for result in results} == {120}
+
+
+def test_legacy_identifier_reason_does_not_request_xyz_generation(lifecycle_db):
     result = apply_source_batch({
         **_batch([_wps_record("北满-17", "P-LEGACY-17", "SYS-LEGACY-17")], "legacy-v1"),
         "source_type": "wps",
@@ -428,7 +545,68 @@ def test_wps_steel_mill_row_number_is_held_for_matching_instead_of_creating_pare
     with db.connect() as conn:
         candidate = conn.execute("SELECT reason FROM order_lifecycle_match_candidates WHERE status = 'open'").fetchone()
     assert candidate is not None
-    assert "钢厂" in candidate["reason"] or "真实业务编号" in candidate["reason"]
+    assert "禁止生成" in candidate["reason"]
+    assert "真实 WPS 业务编号" in candidate["reason"]
+    assert "XYZ-年份-序号格式" not in candidate["reason"]
+
+
+def test_legacy_mapping_preview_returns_unique_exact_wps_evidence_without_writing(lifecycle_db):
+    legacy = _record("email:legacy-unique")
+    legacy["business_no"] = "北满-17"
+    legacy["source_record_key"] = "email:legacy-unique"
+    legacy["contracts"] = [{"contract_no": "P-LEGACY-17", "purchase_contract_no": "P-LEGACY-17", "source_key": "contract:legacy-17"}]
+    apply_source_batch(_batch([legacy], "legacy-preview-unique"))
+    with db.connect() as conn:
+        _insert_wps_preview_evidence(conn, "Y-2026-17", "P-LEGACY-17", "wps:Y-2026-17")
+        conn.commit()
+
+    preview = lifecycle_module.preview_legacy_business_number_mappings()
+
+    assert preview == [{
+        "legacy_business_no": "北满-17",
+        "source_type": "email",
+        "source_record_key": "email:legacy-unique",
+        "candidate_business_ids": [],
+        "authoritative_business_no": "Y-2026-17",
+        "decision": "unique",
+    }]
+    with db.connect() as conn:
+        assert conn.execute("SELECT business_no FROM order_lifecycle_businesses").fetchone()["business_no"] == "北满-17"
+
+
+def test_legacy_mapping_preview_returns_conflict_for_multiple_exact_wps_numbers(lifecycle_db):
+    legacy = _record("email:legacy-conflict")
+    legacy["business_no"] = "北满-18"
+    legacy["source_record_key"] = "email:legacy-conflict"
+    legacy["contracts"] = [{"contract_no": "P-LEGACY-18", "purchase_contract_no": "P-LEGACY-18", "source_key": "contract:legacy-18"}]
+    apply_source_batch(_batch([legacy], "legacy-preview-conflict"))
+    with db.connect() as conn:
+        _insert_wps_preview_evidence(conn, "Y-2026-18", "P-LEGACY-18", "wps:Y-2026-18")
+        _insert_wps_preview_evidence(conn, "T-2026-18", "P-LEGACY-18", "wps:T-2026-18")
+        conn.commit()
+
+    preview = lifecycle_module.preview_legacy_business_number_mappings()
+
+    assert preview[0]["decision"] == "conflict"
+    assert preview[0]["authoritative_business_no"] == ""
+    assert preview[0]["candidate_business_ids"] == []
+
+
+def test_legacy_mapping_preview_returns_no_evidence_without_exact_wps_contract(lifecycle_db):
+    legacy = _record("email:legacy-none")
+    legacy["business_no"] = "北满-19"
+    legacy["source_record_key"] = "email:legacy-none"
+    legacy["contracts"] = [{"contract_no": "P-LEGACY-19", "purchase_contract_no": "P-LEGACY-19", "source_key": "contract:legacy-19"}]
+    apply_source_batch(_batch([legacy], "legacy-preview-none"))
+    with db.connect() as conn:
+        _insert_wps_preview_evidence(conn, "Y-2026-99", "P-OTHER-99", "wps:Y-2026-99")
+        conn.commit()
+
+    preview = lifecycle_module.preview_legacy_business_number_mappings()
+
+    assert preview[0]["decision"] == "no_evidence"
+    assert preview[0]["authoritative_business_no"] == ""
+    assert preview[0]["candidate_business_ids"] == []
 
 
 def test_manual_value_survives_source_refresh_and_reopens_only_for_new_source_value(lifecycle_db):

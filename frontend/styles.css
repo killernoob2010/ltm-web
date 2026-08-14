@@ -1055,6 +1055,245 @@ dialog::backdrop {
   }
 }
 
+/* Order lifecycle fidelity repair: compact desktop filters and type-specific wide cards. */
+.order-lifecycle-workbench {
+  padding: 0;
+  overflow: visible;
+}
+
+.order-lifecycle-search-row {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.order-lifecycle-search-row h2 {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.order-lifecycle-search-form select,
+.order-lifecycle-search-form input,
+.order-lifecycle-search-form button,
+.order-lifecycle-filter-footer button,
+.order-lifecycle-filter-grid .filter-mini-button {
+  min-height: 40px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.order-lifecycle-filter-groups {
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.order-lifecycle-filter-groups .order-lifecycle-check-group,
+.order-lifecycle-status-row .order-lifecycle-check-group {
+  border: 0;
+  border-right: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: #fff;
+}
+
+.order-lifecycle-filter-groups .order-lifecycle-check-group:last-child {
+  border-right: 0;
+}
+
+.order-lifecycle-filter-groups .order-lifecycle-check-group label,
+.order-lifecycle-status-row .order-lifecycle-check-group label {
+  min-height: 32px;
+  margin: 4px 8px 0 0;
+  padding: 4px 7px;
+  border: 1px solid #dbe3ea;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.order-lifecycle-status-row {
+  margin: 0;
+}
+
+.order-lifecycle-status-row .order-lifecycle-check-group {
+  min-height: 72px;
+  border-right: 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.order-lifecycle-filter-grid .filter-mini-button {
+  min-width: 48px;
+  min-height: 30px;
+  padding: 3px 8px;
+}
+
+.order-lifecycle-filter-footer {
+  margin: 0;
+  padding: 12px 18px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fbfcfd;
+}
+
+.order-lifecycle-filter-footer button {
+  min-width: 112px;
+}
+
+.order-lifecycle-view-tabs {
+  margin: 0;
+  padding: 0 18px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.order-lifecycle-result-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 16px 18px 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.order-lifecycle-result-heading strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.order-lifecycle-card-list {
+  padding: 0 18px 18px;
+}
+
+.order-lifecycle-wide-card {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #d9e1e8;
+  border-left: 5px solid #64748b;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, .05);
+}
+
+.order-lifecycle-wide-card.card-risk-high { border-left-color: #b93a2b; }
+.order-lifecycle-wide-card.card-risk-mid { border-left-color: #c47a16; }
+.order-lifecycle-wide-card.card-risk-low { border-left-color: #2f7565; }
+
+.order-lifecycle-card-head {
+  padding: 16px 18px;
+}
+
+.order-lifecycle-card-head h3 {
+  margin-top: 10px;
+  font-size: 24px;
+}
+
+.order-lifecycle-card-identity-fields {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.order-lifecycle-card-identity-fields > div {
+  min-width: 0;
+}
+
+.order-lifecycle-card-identity-fields span,
+.order-lifecycle-card-fact span {
+  display: block;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.order-lifecycle-card-identity-fields strong,
+.order-lifecycle-card-fact strong {
+  display: block;
+  margin-top: 4px;
+  color: #172033;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.order-lifecycle-card-body {
+  display: grid;
+  grid-template-columns: minmax(280px, .78fr) minmax(0, 1.42fr);
+  gap: 0;
+  margin: 0;
+  border-top: 1px solid #e2e8f0;
+}
+
+.order-lifecycle-card-section {
+  padding: 16px 18px;
+  border: 0;
+  border-right: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: #fff;
+}
+
+.order-lifecycle-card-section:last-child {
+  border-right: 0;
+}
+
+.order-lifecycle-card-pass {
+  grid-column: 1 / -1;
+}
+
+.order-lifecycle-card-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.order-lifecycle-execution-facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.order-lifecycle-pass-facts {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.order-lifecycle-card-fact {
+  min-height: 62px;
+  padding: 9px 10px;
+  border-color: #edf1f4;
+  background: #f8fafc;
+}
+
+.order-lifecycle-card-fact small {
+  display: block;
+  margin-top: 5px;
+  color: #7f1d1d;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.order-lifecycle-card-fact.fact-warning small {
+  color: #92400e;
+}
+
+.order-lifecycle-card-footer {
+  margin: 0;
+  padding: 14px 18px;
+  background: #fbfcfd;
+}
+
+.order-lifecycle-pagination {
+  padding: 0 18px 18px;
+}
+
+@media (max-width: 1180px) {
+  .order-lifecycle-card-identity-fields {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .order-lifecycle-execution-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* Order lifecycle prototype rebuild: keep the prototype hierarchy explicit. */
 .order-lifecycle-source-note {
   display: flex;
@@ -1092,7 +1331,7 @@ dialog::backdrop {
 
 .order-lifecycle-search-form {
   display: grid;
-  grid-template-columns: minmax(150px, .72fr) minmax(240px, 1.3fr) auto;
+  grid-template-columns: minmax(170px, .55fr) minmax(260px, 1fr) minmax(220px, 1.2fr);
   gap: 8px;
   align-items: end;
   flex: 1;
@@ -1111,12 +1350,14 @@ dialog::backdrop {
 }
 
 .order-lifecycle-search-form button {
-  min-width: 76px;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
 }
 
 .order-lifecycle-filter-groups {
   display: grid;
-  grid-template-columns: 1.05fr 1.25fr 2fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   align-items: stretch;
   margin: 14px 0 10px;
@@ -1183,29 +1424,25 @@ dialog::backdrop {
 
 .order-lifecycle-card-body {
   display: grid;
-  grid-template-columns: .9fr 1.45fr 1.15fr;
-  gap: 10px;
-  margin-top: 16px;
+  grid-template-columns: minmax(280px, .78fr) minmax(0, 1.42fr);
+  gap: 0;
+  margin-top: 0;
+  border-top: 1px solid #e2e8f0;
 }
 
 .order-lifecycle-card-section {
   display: grid;
   align-content: start;
   min-width: 0;
-  padding: 12px;
-  border: 1px solid #dbe3ea;
-  border-radius: 10px;
-  background: #f8fafc;
+  padding: 16px 18px;
+  border: 0;
+  border-right: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: #fff;
 }
 
-.order-lifecycle-card-section.risk-danger {
-  border-color: #f3b4b0;
-  background: #fff4f3;
-}
-
-.order-lifecycle-card-section.risk-warning {
-  border-color: #f2d08b;
-  background: #fffbeb;
+.order-lifecycle-card-section:last-child {
+  border-right: 0;
 }
 
 .order-lifecycle-card-fact {
@@ -1231,7 +1468,24 @@ dialog::backdrop {
 }
 
 .order-lifecycle-business-type-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 6px;
   color: #155e75;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.order-lifecycle-business-type-badge.type-financing {
+  background: #e5f5ef;
+  color: #176a58;
+}
+
+.order-lifecycle-business-type-badge.type-pass {
+  background: #e8eef8;
+  color: #294f7a;
 }
 
 .order-lifecycle-status-badge {
@@ -3251,12 +3505,6 @@ button.order-vessel-detail-btn {
   overflow: hidden;
 }
 
-.order-lifecycle-filter-grid #orderLifecycleTypeFilter,
-.order-lifecycle-filter-grid #orderLifecycleRiskFilter,
-.order-lifecycle-filter-grid #orderLifecycleFcrFilter { grid-column: span 3; }
-.order-lifecycle-filter-grid #orderLifecycleAnomalyFilter,
-.order-lifecycle-filter-grid #orderLifecycleStatusFilter { grid-column: span 6; }
-
 .order-lifecycle-filter-grid .order-lifecycle-check-group legend {
   align-items: center;
   min-width: 0;
@@ -3391,6 +3639,10 @@ button.order-vessel-detail-btn {
 
 .order-lifecycle-detail-shell {
   gap: 18px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
 }
 
 .order-lifecycle-detail-hero {
@@ -3400,6 +3652,42 @@ button.order-vessel-detail-btn {
 
 .order-lifecycle-detail-hero h2 {
   font-size: 28px;
+}
+
+.order-lifecycle-detail-hero-main {
+  min-width: 0;
+}
+
+.order-lifecycle-detail-hero-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.order-lifecycle-detail-hero-facts > div {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.order-lifecycle-detail-hero-facts span,
+.order-lifecycle-detail-hero-facts strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.order-lifecycle-detail-hero-facts span {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.order-lifecycle-detail-hero-facts strong {
+  margin-top: 4px;
+  color: #172033;
+  font-size: 12px;
 }
 
 .order-lifecycle-edit-policy {
@@ -3438,15 +3726,26 @@ button.order-vessel-detail-btn {
 
 .order-lifecycle-detail-layout .order-lifecycle-detail-nav {
   position: sticky;
-  top: 8px;
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  align-content: stretch;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-wrap: nowrap;
   gap: 4px;
-  margin-bottom: 14px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 0;
+  border-bottom: 1px solid #cbd5e1;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, .08);
+  backdrop-filter: none;
 }
 
 .order-lifecycle-detail-layout .order-lifecycle-detail-nav a {
+  flex: 1 0 116px;
   grid-template-columns: 1fr;
   align-items: start;
   min-height: 48px;
@@ -3755,14 +4054,17 @@ button.order-vessel-detail-btn {
 
 @media (max-width: 1100px) {
   .order-lifecycle-detail-layout .order-lifecycle-detail-nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
   }
 }
 
 @media (max-width: 760px) {
   .order-lifecycle-detail-layout .order-lifecycle-detail-nav {
-    position: static;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-wrap: nowrap;
   }
 }
 
