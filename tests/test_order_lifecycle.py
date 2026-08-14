@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import pytest
 
 from backend.app import db
+from backend.app import order_lifecycle as lifecycle_module
 from backend.app.order_lifecycle import (
     apply_source_batch,
     calculate_business,
@@ -387,6 +388,32 @@ def test_list_uses_bounded_batch_queries_and_returns_only_requested_page(lifecyc
     assert len(result["records"]) == 5
     assert result["page"] == 2
     assert select_count <= 20
+
+
+def test_overview_loads_child_rows_only_for_requested_page(lifecycle_db, monkeypatch):
+    records = []
+    for index in range(25):
+        record = _record(f"email:page-only-{index}")
+        record["business_no"] = f"G-{index + 1}"
+        record["source_record_key"] = f"email:G-{index + 1}"
+        record["contracts"] = [{"contract_no": f"C-PAGE-{index + 1}", "source_key": f"c-page-{index + 1}"}]
+        records.append(record)
+    apply_source_batch(_batch(records, "page-only-v1"))
+
+    child_loads = []
+    original_loader = lifecycle_module._load_business_children_batch
+
+    def tracing_loader(cur, business_ids):
+        child_loads.append(list(business_ids))
+        return original_loader(cur, business_ids)
+
+    monkeypatch.setattr(lifecycle_module, "_load_business_children_batch", tracing_loader)
+    result = list_businesses({"page": 2, "page_size": 5})
+
+    assert result["total"] == 25
+    assert len(result["records"]) == 5
+    assert child_loads
+    assert all(len(batch) <= 5 for batch in child_loads)
 
 
 def test_wps_steel_mill_row_number_is_held_for_matching_instead_of_creating_parent(lifecycle_db):

@@ -2191,6 +2191,56 @@ def _serialize_business_card(row: Any, children: dict[str, list[dict[str, Any]]]
     return item
 
 
+def _load_financing_outstanding_batch(cur, business_ids: list[int]) -> dict[int, float]:
+    """Return outstanding financing totals without loading full child rows."""
+    result = {business_id: 0.0 for business_id in business_ids}
+    if not business_ids:
+        return result
+    placeholders = ", ".join("?" for _ in business_ids)
+    financing_rows = db._exec(
+        cur,
+        f"SELECT id, business_id, amount, repayment_date, repayment_status FROM order_lifecycle_financings WHERE business_id IN ({placeholders})",
+        business_ids,
+    ).fetchall()
+    repayment_rows = db._exec(
+        cur,
+        f"SELECT financing_id, amount, completion_explicit FROM order_lifecycle_bank_repayments WHERE business_id IN ({placeholders})",
+        business_ids,
+    ).fetchall()
+    repayment_amounts: dict[int, float] = defaultdict(float)
+    explicit_repayments: set[int] = set()
+    for row in repayment_rows:
+        financing_id = row["financing_id"]
+        if financing_id is None:
+            continue
+        repayment_amounts[financing_id] += float(row["amount"] or 0)
+        if row["completion_explicit"]:
+            explicit_repayments.add(financing_id)
+    for row in financing_rows:
+        financing_id = row["id"]
+        amount = float(row["amount"] or 0)
+        repaid = bool(row["repayment_date"] or "已还" in _normalize_text(row["repayment_status"]))
+        repaid = repaid or financing_id in explicit_repayments or repayment_amounts[financing_id] >= amount > 0
+        if not repaid:
+            result[row["business_id"]] += amount
+    return result
+
+
+def _load_open_anomaly_counts_batch(cur, business_ids: list[int]) -> dict[int, int]:
+    result = {business_id: 0 for business_id in business_ids}
+    if not business_ids:
+        return result
+    placeholders = ", ".join("?" for _ in business_ids)
+    rows = db._exec(
+        cur,
+        f"SELECT business_id, COUNT(*) AS anomaly_count FROM order_lifecycle_data_anomalies WHERE status = 'open' AND business_id IN ({placeholders}) GROUP BY business_id",
+        business_ids,
+    ).fetchall()
+    for row in rows:
+        result[row["business_id"]] = int(row["anomaly_count"] or 0)
+    return result
+
+
 def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
     clauses = ["b.is_cancelled = 0", "b.source_active = 1"]
     params: list[Any] = []
@@ -2272,35 +2322,67 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
         cur = conn.cursor()
         all_rows = db._exec(cur, f"SELECT b.* FROM order_lifecycle_businesses b WHERE {where}", params).fetchall()
         business_ids = [row["id"] for row in all_rows]
-        children_by_business = _load_business_children_batch(cur, business_ids)
-        anomalies_by_business = _load_open_anomalies_batch(cur, business_ids)
-        all_cards = [
-            _serialize_business_card(
-                row,
-                children_by_business.get(row["id"], {collection: [] for collection in CHILD_TABLES}),
-                anomalies_by_business.get(row["id"], []),
-                bool(filters.get("can_sensitive")),
-            )
-            for row in all_rows
-        ]
-        for item in all_cards:
-            item["weekly_focus_reasons"] = _weekly_focus_reasons(
-                {
-                    **item,
-                    **children_by_business.get(item["id"], {}),
-                }
-            )
         risk_order = {"高风险": 0, "中风险": 1, "低风险": 2}
-        all_cards.sort(key=lambda item: (
-            1 if item.get("status") in {"已完结", "已结算"} else 0,
-            risk_order.get(item.get("risk_level"), 3),
-            _natural_sort_key(item.get("business_no")),
-        ))
         view = _normalize_text(filters.get("view")) or "overview"
+        all_rows.sort(key=lambda row: (
+            1 if row["status"] in {"已完结", "已结算"} else 0,
+            risk_order.get(row["risk_level"], 3),
+            _natural_sort_key(row["business_no"]),
+        ))
+        outstanding_by_business = _load_financing_outstanding_batch(cur, business_ids)
+        anomaly_counts = _load_open_anomaly_counts_batch(cur, business_ids)
         if view == "focus":
+            # Focus reasons depend on due dates, vessel dates and document presence;
+            # keep the exceptional view correct while the default overview stays page-only.
+            children_by_business = _load_business_children_batch(cur, business_ids)
+            anomalies_by_business = _load_open_anomalies_batch(cur, business_ids)
+            all_cards = [
+                _serialize_business_card(
+                    row,
+                    children_by_business.get(row["id"], {collection: [] for collection in CHILD_TABLES}),
+                    anomalies_by_business.get(row["id"], []),
+                    bool(filters.get("can_sensitive")),
+                )
+                for row in all_rows
+            ]
+            for item in all_cards:
+                item["weekly_focus_reasons"] = _weekly_focus_reasons(
+                    {
+                        **item,
+                        **children_by_business.get(item["id"], {}),
+                    }
+                )
             all_cards = [item for item in all_cards if item.get("weekly_focus_reasons")]
-        total = len(all_cards)
-        cards = all_cards[(page - 1) * page_size: page * page_size]
+            card_rows = None
+        else:
+            all_cards = None
+            card_rows = all_rows[(page - 1) * page_size: page * page_size]
+            page_ids = [row["id"] for row in card_rows]
+            children_by_business = _load_business_children_batch(cur, page_ids)
+            anomalies_by_business = _load_open_anomalies_batch(cur, page_ids)
+            cards = [
+                _serialize_business_card(
+                    row,
+                    children_by_business.get(row["id"], {collection: [] for collection in CHILD_TABLES}),
+                    anomalies_by_business.get(row["id"], []),
+                    bool(filters.get("can_sensitive")),
+                )
+                for row in card_rows
+            ]
+            for item in cards:
+                item["weekly_focus_reasons"] = _weekly_focus_reasons(
+                    {
+                        **item,
+                        **children_by_business.get(item["id"], {}),
+                    }
+                )
+        if all_cards is not None:
+            total = len(all_cards)
+            cards = all_cards[(page - 1) * page_size: page * page_size]
+            summary_rows = [item for item in all_cards]
+        else:
+            total = len(all_rows)
+            summary_rows = all_rows
         summary = {
             "存续业务": 0,
             "其中进行中": 0,
@@ -2313,20 +2395,31 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
             "数据异常": 0,
             "更新异常": 0,
         }
-        for item in all_cards:
-            completed = item.get("status") in {"已完结", "已结算"}
+        for row in summary_rows:
+            business_id = row["id"] if isinstance(row, dict) else row["id"]
+            status = row.get("status") if isinstance(row, dict) else row["status"]
+            risk_level = row.get("risk_level") if isinstance(row, dict) else row["risk_level"]
+            completed = status in {"已完结", "已结算"}
             if completed:
                 summary["已完结业务"] += 1
                 summary["已完结"] += 1
             else:
                 summary["存续业务"] += 1
-                summary["存续融资金额"] += float(item.get("outstanding_financing_amount") or 0)
-                if item.get("status") != "待确认":
+                summary["存续融资金额"] += float(
+                    outstanding_by_business.get(business_id, 0)
+                    if all_cards is None
+                    else row.get("outstanding_financing_amount") or 0
+                )
+                if status != "待确认":
                     summary["其中进行中"] += 1
-                if item.get("risk_level") in {"高风险", "中风险", "低风险"}:
-                    summary[item["risk_level"]] += 1
+                if risk_level in {"高风险", "中风险", "低风险"}:
+                    summary[risk_level] += 1
         sync = _row_json(db._exec(cur, "SELECT * FROM order_lifecycle_sync_state WHERE id = 1").fetchone())
-        summary["数据异常"] = sum(1 for item in all_cards if item.get("anomalies"))
+        summary["数据异常"] = sum(
+            1
+            for row in summary_rows
+            if (row.get("anomalies") if isinstance(row, dict) else anomaly_counts.get(row["id"], 0))
+        )
         summary["更新异常数"] = int(bool(sync.get("wps_last_error"))) + int(bool(sync.get("email_last_error")))
         summary["更新异常"] = summary.pop("更新异常数")
     return {"records": cards, "total": int(total), "page": page, "page_size": page_size, "summary": summary, "sync_status": sync}

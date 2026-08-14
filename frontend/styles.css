@@ -2777,11 +2777,18 @@ button.order-vessel-detail-btn {
 }
 
 .order-lifecycle-detail-grid > div {
+  min-width: 0;
   display: grid;
   gap: 3px;
   padding: 8px;
   border-radius: 6px;
   background: #f8fafc;
+}
+
+.order-lifecycle-detail-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .order-lifecycle-detail-grid span,

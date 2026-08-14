@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
+const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
 
 test("订单全流程页面使用独立模块、冻结原型筛选和详情 API", () => {
   assert.match(indexHtml, /id="orderLifecyclePage"/);
@@ -37,7 +38,7 @@ test("订单全流程页面使用独立模块、冻结原型筛选和详情 API"
 test("订单全流程前端资源使用新的缓存一致性版本", () => {
   assert.match(
     indexHtml,
-    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-v1"/,
+    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-v2"/,
   );
 });
 
@@ -64,4 +65,9 @@ test("订单全流程详情使用八段式整页结构和统一编辑入口", ()
   assert.match(appJs, /order-lifecycle-edit-child/);
   assert.doesNotMatch(appJs, /order-lifecycle-node-btn/);
   assert.doesNotMatch(indexHtml, /确认集港|确认装船|撤回业务/);
+});
+
+test("订单全流程详情长来源值必须在字段卡内换行", () => {
+  assert.match(stylesCss, /order-lifecycle-detail-grid[^{}]*\{[\s\S]*?min-width:\s*0/);
+  assert.match(stylesCss, /order-lifecycle-detail-grid[^{}]*strong[^{}]*\{[\s\S]*?overflow-wrap:\s*anywhere/);
 });
