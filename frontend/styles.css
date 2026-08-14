@@ -1552,7 +1552,7 @@ dialog::backdrop {
 
 .order-lifecycle-detail-layout .order-lifecycle-detail-nav {
   position: sticky;
-  top: 8px;
+  top: 0;
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
   align-content: stretch;

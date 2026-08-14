@@ -3460,13 +3460,33 @@ function renderOrderLifecycleDetail(detail) {
   </section>`;
 }
 
+function bindOrderLifecycleDetailNavigation(detailRoot, pageScroller) {
+  const detailNav = detailRoot?.querySelector(".order-lifecycle-detail-nav");
+  detailNav?.querySelectorAll("a[href^='#lifecycle-section-']").forEach((anchor) => {
+    anchor.addEventListener("click", (event) => {
+      event.preventDefault();
+      const targetSelector = anchor.getAttribute("href");
+      const target = targetSelector ? detailRoot.querySelector(targetSelector) : null;
+      if (!target) return;
+      if (pageScroller) {
+        const scrollerRect = pageScroller.getBoundingClientRect();
+        const targetTop = target.getBoundingClientRect().top - scrollerRect.top + pageScroller.scrollTop - detailNav.offsetHeight - 8;
+        pageScroller.scrollTo({ top: Math.max(targetTop, 0), behavior: "smooth" });
+      } else {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      history.replaceState(null, "", targetSelector);
+    });
+  });
+}
+
 async function loadOrderLifecycleDetail(id) {
   try {
     state.orderLifecycleDetail = await api(`/api/order-lifecycle/businesses/${id}`);
     orderLifecycleListView.classList.add("hidden");
     orderLifecycleDetailView.classList.remove("hidden");
     orderLifecycleDetailView.innerHTML = renderOrderLifecycleDetail(state.orderLifecycleDetail);
-    const pageScroller = orderLifecycleListView?.closest(".page");
+    const pageScroller = orderLifecycleScrollContainer();
     if (pageScroller) pageScroller.scrollTop = 0;
     window.scrollTo({ top: 0, behavior: "auto" });
     document.querySelector("#orderLifecycleBackBtn")?.addEventListener("click", () => {
@@ -3476,6 +3496,7 @@ async function loadOrderLifecycleDetail(id) {
       loadOrderLifecycleProgress();
     });
     const detailRoot = orderLifecycleDetailView.querySelector(".order-lifecycle-detail-shell");
+    bindOrderLifecycleDetailNavigation(detailRoot, pageScroller);
     const setEditMode = (enabled) => {
       detailRoot?.classList.toggle("is-editing", enabled);
       document.querySelector("#orderLifecycleEditForm")?.classList.toggle("hidden", !enabled);
@@ -3724,8 +3745,13 @@ function orderLifecycleQueryKey() {
   });
 }
 
+function orderLifecycleScrollContainer() {
+  return orderLifecycleListView?.closest(".page") || null;
+}
+
 function orderLifecycleCurrentScrollTop() {
-  return Math.max(window.scrollY || 0, orderLifecycleListView?.closest(".page")?.scrollTop || 0);
+  const pageScroller = orderLifecycleScrollContainer();
+  return pageScroller ? Math.max(pageScroller.scrollTop || 0, 0) : Math.max(window.scrollY || 0, 0);
 }
 
 function saveOrderLifecycleViewState(preserveForReturn = false) {
@@ -3783,9 +3809,9 @@ function restoreOrderLifecycleScrollPosition() {
   state.orderLifecyclePendingScroll = null;
   requestAnimationFrame(() => {
     const scrollTop = Math.max(Number(pending.scrollTop) || 0, 0);
-    const pageScroller = orderLifecycleListView?.closest(".page");
+    const pageScroller = orderLifecycleScrollContainer();
     if (pageScroller) pageScroller.scrollTop = scrollTop;
-    window.scrollTo({ top: scrollTop, behavior: "auto" });
+    else window.scrollTo({ top: scrollTop, behavior: "auto" });
   });
 }
 
