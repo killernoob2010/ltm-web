@@ -59,7 +59,7 @@ Traceability IDs used in every task:
 - Produces the final copy/layout contract used by all later tasks.
 - Produces the baseline test result and baseline commit/version identity.
 
-- [ ] **Step 1: Record the actual baseline.**
+- [x] **Step 1: Record the actual baseline.**
 
 Run:
 
@@ -72,7 +72,9 @@ node --test tests/order_lifecycle_frontend.test.mjs
 
 Expected: the current branch is `codex/aio-20260809-002-order-lifecycle-v1`; record the exact commit and every baseline failure without treating a source-string test as visual acceptance.
 
-- [ ] **Step 2: Resolve documentation conflicts.**
+Recorded 2026-08-14 baseline: the existing branch worktree was clean at plan commit `87ae1ad`; `origin/staging` and the remote lifecycle branch were at code commit `8ed4af9`. The targeted Python baseline passed `115` tests and the Node lifecycle contract passed `8` tests. The real Staging login page served lifecycle asset version `20260814-order-lifecycle-prototype-rebuild-v3`, matching `8ed4af9`.
+
+- [x] **Step 2: Resolve documentation conflicts.**
 
 Update the requirements document so it explicitly states:
 
@@ -84,7 +86,7 @@ Update the requirements document so it explicitly states:
 
 Update the structural test contract in the same change. Do not alter the allowed desktop-only scope or the Production prohibition.
 
-- [ ] **Step 3: Commit only the contract/baseline documentation.**
+- [x] **Step 3: Commit only the contract/baseline documentation.**
 
 ```bash
 git add docs/2026-08-14-order-lifecycle-fidelity-performance-business-requirements.md docs/superpowers/plans/2026-08-14-order-lifecycle-fidelity-performance.md
