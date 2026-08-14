@@ -407,11 +407,11 @@ Expected: no unrelated regression; the two previously identified order-finance f
 
 Verify only the approved files changed, no secrets/Production URLs entered source or records, and no generated business-number path exists. Commit on `codex/aio-20260809-002-order-lifecycle-v1`.
 
-- [ ] **Step 4: Push and deploy Staging only.**
+- [x] **Step 4: Push and deploy Staging only.**
 
 Push the existing branch and wait for Render Staging to serve the immutable commit. Do not merge or push `main`; do not deploy Production.
 
-- [ ] **Step 5: Perform one consolidated Computer Use acceptance pass.**
+- [x] **Step 5: Perform one consolidated Computer Use acceptance pass.**
 
 On `https://ltm-web-staging.onrender.com/?codex=<commit>` using the admin account, verify:
 
@@ -428,7 +428,7 @@ On `https://ltm-web-staging.onrender.com/?codex=<commit>` using the admin accoun
 
 Do not use an API 200, terminal `curl`, mock data, or logs as a replacement for this browser-visible business acceptance.
 
-- [ ] **Step 6: Update the release record after deployment.**
+- [x] **Step 6: Update the release record after deployment.**
 
 Record commit, Staging URL/version, focused/full test results, recovery point, data-mapping decision, browser evidence, measured timings, known limitations, and rollback commit in `版本更新记录.md`. Do not record passwords, tokens, cookies, database URLs, or deploy hooks.
 
