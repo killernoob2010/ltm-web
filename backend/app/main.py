@@ -106,6 +106,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+INDEX_CACHE_CONTROL = "no-store"
+STATIC_CACHE_CONTROL = "no-cache, must-revalidate"
+
 
 @app.middleware("http")
 async def api_performance_log(request: Request, call_next):
@@ -123,6 +126,10 @@ async def api_performance_log(request: Request, call_next):
             "response_size_approx": response.headers.get("content-length"),
         }
         print(json.dumps(log, ensure_ascii=False))
+    if request.url.path == "/":
+        response.headers["Cache-Control"] = INDEX_CACHE_CONTROL
+    elif request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = STATIC_CACHE_CONTROL
     response.headers["x-request-id"] = request_id
     return response
 

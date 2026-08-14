@@ -33,3 +33,10 @@ test("订单全流程页面使用独立模块、冻结原型筛选和详情 API"
   assert.match(fcrFilter, /data-filter-group="fcr"/);
   assert.doesNotMatch(fcrFilter, /data-filter-action=/);
 });
+
+test("订单全流程前端资源使用新的缓存一致性版本", () => {
+  assert.match(
+    indexHtml,
+    /src="\/static\/app\.js\?[^\"]*&cache=20260814-frontend-asset-coherence-v1"/,
+  );
+});
