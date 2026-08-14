@@ -38,7 +38,7 @@ test("订单全流程页面使用独立模块、冻结原型筛选和详情 API"
 test("订单全流程前端资源使用新的缓存一致性版本", () => {
   assert.match(
     indexHtml,
-    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-fidelity-v2"/,
+    /src="\/static\/app\.js\?[^\"]*&cache=20260814-order-lifecycle-prototype-rebuild-v3"/,
   );
 });
 
@@ -70,4 +70,35 @@ test("订单全流程详情使用八段式整页结构和统一编辑入口", ()
 test("订单全流程详情长来源值必须在字段卡内换行", () => {
   assert.match(stylesCss, /order-lifecycle-detail-grid[^{}]*\{[\s\S]*?min-width:\s*0/);
   assert.match(stylesCss, /order-lifecycle-detail-grid[^{}]*strong[^{}]*\{[\s\S]*?overflow-wrap:\s*anywhere/);
+});
+
+test("订单全流程页面落实原型的搜索、筛选和来源状态布局", () => {
+  const lifecycleBlock = indexHtml.match(/<section id="orderLifecyclePage"[\s\S]*?<section id="orderFinanceCapitalPage"/)?.[0] || "";
+  assert.match(lifecycleBlock, /id="orderLifecycleSearchBtn"/);
+  assert.match(lifecycleBlock, /id="orderLifecycleFilterGroups"/);
+  assert.match(lifecycleBlock, /id="orderLifecycleStatusRow"/);
+  assert.match(lifecycleBlock, /class="[^"]*order-lifecycle-filter-footer/);
+  assert.match(lifecycleBlock, /WPS 最近获取成功/);
+  assert.match(lifecycleBlock, /邮件台账最近获取成功/);
+  assert.match(appJs, /function submitOrderLifecycleSearch\(/);
+  assert.match(appJs, /orderLifecycleSearchBtn\.addEventListener/);
+});
+
+test("订单全流程卡片和详情使用原型的信息层级与风险事实单元", () => {
+  assert.match(appJs, /function lifecycleBusinessTypeLabel\(/);
+  assert.match(appJs, /order-lifecycle-status-badge/);
+  assert.match(appJs, /order-lifecycle-card-fact/);
+  assert.match(appJs, /order-lifecycle-record-table/);
+  assert.match(appJs, /<table class="order-lifecycle-record-table"/);
+  assert.match(stylesCss, /order-lifecycle-card-body/);
+  assert.match(stylesCss, /order-lifecycle-card-fact\.fact-danger/);
+  assert.match(stylesCss, /order-lifecycle-card-fact\.fact-warning/);
+});
+
+test("订单全流程详情将 01-08 导航放在内容顶部", () => {
+  assert.match(stylesCss, /\.order-lifecycle-detail-layout\s*\{[\s\S]*?display:\s*block/);
+  assert.match(stylesCss, /\.order-lifecycle-detail-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(8/);
+  const navRules = stylesCss.match(/\.order-lifecycle-detail-layout \.order-lifecycle-detail-nav\s*\{[^}]*\}/g) || [];
+  assert.ok(navRules.length > 0);
+  assert.ok(navRules.every((rule) => !/grid-template-columns:\s*1fr\s*;/.test(rule)));
 });
