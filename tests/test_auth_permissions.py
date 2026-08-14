@@ -59,6 +59,53 @@ def test_postgres_rewrite_handles_indented_insert_or_ignore(monkeypatch):
     assert rewritten.endswith("ON CONFLICT DO NOTHING")
 
 
+def test_postgres_connect_reuses_thread_safe_pool(monkeypatch):
+    events = []
+
+    class Connection:
+        closed = 0
+        cursor_factory = None
+
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+    connection = Connection()
+
+    class Pool:
+        def __init__(self, minconn, maxconn, dsn, connect_timeout):
+            events.append(("pool", minconn, maxconn, dsn, connect_timeout))
+
+        def getconn(self):
+            events.append("get")
+            return connection
+
+        def putconn(self, conn, close=False):
+            events.append(("put", conn is connection, close))
+
+        def closeall(self):
+            events.append("closeall")
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/test")
+    monkeypatch.setattr(db, "_pg_pool", None)
+    monkeypatch.setattr(db, "_pg_pool_url", None)
+    monkeypatch.setattr(db.psycopg2.pool, "ThreadedConnectionPool", Pool)
+
+    with db.connect() as first:
+        assert first is connection
+    with db.connect() as second:
+        assert second is connection
+
+    assert [event for event in events if isinstance(event, tuple) and event[0] == "pool"] == [
+        ("pool", 1, 10, "postgresql://example.invalid/test", 30)
+    ]
+    assert events.count("get") == 2
+    assert events.count("commit") == 2
+    assert events.count(("put", True, False)) == 2
+
+
 def test_session_expires_at_blocks_old_token(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:

@@ -7,13 +7,18 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "app.db"
+_pg_pool = None
+_pg_pool_url = None
+_pg_pool_lock = Lock()
 
 TRADING_MANAGEMENT_TABLES = (
     "trading_accounts",
@@ -154,9 +159,26 @@ def _q() -> str:
 @contextmanager
 def connect():
     """Return a DB-API 2.0 connection (psycopg2 for PG, sqlite3 for SQLite fallback)."""
+    global _pg_pool, _pg_pool_url
     db_url = get_db_url()
+    pg_pool = None
     if db_url.startswith("postgres"):
-        conn = psycopg2.connect(db_url, connect_timeout=30)
+        with _pg_pool_lock:
+            if _pg_pool is None or _pg_pool_url != db_url:
+                if _pg_pool is not None:
+                    _pg_pool.closeall()
+                _pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                    1,
+                    10,
+                    dsn=db_url,
+                    connect_timeout=30,
+                )
+                _pg_pool_url = db_url
+            pg_pool = _pg_pool
+        conn = pg_pool.getconn()
+        if conn.closed:
+            pg_pool.putconn(conn, close=True)
+            conn = pg_pool.getconn()
         conn.cursor_factory = psycopg2.extras.RealDictCursor
     else:
         # SQLite fallback
@@ -172,7 +194,10 @@ def connect():
         raise
     finally:
         _last_ids.pop(id(conn), None)
-        conn.close()
+        if pg_pool is not None:
+            pg_pool.putconn(conn, close=bool(conn.closed))
+        else:
+            conn.close()
 
 
 
