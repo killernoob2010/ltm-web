@@ -3471,6 +3471,12 @@ function bindOrderLifecycleDetailNavigation(detailRoot, pageScroller) {
       if (pageScroller) {
         const scrollerRect = pageScroller.getBoundingClientRect();
         const targetTop = target.getBoundingClientRect().top - scrollerRect.top + pageScroller.scrollTop - detailNav.offsetHeight - 8;
+        const maxScrollTop = Math.max(pageScroller.scrollHeight - pageScroller.clientHeight, 0);
+        const missingScrollSpace = targetTop - maxScrollTop;
+        if (missingScrollSpace > 0) {
+          const currentScrollReserve = Number.parseFloat(detailRoot.style.paddingBottom) || 0;
+          detailRoot.style.paddingBottom = `${currentScrollReserve + missingScrollSpace}px`;
+        }
         pageScroller.scrollTo({ top: Math.max(targetTop, 0), behavior: "auto" });
       } else {
         target.scrollIntoView({ behavior: "auto", block: "start" });
