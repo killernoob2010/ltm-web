@@ -434,8 +434,13 @@ def initialize_schema(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_ol_business_type_status ON order_lifecycle_businesses(business_type, status)",
         "CREATE INDEX IF NOT EXISTS idx_ol_business_risk ON order_lifecycle_businesses(risk_level)",
         "CREATE INDEX IF NOT EXISTS idx_ol_business_source ON order_lifecycle_businesses(source_type, source_record_key)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_contract_business ON order_lifecycle_contracts(business_id)",
         "CREATE INDEX IF NOT EXISTS idx_ol_financing_business ON order_lifecycle_financings(business_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_vessel_business ON order_lifecycle_vessels(business_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_document_business ON order_lifecycle_documents(business_id)",
         "CREATE INDEX IF NOT EXISTS idx_ol_receipt_business ON order_lifecycle_customer_receipts(business_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_repayment_business ON order_lifecycle_bank_repayments(business_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ol_source_record_business ON order_lifecycle_source_records(business_key, source_type)",
         "CREATE INDEX IF NOT EXISTS idx_ol_business_source_membership ON order_lifecycle_business_sources(business_id, source_active)",
         "CREATE INDEX IF NOT EXISTS idx_ol_source_membership_active ON order_lifecycle_business_sources(source_type, source_active)",
         "CREATE INDEX IF NOT EXISTS idx_ol_anomaly_business_status ON order_lifecycle_data_anomalies(business_id, status)",
@@ -583,6 +588,19 @@ def _normalize_business_no(value: Any) -> str:
     if not text:
         return ""
     return re.sub(r"\s+", "", text).replace("－", "-").replace("—", "-").replace("–", "-").upper()
+
+
+def _is_legacy_mill_row_business_no(value: Any) -> bool:
+    """Return True for the old steel-mill-plus-row labels, never for real IDs."""
+    text = _normalize_business_no(value)
+    if not text or re.search(r"-\d{4}-\d+", text):
+        return False
+    number = r"(?:\d+|[零〇一二两三四五六七八九十百千万]+)"
+    return bool(
+        re.fullmatch(rf"[\u4e00-\u9fffA-Z]+杠{number}", text)
+        or re.fullmatch(rf"杠{number}", text)
+        or re.fullmatch(rf"[\u4e00-\u9fffA-Z]+-\d+", text)
+    )
 
 
 def _contract_identity(item: dict[str, Any]) -> str:
@@ -1769,6 +1787,16 @@ def apply_source_batch(batch: dict[str, Any], imported_by: str = "system", compl
             source_key = _record_source_business_key(record)
             resolution = _match_source_record(record, parents, token_index, memberships)
             source_kind = _normalize_text(record.get("source_type")).lower()
+            if source_kind == "wps" and _is_legacy_mill_row_business_no(record.get("business_no")):
+                _save_match_candidate(
+                    cur,
+                    record,
+                    "WPS业务编号仅为钢厂+行号，禁止生成业务主卡；请回读 XYZ-年份-序号格式的真实编号",
+                    [],
+                    parents,
+                )
+                pending_candidates += 1
+                continue
             business_id = resolution.get("business_id") if resolution.get("status") == "matched" else None
             if resolution["status"] == "pending" or (
                 resolution["status"] == "unmatched"
@@ -2099,6 +2127,70 @@ def _serialize_business(row: Any, children: dict[str, list[dict[str, Any]]], ano
     return item
 
 
+def _load_business_children_batch(cur, business_ids: list[int]) -> dict[int, dict[str, list[dict[str, Any]]]]:
+    """Load card facts in one query per collection instead of one query per business."""
+    result = {business_id: {collection: [] for collection in CHILD_TABLES} for business_id in business_ids}
+    if not business_ids:
+        return result
+    placeholders = ", ".join("?" for _ in business_ids)
+    for collection, table in CHILD_TABLES.items():
+        rows = db._exec(
+            cur,
+            f"SELECT * FROM {table} WHERE business_id IN ({placeholders}) ORDER BY business_id, id",
+            business_ids,
+        ).fetchall()
+        for row in rows:
+            business_id = row["business_id"]
+            if business_id in result:
+                result[business_id][collection].append(_row_json(row))
+    return result
+
+
+def _load_open_anomalies_batch(cur, business_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    result = {business_id: [] for business_id in business_ids}
+    if not business_ids:
+        return result
+    placeholders = ", ".join("?" for _ in business_ids)
+    rows = db._exec(
+        cur,
+        f"SELECT * FROM order_lifecycle_data_anomalies WHERE status = 'open' AND business_id IN ({placeholders}) ORDER BY business_id, id",
+        business_ids,
+    ).fetchall()
+    for row in rows:
+        if row["business_id"] in result:
+            result[row["business_id"]].append(_row_json(row))
+    return result
+
+
+def _serialize_business_card(row: Any, children: dict[str, list[dict[str, Any]]], anomaly_rows: list[dict[str, Any]], can_sensitive: bool = False) -> dict[str, Any]:
+    """Serialize only the wide-card facts; full child/source/audit rows stay in detail."""
+    item = _serialize_business(row, children, anomaly_rows, can_sensitive)
+    item["contract_count"] = len(children.get("contracts", []))
+    item["contract_numbers"] = [
+        value
+        for value in dict.fromkeys(
+            _normalize_text(child.get("purchase_contract_no") or child.get("contract_no") or child.get("system_contract_no"))
+            for child in children.get("contracts", [])
+        )
+        if value
+    ]
+    item["financing_banks"] = [
+        value for value in dict.fromkeys(_normalize_text(child.get("bank")) for child in children.get("financings", [])) if value
+    ]
+    item["vessel_count"] = len(children.get("vessels", []))
+    item["document_count"] = len(children.get("documents", []))
+    shipment_dates = [
+        _normalize_date(child.get("latest_shipment_date"))
+        for child in children.get("vessels", [])
+        if child.get("latest_shipment_date")
+    ]
+    item["latest_shipment_date"] = min((value for value in shipment_dates if value), default=None)
+    for collection in CHILD_TABLES:
+        item.pop(collection, None)
+    item["children_loaded"] = False
+    return item
+
+
 def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
     clauses = ["b.is_cancelled = 0", "b.source_active = 1"]
     params: list[Any] = []
@@ -2179,12 +2271,25 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
         all_rows = db._exec(cur, f"SELECT b.* FROM order_lifecycle_businesses b WHERE {where}", params).fetchall()
-        all_cards = []
-        for row in all_rows:
-            anomalies = [_row_json(item) for item in db._exec(cur, "SELECT * FROM order_lifecycle_data_anomalies WHERE business_id = ? AND status = 'open' ORDER BY id", (row["id"],)).fetchall()]
-            all_cards.append(_serialize_business(row, _load_business_children(cur, row["id"]), anomalies, bool(filters.get("can_sensitive"))))
+        business_ids = [row["id"] for row in all_rows]
+        children_by_business = _load_business_children_batch(cur, business_ids)
+        anomalies_by_business = _load_open_anomalies_batch(cur, business_ids)
+        all_cards = [
+            _serialize_business_card(
+                row,
+                children_by_business.get(row["id"], {collection: [] for collection in CHILD_TABLES}),
+                anomalies_by_business.get(row["id"], []),
+                bool(filters.get("can_sensitive")),
+            )
+            for row in all_rows
+        ]
         for item in all_cards:
-            item["weekly_focus_reasons"] = _weekly_focus_reasons(item)
+            item["weekly_focus_reasons"] = _weekly_focus_reasons(
+                {
+                    **item,
+                    **children_by_business.get(item["id"], {}),
+                }
+            )
         risk_order = {"高风险": 0, "中风险": 1, "低风险": 2}
         all_cards.sort(key=lambda item: (
             1 if item.get("status") in {"已完结", "已结算"} else 0,
@@ -2196,13 +2301,30 @@ def list_businesses(filters: dict[str, Any]) -> dict[str, Any]:
             all_cards = [item for item in all_cards if item.get("weekly_focus_reasons")]
         total = len(all_cards)
         cards = all_cards[(page - 1) * page_size: page * page_size]
-        summary = {"存续融资金额": 0, "高风险": 0, "中风险": 0, "低风险": 0, "已完结": 0, "数据异常": 0, "更新异常": 0}
+        summary = {
+            "存续业务": 0,
+            "其中进行中": 0,
+            "已完结业务": 0,
+            "存续融资金额": 0,
+            "高风险": 0,
+            "中风险": 0,
+            "低风险": 0,
+            "已完结": 0,
+            "数据异常": 0,
+            "更新异常": 0,
+        }
         for item in all_cards:
-            summary["存续融资金额"] += float(item.get("outstanding_financing_amount") or 0)
-            if item.get("status") in {"已完结", "已结算"}:
+            completed = item.get("status") in {"已完结", "已结算"}
+            if completed:
+                summary["已完结业务"] += 1
                 summary["已完结"] += 1
-            elif item.get("risk_level") in {"高风险", "中风险", "低风险"}:
-                summary[item["risk_level"]] += 1
+            else:
+                summary["存续业务"] += 1
+                summary["存续融资金额"] += float(item.get("outstanding_financing_amount") or 0)
+                if item.get("status") != "待确认":
+                    summary["其中进行中"] += 1
+                if item.get("risk_level") in {"高风险", "中风险", "低风险"}:
+                    summary[item["risk_level"]] += 1
         sync = _row_json(db._exec(cur, "SELECT * FROM order_lifecycle_sync_state WHERE id = 1").fetchone())
         summary["数据异常"] = sum(1 for item in all_cards if item.get("anomalies"))
         summary["更新异常数"] = int(bool(sync.get("wps_last_error"))) + int(bool(sync.get("email_last_error")))

@@ -315,6 +315,95 @@ def test_unmatched_financing_mail_does_not_create_temporary_parent(lifecycle_db)
         assert conn.execute("SELECT COUNT(*) AS c FROM order_lifecycle_match_candidates WHERE status = 'open'").fetchone()["c"] == 1
 
 
+def test_summary_exposes_business_counts_over_filtered_result_set(lifecycle_db):
+    active = _record("email:summary-active")
+    active["business_no"] = "G-101"
+    active["source_record_key"] = "email:G-101"
+    active["contracts"] = [{"contract_no": "C-SUMMARY-A", "source_key": "c-summary-a"}]
+    financing = _record(
+        "email:summary-financing",
+        business_type="融资",
+        financings=[{
+            "bank": "中信唐山",
+            "amount": 1000,
+            "financing_date": "2026-07-01",
+            "original_due_date": "2026-12-30",
+            "source_key": "finance:summary-financing",
+        }],
+    )
+    financing["business_no"] = "Y-2026-101"
+    financing["source_record_key"] = "email:Y-2026-101"
+    financing["contracts"] = [{"contract_no": "C-SUMMARY-F", "source_key": "c-summary-f"}]
+    completed = _record(
+        "email:summary-completed",
+        business_type="融资",
+        financings=[{
+            "bank": "中信唐山",
+            "amount": 2000,
+            "financing_date": "2026-06-01",
+            "original_due_date": "2026-07-30",
+            "repayment_date": "2026-08-10",
+            "repayment_status": "已还款",
+            "source_key": "finance:summary-completed",
+        }],
+    )
+    completed["business_no"] = "Y-2026-102"
+    completed["source_record_key"] = "email:Y-2026-102"
+    completed["contracts"] = [{"contract_no": "C-SUMMARY-C", "source_key": "c-summary-c"}]
+    apply_source_batch(_batch([active, financing, completed], "summary-v1"))
+
+    result = list_businesses({"page": 1, "page_size": 1})
+
+    assert result["total"] == 3
+    assert len(result["records"]) == 1
+    assert result["summary"]["存续业务"] == 2
+    assert result["summary"]["其中进行中"] == 2
+    assert result["summary"]["已完结业务"] == 1
+    assert result["summary"]["存续融资金额"] == 1000
+
+
+def test_list_uses_bounded_batch_queries_and_returns_only_requested_page(lifecycle_db, monkeypatch):
+    records = []
+    for index in range(25):
+        record = _record(f"email:perf-{index}")
+        record["business_no"] = f"G-{index + 1}"
+        record["source_record_key"] = f"email:G-{index + 1}"
+        record["contracts"] = [{"contract_no": f"C-PERF-{index + 1}", "source_key": f"c-perf-{index + 1}"}]
+        records.append(record)
+    apply_source_batch(_batch(records, "perf-v1"))
+
+    original_exec = db._exec
+    statements = []
+
+    def tracing_exec(cur, sql, params=None):
+        statements.append(sql)
+        return original_exec(cur, sql, params)
+
+    monkeypatch.setattr(db, "_exec", tracing_exec)
+    result = list_businesses({"page": 2, "page_size": 5})
+
+    select_count = sum(1 for statement in statements if statement.lstrip().upper().startswith("SELECT"))
+    assert result["total"] == 25
+    assert len(result["records"]) == 5
+    assert result["page"] == 2
+    assert select_count <= 20
+
+
+def test_wps_steel_mill_row_number_is_held_for_matching_instead_of_creating_parent(lifecycle_db):
+    result = apply_source_batch({
+        **_batch([_wps_record("北满-17", "P-LEGACY-17", "SYS-LEGACY-17")], "legacy-v1"),
+        "source_type": "wps",
+    })
+
+    assert result["created_businesses"] == 0
+    assert result["pending_match_candidates"] == 1
+    assert list_businesses({"page": 1, "page_size": 20})["total"] == 0
+    with db.connect() as conn:
+        candidate = conn.execute("SELECT reason FROM order_lifecycle_match_candidates WHERE status = 'open'").fetchone()
+    assert candidate is not None
+    assert "钢厂" in candidate["reason"] or "真实业务编号" in candidate["reason"]
+
+
 def test_manual_value_survives_source_refresh_and_reopens_only_for_new_source_value(lifecycle_db):
     record = _record()
     apply_source_batch(_batch([record]))

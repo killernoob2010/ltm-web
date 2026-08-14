@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260813&upload-count=20260813" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-v1&upload-count=20260813" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -540,22 +540,22 @@
         </section>
 
         <section id="orderLifecyclePage" class="page hidden">
-          <div id="orderLifecycleListView">
+          <div id="orderLifecycleListView" class="order-lifecycle-list-view">
           <div class="toolbar order-lifecycle-toolbar">
             <span class="toolbar-status">订单全流程管理</span>
             <span id="orderLifecycleSyncStatus" class="toolbar-status">来源更新时间读取中</span>
           </div>
           <p class="order-lifecycle-source-note">WPS：<span id="orderLifecycleWpsSuccessAt">尚无成功获取</span> · 邮件台账：<span id="orderLifecycleEmailSuccessAt">尚无成功获取</span></p>
-          <section class="order-lifecycle-summary" id="orderLifecycleSummary"></section>
-          <section class="panel order-lifecycle-workbench">
-            <div class="panel-head">
+          <section class="order-lifecycle-summary" id="orderLifecycleSummary" aria-label="订单全流程汇总"><div class="order-lifecycle-primary-summary" hidden></div><div class="order-lifecycle-operational-summary" hidden></div></section>
+          <section class="panel order-lifecycle-workbench order-lifecycle-search-panel">
+            <div class="panel-head order-lifecycle-search-row">
               <div>
                 <h2>业务主卡</h2>
                 <span id="orderLifecycleCount"></span>
               </div>
               <label class="order-finance-search"><select id="orderLifecycleSearchField" aria-label="搜索字段"><option value="business_no">业务编号</option><option value="contract_no">合同号</option><option value="trade_entity">贸易主体</option><option value="supplier_steel_mill">供应钢厂</option><option value="terminal_customer">终端客户</option><option value="product_name">货物品名</option><option value="bank">融资银行</option><option value="date">日期</option><option value="amount">金额</option></select><input id="orderLifecycleKeyword" type="search" placeholder="输入内容" /></label>
             </div>
-            <div class="order-lifecycle-filters" id="orderLifecycleFilters">
+            <div class="order-lifecycle-filters order-lifecycle-filter-grid" id="orderLifecycleFilters">
               <fieldset class="order-lifecycle-check-group" id="orderLifecycleTypeFilter" data-filter-group="business_types"><legend><span>业务类型</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="融资" checked>融资类业务</label><label><input type="checkbox" value="过单" checked>过单类业务</label></fieldset>
               <fieldset class="order-lifecycle-check-group" id="orderLifecycleRiskFilter" data-filter-group="risk_levels"><legend><span>风险等级</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="高风险" checked>高风险</label><label><input type="checkbox" value="中风险" checked>中风险</label><label><input type="checkbox" value="低风险" checked>低风险</label></fieldset>
               <fieldset class="order-lifecycle-check-group wide" id="orderLifecycleAnomalyFilter" data-filter-group="anomaly_types"><legend><span>异常类型</span><span><button type="button" class="filter-mini-button" data-filter-action="all">全选</button><button type="button" class="filter-mini-button" data-filter-action="none">全不选</button></span></legend><label><input type="checkbox" value="数据缺失" checked>字段缺失</label><label><input type="checkbox" value="来源冲突" checked>来源冲突</label><label><input type="checkbox" value="节点矛盾" checked>节点矛盾</label><label><input type="checkbox" value="日期异常" checked>未来日期</label><label><input type="checkbox" value="无异常" checked>无异常</label></fieldset>
@@ -564,7 +564,7 @@
               <button id="orderLifecycleResetBtn" class="secondary" type="button">清空筛选</button>
             </div>
             <div class="order-lifecycle-view-tabs"><button id="orderLifecycleOverviewTab" type="button" class="active">总览</button><button id="orderLifecycleFocusTab" type="button">本周关注重点</button></div>
-            <div id="orderLifecycleCards" class="order-lifecycle-cards"></div>
+            <div id="orderLifecycleCards" class="order-lifecycle-cards order-lifecycle-card-list" aria-live="polite"></div>
             <div class="order-lifecycle-pagination">
               <button id="orderLifecyclePrevBtn" class="secondary" type="button">上一页</button>
               <span id="orderLifecyclePageInfo" class="toolbar-status"></span>
@@ -1479,7 +1479,7 @@
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260813&upload-count=20260813&cache=20260814-frontend-asset-coherence-v1"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260814-order-lifecycle-fidelity-v1&upload-count=20260813&cache=20260814-order-lifecycle-fidelity-v1"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>
