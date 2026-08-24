@@ -241,10 +241,15 @@ def test_wps_client_redacts_credentials_tokens_and_download_url(tmp_path):
 @pytest.mark.parametrize(("clock", "expected"), [
     ("2026-07-18T08:59:00+08:00", []),
     ("2026-07-18T09:00:00+08:00", ["2026-07-18T09:00+08:00"]),
-    ("2026-07-18T16:59:00+08:00", ["2026-07-18T09:00+08:00"]),
+    ("2026-07-18T09:59:00+08:00", ["2026-07-18T09:00+08:00"]),
+    ("2026-07-18T10:00:00+08:00", ["2026-07-18T10:00+08:00"]),
+    ("2026-07-18T12:37:00+08:00", ["2026-07-18T12:00+08:00"]),
     ("2026-07-18T17:00:00+08:00", ["2026-07-18T17:00+08:00"]),
+    ("2026-07-18T17:59:00+08:00", ["2026-07-18T17:00+08:00"]),
+    ("2026-07-18T18:00:00+08:00", ["2026-07-18T18:00+08:00"]),
+    ("2026-07-18T23:59:00+08:00", ["2026-07-18T18:00+08:00"]),
 ])
-def test_due_slots_include_weekends_and_two_shanghai_times(clock, expected):
+def test_due_slots_run_hourly_from_nine_through_eighteen_on_weekends(clock, expected):
     assert due_order_finance_sync_slots(datetime.fromisoformat(clock), None) == expected
 
 
