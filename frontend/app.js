@@ -143,6 +143,9 @@ function applyUiPermissions() {
   setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
   setHidden("#plattsIndexUploadBtn", guest || !canModuleSensitive("platts_index_monitor"));
   setHidden("#plattsIndexConfirmBtn", guest || !canModuleSensitive("platts_index_monitor"));
+  setHidden("#spotLedgerExportBtn", guest || !canModuleSensitive("spot_ledger"));
+  setHidden("#spotLedgerStrategyBtn", guest || !canModuleSensitive("spot_ledger"));
+  setHidden("#spotLedgerEditBtn", guest || !canModuleSensitive("spot_ledger"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -176,6 +179,7 @@ const orderFinanceResetFiltersBtn = document.querySelector("#orderFinanceResetFi
 const orderFinanceStageFilters = document.querySelector("#orderFinanceStageFilters");
 const orderFinanceCapitalPage = document.querySelector("#orderFinanceCapitalPage");
 const tradingManagementPage = document.querySelector("#tradingManagementPage");
+const spotLedgerPage = document.querySelector("#spotLedgerPage");
 const orderFinanceCapitalRefreshBtn = document.querySelector("#orderFinanceCapitalRefreshBtn");
 const orderLifecycleSyncStatus = document.querySelector("#orderLifecycleSyncStatus");
 const orderLifecycleSummary = document.querySelector("#orderLifecycleSummary");
@@ -561,7 +565,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderVesselOverviewPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderVesselOverviewPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -659,6 +663,14 @@ async function activateModule(code, subName, subView = "") {
   if (code === "order_finance_capital") {
     showOnly(orderFinanceCapitalPage);
     await loadOrderFinanceCapital();
+    return;
+  }
+  if (code === "spot_ledger") {
+    showOnly(spotLedgerPage);
+    await window.SpotLedger.activate({
+      api,
+      canSensitive: canModuleSensitive("spot_ledger"),
+    });
     return;
   }
   if (code === "data_visualization_integration") {

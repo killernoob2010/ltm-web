@@ -4109,3 +4109,227 @@ button.order-vessel-detail-btn {
     grid-row: auto;
   }
 }
+
+.spot-ledger-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.spot-ledger-toolbar {
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.spot-ledger-toolbar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spot-ledger-filter-panel,
+.spot-ledger-list-panel,
+.spot-ledger-detail {
+  overflow: hidden;
+}
+
+.spot-ledger-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.spot-ledger-filter-grid label,
+.spot-ledger-strategy-grid label,
+.spot-ledger-edit-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted-text, #667085);
+  font-size: 12px;
+}
+
+.spot-ledger-filter-grid input,
+.spot-ledger-filter-grid select,
+.spot-ledger-strategy-grid input,
+.spot-ledger-strategy-grid textarea,
+.spot-ledger-edit-grid input,
+.spot-ledger-edit-grid select {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #d9e0ea;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2937;
+}
+
+.spot-ledger-filter-actions {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.spot-ledger-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 16px 0;
+}
+
+.spot-ledger-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #667085;
+  padding: 8px 10px;
+}
+
+.spot-ledger-tab.active {
+  border-bottom-color: #2563eb;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.spot-ledger-table-wrap {
+  max-height: 520px;
+}
+
+.spot-ledger-record-row {
+  cursor: pointer;
+}
+
+.spot-ledger-record-row:hover {
+  background: #f5f8ff;
+}
+
+.spot-ledger-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.spot-ledger-badge.success { background: #ecfdf3; color: #027a48; }
+.spot-ledger-badge.warning { background: #fffaeb; color: #b54708; }
+.spot-ledger-badge.danger { background: #fef3f2; color: #b42318; }
+
+.spot-ledger-detail-meta,
+.spot-ledger-field-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.spot-ledger-detail-meta > div,
+.spot-ledger-field-card {
+  min-width: 0;
+  border: 1px solid #e5eaf1;
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 10px;
+}
+
+.spot-ledger-detail-meta span,
+.spot-ledger-field-card small {
+  display: block;
+  color: #667085;
+  font-size: 11px;
+}
+
+.spot-ledger-detail-meta strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spot-ledger-field-card-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.spot-ledger-field-card-head > span {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.spot-ledger-field-card-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spot-ledger-field-value {
+  min-height: 24px;
+  margin: 7px 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+}
+
+.spot-ledger-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.spot-ledger-edit-form {
+  margin-top: 16px;
+  border-top: 1px solid #e5eaf1;
+  padding-top: 16px;
+}
+
+.spot-ledger-edit-grid,
+.spot-ledger-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.spot-ledger-edit-grid .wide-field,
+.spot-ledger-strategy-grid .wide-field {
+  grid-column: 1 / -1;
+}
+
+.spot-ledger-page dialog {
+  width: min(720px, calc(100vw - 32px));
+  border: 0;
+  border-radius: 12px;
+  padding: 0;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, .22);
+}
+
+.spot-ledger-page dialog::backdrop {
+  background: rgba(15, 23, 42, .35);
+}
+
+.spot-ledger-page dialog .dialog-form {
+  padding: 22px;
+}
+
+@media (max-width: 900px) {
+  .spot-ledger-filter-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+  .spot-ledger-detail-meta,
+  .spot-ledger-field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .spot-ledger-filter-grid,
+  .spot-ledger-edit-grid,
+  .spot-ledger-strategy-grid,
+  .spot-ledger-detail-meta,
+  .spot-ledger-field-grid { grid-template-columns: 1fr; }
+  .spot-ledger-toolbar { align-items: flex-start; flex-direction: column; }
+  .spot-ledger-table-wrap { overflow-x: auto; }
+  .spot-ledger-table-wrap table { min-width: 980px; }
+}

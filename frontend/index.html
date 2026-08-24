@@ -438,6 +438,94 @@
           </div>
         </section>
 
+        <section id="spotLedgerPage" class="page hidden spot-ledger-page">
+          <div class="toolbar spot-ledger-toolbar">
+            <div class="spot-ledger-toolbar-copy">
+              <strong>贸易台账管理 / 现货业务台账管理</strong>
+              <span id="spotLedgerSyncStatus" class="toolbar-status">同步状态：待加载</span>
+            </div>
+            <div class="row-actions">
+              <button id="spotLedgerExportBtn" type="button">导出 Excel</button>
+              <button id="spotLedgerStrategyBtn" type="button" class="secondary">新增战略套保</button>
+            </div>
+          </div>
+
+          <section id="spotLedgerFilters" class="panel spot-ledger-filter-panel">
+            <div class="panel-head">
+              <h2>筛选条件</h2>
+              <span>默认仅显示当前有效的现货生效明细</span>
+            </div>
+            <form id="spotLedgerFilterForm" class="spot-ledger-filter-grid">
+              <label>销售日期起<input name="from_date" type="date"></label>
+              <label>销售日期止<input name="to_date" type="date"></label>
+              <label>销售组别<select name="sales_group"><option value="">全部</option><option>大客户组</option><option>东北组</option><option>山东组</option><option>黄骅组</option><option>天津组</option><option>唐山组</option><option>南方组</option></select></label>
+              <label>利润组别<select name="profit_group"><option value="">全部</option><option>大客户组</option><option>东北组</option><option>山东组</option><option>黄骅组</option><option>天津组</option><option>唐山组</option><option>南方组</option></select></label>
+              <label>销售类型<select name="sales_type"><option value="">全部</option><option>现货-市场加价</option><option>现货-背对背</option><option>船货-落地</option></select></label>
+              <label>商品<input name="product_name" placeholder="商品名称"></label>
+              <label>港口<input name="port" placeholder="港口"></label>
+              <label>操作抬头<input name="operation_title" placeholder="操作抬头"></label>
+              <label>供应商<input name="supplier" placeholder="供应商"></label>
+              <label>客户<input name="customer" placeholder="合同签约客户"></label>
+              <label>销售合同号<input name="contract_number" placeholder="合同号"></label>
+              <label>采购执行<input name="purchase_execution" placeholder="采购执行"></label>
+              <label>销售执行<input name="sales_execution" placeholder="销售执行"></label>
+              <label>采购数量<input name="purchase_quantity" type="number" step="0.01"></label>
+              <label>销售数量<input name="sales_quantity" type="number" step="0.01"></label>
+              <label>结案状态<select name="closed_state"><option value="">全部</option><option value="已结案">已结案</option><option value="未结案">未结案</option></select></label>
+              <label>补录状态<select name="supplement_status"><option value="">全部</option><option>已完成</option><option>待补录</option></select></label>
+              <label>同步异常<select name="sync_error"><option value="">全部</option><option value="true">仅异常</option></select></label>
+              <div class="spot-ledger-filter-actions"><button type="submit">查询</button><button id="spotLedgerResetBtn" type="button" class="secondary">重置</button></div>
+            </form>
+          </section>
+
+          <section class="panel spot-ledger-list-panel">
+            <div class="spot-ledger-tabs" role="tablist" aria-label="台账视图">
+              <button id="spotLedgerRecordsTab" class="spot-ledger-tab active" type="button" data-view="records">台账列表</button>
+              <button id="spotLedgerPendingTab" class="spot-ledger-tab" type="button" data-view="pending">待补录 <span id="spotLedgerPendingCount">0</span></button>
+              <button id="spotLedgerErrorsTab" class="spot-ledger-tab" type="button" data-view="errors">同步异常 <span id="spotLedgerErrorCount">0</span></button>
+              <span id="spotLedgerListStatus" class="toolbar-status"></span>
+            </div>
+            <div class="table-wrap spot-ledger-table-wrap">
+              <table id="spotLedgerTable">
+                <thead><tr><th>销售合同号</th><th>销售组别</th><th>利润组别</th><th>销售类型</th><th>销售日期</th><th>商品</th><th>港口</th><th>客户</th><th>采购量</th><th>销售量</th><th>补录状态</th><th>同步状态</th></tr></thead>
+                <tbody id="spotLedgerTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="spotLedgerDetail" class="panel spot-ledger-detail hidden">
+            <div class="panel-head"><h2>记录详情</h2><button id="spotLedgerCloseDetailBtn" type="button" class="secondary">关闭详情</button></div>
+            <div id="spotLedgerDetailMeta" class="spot-ledger-detail-meta"></div>
+            <div id="spotLedgerFieldDefinitions" class="spot-ledger-field-grid"></div>
+            <form id="spotLedgerEditForm" class="spot-ledger-edit-form hidden"></form>
+            <div class="spot-ledger-detail-actions"><button id="spotLedgerEditBtn" type="button" class="secondary hidden">编辑人工字段</button><span id="spotLedgerEditStatus" class="toolbar-status"></span></div>
+          </section>
+
+          <dialog id="spotLedgerStrategyDialog">
+            <form id="spotLedgerStrategyForm" class="dialog-form">
+              <h2>新增战略套保（全开全平）</h2>
+              <div class="spot-ledger-strategy-grid">
+                <label>组别<input name="group_name" required></label>
+                <label>账户<input name="account" required></label>
+                <label>合约/品种<input name="contract" required></label>
+                <label>开仓方向<input name="open_direction" required></label>
+                <label>开仓日期时间<input name="opened_at" type="datetime-local" required></label>
+                <label>开仓数量<input name="open_quantity" type="number" step="0.01" min="0.0001" required></label>
+                <label>数量单位<input name="quantity_unit" value="吨" required></label>
+                <label>开仓价格<input name="open_price" type="number" step="0.01" required></label>
+                <label>价格币种/单位<input name="price_currency" value="元/吨" required></label>
+                <label>平仓日期时间<input name="closed_at" type="datetime-local"></label>
+                <label>平仓数量<input name="close_quantity" type="number" step="0.01" min="0.0001"></label>
+                <label>平仓价格<input name="close_price" type="number" step="0.01"></label>
+                <label class="wide-field">备注<textarea name="remark" rows="2"></textarea></label>
+              </div>
+              <p class="form-hint">当前仅支持一次性全开、一次性全平；不适用现货必填规则，不自动计算盈亏。</p>
+              <div class="dialog-actions"><button id="spotLedgerCancelStrategyBtn" type="button" class="secondary">取消</button><button type="submit">保存战略套保</button></div>
+              <p id="spotLedgerStrategyStatus" class="error-text"></p>
+            </form>
+          </dialog>
+        </section>
+
         <section id="placeholderPage" class="page hidden">
           <section class="panel empty-state">
             <h2 id="placeholderTitle"></h2>
@@ -1488,6 +1576,7 @@
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
+    <script src="/static/spot_ledger.js?v=spot-ledger-local-fixture-20260824"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
