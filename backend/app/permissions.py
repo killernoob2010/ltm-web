@@ -15,6 +15,8 @@ RESOURCE_MODULES = {
     "order_finance.records": "order_finance_progress",
     "order_finance.capital": "order_finance_capital",
     "order_lifecycle.records": "order_lifecycle_progress",
+    "spot_ledger.records": "spot_ledger",
+    "spot_ledger.export": "spot_ledger",
     "trading.overview": "trading_overview",
     "trading.facts": "trading_positions",
     "trading.junneng": "trading_sh_junneng",
@@ -62,6 +64,7 @@ ACTIVE_BUSINESS_MODULES = {
     "order_finance_progress",
     "order_finance_capital",
     "order_lifecycle_progress",
+    "spot_ledger",
     "trading_overview",
     "trading_positions",
     "trading_sh_junneng",
@@ -78,6 +81,7 @@ DEPARTMENT_MODULES = {
     "贸易处": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "spot_ledger",
     },
     "期货组": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",

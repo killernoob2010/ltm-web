@@ -64,6 +64,7 @@ MODULES = [
     ("订单融资管理", "order_finance_progress", "订单融资进度"),
     ("订单融资管理", "order_finance_capital", "融资资金监控"),
     ("订单融资管理", "order_lifecycle_progress", "订单全流程管理"),
+    ("贸易台账管理", "spot_ledger", "现货业务台账管理"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
 ]
@@ -1125,6 +1126,8 @@ def init_db() -> None:
         migrate_order_vessel_snapshot_schema(conn)
         from .order_lifecycle import initialize_schema, sync_order_lifecycle_permissions
         initialize_schema(conn)
+        from .spot_ledger import initialize_schema as initialize_spot_ledger_schema, sync_spot_ledger_permissions
+        initialize_spot_ledger_schema(conn)
         migrate_dv_integration_schema(conn)
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
@@ -1135,6 +1138,7 @@ def init_db() -> None:
         sync_trading_module_permissions(cur)
         sync_platts_index_permissions(cur)
         sync_order_lifecycle_permissions(cur)
+        sync_spot_ledger_permissions(cur)
         conn.commit()
 
 
