@@ -669,6 +669,7 @@ async function activateModule(code, subName, subView = "") {
     showOnly(spotLedgerPage);
     await window.SpotLedger.activate({
       api,
+      token: state.token,
       canSensitive: canModuleSensitive("spot_ledger"),
     });
     return;

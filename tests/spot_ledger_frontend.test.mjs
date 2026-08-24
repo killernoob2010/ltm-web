@@ -13,6 +13,7 @@ test("spot ledger page is wired into the existing shell and route", () => {
   assert.match(appJs, /spotLedgerPage/);
   assert.match(appJs, /code === "spot_ledger"/);
   assert.match(appJs, /window\.SpotLedger\.activate/);
+  assert.match(appJs, /window\.SpotLedger\.activate\(\{\s*api,\s*token: state\.token/);
 });
 
 test("spot ledger renders all field definitions, pending/errors tabs, filters and export", () => {
@@ -22,11 +23,15 @@ test("spot ledger renders all field definitions, pending/errors tabs, filters an
   assert.match(spotJs, /同步异常/);
   assert.match(spotJs, /spot-ledger-export/);
   assert.match(spotJs, /strategic-hedging/);
+  assert.match(spotJs, /sync_error_summary/);
   assert.match(indexHtml, /id="spotLedgerFilters"/);
   assert.match(indexHtml, /id="spotLedgerPendingTab"/);
   assert.match(indexHtml, /id="spotLedgerErrorsTab"/);
   assert.match(indexHtml, /id="spotLedgerExportBtn"/);
   assert.match(indexHtml, /id="spotLedgerStrategyBtn"/);
+  assert.match(indexHtml, /id="spotLedgerSaveStrategyBtn" type="button"/);
+  assert.match(spotJs, /spotLedgerSaveStrategyBtn/);
+  assert.match(spotJs, /moduleState\.token/);
   assert.doesNotMatch(indexHtml + spotJs, /立即同步|sync-now|手动同步/);
   assert.match(stylesCss, /\.spot-ledger-page/);
 });

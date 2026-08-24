@@ -510,17 +510,17 @@
                 <label>合约/品种<input name="contract" required></label>
                 <label>开仓方向<input name="open_direction" required></label>
                 <label>开仓日期时间<input name="opened_at" type="datetime-local" required></label>
-                <label>开仓数量<input name="open_quantity" type="number" step="0.01" min="0.0001" required></label>
+                <label>开仓数量<input name="open_quantity" type="number" step="0.0001" min="0.0001" required></label>
                 <label>数量单位<input name="quantity_unit" value="吨" required></label>
                 <label>开仓价格<input name="open_price" type="number" step="0.01" required></label>
                 <label>价格币种/单位<input name="price_currency" value="元/吨" required></label>
                 <label>平仓日期时间<input name="closed_at" type="datetime-local"></label>
-                <label>平仓数量<input name="close_quantity" type="number" step="0.01" min="0.0001"></label>
+                <label>平仓数量<input name="close_quantity" type="number" step="0.0001" min="0.0001"></label>
                 <label>平仓价格<input name="close_price" type="number" step="0.01"></label>
                 <label class="wide-field">备注<textarea name="remark" rows="2"></textarea></label>
               </div>
               <p class="form-hint">当前仅支持一次性全开、一次性全平；不适用现货必填规则，不自动计算盈亏。</p>
-              <div class="dialog-actions"><button id="spotLedgerCancelStrategyBtn" type="button" class="secondary">取消</button><button type="submit">保存战略套保</button></div>
+              <div class="dialog-actions"><button id="spotLedgerCancelStrategyBtn" type="button" class="secondary">取消</button><button id="spotLedgerSaveStrategyBtn" type="button">保存战略套保</button></div>
               <p id="spotLedgerStrategyStatus" class="error-text"></p>
             </form>
           </dialog>

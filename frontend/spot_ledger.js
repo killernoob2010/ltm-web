@@ -3,6 +3,7 @@
 
   const moduleState = {
     api: null,
+    token: "",
     canSensitive: false,
     fields: [],
     records: [],
@@ -150,11 +151,20 @@
     return moduleState.fields.find((field) => field.code === code) || { code, name: FIELD_LABELS[code] || code, control: "手工", source_rule: "人工录入" };
   }
 
+  function syncErrorText(value) {
+    const errors = Array.isArray(value) ? value : value ? [value] : [];
+    return errors.map((error) => {
+      if (typeof error !== "object" || error === null) return String(error);
+      return [error.field, error.message].filter(Boolean).join("：") || JSON.stringify(error);
+    }).join("；");
+  }
+
   function renderDetail(record) {
     moduleState.selectedRecord = record;
     const detail = $("#spotLedgerDetail");
     detail.classList.remove("hidden");
-    $("#spotLedgerDetailMeta").innerHTML = `<div><span>明细 ID</span><strong>${escapeHtml(displayValue(record.source_detail_id))}</strong></div><div><span>来源类型</span><strong>${escapeHtml(displayValue(record.record_source_type))}</strong></div><div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div><div><span>最近同步</span><strong>${escapeHtml(seconds(record.last_synced_at) || "空白")}</strong></div>`;
+    const errorText = syncErrorText(record.sync_error_summary);
+    $("#spotLedgerDetailMeta").innerHTML = `<div><span>明细 ID</span><strong>${escapeHtml(displayValue(record.source_detail_id))}</strong></div><div><span>来源类型</span><strong>${escapeHtml(displayValue(record.record_source_type))}</strong></div><div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div><div><span>最近同步</span><strong>${escapeHtml(seconds(record.last_synced_at) || "空白")}</strong></div>${errorText ? `<div class="spot-ledger-error-summary"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
     $("#spotLedgerFieldDefinitions").innerHTML = moduleState.fields.map((field) => `<article class="spot-ledger-field-card"><div class="spot-ledger-field-card-head"><span>${escapeHtml(field.code)}</span><strong>${escapeHtml(field.name)}</strong></div><div class="spot-ledger-field-value">${escapeHtml(displayValue(record[field.code]))}</div><small>${escapeHtml(field.control)} · ${escapeHtml(field.source_rule)}</small></article>`).join("");
     const editButton = $("#spotLedgerEditBtn");
     editButton.classList.toggle("hidden", !moduleState.canSensitive);
@@ -217,8 +227,7 @@
 
   async function downloadExport() {
     const params = new URLSearchParams({ ...moduleState.filters, include_technical_key: "false" });
-    const token = localStorage.getItem("token") || "";
-    const response = await fetch(`/api/spot-ledger/export?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } });
+    const response = await fetch(`/api/spot-ledger/export?${params.toString()}`, { headers: { Authorization: `Bearer ${moduleState.token}` } });
     if (!response.ok) throw new Error("导出失败");
     const blob = await response.blob();
     const link = document.createElement("a");
@@ -234,6 +243,28 @@
     const dialog = $("#spotLedgerStrategyDialog");
     if (dialog?.showModal) dialog.showModal();
     else dialog?.classList.remove("hidden");
+  }
+
+  async function saveStrategy(event) {
+    event?.preventDefault();
+    const form = $("#spotLedgerStrategyForm");
+    const data = Object.fromEntries(new FormData(form).entries());
+    const payload = {
+      ...data,
+      open_quantity: Number(data.open_quantity),
+      open_price: Number(data.open_price),
+      close_quantity: data.close_quantity ? Number(data.close_quantity) : null,
+      close_price: data.close_price ? Number(data.close_price) : null,
+      closed_at: data.closed_at || null,
+    };
+    try {
+      const result = await moduleState.api("/api/spot-ledger/strategic-hedging", { method: "POST", body: JSON.stringify(payload) });
+      $("#spotLedgerStrategyStatus").textContent = `已保存：${result.record.strategic_status}｜${seconds(result.record.strategic_opened_at)}｜${displayValue(result.record.strategic_contract)}`;
+      setStatus("战略套保记录已保存");
+      form.reset();
+    } catch (error) {
+      $("#spotLedgerStrategyStatus").textContent = error.message || "保存失败";
+    }
   }
 
   function bind() {
@@ -262,32 +293,14 @@
     $("#spotLedgerExportBtn")?.addEventListener("click", () => downloadExport().catch((error) => setStatus(error.message, true)));
     $("#spotLedgerStrategyBtn")?.addEventListener("click", openStrategyDialog);
     $("#spotLedgerCancelStrategyBtn")?.addEventListener("click", () => $("#spotLedgerStrategyDialog")?.close());
-    $("#spotLedgerStrategyForm")?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const data = Object.fromEntries(new FormData(form).entries());
-      const payload = {
-        ...data,
-        open_quantity: Number(data.open_quantity),
-        open_price: Number(data.open_price),
-        close_quantity: data.close_quantity ? Number(data.close_quantity) : null,
-        close_price: data.close_price ? Number(data.close_price) : null,
-        closed_at: data.closed_at || null,
-      };
-      try {
-        const result = await moduleState.api("/api/spot-ledger/strategic-hedging", { method: "POST", body: JSON.stringify(payload) });
-        $("#spotLedgerStrategyStatus").textContent = `已保存：${result.record.strategic_status}｜${seconds(result.record.strategic_opened_at)}｜${displayValue(result.record.strategic_contract)}`;
-        setStatus("战略套保记录已保存");
-        form.reset();
-      } catch (error) {
-        $("#spotLedgerStrategyStatus").textContent = error.message || "保存失败";
-      }
-    });
+    $("#spotLedgerStrategyForm")?.addEventListener("submit", saveStrategy);
+    $("#spotLedgerSaveStrategyBtn")?.addEventListener("click", saveStrategy);
   }
 
   async function activate(config) {
     if (!config?.api) return;
     moduleState.api = config.api;
+    moduleState.token = config.token || "";
     moduleState.canSensitive = Boolean(config.canSensitive);
     bind();
     $("#spotLedgerExportBtn")?.classList.toggle("hidden", !moduleState.canSensitive);
