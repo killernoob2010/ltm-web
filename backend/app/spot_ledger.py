@@ -500,6 +500,15 @@ def _get_user(user: Optional[dict[str, Any]]) -> dict[str, Any]:
     return user or _default_user_for_tests()
 
 
+def _request_user(request: Request) -> dict[str, Any]:
+    authorization = request.headers.get("authorization", "")
+    token = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
+    user = db.get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return dict(user)
+
+
 def _record_query_conditions(params: dict[str, Any], include_inactive: bool = False) -> tuple[list[str], list[Any]]:
     conditions = ["record_source_type = '现货同步'"]
     values: list[Any] = []
@@ -543,8 +552,10 @@ def list_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict
     params = params or {}
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
     conditions, values = _record_query_conditions(params, include_inactive=include_inactive)
-    limit = max(1, min(int(params.get("limit") or 500), 5000))
-    offset = max(0, int(params.get("offset") or 0))
+    limit_value = params.get("limit")
+    offset_value = params.get("offset")
+    limit = max(1, min(int(limit_value) if isinstance(limit_value, (int, str)) and str(limit_value).isdigit() else 500, 5000))
+    offset = max(0, int(offset_value) if isinstance(offset_value, (int, str)) and str(offset_value).isdigit() else 0)
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(
@@ -556,7 +567,7 @@ def list_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict
 
 
 @router.get("/spot-ledger/field-definitions")
-def field_definitions(user=Depends(lambda: _default_user_for_tests())):
+def field_definitions(user=Depends(_request_user)):
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
     return {"fields": FIELD_DEFINITIONS, "technical_fields": list(TECHNICAL_FIELDS)}
 
@@ -567,14 +578,14 @@ def get_records(
     product_name: str = "", port: str = "", operation_title: str = "", supplier: str = "", customer: str = "",
     contract_number: str = "", purchase_execution: str = "", sales_execution: str = "", purchase_quantity: str = "",
     sales_quantity: str = "", closed_state: str = "", supplement_status: str = "", sync_error: str = "",
-    limit: int = Query(500, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(lambda: _default_user_for_tests()),
+    limit: int = Query(500, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user),
 ):
     params = locals().copy()
     return {"records": list_records(params, user=user), "field_definitions": FIELD_DEFINITIONS}
 
 
 @router.get("/spot-ledger/records/{record_id}")
-def get_record(record_id: str, user=Depends(lambda: _default_user_for_tests())):
+def get_record(record_id: str, user=Depends(_request_user)):
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
     with db.connect() as conn:
         row = db._exec(conn.cursor(), "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
@@ -588,10 +599,153 @@ class SpotLedgerPatch(BaseModel):
 
 
 @router.patch("/spot-ledger/records/{record_id}")
-def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(lambda: _default_user_for_tests())):
-    require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "edit")
-    require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "manage")
-    raise HTTPException(status_code=501, detail="人工编辑将在同步模块落地")
+def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request_user)):
+    active_user = _get_user(user)
+    require_permission(active_user, SPOT_LEDGER_RESOURCE, "edit")
+    require_permission(active_user, SPOT_LEDGER_RESOURCE, "manage")
+    values = payload.values or {}
+    allowed = MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        raise HTTPException(status_code=400, detail={"message": "包含不可编辑的系统字段", "fields": unknown})
+    if not values:
+        raise HTTPException(status_code=400, detail="没有可保存的人工字段")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(cur, "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="台账记录不存在")
+        current = _row_dict(row)
+        projected = dict(current)
+        for field, value in values.items():
+            if field in NUMERIC_FIELDS:
+                converted = _number(value)
+                if value not in (None, "") and converted is None:
+                    raise HTTPException(status_code=400, detail={"message": f"字段 {field} 必须为数字", "field": field})
+                projected[field] = converted
+            elif field == "AO":
+                projected[field] = _normalize_date(value)
+            else:
+                projected[field] = value if value is not None else ""
+        value_errors = validate_record_values(projected)
+        if value_errors:
+            raise HTTPException(status_code=400, detail={"message": "人工字段格式不合法", "errors": value_errors})
+        projected = calculate_derived_fields(projected)
+        missing = missing_required_fields(projected)
+        assignments = []
+        params: list[Any] = []
+        for field in values:
+            column = f'"{field}"' if field in FIELD_CODES else field
+            assignments.append(f"{column} = ?")
+            params.append(projected[field])
+        assignments.extend(["missing_fields = ?", "supplement_status = ?", "updated_at = ?"])
+        params.extend([json.dumps(missing, ensure_ascii=False), "待补录" if missing else "已完成", datetime.now().isoformat(timespec="seconds")])
+        params.append(record_id)
+        db._exec(cur, f"UPDATE spot_ledger_records SET {', '.join(assignments)} WHERE record_id = ?", tuple(params))
+        saved = db._exec(cur, "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
+    return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
+
+
+def get_pending(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    records = list_records({"supplement_status": "待补录"}, user=user)
+    return {"records": records, "count": len(records)}
+
+
+def get_sync_errors(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    records = list_records({"sync_error": "true"}, user=user)
+    try:
+        from .spot_ledger_sync import get_sync_runs
+
+        runs = get_sync_runs()
+    except Exception:
+        runs = []
+    return {"records": records, "runs": runs, "count": len(records)}
+
+
+@router.get("/spot-ledger/pending")
+def pending_view(user=Depends(_request_user)):
+    return get_pending(user=user)
+
+
+@router.get("/spot-ledger/sync-errors")
+def sync_errors_view(user=Depends(_request_user)):
+    return get_sync_errors(user=user)
+
+
+@router.get("/spot-ledger/sync-status")
+def sync_status_view(user=Depends(_request_user)):
+    require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
+    try:
+        from .spot_ledger_sync import get_sync_runs
+
+        runs = get_sync_runs()
+    except Exception:
+        runs = []
+    return {
+        "enabled": (os.getenv("SPOT_LEDGER_AUTO_SYNC_ENABLED") or "").strip().lower() == "true",
+        "source_mode": (os.getenv("SPOT_LEDGER_SOURCE_MODE") or "profiled_http").strip(),
+        "slots": [f"{hour:02d}:00" for hour in range(9, 19)],
+        "runs": runs,
+    }
+
+
+class StrategicHedgingIn(BaseModel):
+    group_name: str = Field(min_length=1)
+    account: str = Field(min_length=1)
+    contract: str = Field(min_length=1)
+    open_direction: str = Field(min_length=1)
+    opened_at: str = Field(min_length=1)
+    open_quantity: float = Field(gt=0)
+    quantity_unit: str = Field(min_length=1)
+    open_price: float
+    price_currency: str = Field(min_length=1)
+    closed_at: Optional[str] = None
+    close_quantity: Optional[float] = Field(default=None, gt=0)
+    close_price: Optional[float] = None
+    spot_record_id: Optional[str] = None
+    remark: str = ""
+
+
+def _execute_insert(cur, sql: str, params: tuple[Any, ...]):
+    if db._is_pg():
+        sql = sql.replace("?", "%s")
+    cur.execute(sql, params)
+
+
+@router.post("/spot-ledger/strategic-hedging")
+def create_strategic_hedging(payload: StrategicHedgingIn, user=Depends(_request_user)):
+    active_user = _get_user(user)
+    require_permission(active_user, SPOT_LEDGER_RESOURCE, "edit")
+    require_permission(active_user, SPOT_LEDGER_RESOURCE, "manage")
+    has_close = any(value not in (None, "") for value in (payload.closed_at, payload.close_quantity, payload.close_price))
+    if has_close and not all(value not in (None, "") for value in (payload.closed_at, payload.close_quantity, payload.close_price)):
+        raise HTTPException(status_code=400, detail="平仓日期、平仓数量、平仓价格必须同时填写")
+    if has_close and payload.close_quantity != payload.open_quantity:
+        raise HTTPException(status_code=400, detail="当前仅支持全开全平，不支持部分平仓")
+    status = "已平仓" if has_close else "未平仓"
+    record_id = f"strategy:{uuid4().hex}"
+    fields = {code: "" for code in FIELD_CODES}
+    fields.update({"A": "战略套保", "E": payload.group_name, "AP": payload.group_name})
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    columns = [
+        "record_id", "source_detail_id", "record_source_type", *FIELD_CODES, "long_contract_object", "eligible", "is_active",
+        "supplement_status", "missing_fields", "sync_status", "last_synced_at", "sync_error_summary", "source_payload_json",
+        "source_mode", "strategic_hedging_id", "strategic_group", "strategic_account", "strategic_contract", "strategic_open_direction",
+        "strategic_opened_at", "strategic_open_quantity", "strategic_quantity_unit", "strategic_open_price", "strategic_price_currency",
+        "strategic_closed_at", "strategic_close_quantity", "strategic_close_price", "strategic_spot_record_id", "strategic_remark", "strategic_status",
+    ]
+    values = [
+        record_id, None, "战略套保", *[fields[code] for code in FIELD_CODES], "", 1, 1, "已完成", "[]", "正常", "", "", "{}", "manual",
+        record_id, payload.group_name, payload.account, payload.contract, payload.open_direction, payload.opened_at,
+        payload.open_quantity, payload.quantity_unit, payload.open_price, payload.price_currency, payload.closed_at,
+        payload.close_quantity, payload.close_price, payload.spot_record_id, payload.remark, status,
+    ]
+    quoted_columns = [f'"{column}"' if column in FIELD_CODES else column for column in columns]
+    with db.connect() as conn:
+        initialize_schema(conn)
+        _execute_insert(conn.cursor(), f"INSERT INTO spot_ledger_records ({', '.join(quoted_columns)}) VALUES ({', '.join('?' for _ in columns)})", tuple(values))
+        row = db._exec(conn.cursor(), "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
+    return {"record": record_to_public(_row_dict(row))}
 
 
 def _export_workbook(records: Iterable[dict[str, Any]], include_technical_key: bool = False) -> bytes:
@@ -611,9 +765,15 @@ def _export_workbook(records: Iterable[dict[str, Any]], include_technical_key: b
 
 
 @router.get("/spot-ledger/export")
-def export_records(include_technical_key: bool = False, user=Depends(lambda: _default_user_for_tests())):
+def export_records(
+    include_technical_key: bool = False, from_date: str = "", to_date: str = "", sales_group: str = "", profit_group: str = "",
+    sales_type: str = "", product_name: str = "", port: str = "", operation_title: str = "", supplier: str = "", customer: str = "",
+    contract_number: str = "", purchase_execution: str = "", sales_execution: str = "", purchase_quantity: str = "", sales_quantity: str = "",
+    closed_state: str = "", supplement_status: str = "", sync_error: str = "", user=Depends(_request_user),
+):
     require_permission(_get_user(user), SPOT_LEDGER_EXPORT_RESOURCE, "export")
-    records = list_records({}, user=user)
+    params = locals().copy()
+    records = list_records(params, user=user)
     content = _export_workbook(records, include_technical_key=include_technical_key)
     return StreamingResponse(
         io.BytesIO(content),
