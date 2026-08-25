@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 import json
 import os
@@ -212,6 +213,21 @@ def build_backfill_plan(
     return result
 
 
+def candidate_detail_ids(source_rows: Iterable[dict[str, Any]], records: list[dict[str, Any]]) -> list[str]:
+    source_keys = {
+        (_text(row.get("AD")), _text(row.get("H")), _normalize_date(row.get("U")), _text(_quantity(row)))
+        for row in source_rows
+        if _date_status(row.get("U")) == "focus" and any(_usable(row.get(field)) for field in BACKFILL_FIELDS)
+    }
+    return [
+        str(record["record_id"])
+        for record in records
+        if record.get("record_id") and (
+            _text(record.get("AD")), _text(record.get("H")), _normalize_date(record.get("U")), _text(_quantity(record))
+        ) in source_keys
+    ]
+
+
 class StagingLedgerClient:
     def __init__(self, base_url: str, username: str, password: str, timeout: float = 30, session: requests.Session | None = None):
         self.base_url = validate_staging_base_url(base_url)
@@ -260,6 +276,12 @@ class StagingLedgerClient:
     def reconcile_mappings(self, apply: bool = False) -> dict[str, Any]:
         return self._request("POST", "/api/spot-ledger/reconcile-mappings", params={"apply": str(apply).lower()})
 
+    def get_details_concurrent(self, record_ids: Iterable[str], max_workers: int = 8) -> dict[str, dict[str, Any]]:
+        ids = list(record_ids)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            details = executor.map(self.get_detail, ids)
+        return dict(zip(ids, details))
+
 
 def apply_backfill_plan(client: StagingLedgerClient, result: dict[str, Any], change_log: Path) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
@@ -298,6 +320,7 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Explicitly write the dry-run-approved blank fields to Staging.")
     parser.add_argument("--change-log", type=Path, default=Path("/tmp/spot-ledger-staging-backfill-change-log.json"))
     parser.add_argument("--reconcile-mappings", action="store_true", help="Run the admin-only stored mapping reconciliation first.")
+    parser.add_argument("--reconcile-only", action="store_true", help="Only run mapping reconciliation; do not read or backfill the workbook.")
     parser.add_argument("--timeout", type=float, default=30)
     args = parser.parse_args()
     username = os.getenv("STAGING_LEDGER_USERNAME", "")
@@ -310,10 +333,11 @@ def main() -> int:
         client.login()
         if args.reconcile_mappings:
             print(json.dumps({"ok": True, "mapping_reconciliation": json.loads(safe_summary(client.reconcile_mappings(apply=args.apply)))}, ensure_ascii=False, separators=(",", ":")))
+            if args.reconcile_only:
+                return 0
         sheet, source_rows = read_workbook_rows(args.workbook)
         records = client.list_records()
-        focus_records = [record for record in records if _date_status(record.get("U")) == "focus"]
-        details = {str(record["record_id"]): client.get_detail(str(record["record_id"])) for record in focus_records if record.get("record_id")}
+        details = client.get_details_concurrent(candidate_detail_ids(source_rows, records))
         result = build_backfill_plan(source_rows, records, details)
         result["sheet"] = sheet
         result["dry_run"] = not args.apply

@@ -49,6 +49,7 @@ def test_build_backfill_plan_is_2026_only_blank_only_and_conflict_safe():
     assert result["field_updates"] == {"K": 1, "AM": 1}
     assert result["plans"][0]["record_id"] == "r-102"
     assert result["plans"][0]["values"] == {"K": "补录船", "AM": "来源备注"}
+    assert staging_import.candidate_detail_ids(source_rows, records) == ["r-102", "r-101"]
 
 
 def test_cli_summary_does_not_include_credentials():
