@@ -54,6 +54,7 @@ def test_records_support_combined_filters_and_expose_all_field_definitions(ledge
         contract_number="C-102", user=admin,
     )
     assert [row["source_detail_id"] for row in result["records"]] == ["D1004"]
+    assert result["count"] == 1
     assert [field["code"] for field in field_definitions(user=admin)["fields"]] == list(FIELD_CODES)
 
 
@@ -78,6 +79,30 @@ def test_pending_and_sync_error_views_are_explicit(ledger_context):
     assert any(row["source_detail_id"] == "D1004" for row in pending["records"])
     assert any(row["source_detail_id"] == "D1009" for row in errors["records"])
     assert any(error["type"] == "conversion_mapping" for error in errors["records"][0]["sync_error_summary"])
+
+
+def test_pending_and_sync_error_counts_are_not_capped_by_view_page_size(ledger_context, monkeypatch):
+    from app import spot_ledger
+
+    admin, _ = ledger_context
+    requested = []
+
+    def fake_list(params, *, user=None, include_inactive=False):
+        requested.append(dict(params))
+        return [{"record_id": "visible-row"}]
+
+    monkeypatch.setattr(spot_ledger, "list_records", fake_list)
+    monkeypatch.setattr(spot_ledger, "count_records", lambda params, *, user=None, include_inactive=False: 1460)
+
+    pending = spot_ledger.get_pending(user=admin)
+    errors = spot_ledger.get_sync_errors(user=admin)
+
+    assert pending["count"] == 1460
+    assert errors["count"] == 1460
+    assert requested == [
+        {"supplement_status": "待补录", "limit": 100, "offset": 0},
+        {"sync_error": "true", "limit": 100, "offset": 0},
+    ]
 
 
 def test_source_readiness_requires_administrator_role(ledger_context):
@@ -245,6 +270,22 @@ def test_export_defaults_to_a_to_ay_and_adds_technical_key_only_when_requested(l
     assert "销售合同商品明细 ID" not in default_headers
     assert len(technical_headers) == 52
     assert technical_headers[-1] == "销售合同商品明细 ID"
+
+
+def test_export_requests_the_complete_supported_result_set(ledger_context, monkeypatch):
+    from app import spot_ledger
+
+    admin, _ = ledger_context
+    captured = {}
+
+    def fake_list(params, *, user=None, include_inactive=False):
+        captured.update(params)
+        return []
+
+    monkeypatch.setattr(spot_ledger, "list_records", fake_list)
+    spot_ledger.export_records(user=admin)
+
+    assert captured["limit"] == 5000
 
 
 def test_spot_ledger_routes_are_registered_in_main_app():

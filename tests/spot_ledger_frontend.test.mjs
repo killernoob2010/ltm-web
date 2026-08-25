@@ -34,6 +34,10 @@ test("spot ledger keeps the complete field contract while presenting pending/err
   assert.match(spotJs, /moduleState\.token/);
   assert.doesNotMatch(indexHtml + spotJs, /立即同步|sync-now|手动同步/);
   assert.match(stylesCss, /\.spot-ledger-page/);
+  assert.match(spotJs, /pageSize:\s*100/);
+  assert.match(indexHtml, /id="spotLedgerPrevPageBtn"/);
+  assert.match(indexHtml, /id="spotLedgerNextPageBtn"/);
+  assert.match(indexHtml, /id="spotLedgerPageInfo"/);
 });
 
 test("spot ledger visible timestamps are reduced to seconds", () => {

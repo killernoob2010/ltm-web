@@ -218,6 +218,8 @@ def _business_type(raw_value: Any, errors: list[dict[str, str]]) -> str:
     code = _text(raw_value)
     if code in SALES_TYPE_MAP:
         return SALES_TYPE_MAP[code]
+    if re.fullmatch(r"B(?:05|06|07|09)\d*", code):
+        return SALES_TYPE_MAP[code[:3]]
     if code in SALES_TYPE_MAP.values():
         return code
     if code:
@@ -583,6 +585,19 @@ def list_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict
     return [record_to_public(_row_dict(row)) for row in rows]
 
 
+def count_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict[str, Any]] = None, include_inactive: bool = False) -> int:
+    params = params or {}
+    require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
+    conditions, values = _record_query_conditions(params, include_inactive=include_inactive)
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            f"SELECT COUNT(*) AS count FROM spot_ledger_records WHERE {' AND '.join(conditions)}",
+            tuple(values),
+        ).fetchone()
+    return int(_row_dict(row).get("count") or 0)
+
+
 @router.get("/spot-ledger/field-definitions")
 def field_definitions(user=Depends(_request_user)):
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
@@ -598,7 +613,13 @@ def get_records(
     limit: int = Query(500, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user),
 ):
     params = locals().copy()
-    return {"records": list_records(params, user=user), "field_definitions": FIELD_DEFINITIONS}
+    return {
+        "records": list_records(params, user=user),
+        "count": count_records(params, user=user),
+        "limit": limit,
+        "offset": offset,
+        "field_definitions": FIELD_DEFINITIONS,
+    }
 
 
 @router.get("/spot-ledger/records/{record_id}")
@@ -663,30 +684,42 @@ def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request
     return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
 
 
-def get_pending(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    records = list_records({"supplement_status": "待补录"}, user=user)
-    return {"records": records, "count": len(records)}
+def get_pending(*, limit: int = 100, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    params = {"supplement_status": "待补录", "limit": limit, "offset": offset}
+    return {
+        "records": list_records(params, user=user),
+        "count": count_records(params, user=user),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
-def get_sync_errors(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    records = list_records({"sync_error": "true"}, user=user)
+def get_sync_errors(*, limit: int = 100, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    params = {"sync_error": "true", "limit": limit, "offset": offset}
+    records = list_records(params, user=user)
     try:
         from .spot_ledger_sync import get_sync_runs
 
         runs = get_sync_runs()
     except Exception:
         runs = []
-    return {"records": records, "runs": runs, "count": len(records)}
+    return {
+        "records": records,
+        "runs": runs,
+        "count": count_records(params, user=user),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/spot-ledger/pending")
-def pending_view(user=Depends(_request_user)):
-    return get_pending(user=user)
+def pending_view(limit: int = Query(100, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user)):
+    return get_pending(limit=limit, offset=offset, user=user)
 
 
 @router.get("/spot-ledger/sync-errors")
-def sync_errors_view(user=Depends(_request_user)):
-    return get_sync_errors(user=user)
+def sync_errors_view(limit: int = Query(100, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user)):
+    return get_sync_errors(limit=limit, offset=offset, user=user)
 
 
 @router.get("/spot-ledger/sync-status")
@@ -866,7 +899,15 @@ def export_records(
 ):
     require_permission(_get_user(user), SPOT_LEDGER_EXPORT_RESOURCE, "export")
     params = locals().copy()
-    records = list_records(params, user=user)
+    records = []
+    offset = 0
+    while True:
+        batch_params = {**params, "limit": 5000, "offset": offset}
+        batch = list_records(batch_params, user=user)
+        records.extend(batch)
+        if len(batch) < 5000:
+            break
+        offset += len(batch)
     content = _export_workbook(records, include_technical_key=include_technical_key)
     return StreamingResponse(
         io.BytesIO(content),

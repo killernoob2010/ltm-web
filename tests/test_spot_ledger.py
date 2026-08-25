@@ -75,6 +75,10 @@ def test_system_conversion_preserves_unknown_type_and_normalizes_placeholders():
         ("贸易-港口现货-背对背-B06", "现货-背对背"),
         ("贸易-代理落地-B09", "船货-落地"),
         ("贸易-落地-固定价-B05", "船货-落地"),
+        ("B0701", "现货-市场加价"),
+        ("B0601", "现货-背对背"),
+        ("B0901", "船货-落地"),
+        ("B0501", "船货-落地"),
     ],
 )
 def test_confirmed_source_business_categories_map_without_false_sync_errors(source_category, expected_type):

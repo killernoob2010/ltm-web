@@ -9,6 +9,9 @@
     records: [],
     filters: {},
     view: "records",
+    page: 1,
+    pageSize: 100,
+    total: 0,
     selectedRecord: null,
     bound: false,
   };
@@ -116,14 +119,21 @@
 
   async function loadCounts() {
     const [pending, errors] = await Promise.all([
-      moduleState.api("/api/spot-ledger/pending"),
-      moduleState.api("/api/spot-ledger/sync-errors"),
+      moduleState.api("/api/spot-ledger/pending?limit=1"),
+      moduleState.api("/api/spot-ledger/sync-errors?limit=1"),
     ]);
     $("#spotLedgerPendingCount").textContent = pending.count || 0;
     $("#spotLedgerErrorCount").textContent = errors.count || 0;
     const latest = errors.runs?.[0];
     if (latest) setSyncStatus(`${latest.status}｜${seconds(latest.finished_at || latest.started_at)}｜${latest.source_mode}`);
     else setSyncStatus("暂无任务记录；真实源认证仍待上线配置");
+  }
+
+  function renderPagination() {
+    const totalPages = Math.max(1, Math.ceil(moduleState.total / moduleState.pageSize));
+    $("#spotLedgerPageInfo").textContent = `第 ${moduleState.page} / ${totalPages} 页｜共 ${moduleState.total} 条`;
+    $("#spotLedgerPrevPageBtn").disabled = moduleState.page <= 1;
+    $("#spotLedgerNextPageBtn").disabled = moduleState.page >= totalPages;
   }
 
   function renderRows(records) {
@@ -160,17 +170,22 @@
     setStatus("读取中…");
     try {
       let result;
-      if (view === "pending") result = await moduleState.api("/api/spot-ledger/pending");
-      else if (view === "errors") result = await moduleState.api("/api/spot-ledger/sync-errors");
-      else result = await moduleState.api(`/api/spot-ledger/records${queryString(moduleState.filters)}`);
+      const pageParams = { limit: moduleState.pageSize, offset: (moduleState.page - 1) * moduleState.pageSize };
+      if (view === "pending") result = await moduleState.api(`/api/spot-ledger/pending${queryString(pageParams)}`);
+      else if (view === "errors") result = await moduleState.api(`/api/spot-ledger/sync-errors${queryString(pageParams)}`);
+      else result = await moduleState.api(`/api/spot-ledger/records${queryString({ ...moduleState.filters, ...pageParams })}`);
       moduleState.records = result.records || [];
+      moduleState.total = Number(result.count ?? moduleState.records.length);
       if (result.field_definitions?.length) moduleState.fields = result.field_definitions;
       renderRows(moduleState.records);
-      setStatus(`当前 ${moduleState.records.length} 条`);
+      renderPagination();
+      setStatus(`当前 ${moduleState.records.length} 条｜共 ${moduleState.total} 条`);
       if (view === "errors" && result.runs?.length) setSyncStatus(`${result.runs[0].status}｜${seconds(result.runs[0].finished_at || result.runs[0].started_at)}｜${result.runs[0].source_mode || "来源未标注"}`);
     } catch (error) {
       moduleState.records = [];
+      moduleState.total = 0;
       renderRows([]);
+      renderPagination();
       setStatus(error.message || "读取失败", true);
     }
   }
@@ -370,11 +385,13 @@
     $("#spotLedgerFilterForm")?.addEventListener("submit", (event) => {
       event.preventDefault();
       moduleState.filters = filterValues();
+      moduleState.page = 1;
       loadView("records");
     });
     $("#spotLedgerResetBtn")?.addEventListener("click", () => {
       $("#spotLedgerFilterForm")?.reset();
       moduleState.filters = {};
+      moduleState.page = 1;
       setAdvancedFiltersExpanded(false);
       updateAdvancedFilterCount();
       loadView("records");
@@ -385,7 +402,20 @@
     });
     $("#spotLedgerFilterForm")?.addEventListener("input", updateAdvancedFilterCount);
     $("#spotLedgerFilterForm")?.addEventListener("change", updateAdvancedFilterCount);
-    document.querySelectorAll(".spot-ledger-tab").forEach((button) => button.addEventListener("click", () => loadView(button.dataset.view)));
+    document.querySelectorAll(".spot-ledger-tab").forEach((button) => button.addEventListener("click", () => {
+      moduleState.page = 1;
+      loadView(button.dataset.view);
+    }));
+    $("#spotLedgerPrevPageBtn")?.addEventListener("click", () => {
+      if (moduleState.page <= 1) return;
+      moduleState.page -= 1;
+      loadView(moduleState.view);
+    });
+    $("#spotLedgerNextPageBtn")?.addEventListener("click", () => {
+      if (moduleState.page * moduleState.pageSize >= moduleState.total) return;
+      moduleState.page += 1;
+      loadView(moduleState.view);
+    });
     $("#spotLedgerCloseDetailBtn")?.addEventListener("click", closeDetail);
     $("#spotLedgerDetail")?.addEventListener("close", () => {
       const form = $("#spotLedgerEditForm");

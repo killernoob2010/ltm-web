@@ -2536,10 +2536,32 @@ def _record_values(record: dict[str, Any], *, existing: Optional[dict[str, Any]]
     return [serialized.get(column, "") for column in _record_columns()]
 
 
-def _upsert_record(cur, record: dict[str, Any], source_mode: str, timestamp: str) -> tuple[bool, bool]:
+def _load_existing_records(cur, detail_ids: list[str]) -> dict[str, dict[str, Any]]:
+    existing: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(detail_ids), 500):
+        chunk = detail_ids[start:start + 500]
+        if not chunk:
+            continue
+        marks = ", ".join("?" for _ in chunk)
+        rows = _raw_execute(
+            cur,
+            f"SELECT * FROM spot_ledger_records WHERE source_detail_id IN ({marks})",
+            tuple(chunk),
+        ).fetchall()
+        for row in rows:
+            item = dict(row)
+            existing[str(item.get("source_detail_id") or "")] = item
+    return existing
+
+
+def _upsert_record(
+    cur,
+    record: dict[str, Any],
+    source_mode: str,
+    timestamp: str,
+    existing: Optional[dict[str, Any]],
+) -> tuple[bool, bool]:
     detail_id = str(record.get("source_detail_id") or "")
-    existing_row = _raw_execute(cur, "SELECT * FROM spot_ledger_records WHERE source_detail_id = ?", (detail_id,)).fetchone()
-    existing = dict(existing_row) if existing_row else None
     record = _merge_record({**record, "record_id": (existing or {}).get("record_id") or _record_id(detail_id)}, existing)
     columns = _record_columns()
     values = _record_values(record, existing=existing, source_mode=source_mode, timestamp=timestamp)
@@ -2583,15 +2605,22 @@ def apply_full_scan(scan: FullScanResult, slot_key: str, now: Optional[datetime]
     started_at = _timestamp(now)
     finished_at = _timestamp(now)
     result: dict[str, Any] = {"status": "success" if scan.complete else "error", "inserted": 0, "updated": 0, "hidden": 0, "record_errors": []}
-    initialize_needed = True
+    with db.connect() as schema_conn:
+        initialize_schema(schema_conn)
     with db.connect() as conn:
-        if initialize_needed:
-            initialize_schema(conn)
         cur = conn.cursor()
-        for incoming in scan.records:
-            if not incoming.get("eligible"):
-                continue
-            inserted, has_error = _upsert_record(cur, incoming, scan.source_mode, finished_at)
+        eligible_records = [incoming for incoming in scan.records if incoming.get("eligible")]
+        detail_ids = [str(incoming.get("source_detail_id") or "") for incoming in eligible_records]
+        existing_records = _load_existing_records(cur, detail_ids)
+        for incoming in eligible_records:
+            detail_id = str(incoming.get("source_detail_id") or "")
+            inserted, has_error = _upsert_record(
+                cur,
+                incoming,
+                scan.source_mode,
+                finished_at,
+                existing_records.get(detail_id),
+            )
             if inserted:
                 result["inserted"] += 1
             else:
@@ -2623,6 +2652,16 @@ def get_sync_runs(limit: int = 20) -> list[dict[str, Any]]:
             conn.cursor(), "SELECT * FROM spot_ledger_sync_runs ORDER BY started_at DESC LIMIT ?", (max(1, min(limit, 100)),)
         ).fetchall()
     return [record_to_public(dict(row)) for row in rows]
+
+
+def _sync_run_exists(slot_key: str) -> bool:
+    with db.connect() as conn:
+        row = _raw_execute(
+            conn.cursor(),
+            "SELECT 1 AS found FROM spot_ledger_sync_runs WHERE slot_key = ? LIMIT 1",
+            (slot_key,),
+        ).fetchone()
+    return bool(row)
 
 
 def _slot_key(current: datetime, slot: day_time) -> str:
@@ -2669,6 +2708,8 @@ def _source_from_env() -> SalesContractSource:
 
 
 def run_spot_ledger_sync_once(slot_key: str, source: Optional[SalesContractSource] = None) -> dict[str, Any]:
+    if _sync_run_exists(slot_key):
+        return {"status": "skipped", "reason": "slot_already_recorded", "slot_key": slot_key}
     try:
         scan = (source or _source_from_env()).fetch_full_scan()
         return apply_full_scan(scan, slot_key)

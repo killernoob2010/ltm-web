@@ -4238,6 +4238,22 @@ button.order-vessel-detail-btn {
   max-height: 520px;
 }
 
+.spot-ledger-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid #edf0f4;
+  color: #667085;
+  font-size: 12px;
+}
+
+.spot-ledger-pagination button {
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
 .spot-ledger-record-row {
   cursor: pointer;
 }
@@ -4535,6 +4551,7 @@ dialog.spot-ledger-detail {
   .spot-ledger-filter-actions { justify-content: flex-end; }
   .spot-ledger-tabs-row { gap: 6px; padding-top: 10px; }
   .spot-ledger-tabs { overflow-x: auto; }
+  .spot-ledger-pagination { justify-content: center; }
   .spot-ledger-table-wrap { overflow-x: auto; }
   .spot-ledger-table-wrap table { min-width: 980px; }
   dialog.spot-ledger-detail {

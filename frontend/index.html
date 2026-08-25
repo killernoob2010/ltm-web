@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=inline-edit-20260824" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=real-data-pagination-20260825" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -505,6 +505,11 @@
                 <thead><tr><th>销售合同号</th><th>销售组别</th><th>利润组别</th><th>销售类型</th><th>销售日期</th><th>商品</th><th>港口</th><th>客户</th><th>采购量</th><th>销售量</th><th>补录状态</th><th>同步状态</th></tr></thead>
                 <tbody id="spotLedgerTableBody"></tbody>
               </table>
+            </div>
+            <div id="spotLedgerPagination" class="spot-ledger-pagination" aria-label="台账分页">
+              <button id="spotLedgerPrevPageBtn" type="button" class="secondary">上一页</button>
+              <span id="spotLedgerPageInfo">第 1 / 1 页｜共 0 条</span>
+              <button id="spotLedgerNextPageBtn" type="button" class="secondary">下一页</button>
             </div>
           </section>
 
@@ -1623,7 +1628,7 @@
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
-    <script src="/static/spot_ledger.js?v=spot-ledger-inline-edit-20260824"></script>
+    <script src="/static/spot_ledger.js?v=spot-ledger-real-data-pagination-20260825"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>

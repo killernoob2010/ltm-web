@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import json
 import os
 from datetime import datetime
@@ -57,6 +58,70 @@ def test_full_scan_upsert_is_idempotent_and_preserves_manual_fields(ledger_db):
         detail = conn.execute("SELECT source_detail_id FROM spot_ledger_records WHERE \"AD\" = 'C-100' ORDER BY source_detail_id").fetchall()
     assert count == len(scan.records)
     assert len(detail) == 2
+
+
+def test_full_scan_commits_schema_setup_before_opening_data_transaction(ledger_db, monkeypatch):
+    from app import spot_ledger_sync as sync
+
+    original_connect = sync.db.connect
+    original_initialize = sync.initialize_schema
+    events = []
+
+    @contextmanager
+    def tracked_connect():
+        events.append("connect_enter")
+        with original_connect() as conn:
+            yield conn
+        events.append("connect_exit")
+
+    def tracked_initialize(conn):
+        events.append("initialize_schema")
+        original_initialize(conn)
+
+    monkeypatch.setattr(sync.db, "connect", tracked_connect)
+    monkeypatch.setattr(sync, "initialize_schema", tracked_initialize)
+
+    sync.apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+
+    assert events[:4] == ["connect_enter", "initialize_schema", "connect_exit", "connect_enter"]
+
+
+def test_full_scan_prefetches_existing_records_without_one_select_per_record(ledger_db, monkeypatch):
+    from app import spot_ledger_sync as sync
+
+    original_execute = sync._raw_execute
+    single_record_selects = []
+
+    def tracked_execute(cur, sql, params=()):
+        if "SELECT * FROM spot_ledger_records WHERE source_detail_id = ?" in " ".join(sql.split()):
+            single_record_selects.append(params)
+        return original_execute(cur, sql, params)
+
+    monkeypatch.setattr(sync, "_raw_execute", tracked_execute)
+    sync.apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+
+    assert single_record_selects == []
+
+
+def test_sync_slot_is_not_repeated_after_process_restart(ledger_db):
+    from app import spot_ledger_sync as sync
+
+    slot_key = "2026-08-24T09:00+08:00"
+    sync.apply_full_scan(load_fixture_scan(), slot_key)
+
+    class Source:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_full_scan(self):
+            self.calls += 1
+            return load_fixture_scan()
+
+    source = Source()
+    result = sync.run_spot_ledger_sync_once(slot_key, source)
+
+    assert result == {"status": "skipped", "reason": "slot_already_recorded", "slot_key": slot_key}
+    assert source.calls == 0
 
 
 def test_incomplete_scan_does_not_hide_existing_record(ledger_db):
