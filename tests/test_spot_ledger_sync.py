@@ -248,6 +248,8 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         def post(self, url, **kwargs):
             self.calls.append((url, kwargs))
             if "/tradeing/chain/saleList" in url:
+                if kwargs["json"]["chainId"] == "must-not-be-returned-chain-id":
+                    return Response({"code": 200, "data": []})
                 return Response(
                     {
                         "code": 200,
@@ -268,7 +270,8 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                                 "saleContractId": "must-not-be-returned-id",
                                 "contractNo": "must-not-be-returned",
                                 "goods": [{"saleContractMxId": "must-not-be-returned"}],
-                            }
+                            },
+                            {"saleContractId": "must-not-be-returned-id-2"},
                         ],
                         "total": 1,
                     },
@@ -278,13 +281,25 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
             if "/tradeing/chain/getById/" in url:
+                chain_id = "must-not-be-returned-chain-id-2" if "chain-id-2" in url else "must-not-be-returned-chain-id"
                 return Response(
                     {
                         "code": 200,
                         "data": {
-                            "chainId": "must-not-be-returned-chain-id",
+                            "chainId": chain_id,
                             "profitAttribution": "must-not-be-returned-profit-group",
                             "quantityAttribution": "must-not-be-returned-quantity-group",
+                        },
+                    }
+                )
+            if "/tradeing/saleContract/must-not-be-returned-id-2" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "chainId": "must-not-be-returned-chain-id-2",
+                            "saleContractId": "must-not-be-returned-id-2",
+                            "saleContractMxList": [],
                         },
                     }
                 )
@@ -368,6 +383,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "chain_response_code": "200",
         "resource_list_response_code": "200",
         "resource_detail_response_code": "200",
+        "sampled_contract_count": 2,
         "schema_paths": [
             "code",
             "data",
@@ -437,8 +453,8 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         (
             "https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList",
             {
-                "params": {"sheetCode": "G01009", "pageNum": 1, "pageSize": 1},
-                "json": {},
+                "params": {"sheetCode": "G01009", "pageNum": 1, "pageSize": 10},
+                "json": {"status": "70", "isQryAll": "N"},
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",
@@ -495,6 +511,40 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "https://tds-api.ejianlong.com/tradeing/chain/saleList?sheetCode=G01004",
             {
                 "json": {"chainId": "must-not-be-returned-chain-id", "tradersId": ""},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/saleContract/must-not-be-returned-id-2?sheetCode=G01009",
+            {
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/chain/getById/must-not-be-returned-chain-id-2?sheetCode=G01004",
+            {
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/chain/saleList?sheetCode=G01004",
+            {
+                "json": {"chainId": "must-not-be-returned-chain-id-2", "tradersId": ""},
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",

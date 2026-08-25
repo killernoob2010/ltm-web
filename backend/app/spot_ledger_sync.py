@@ -639,8 +639,8 @@ def probe_official_sales_contract_api(
         }
         response = active_source.http.post(
             OFFICIAL_SALES_CONTRACT_LIST_URL,
-            params={"sheetCode": "G01009", "pageNum": 1, "pageSize": 1},
-            json={},
+            params={"sheetCode": "G01009", "pageNum": 1, "pageSize": 10},
+            json={"status": "70", "isQryAll": "N"},
             headers=headers,
             timeout=30,
         )
@@ -688,7 +688,14 @@ def probe_official_sales_contract_api(
     resource_list_response_code = ""
     resource_detail_payload: dict[str, Any] = {}
     resource_detail_response_code = ""
+    sampled_contract_count = 0
+    resource_id: Any = None
+    detail_schema_path_set: set[str] = set()
+    chain_schema_path_set: set[str] = set()
+    resource_list_schema_path_set: set[str] = set()
+    seen_chain_ids: set[str] = set()
     if isinstance(rows, list) and rows:
+        sampled_contract_count = 1
         contract_id = rows[0].get("saleContractId") if isinstance(rows[0], dict) else None
         if not contract_id:
             raise SalesContractSourceError(
@@ -731,6 +738,7 @@ def probe_official_sales_contract_api(
                 stage="official_detail_response",
             )
         detail_response_code = str(detail_payload.get("code") or "")
+        detail_schema_path_set.update(_schema_paths(detail_payload))
         try:
             relevance_response = active_source.http.get(
                 (
@@ -820,6 +828,7 @@ def probe_official_sales_contract_api(
         detail_data = detail_payload.get("data")
         chain_id = detail_data.get("chainId") if isinstance(detail_data, dict) else None
         if chain_id:
+            seen_chain_ids.add(str(chain_id))
             quoted_chain_id = quote(str(chain_id), safe="")
             chain_payload, chain_response_code = _probe_json_request(
                 active_source,
@@ -829,6 +838,7 @@ def probe_official_sales_contract_api(
                 stage="official_chain_detail",
                 description="正式交易链 JSON 详情",
             )
+            chain_schema_path_set.update(_schema_paths(chain_payload))
             resource_list_payload, resource_list_response_code = _probe_json_request(
                 active_source,
                 "post",
@@ -838,21 +848,72 @@ def probe_official_sales_contract_api(
                 description="正式销售资源 JSON 列表",
                 json={"chainId": str(chain_id), "tradersId": ""},
             )
+            resource_list_schema_path_set.update(_schema_paths(resource_list_payload))
             resource_rows = resource_list_payload.get("data")
             resource_id = next(
                 (row.get("saleId") for row in resource_rows if isinstance(row, dict) and row.get("saleId")),
                 None,
             ) if isinstance(resource_rows, list) else None
-            if resource_id:
-                resource_detail_payload, resource_detail_response_code = _probe_json_request(
+        if not resource_id:
+            for extra_row in rows[1:5]:
+                extra_contract_id = extra_row.get("saleContractId") if isinstance(extra_row, dict) else None
+                if not extra_contract_id:
+                    continue
+                sampled_contract_count += 1
+                extra_detail_payload, _ = _probe_json_request(
                     active_source,
                     "get",
-                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale?sheetCode=G01003",
+                    (
+                        f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/"
+                        f"{quote(str(extra_contract_id), safe='')}?sheetCode=G01009"
+                    ),
                     headers=headers,
-                    stage="official_resource_detail",
-                    description="正式销售资源 JSON 详情",
-                    params={"saleId": str(resource_id)},
+                    stage="official_sample_detail",
+                    description="正式销售合同 JSON 抽样详情",
                 )
+                detail_schema_path_set.update(_schema_paths(extra_detail_payload))
+                extra_detail_data = extra_detail_payload.get("data")
+                extra_chain_id = extra_detail_data.get("chainId") if isinstance(extra_detail_data, dict) else None
+                if not extra_chain_id or str(extra_chain_id) in seen_chain_ids:
+                    continue
+                seen_chain_ids.add(str(extra_chain_id))
+                quoted_chain_id = quote(str(extra_chain_id), safe="")
+                chain_payload, chain_response_code = _probe_json_request(
+                    active_source,
+                    "get",
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/chain/getById/{quoted_chain_id}?sheetCode=G01004",
+                    headers=headers,
+                    stage="official_sample_chain_detail",
+                    description="正式交易链 JSON 抽样详情",
+                )
+                chain_schema_path_set.update(_schema_paths(chain_payload))
+                resource_list_payload, resource_list_response_code = _probe_json_request(
+                    active_source,
+                    "post",
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/chain/saleList?sheetCode=G01004",
+                    headers=headers,
+                    stage="official_sample_resource_list",
+                    description="正式销售资源 JSON 抽样列表",
+                    json={"chainId": str(extra_chain_id), "tradersId": ""},
+                )
+                resource_list_schema_path_set.update(_schema_paths(resource_list_payload))
+                resource_rows = resource_list_payload.get("data")
+                resource_id = next(
+                    (row.get("saleId") for row in resource_rows if isinstance(row, dict) and row.get("saleId")),
+                    None,
+                ) if isinstance(resource_rows, list) else None
+                if resource_id:
+                    break
+        if resource_id:
+            resource_detail_payload, resource_detail_response_code = _probe_json_request(
+                active_source,
+                "get",
+                f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale?sheetCode=G01003",
+                headers=headers,
+                stage="official_resource_detail",
+                description="正式销售资源 JSON 详情",
+                params={"saleId": str(resource_id)},
+            )
     return {
         "ok": (
             response_code in {"", "200"}
@@ -872,12 +933,13 @@ def probe_official_sales_contract_api(
         "chain_response_code": chain_response_code,
         "resource_list_response_code": resource_list_response_code,
         "resource_detail_response_code": resource_detail_response_code,
+        "sampled_contract_count": sampled_contract_count,
         "schema_paths": sorted(_schema_paths(payload))[:300],
-        "detail_schema_paths": sorted(_schema_paths(detail_payload))[:300],
+        "detail_schema_paths": sorted(detail_schema_path_set)[:300],
         "relevance_schema_paths": sorted(_schema_paths(relevance_payload))[:300],
         "purchase_schema_paths": sorted(_schema_paths(purchase_payload))[:300],
-        "chain_schema_paths": sorted(_schema_paths(chain_payload))[:300],
-        "resource_list_schema_paths": sorted(_schema_paths(resource_list_payload))[:300],
+        "chain_schema_paths": sorted(chain_schema_path_set)[:300],
+        "resource_list_schema_paths": sorted(resource_list_schema_path_set)[:300],
         "resource_detail_schema_paths": sorted(_schema_paths(resource_detail_payload))[:300],
     }
 
