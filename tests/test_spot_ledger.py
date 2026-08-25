@@ -108,6 +108,33 @@ def test_schema_is_idempotent_and_contains_all_business_columns(tmp_path, monkey
     }.issubset(columns)
 
 
+def test_postgres_schema_uses_supabase_safe_idempotent_ddl(monkeypatch):
+    from app import db
+    from app.spot_ledger import initialize_schema
+
+    statements = []
+
+    class RecordingCursor:
+        def execute(self, statement, params=None):
+            statements.append(" ".join(statement.split()))
+
+    class RecordingConnection:
+        def cursor(self):
+            return RecordingCursor()
+
+    monkeypatch.setattr(db, "_is_pg", lambda: True)
+    initialize_schema(RecordingConnection())
+    sql = "\n".join(statements)
+
+    assert "CREATE TABLE IF NOT EXISTS spot_ledger_records" in sql
+    assert "DOUBLE PRECISION" in sql
+    assert "AUTOINCREMENT" not in sql
+    assert "PRAGMA" not in sql
+    assert "ALTER TABLE spot_ledger_records ENABLE ROW LEVEL SECURITY" in sql
+    assert "ALTER TABLE spot_ledger_sync_runs ENABLE ROW LEVEL SECURITY" in sql
+    assert "REVOKE ALL ON TABLE spot_ledger_records, spot_ledger_sync_runs FROM anon, authenticated" in sql
+
+
 def test_spot_ledger_is_a_visible_trade_module_with_sensitive_admin_permission(tmp_path, monkeypatch):
     from app import db, permissions
 

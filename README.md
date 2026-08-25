@@ -49,6 +49,8 @@ http://127.0.0.1:8001
 
 现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、B05/B09 类型转换、跨组标识、待补录和同步异常。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；不提供实时同步或手动立即同步。2026-08-25 经用户授权在已登录浏览器中完成一次只读复核：候选 `POST https://tds-report.ejianlong.com/jmreport/show` 返回 200 JSON，请求使用报表 ID `1055351755192311808` 和 JSON 字符串 `params`；记录路径为 `result.dataList.TJJLYSHZ.list`，`count` 为记录总数，`total` 为总页数，并确认了销售合同商品明细 ID 及台账所需系统源字段。适配器已内置该脱敏 request/response/field profile 和分页规则；本地测试不保存真实响应或业务明细。浏览器请求当前仅观察到 Cookie 会话认证，尚未确认源系统支持的服务端登录/刷新方式，因此无人值守认证仍是上线阻塞，fixture 或浏览器只读复核均不得称为正式自动同步。
 
+现货业务台账数据库沿用项目现有 `db.init_db()` 双数据库兼容路径：本地使用 SQLite，Render/Supabase 使用 PostgreSQL 专用的 `TEXT`、`DOUBLE PRECISION` 和幂等 `CREATE TABLE IF NOT EXISTS`。线上两张台账表只允许服务端 FastAPI 连接访问，PostgreSQL 路径启用 RLS 并撤销 `anon` / `authenticated` 的直接表权限；页面不通过 Supabase Data API 直连。部署到 Staging 时仅创建空表和索引，自动同步仍保持关闭，不导入真实销售合同数据。
+
 ## 铁矿石基差 Excel 导入
 
 导入命令默认只校验文件、字段、业务唯一键和两张数据表的一致性，不写数据库：

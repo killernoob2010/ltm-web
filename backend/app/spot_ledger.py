@@ -457,6 +457,10 @@ def initialize_schema(conn) -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_spot_ledger_contract ON spot_ledger_records(\"AD\")")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_spot_ledger_dates ON spot_ledger_records(\"U\", \"E\", \"AP\")")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_spot_ledger_sync_runs_slot ON spot_ledger_sync_runs(slot_key, started_at)")
+    if db._is_pg():
+        cur.execute("ALTER TABLE spot_ledger_records ENABLE ROW LEVEL SECURITY")
+        cur.execute("ALTER TABLE spot_ledger_sync_runs ENABLE ROW LEVEL SECURITY")
+        cur.execute("REVOKE ALL ON TABLE spot_ledger_records, spot_ledger_sync_runs FROM anon, authenticated")
 
 
 def sync_spot_ledger_permissions(cur) -> None:
