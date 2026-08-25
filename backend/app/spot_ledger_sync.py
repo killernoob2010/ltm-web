@@ -256,6 +256,10 @@ class JianlongPasswordAuthProvider:
                 f"{JIANLONG_AUTH_BASE_URL}/login",
                 stage="token_exchange_request",
                 params={"code": code},
+                headers={
+                    "Origin": JIANLONG_TDS_REDIRECT_URI.rstrip("/"),
+                    "Referer": JIANLONG_TDS_REDIRECT_URI,
+                },
                 timeout=self.timeout_seconds,
             )
             self._check_http(token_response, stage="token_exchange_http")

@@ -179,6 +179,10 @@ def test_password_auth_uses_official_rsa_code_exchange_and_caches_bearer_token()
     assert decrypted == b"personal-password"
     assert session.calls[1][2]["json"]["username"] == "employee-id"
     assert session.calls[2][2]["params"] == {"code": "one-time-code"}
+    assert session.calls[2][2]["headers"] == {
+        "Origin": "https://tds.ejianlong.com",
+        "Referer": "https://tds.ejianlong.com/",
+    }
     assert "personal-password" not in repr(session.calls)
     assert session.cookies.clear_calls == 1
     assert provider.refresh() == {"Authorization": "Bearer bearer-token"}
