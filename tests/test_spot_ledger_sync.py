@@ -229,6 +229,104 @@ def test_profiled_source_from_env_uses_one_session_for_login_and_report(monkeypa
     assert isinstance(source.auth_provider, sync.JianlongPasswordAuthProvider)
 
 
+def test_source_factory_selects_official_json_mode(monkeypatch):
+    from app import spot_ledger_sync as sync
+
+    session = object()
+    monkeypatch.setenv("SPOT_LEDGER_SOURCE_MODE", "official_json")
+    monkeypatch.setenv("SPOT_LEDGER_SOURCE_USERNAME", "employee-id")
+    monkeypatch.setenv("SPOT_LEDGER_SOURCE_PASSWORD", "personal-password")
+    monkeypatch.setattr(sync.requests, "Session", lambda: session)
+
+    source = sync._source_from_env()
+
+    assert isinstance(source, sync.OfficialJsonSalesContractSource)
+    assert source.http is session
+    assert isinstance(source.auth_provider, sync.JianlongPasswordAuthProvider)
+
+
+def test_official_contract_scope_starts_from_locally_filtered_demands():
+    from app import spot_ledger_sync as sync
+
+    class Source(sync.OfficialJsonSalesContractSource):
+        def __init__(self):
+            super().__init__(auth_provider=lambda: {}, page_size=2)
+            self.calls = []
+
+        def _request_json(self, method, url, *, stage, **kwargs):
+            self.calls.append((method, url, stage, kwargs))
+            if "/tradeing/demand/list" in url:
+                page = kwargs["params"]["pageNum"]
+                rows = {
+                    1: [
+                        {
+                            "demandId": "demand-in-scope",
+                            "sourceType": "10",
+                            "quantityAttribution": "Q1",
+                        },
+                        {
+                            "demandId": "demand-other-group",
+                            "sourceType": "10",
+                            "quantityAttribution": "Q2",
+                        },
+                    ],
+                    2: [
+                        {
+                            "demandId": "demand-futures",
+                            "sourceType": "20",
+                            "quantityAttribution": "Q1",
+                        }
+                    ],
+                }[page]
+                return {"code": 200, "data": {"rows": rows, "total": 3}}
+            if "/relatedToDemand/" in url:
+                assert "demand-in-scope" in url
+                return {
+                    "code": 200,
+                    "data": [{"chainId": "chain-1"}, {"chainId": "chain-1"}],
+                }
+            if "/tradeing/chain/saleContractList" in url:
+                assert kwargs["json"] == {"chainId": "chain-1", "tradersId": ""}
+                return {
+                    "code": 200,
+                    "data": [
+                        {"saleContractId": "contract-active", "status": "70"},
+                        {"saleContractId": "contract-inactive", "status": "60"},
+                        {"saleContractId": "contract-active", "status": "70"},
+                    ],
+                }
+            raise AssertionError((method, url, stage, kwargs))
+
+    dictionaries = {
+        "source_type": {"10": "现货", "20": "期货"},
+        "quantity_attribution": {"Q1": "大客户组", "Q2": "其他组"},
+    }
+    source = Source()
+
+    scope = source._fetch_contract_scope(dictionaries)
+
+    assert scope.page_count == 2
+    assert set(scope.demands) == {
+        "demand-in-scope",
+        "demand-other-group",
+        "demand-futures",
+    }
+    assert scope.in_scope_demand_ids == {"demand-in-scope"}
+    assert scope.active_contracts == [{"saleContractId": "contract-active", "status": "70"}]
+    assert scope.errors == []
+    assert scope.diagnostics == {
+        "source_demand_count": 3,
+        "spot_demand_count": 2,
+        "in_scope_demand_count": 1,
+        "duplicate_demand_id_count": 0,
+        "unclassified_demand_scope_count": 0,
+        "related_chain_count": 1,
+        "related_sale_contract_count": 3,
+        "active_contract_count": 1,
+    }
+    assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.calls)
+
+
 def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
     from app import spot_ledger_sync as sync
 
@@ -248,10 +346,17 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
 
         def post(self, url, **kwargs):
             self.calls.append(("POST", url, kwargs))
-            if "/saleContractList" in url:
-                page = kwargs["params"]["pageNum"]
-                rows = [{"saleContractId": f"contract-{page}"}]
-                return Response({"code": 200, "data": {"rows": rows, "total": 2}})
+            if "/tradeing/chain/saleContractList" in url:
+                assert kwargs["json"] == {"chainId": "chain-1", "tradersId": ""}
+                return Response(
+                    {
+                        "code": 200,
+                        "data": [
+                            {"saleContractId": "contract-1", "status": "70"},
+                            {"saleContractId": "contract-2", "status": "60"},
+                        ],
+                    }
+                )
             if "/tdsSettle/queryJiesuan" in url:
                 return Response(
                     {
@@ -271,6 +376,21 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
 
         def get(self, url, **kwargs):
             self.calls.append(("GET", url, kwargs))
+            if "/tradeing/demand/list" in url:
+                page = kwargs["params"]["pageNum"]
+                rows = [
+                    {
+                        "demandId": f"demand-{page}",
+                        "sourceType": "10",
+                        "businessType": "B07" if page == 1 else "B05",
+                        "quantityAttribution": "Q1" if page == 1 else "Q2",
+                        "profitAttribution": "P1" if page == 1 else "P2",
+                    }
+                ]
+                return Response({"code": 200, "data": {"rows": rows, "total": 2}})
+            if "/relatedToDemand/" in url:
+                assert "demand-1" in url
+                return Response({"code": 200, "data": [{"chainId": "chain-1"}]})
             if "/system/dict/data/type" in url:
                 dictionaries = {
                     "quantity_attribution": [
@@ -398,10 +518,17 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
     assert scan.total_count == 1
     assert scan.source_mode == "official_json"
     assert scan.diagnostics == {
-        "active_contract_count": 2,
-        "source_detail_count": 2,
+        "source_demand_count": 2,
+        "spot_demand_count": 2,
+        "in_scope_demand_count": 1,
+        "duplicate_demand_id_count": 0,
+        "unclassified_demand_scope_count": 0,
+        "related_chain_count": 1,
+        "related_sale_contract_count": 2,
+        "active_contract_count": 1,
+        "source_detail_count": 1,
         "eligible_record_count": 1,
-        "out_of_scope_record_count": 1,
+        "out_of_scope_record_count": 0,
         "ambiguous_resource_match_count": 0,
         "missing_resource_match_count": 0,
     }
@@ -421,9 +548,9 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
     assert record["K"] == "海运一号"
     assert record["source_closed_state"] == "已结案"
     assert not any(error.get("type") == "group_mismatch" for error in record["sync_errors"])
-    list_calls = [call for call in source.http.calls if "/saleContractList" in call[1]]
-    assert [call[2]["params"]["pageNum"] for call in list_calls] == [1, 2]
-    assert all(call[2]["json"] == {"status": "70", "isQryAll": "N"} for call in list_calls)
+    demand_calls = [call for call in source.http.calls if "/tradeing/demand/list" in call[1]]
+    assert [call[2]["params"]["pageNum"] for call in demand_calls] == [1, 2]
+    assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.http.calls)
 
 
 def test_official_json_source_marks_duplicate_goods_match_as_ambiguous():
@@ -433,8 +560,22 @@ def test_official_json_source_marks_duplicate_goods_match_as_ambiguous():
         def __init__(self):
             super().__init__(auth_provider=lambda: {})
 
-        def _fetch_active_contracts(self):
-            return ([{"saleContractId": "contract-1", "status": "70"}], 1)
+        def _fetch_contract_scope(self, _dictionaries):
+            return sync.OfficialContractScope(
+                active_contracts=[{"saleContractId": "contract-1", "status": "70"}],
+                demands={
+                    "demand-1": {
+                        "demandId": "demand-1",
+                        "sourceType": "10",
+                        "businessType": "B07",
+                        "quantityAttribution": "Q1",
+                        "profitAttribution": "P1",
+                    }
+                },
+                in_scope_demand_ids={"demand-1"},
+                page_count=1,
+                diagnostics={"active_contract_count": 1},
+            )
 
         def _fetch_settlements(self):
             return {}
@@ -503,13 +644,22 @@ def test_official_source_dry_run_summary_contains_only_aggregate_metadata():
         complete=False,
         errors=[{"type": "ambiguous_resource_match", "detail_id": "sensitive-detail-id"}],
         source_mode="official_json",
-        diagnostics={"active_contract_count": 1, "eligible_record_count": 1},
+        diagnostics={
+            "source_demand_count": 3,
+            "in_scope_demand_count": 1,
+            "related_chain_count": 1,
+            "active_contract_count": 1,
+            "eligible_record_count": 1,
+        },
     )
 
     result = sync.summarize_official_source_scan(scan)
     serialized = json.dumps(result, ensure_ascii=False)
 
     assert result["ok"] is False
+    assert result["counts"]["source_demand_count"] == 3
+    assert result["counts"]["in_scope_demand_count"] == 1
+    assert result["counts"]["related_chain_count"] == 1
     assert result["counts"]["eligible_record_count"] == 1
     assert result["field_coverage"]["AB"] == {"filled_count": 1, "total_count": 1}
     assert result["scan_error_types"] == {"ambiguous_resource_match": 1}
@@ -548,6 +698,49 @@ def test_profiled_report_dry_run_returns_aggregate_only():
     assert result["field_coverage"]["E"] == {"filled_count": 1, "total_count": 1}
     assert "sensitive-detail-id" not in serialized
     assert "敏感客户名称" not in serialized
+
+
+def test_official_contract_scope_dry_run_returns_counts_without_identifiers():
+    from app import spot_ledger_sync as sync
+
+    class Source:
+        def _fetch_dictionaries(self):
+            return {}
+
+        def _fetch_contract_scope(self, _dictionaries):
+            return sync.OfficialContractScope(
+                active_contracts=[{"saleContractId": "sensitive-contract-id"}],
+                demands={"sensitive-demand-id": {}},
+                in_scope_demand_ids={"sensitive-demand-id"},
+                page_count=2,
+                errors=[
+                    {
+                        "type": "unclassified_demand_scope",
+                        "demand_id": "sensitive-demand-id",
+                    }
+                ],
+                diagnostics={
+                    "source_demand_count": 10,
+                    "in_scope_demand_count": 1,
+                    "active_contract_count": 1,
+                },
+            )
+
+    result = sync.run_official_contract_scope_dry_run(source=Source())
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result == {
+        "ok": False,
+        "source_mode": "official_json",
+        "page_count": 2,
+        "counts": {
+            "source_demand_count": 10,
+            "in_scope_demand_count": 1,
+            "active_contract_count": 1,
+        },
+        "error_types": {"unclassified_demand_scope": 1},
+    }
+    assert "sensitive" not in serialized
 
 
 def test_official_scope_probe_confirms_demand_and_settlement_filters_without_values():

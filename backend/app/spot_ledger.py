@@ -769,10 +769,10 @@ def source_scope_readiness_view(user=Depends(_request_user)):
     if not is_admin(active_user):
         raise HTTPException(status_code=403, detail="仅管理员可检查真实源范围")
 
-    from .spot_ledger_sync import SalesContractSourceError, probe_official_scope_filters
+    from .spot_ledger_sync import SalesContractSourceError, run_official_contract_scope_dry_run
 
     try:
-        return probe_official_scope_filters()
+        return run_official_contract_scope_dry_run()
     except SalesContractSourceError as exc:
         detail = {"code": exc.code, "stage": exc.stage}
         if exc.http_status is not None:

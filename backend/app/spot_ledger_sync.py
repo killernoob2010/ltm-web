@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as day_time
 from html.parser import HTMLParser
@@ -114,6 +115,16 @@ class FullScanResult:
     errors: list[Any] = field(default_factory=list)
     source_mode: str = "fixture"
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OfficialContractScope:
+    active_contracts: list[dict[str, Any]]
+    demands: dict[str, dict[str, Any]]
+    in_scope_demand_ids: set[str]
+    page_count: int
+    errors: list[dict[str, str]] = field(default_factory=list)
+    diagnostics: dict[str, int] = field(default_factory=dict)
 
 
 class SalesContractSource:
@@ -615,16 +626,18 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         *,
         http: Any = requests,
         auth_provider: Optional[Callable[[], dict[str, str]]] = None,
-        page_size: int = 50,
+        page_size: int = 500,
         max_pages: int = 1000,
+        max_workers: int = 8,
         timeout_seconds: float = 30,
     ):
-        if page_size < 1 or max_pages < 1:
-            raise ValueError("page_size 和 max_pages 必须为正整数")
+        if page_size < 1 or max_pages < 1 or not 1 <= max_workers <= 16:
+            raise ValueError("page_size、max_pages 和 max_workers 必须在安全范围内")
         self.http = http
         self.auth_provider = auth_provider
         self.page_size = page_size
         self.max_pages = max_pages
+        self.max_workers = max_workers
         self.timeout_seconds = timeout_seconds
 
     @classmethod
@@ -722,6 +735,14 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             )
         return payload
 
+    def _map_bounded(self, function: Callable[[Any], Any], values: list[Any]) -> list[Any]:
+        if not values:
+            return []
+        if self.max_workers == 1 or len(values) == 1:
+            return [function(value) for value in values]
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(values))) as executor:
+            return list(executor.map(function, values))
+
     @staticmethod
     def _paged_rows(payload: dict[str, Any], *, stage: str) -> tuple[list[dict[str, Any]], int]:
         data = payload.get("data")
@@ -749,50 +770,161 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             )
         return rows, total_count
 
-    def _fetch_active_contracts(self) -> tuple[list[dict[str, Any]], int]:
-        rows: list[dict[str, Any]] = []
-        expected_total: Optional[int] = None
-        page_count = 1
-        for page_no in range(1, self.max_pages + 1):
+    def _fetch_contract_scope(
+        self,
+        dictionaries: dict[str, dict[str, str]],
+    ) -> OfficialContractScope:
+        def fetch_demand_page(page_no: int) -> tuple[list[dict[str, Any]], int]:
             payload = self._request_json(
-                "post",
-                OFFICIAL_SALES_CONTRACT_LIST_URL,
-                stage="official_contract_list",
-                params={"sheetCode": "G01009", "pageNum": page_no, "pageSize": self.page_size},
-                json={"status": "70", "isQryAll": "N"},
+                "get",
+                OFFICIAL_DEMAND_LIST_URL,
+                stage="official_scope_demand_list",
+                params={"pageNum": page_no, "pageSize": self.page_size},
             )
-            page_rows, total = self._paged_rows(payload, stage="official_contract_list")
-            if expected_total is None:
-                expected_total = total
-                page_count = max(1, (total + self.page_size - 1) // self.page_size)
-                if page_count > self.max_pages:
-                    raise SalesContractSourceError(
-                        "parse_error",
-                        "正式销售合同分页数超过安全上限",
-                        stage="official_contract_list_pages",
-                    )
-            elif total != expected_total:
-                raise SalesContractSourceError(
-                    "parse_error",
-                    "正式销售合同分页统计在扫描过程中发生变化",
-                    stage="official_contract_list_changed",
-                )
-            rows.extend(page_rows)
-            if page_no >= page_count:
-                break
-        if expected_total is None or len(rows) != expected_total:
+            return self._paged_rows(payload, stage="official_scope_demand_list")
+
+        first_rows, expected_total = fetch_demand_page(1)
+        page_count = max(1, (expected_total + self.page_size - 1) // self.page_size)
+        if page_count > self.max_pages:
             raise SalesContractSourceError(
                 "parse_error",
-                "正式销售合同分页记录数与总数不一致",
-                stage="official_contract_list_count",
+                "正式需求分页数超过安全上限",
+                stage="official_scope_demand_pages",
             )
-        return rows, page_count
+        demand_rows = list(first_rows)
+        remaining_pages = self._map_bounded(fetch_demand_page, list(range(2, page_count + 1)))
+        for page_rows, total in remaining_pages:
+            if total != expected_total:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式需求分页统计在扫描过程中发生变化",
+                    stage="official_scope_demand_changed",
+                )
+            demand_rows.extend(page_rows)
+        if len(demand_rows) != expected_total:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式需求分页记录数与总数不一致",
+                stage="official_scope_demand_count",
+            )
+
+        errors: list[dict[str, str]] = []
+        demands: dict[str, dict[str, Any]] = {}
+        in_scope_demand_ids: set[str] = set()
+        in_scope_demand_order: list[str] = []
+        spot_demand_count = 0
+        duplicate_demand_id_count = 0
+        unclassified_demand_scope_count = 0
+        for row in demand_rows:
+            demand_id = str(row.get("demandId") or "").strip()
+            if not demand_id:
+                errors.append({"type": "missing_demand_id"})
+                continue
+            if demand_id in demands:
+                duplicate_demand_id_count += 1
+                errors.append({"type": "duplicate_demand_id", "demand_id": demand_id})
+                continue
+            demands[demand_id] = row
+            source_type, source_known = self._dictionary_label(
+                dictionaries.get("source_type", {}),
+                row.get("sourceType"),
+            )
+            quantity_group, quantity_group_known = self._dictionary_label(
+                dictionaries.get("quantity_attribution", {}),
+                row.get("quantityAttribution"),
+            )
+            if not source_known or not quantity_group_known:
+                unclassified_demand_scope_count += 1
+                errors.append({"type": "unclassified_demand_scope", "demand_id": demand_id})
+                continue
+            if source_type == "现货":
+                spot_demand_count += 1
+            if source_type == "现货" and quantity_group in SHANGHAI_GROUPS:
+                in_scope_demand_ids.add(demand_id)
+                in_scope_demand_order.append(demand_id)
+
+        chain_ids: list[str] = []
+        seen_chain_ids: set[str] = set()
+        def fetch_related_chains(demand_id: str) -> tuple[str, list[dict[str, Any]]]:
+            rows = self._get_data_list(
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/chain/relatedToDemand/"
+                    f"{quote(demand_id, safe='')}?sheetCode=G01004"
+                ),
+                stage="official_scope_related_chain",
+            )
+            return demand_id, rows
+
+        for demand_id, related_chains in self._map_bounded(
+            fetch_related_chains,
+            in_scope_demand_order,
+        ):
+            for row in related_chains:
+                chain_id = str(row.get("chainId") or "").strip()
+                if not chain_id:
+                    errors.append({"type": "missing_chain_id", "demand_id": demand_id})
+                    continue
+                if chain_id not in seen_chain_ids:
+                    seen_chain_ids.add(chain_id)
+                    chain_ids.append(chain_id)
+
+        active_contracts: list[dict[str, Any]] = []
+        seen_contract_ids: set[str] = set()
+        related_sale_contract_count = 0
+        def fetch_chain_sales(chain_id: str) -> tuple[str, list[dict[str, Any]]]:
+            payload = self._request_json(
+                "post",
+                OFFICIAL_CHAIN_SALE_CONTRACT_LIST_URL,
+                stage="official_scope_chain_sales",
+                json={"chainId": chain_id, "tradersId": ""},
+            )
+            rows = payload.get("data")
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式业务链销售合同响应不是数组",
+                    stage="official_scope_chain_sales_data",
+                )
+            return chain_id, rows
+
+        for _chain_id, rows in self._map_bounded(fetch_chain_sales, chain_ids):
+            related_sale_contract_count += len(rows)
+            for row in rows:
+                status = str(row.get("status") or "").strip()
+                if not status:
+                    errors.append({"type": "missing_contract_status"})
+                    continue
+                if status not in {"70", "生效"}:
+                    continue
+                contract_id = str(row.get("saleContractId") or "").strip()
+                if not contract_id:
+                    errors.append({"type": "missing_contract_id"})
+                    continue
+                if contract_id in seen_contract_ids:
+                    continue
+                seen_contract_ids.add(contract_id)
+                active_contracts.append(row)
+
+        return OfficialContractScope(
+            active_contracts=active_contracts,
+            demands=demands,
+            in_scope_demand_ids=in_scope_demand_ids,
+            page_count=page_count,
+            errors=errors,
+            diagnostics={
+                "source_demand_count": expected_total,
+                "spot_demand_count": spot_demand_count,
+                "in_scope_demand_count": len(in_scope_demand_ids),
+                "duplicate_demand_id_count": duplicate_demand_id_count,
+                "unclassified_demand_scope_count": unclassified_demand_scope_count,
+                "related_chain_count": len(chain_ids),
+                "related_sale_contract_count": related_sale_contract_count,
+                "active_contract_count": len(active_contracts),
+            },
+        )
 
     def _fetch_settlements(self) -> dict[str, float | int]:
-        rows: list[dict[str, Any]] = []
-        expected_total: Optional[int] = None
-        page_count = 1
-        for page_no in range(1, self.max_pages + 1):
+        def fetch_settlement_page(page_no: int) -> tuple[list[dict[str, Any]], int]:
             payload = self._request_json(
                 "post",
                 OFFICIAL_SETTLEMENT_QUERY_URL,
@@ -800,26 +932,30 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 params={"pageNum": page_no, "pageSize": self.page_size},
                 json={"status": "70"},
             )
-            page_rows, total = self._paged_rows(payload, stage="official_settlement")
-            if expected_total is None:
-                expected_total = total
-                page_count = max(1, (total + self.page_size - 1) // self.page_size)
-                if page_count > self.max_pages:
-                    raise SalesContractSourceError(
-                        "parse_error",
-                        "正式结算分页数超过安全上限",
-                        stage="official_settlement_pages",
-                    )
-            elif total != expected_total:
+            return self._paged_rows(payload, stage="official_settlement")
+
+        first_rows, expected_total = fetch_settlement_page(1)
+        page_count = max(1, (expected_total + self.page_size - 1) // self.page_size)
+        if page_count > self.max_pages:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式结算分页数超过安全上限",
+                stage="official_settlement_pages",
+            )
+        rows = list(first_rows)
+        remaining_pages = self._map_bounded(
+            fetch_settlement_page,
+            list(range(2, page_count + 1)),
+        )
+        for page_rows, total in remaining_pages:
+            if total != expected_total:
                 raise SalesContractSourceError(
                     "parse_error",
                     "正式结算分页统计在扫描过程中发生变化",
                     stage="official_settlement_changed",
                 )
             rows.extend(page_rows)
-            if page_no >= page_count:
-                break
-        if expected_total is None or len(rows) != expected_total:
+        if len(rows) != expected_total:
             raise SalesContractSourceError(
                 "parse_error",
                 "正式结算分页记录数与总数不一致",
@@ -933,16 +1069,18 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         return purchase_lines
 
     def fetch_full_scan(self) -> FullScanResult:
-        contract_rows, contract_page_count = self._fetch_active_contracts()
-        settlements = self._fetch_settlements()
         dictionaries = self._fetch_dictionaries()
+        contract_scope = self._fetch_contract_scope(dictionaries)
+        contract_rows = contract_scope.active_contracts
+        contract_page_count = contract_scope.page_count
+        settlements = self._fetch_settlements()
         normalized_records: list[dict[str, Any]] = []
-        scan_errors: list[dict[str, str]] = []
+        scan_errors: list[dict[str, str]] = list(contract_scope.errors)
         source_detail_count = 0
         out_of_scope_count = 0
         ambiguous_match_count = 0
         missing_match_count = 0
-        demand_cache: dict[str, dict[str, Any]] = {}
+        demand_cache: dict[str, dict[str, Any]] = dict(contract_scope.demands)
         resource_cache: dict[str, dict[str, Any]] = {}
 
         for contract_row in contract_rows:
@@ -1017,6 +1155,24 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                         params={"demandId": demand_id},
                     )
                 demand = demand_cache[demand_id]
+                if any(
+                    demand.get(field_name) in (None, "")
+                    for field_name in (
+                        "sourceType",
+                        "quantityAttribution",
+                        "profitAttribution",
+                        "businessType",
+                    )
+                ):
+                    demand = {
+                        **demand,
+                        **self._get_data_dict(
+                            OFFICIAL_DEMAND_DETAIL_URL,
+                            stage="official_demand_detail",
+                            params={"demandId": demand_id},
+                        ),
+                    }
+                    demand_cache[demand_id] = demand
                 quantity_group, quantity_group_known = self._dictionary_label(
                     dictionaries["quantity_attribution"],
                     demand.get("quantityAttribution"),
@@ -1103,7 +1259,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     out_of_scope_count += 1
 
         diagnostics = {
-            "active_contract_count": len(contract_rows),
+            **contract_scope.diagnostics,
             "source_detail_count": source_detail_count,
             "eligible_record_count": len(normalized_records),
             "out_of_scope_record_count": out_of_scope_count,
@@ -1141,6 +1297,13 @@ def _error_type_counts(errors: list[Any]) -> dict[str, int]:
 def summarize_official_source_scan(scan: FullScanResult) -> dict[str, Any]:
     """Return dry-run evidence without exposing source records or identifiers."""
     diagnostic_defaults = {
+        "source_demand_count": 0,
+        "spot_demand_count": 0,
+        "in_scope_demand_count": 0,
+        "duplicate_demand_id_count": 0,
+        "unclassified_demand_scope_count": 0,
+        "related_chain_count": 0,
+        "related_sale_contract_count": 0,
         "active_contract_count": 0,
         "source_detail_count": 0,
         "eligible_record_count": len(scan.records),
@@ -1193,6 +1356,22 @@ def run_profiled_source_dry_run(
     """Read the confirmed JSON report without persisting records or source values."""
     scan = (source or ProfiledSalesContractSource.from_env()).fetch_full_scan()
     return summarize_official_source_scan(scan)
+
+
+def run_official_contract_scope_dry_run(
+    source: Optional[OfficialJsonSalesContractSource] = None,
+) -> dict[str, Any]:
+    """Resolve the seven-group contract scope without reading contract details or settlements."""
+    active_source = source or OfficialJsonSalesContractSource.from_env()
+    dictionaries = active_source._fetch_dictionaries()
+    scope = active_source._fetch_contract_scope(dictionaries)
+    return {
+        "ok": not scope.errors,
+        "source_mode": "official_json",
+        "page_count": scope.page_count,
+        "counts": dict(scope.diagnostics),
+        "error_types": _error_type_counts(scope.errors),
+    }
 
 
 def probe_official_scope_filters(
@@ -2376,7 +2555,15 @@ def _source_from_env() -> SalesContractSource:
         if not path:
             raise SalesContractSourceError("fixture_missing", "SPOT_LEDGER_FIXTURE_PATH 未配置")
         return FixtureSalesContractSource(path)
-    return ProfiledSalesContractSource.from_env()
+    if mode == "official_json":
+        return OfficialJsonSalesContractSource.from_env()
+    if mode == "profiled_http":
+        return ProfiledSalesContractSource.from_env()
+    raise SalesContractSourceError(
+        "source_mode_invalid",
+        "SPOT_LEDGER_SOURCE_MODE 不受支持",
+        stage="source_mode",
+    )
 
 
 def run_spot_ledger_sync_once(slot_key: str, source: Optional[SalesContractSource] = None) -> dict[str, Any]:

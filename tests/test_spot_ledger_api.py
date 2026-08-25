@@ -183,14 +183,11 @@ def test_source_scope_readiness_returns_only_aggregate_result(ledger_context, mo
     aggregate = {
         "ok": True,
         "source_mode": "official_json",
-        "demand_filter": {
-            "group_counts": {"大客户组": 8},
-            "sampled_group_count": 1,
-            "sample_match_count": 1,
-        },
-        "settlement_filters": {"saleContractMxId": {"total": 1, "effective": True}},
+        "page_count": 1,
+        "counts": {"in_scope_demand_count": 8, "active_contract_count": 1},
+        "error_types": {},
     }
-    monkeypatch.setattr(sync, "probe_official_scope_filters", lambda: aggregate)
+    monkeypatch.setattr(sync, "run_official_contract_scope_dry_run", lambda: aggregate)
 
     assert source_scope_readiness_view(user=admin) == aggregate
 
