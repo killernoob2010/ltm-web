@@ -248,19 +248,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         def post(self, url, **kwargs):
             self.calls.append((url, kwargs))
             if "/tradeing/chain/saleList" in url:
-                if kwargs["json"]["chainId"] == "must-not-be-returned-chain-id":
-                    return Response({"code": 200, "data": []})
-                return Response(
-                    {
-                        "code": 200,
-                        "data": [
-                            {
-                                "saleId": "must-not-be-returned-resource-id",
-                                "sourceDate": "must-not-be-returned-resource-date",
-                            }
-                        ],
-                    }
-                )
+                return Response({"code": 200, "data": []})
             return Response(
                 {
                     "code": 200,
@@ -299,8 +287,22 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                         "data": {
                             "chainId": "must-not-be-returned-chain-id-2",
                             "saleContractId": "must-not-be-returned-id-2",
+                            "syncTradersId": "must-not-be-returned-traders-id",
                             "saleContractMxList": [],
                         },
+                    }
+                )
+            if "/chain/goods/matchResult/" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": [
+                            {
+                                "saleId": "must-not-be-returned-resource-id",
+                                "saleNo": "must-not-be-returned-resource-no",
+                                "sourceDate": "must-not-be-returned-resource-date",
+                            }
+                        ],
                     }
                 )
             if "/tradeing/sale?" in url:
@@ -382,6 +384,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "purchase_response_code": "200",
         "chain_response_code": "200",
         "resource_list_response_code": "200",
+        "match_response_code": "200",
         "resource_detail_response_code": "200",
         "sampled_contract_count": 2,
         "schema_paths": [
@@ -405,6 +408,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.saleContractMxList[]",
             "data.saleContractMxList[].contractQuantity",
             "data.saleContractMxList[].saleContractMxId",
+            "data.syncTradersId",
         ],
         "relevance_schema_paths": [
             "code",
@@ -435,7 +439,13 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "code",
             "data",
             "data[]",
+        ],
+        "match_schema_paths": [
+            "code",
+            "data",
+            "data[]",
             "data[].saleId",
+            "data[].saleNo",
             "data[].sourceDate",
         ],
         "resource_detail_schema_paths": [
@@ -545,6 +555,17 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "https://tds-api.ejianlong.com/tradeing/chain/saleList?sheetCode=G01004",
             {
                 "json": {"chainId": "must-not-be-returned-chain-id-2", "tradersId": ""},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/chain/goods/matchResult/must-not-be-returned-traders-id?sheetCode=G01004",
+            {
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",

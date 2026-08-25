@@ -686,6 +686,8 @@ def probe_official_sales_contract_api(
     chain_response_code = ""
     resource_list_payload: dict[str, Any] = {}
     resource_list_response_code = ""
+    match_payload: dict[str, Any] = {}
+    match_response_code = ""
     resource_detail_payload: dict[str, Any] = {}
     resource_detail_response_code = ""
     sampled_contract_count = 0
@@ -693,7 +695,9 @@ def probe_official_sales_contract_api(
     detail_schema_path_set: set[str] = set()
     chain_schema_path_set: set[str] = set()
     resource_list_schema_path_set: set[str] = set()
+    match_schema_path_set: set[str] = set()
     seen_chain_ids: set[str] = set()
+    seen_traders_ids: set[str] = set()
     if isinstance(rows, list) and rows:
         sampled_contract_count = 1
         contract_id = rows[0].get("saleContractId") if isinstance(rows[0], dict) else None
@@ -854,6 +858,26 @@ def probe_official_sales_contract_api(
                 (row.get("saleId") for row in resource_rows if isinstance(row, dict) and row.get("saleId")),
                 None,
             ) if isinstance(resource_rows, list) else None
+        sync_traders_id = detail_data.get("syncTradersId") if isinstance(detail_data, dict) else None
+        if not resource_id and sync_traders_id:
+            seen_traders_ids.add(str(sync_traders_id))
+            match_payload, match_response_code = _probe_json_request(
+                active_source,
+                "get",
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
+                    f"{quote(str(sync_traders_id), safe='')}?sheetCode=G01004"
+                ),
+                headers=headers,
+                stage="official_match_result",
+                description="正式交易链资源匹配 JSON",
+            )
+            match_schema_path_set.update(_schema_paths(match_payload))
+            match_rows = match_payload.get("data")
+            resource_id = next(
+                (row.get("saleId") for row in match_rows if isinstance(row, dict) and row.get("saleId")),
+                None,
+            ) if isinstance(match_rows, list) else None
         if not resource_id:
             for extra_row in rows[1:5]:
                 extra_contract_id = extra_row.get("saleContractId") if isinstance(extra_row, dict) else None
@@ -902,6 +926,32 @@ def probe_official_sales_contract_api(
                     (row.get("saleId") for row in resource_rows if isinstance(row, dict) and row.get("saleId")),
                     None,
                 ) if isinstance(resource_rows, list) else None
+                extra_sync_traders_id = (
+                    extra_detail_data.get("syncTradersId") if isinstance(extra_detail_data, dict) else None
+                )
+                if (
+                    not resource_id
+                    and extra_sync_traders_id
+                    and str(extra_sync_traders_id) not in seen_traders_ids
+                ):
+                    seen_traders_ids.add(str(extra_sync_traders_id))
+                    match_payload, match_response_code = _probe_json_request(
+                        active_source,
+                        "get",
+                        (
+                            f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
+                            f"{quote(str(extra_sync_traders_id), safe='')}?sheetCode=G01004"
+                        ),
+                        headers=headers,
+                        stage="official_sample_match_result",
+                        description="正式交易链资源匹配 JSON 抽样",
+                    )
+                    match_schema_path_set.update(_schema_paths(match_payload))
+                    match_rows = match_payload.get("data")
+                    resource_id = next(
+                        (row.get("saleId") for row in match_rows if isinstance(row, dict) and row.get("saleId")),
+                        None,
+                    ) if isinstance(match_rows, list) else None
                 if resource_id:
                     break
         if resource_id:
@@ -922,6 +972,7 @@ def probe_official_sales_contract_api(
             and purchase_response_code in {"", "200"}
             and chain_response_code in {"", "200"}
             and resource_list_response_code in {"", "200"}
+            and match_response_code in {"", "200"}
             and resource_detail_response_code in {"", "200"}
         ),
         "source_mode": "official_json",
@@ -932,6 +983,7 @@ def probe_official_sales_contract_api(
         "purchase_response_code": purchase_response_code,
         "chain_response_code": chain_response_code,
         "resource_list_response_code": resource_list_response_code,
+        "match_response_code": match_response_code,
         "resource_detail_response_code": resource_detail_response_code,
         "sampled_contract_count": sampled_contract_count,
         "schema_paths": sorted(_schema_paths(payload))[:300],
@@ -940,6 +992,7 @@ def probe_official_sales_contract_api(
         "purchase_schema_paths": sorted(_schema_paths(purchase_payload))[:300],
         "chain_schema_paths": sorted(chain_schema_path_set)[:300],
         "resource_list_schema_paths": sorted(resource_list_schema_path_set)[:300],
+        "match_schema_paths": sorted(match_schema_path_set)[:300],
         "resource_detail_schema_paths": sorted(_schema_paths(resource_detail_payload))[:300],
     }
 
