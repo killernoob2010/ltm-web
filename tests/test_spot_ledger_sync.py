@@ -768,6 +768,8 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "quantity_group_dictionary_response_code": "200",
         "profit_group_dictionary_response_code": "200",
         "sampled_contract_count": 1,
+        "active_contract_total": 1,
+        "settlement_row_total": 1,
         "schema_paths": [
             "code",
             "data",

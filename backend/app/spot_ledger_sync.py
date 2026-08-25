@@ -1228,6 +1228,15 @@ def _payload_rows(payload: dict[str, Any], *paths: tuple[str, ...]) -> list[dict
     return []
 
 
+def _payload_total(payload: dict[str, Any]) -> int:
+    data = payload.get("data")
+    value = data.get("total") if isinstance(data, dict) else None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _nonempty_ids(rows: list[dict[str, Any]], key: str) -> set[str]:
     return {str(row[key]) for row in rows if row.get(key) not in (None, "")}
 
@@ -1837,6 +1846,8 @@ def probe_official_sales_contract_api(
         "quantity_group_dictionary_response_code": quantity_group_dictionary_response_code,
         "profit_group_dictionary_response_code": profit_group_dictionary_response_code,
         "sampled_contract_count": sampled_contract_count,
+        "active_contract_total": _payload_total(payload),
+        "settlement_row_total": _payload_total(settlement_payload),
         "schema_paths": sorted(_schema_paths(payload))[:300],
         "detail_schema_paths": sorted(detail_schema_path_set)[:300],
         "relevance_schema_paths": sorted(_schema_paths(relevance_payload))[:300],
