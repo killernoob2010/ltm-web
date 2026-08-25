@@ -315,6 +315,31 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                         },
                     }
                 )
+            if "/tradeing/demand?" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "demandId": "must-not-be-returned-demand-id",
+                            "quantityAttribution": "must-not-be-returned-quantity-group",
+                            "profitAttribution": "must-not-be-returned-profit-group",
+                        },
+                    }
+                )
+            if "/tradeing/goods/list/" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": [
+                            {
+                                "goodsDetailId": "must-not-be-returned-business-detail-id",
+                                "chainGoodId": "must-not-be-returned-chain-good-id",
+                                "goodsCode": "must-not-be-returned-goods-code",
+                                "specification": "must-not-be-returned-specification",
+                            }
+                        ],
+                    }
+                )
             if "/tradeing/chain/getById/" in url:
                 chain_id = "must-not-be-returned-chain-id-2" if "chain-id-2" in url else "must-not-be-returned-chain-id"
                 return Response(
@@ -348,7 +373,9 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                                 "saleId": "must-not-be-returned-resource-id",
                                 "saleNo": "must-not-be-returned-resource-no",
                                 "sourceDate": "must-not-be-returned-resource-date",
-                                "demandId": "must-not-be-returned-business-detail-id",
+                                "demandId": "must-not-be-returned-demand-id",
+                                "goodsCode": "must-not-be-returned-goods-code",
+                                "specs": "must-not-be-returned-specification",
                             }
                         ],
                     }
@@ -408,7 +435,9 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                                 "saleContractMxId": "must-not-be-returned",
                                 "businessDetailId": "must-not-be-returned-business-detail-id",
                                 "chainGoodId": "must-not-be-returned-chain-good-id",
+                                "goodsCode": "must-not-be-returned-goods-code",
                                 "relevanceId": "must-not-be-returned-relevance-id",
+                                "specification": "must-not-be-returned-specification",
                                 "upContractMxId": "must-not-be-returned-purchase-line-id",
                                 "contractQuantity": 100,
                             }
@@ -441,6 +470,8 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "resource_list_response_code": "200",
         "match_response_code": "200",
         "resource_detail_response_code": "200",
+        "demand_detail_response_code": "200",
+        "demand_goods_response_code": "200",
         "settlement_response_code": "200",
         "resource_catalog_response_code": "200",
         "quantity_group_dictionary_response_code": "200",
@@ -469,8 +500,10 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.tdsSaleContractMxVos[].businessDetailId",
             "data.tdsSaleContractMxVos[].chainGoodId",
             "data.tdsSaleContractMxVos[].contractQuantity",
+            "data.tdsSaleContractMxVos[].goodsCode",
             "data.tdsSaleContractMxVos[].relevanceId",
             "data.tdsSaleContractMxVos[].saleContractMxId",
+            "data.tdsSaleContractMxVos[].specification",
             "data.tdsSaleContractMxVos[].upContractMxId",
         ],
         "relevance_schema_paths": [
@@ -511,9 +544,11 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data",
             "data[]",
             "data[].demandId",
+            "data[].goodsCode",
             "data[].saleId",
             "data[].saleNo",
             "data[].sourceDate",
+            "data[].specs",
         ],
         "resource_detail_schema_paths": [
             "code",
@@ -524,6 +559,22 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.tdsGoodsList",
             "data.tdsGoodsList[]",
             "data.tdsGoodsList[].price",
+        ],
+        "demand_detail_schema_paths": [
+            "code",
+            "data",
+            "data.demandId",
+            "data.profitAttribution",
+            "data.quantityAttribution",
+        ],
+        "demand_goods_schema_paths": [
+            "code",
+            "data",
+            "data[]",
+            "data[].chainGoodId",
+            "data[].goodsCode",
+            "data[].goodsDetailId",
+            "data[].specification",
         ],
         "settlement_schema_paths": [
             "code",
@@ -561,6 +612,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data[].dictValue",
         ],
         "group_dictionary_coverage": {"quantity": 7, "profit": 7},
+        "sampled_demand_group_coverage": {"quantity": 1, "profit": 1},
         "linkage_counts": {
             "sale_lines": 1,
             "purchase_lines": 1,
@@ -568,9 +620,13 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "match_rows": 1,
             "settlement_to_sale_detail": 1,
             "match_demand_to_sale_detail": 0,
-            "match_demand_to_sale_business_detail": 1,
+            "match_demand_to_sale_business_detail": 0,
             "match_demand_to_sale_chain_good": 0,
             "match_demand_to_sale_relevance": 0,
+            "match_goods_to_sale_goods_code": 1,
+            "match_goods_and_specs_to_sale_line": 1,
+            "demand_goods_detail_to_sale_business_detail": 1,
+            "demand_goods_chain_good_to_sale_chain_good": 1,
             "purchase_to_sale_up_contract": 1,
             "purchase_business_detail_to_sale_business_detail": 0,
             "purchase_chain_good_to_sale_chain_good": 1,
@@ -696,6 +752,29 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "https://tds-api.ejianlong.com/tradeing/sale?sheetCode=G01003",
             {
                 "params": {"saleId": "must-not-be-returned-resource-id"},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/demand?sheetCode=G01002",
+            {
+                "params": {"demandId": "must-not-be-returned-demand-id"},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/goods/list/must-not-be-returned-demand-id?sheetCode=G01002",
+            {
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",

@@ -49,6 +49,7 @@ OFFICIAL_SALES_CONTRACT_LIST_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleCo
 OFFICIAL_SETTLEMENT_QUERY_URL = f"{JIANLONG_TDS_API_BASE_URL}/tdsSettle/queryJiesuan?sheetCode=G01112"
 OFFICIAL_RESOURCE_CATALOG_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale/list?sheetCode=G01003"
 OFFICIAL_DICTIONARY_URL = f"{JIANLONG_TDS_API_BASE_URL}/system/dict/data/type"
+OFFICIAL_DEMAND_DETAIL_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/demand?sheetCode=G01002"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -641,6 +642,7 @@ def _linkage_counts(
     detail_payload: dict[str, Any],
     purchase_payload: dict[str, Any],
     match_payload: dict[str, Any],
+    demand_goods_payload: dict[str, Any],
     settlement_payload: dict[str, Any],
 ) -> dict[str, int]:
     sale_lines = _payload_rows(
@@ -654,6 +656,7 @@ def _linkage_counts(
         ("data", "purchaseContractMxList"),
     )
     match_rows = _payload_rows(match_payload, ("data",))
+    demand_goods = _payload_rows(demand_goods_payload, ("data",))
     settlement_rows = _payload_rows(settlement_payload, ("data", "rows"))
     sale_ids = {
         "detail": _nonempty_ids(sale_lines, "saleContractMxId"),
@@ -661,6 +664,12 @@ def _linkage_counts(
         "chain_good": _nonempty_ids(sale_lines, "chainGoodId"),
         "relevance": _nonempty_ids(sale_lines, "relevanceId"),
         "up_contract": _nonempty_ids(sale_lines, "upContractMxId"),
+        "goods_code": _nonempty_ids(sale_lines, "goodsCode"),
+    }
+    sale_goods_specs = {
+        (str(row.get("goodsCode")), str(row.get("specification")))
+        for row in sale_lines
+        if row.get("goodsCode") not in (None, "") and row.get("specification") not in (None, "")
     }
     return {
         "sale_lines": len(sale_lines),
@@ -692,6 +701,26 @@ def _linkage_counts(
             for row in match_rows
             if row.get("demandId") not in (None, "")
         ),
+        "match_goods_to_sale_goods_code": sum(
+            str(row.get("goodsCode")) in sale_ids["goods_code"]
+            for row in match_rows
+            if row.get("goodsCode") not in (None, "")
+        ),
+        "match_goods_and_specs_to_sale_line": sum(
+            (str(row.get("goodsCode")), str(row.get("specs"))) in sale_goods_specs
+            for row in match_rows
+            if row.get("goodsCode") not in (None, "") and row.get("specs") not in (None, "")
+        ),
+        "demand_goods_detail_to_sale_business_detail": sum(
+            str(row.get("goodsDetailId")) in sale_ids["business"]
+            for row in demand_goods
+            if row.get("goodsDetailId") not in (None, "")
+        ),
+        "demand_goods_chain_good_to_sale_chain_good": sum(
+            str(row.get("chainGoodId")) in sale_ids["chain_good"]
+            for row in demand_goods
+            if row.get("chainGoodId") not in (None, "")
+        ),
         "purchase_to_sale_up_contract": sum(
             str(row.get("purchaseContractMxId")) in sale_ids["up_contract"]
             for row in purchase_lines
@@ -721,6 +750,14 @@ def _group_dictionary_coverage(payload: dict[str, Any]) -> int:
         for row in _payload_rows(payload, ("data",))
     }
     return len(labels.intersection(SHANGHAI_GROUPS))
+
+
+def _demand_group_coverage(payload: dict[str, Any]) -> dict[str, int]:
+    data = payload.get("data")
+    return {
+        "quantity": int(isinstance(data, dict) and data.get("quantityAttribution") not in (None, "")),
+        "profit": int(isinstance(data, dict) and data.get("profitAttribution") not in (None, "")),
+    }
 
 
 def probe_official_sales_contract_api(
@@ -793,6 +830,10 @@ def probe_official_sales_contract_api(
     match_response_code = ""
     resource_detail_payload: dict[str, Any] = {}
     resource_detail_response_code = ""
+    demand_detail_payload: dict[str, Any] = {}
+    demand_detail_response_code = ""
+    demand_goods_payload: dict[str, Any] = {}
+    demand_goods_response_code = ""
     settlement_payload: dict[str, Any] = {}
     settlement_response_code = ""
     resource_catalog_payload: dict[str, Any] = {}
@@ -1075,6 +1116,32 @@ def probe_official_sales_contract_api(
                 description="正式销售资源 JSON 详情",
                 params={"saleId": str(resource_id)},
             )
+        match_rows = match_payload.get("data")
+        demand_id = next(
+            (row.get("demandId") for row in match_rows if isinstance(row, dict) and row.get("demandId")),
+            None,
+        ) if isinstance(match_rows, list) else None
+        if demand_id:
+            demand_detail_payload, demand_detail_response_code = _probe_json_request(
+                active_source,
+                "get",
+                OFFICIAL_DEMAND_DETAIL_URL,
+                headers=headers,
+                stage="official_demand_detail",
+                description="正式需求资源 JSON 详情",
+                params={"demandId": str(demand_id)},
+            )
+            demand_goods_payload, demand_goods_response_code = _probe_json_request(
+                active_source,
+                "get",
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/goods/list/"
+                    f"{quote(str(demand_id), safe='')}?sheetCode=G01002"
+                ),
+                headers=headers,
+                stage="official_demand_goods",
+                description="正式需求资源物资 JSON 列表",
+            )
     settlement_payload, settlement_response_code = _probe_json_request(
         active_source,
         "post",
@@ -1132,6 +1199,8 @@ def probe_official_sales_contract_api(
             and resource_list_response_code in {"", "200"}
             and match_response_code in {"", "200"}
             and resource_detail_response_code in {"", "200"}
+            and demand_detail_response_code in {"", "200"}
+            and demand_goods_response_code in {"", "200"}
             and settlement_response_code in {"", "200"}
             and resource_catalog_response_code in {"", "200"}
             and quantity_group_dictionary_response_code in {"", "200"}
@@ -1147,6 +1216,8 @@ def probe_official_sales_contract_api(
         "resource_list_response_code": resource_list_response_code,
         "match_response_code": match_response_code,
         "resource_detail_response_code": resource_detail_response_code,
+        "demand_detail_response_code": demand_detail_response_code,
+        "demand_goods_response_code": demand_goods_response_code,
         "settlement_response_code": settlement_response_code,
         "resource_catalog_response_code": resource_catalog_response_code,
         "quantity_group_dictionary_response_code": quantity_group_dictionary_response_code,
@@ -1160,6 +1231,8 @@ def probe_official_sales_contract_api(
         "resource_list_schema_paths": sorted(resource_list_schema_path_set)[:300],
         "match_schema_paths": sorted(match_schema_path_set)[:300],
         "resource_detail_schema_paths": sorted(_schema_paths(resource_detail_payload))[:300],
+        "demand_detail_schema_paths": sorted(_schema_paths(demand_detail_payload))[:300],
+        "demand_goods_schema_paths": sorted(_schema_paths(demand_goods_payload))[:300],
         "settlement_schema_paths": sorted(_schema_paths(settlement_payload))[:300],
         "resource_catalog_schema_paths": sorted(_schema_paths(resource_catalog_payload))[:300],
         "quantity_group_dictionary_schema_paths": sorted(_schema_paths(quantity_group_dictionary_payload))[:300],
@@ -1168,10 +1241,12 @@ def probe_official_sales_contract_api(
             "quantity": _group_dictionary_coverage(quantity_group_dictionary_payload),
             "profit": _group_dictionary_coverage(profit_group_dictionary_payload),
         },
+        "sampled_demand_group_coverage": _demand_group_coverage(demand_detail_payload),
         "linkage_counts": _linkage_counts(
             detail_payload,
             purchase_payload,
             match_payload,
+            demand_goods_payload,
             settlement_payload,
         ),
     }
