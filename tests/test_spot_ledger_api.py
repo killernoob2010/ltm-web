@@ -147,6 +147,34 @@ def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, sou
     assert "bearer-token" not in str(failed.value)
 
 
+def test_source_dry_run_requires_administrator_role(ledger_context):
+    from app.spot_ledger import source_dry_run_view
+
+    _, trade_user = ledger_context
+    with pytest.raises(HTTPException) as denied:
+        source_dry_run_view(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_dry_run_returns_only_aggregate_result(ledger_context, monkeypatch):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_dry_run_view
+
+    admin, _ = ledger_context
+    aggregate = {
+        "ok": True,
+        "source_mode": "official_json",
+        "page_count": 2,
+        "counts": {"active_contract_count": 12, "eligible_record_count": 7},
+        "field_coverage": {"AD": {"filled_count": 7, "total_count": 7}},
+        "scan_error_types": {},
+        "record_error_types": {},
+    }
+    monkeypatch.setattr(sync, "run_official_source_dry_run", lambda: aggregate)
+
+    assert source_dry_run_view(user=admin) == aggregate
+
+
 def test_manual_edit_requires_sensitive_permission_and_cannot_change_system_field(ledger_context):
     from app.spot_ledger import SpotLedgerPatch, patch_record
 
@@ -210,4 +238,5 @@ def test_spot_ledger_routes_are_registered_in_main_app():
     assert "/api/spot-ledger/export" in paths
     assert "/api/spot-ledger/strategic-hedging" in paths
     assert "/api/spot-ledger/source-readiness" in paths
+    assert "/api/spot-ledger/source-dry-run" in paths
     assert not any(path.endswith("/sync-now") for path in paths)

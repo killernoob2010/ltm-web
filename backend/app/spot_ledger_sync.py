@@ -50,6 +50,7 @@ OFFICIAL_SETTLEMENT_QUERY_URL = f"{JIANLONG_TDS_API_BASE_URL}/tdsSettle/queryJie
 OFFICIAL_RESOURCE_CATALOG_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale/list?sheetCode=G01003"
 OFFICIAL_DICTIONARY_URL = f"{JIANLONG_TDS_API_BASE_URL}/system/dict/data/type"
 OFFICIAL_DEMAND_DETAIL_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/demand?sheetCode=G01002"
+OFFICIAL_RESOURCE_DETAIL_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale?sheetCode=G01003"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -108,6 +109,7 @@ class FullScanResult:
     complete: bool
     errors: list[Any] = field(default_factory=list)
     source_mode: str = "fixture"
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class SalesContractSource:
@@ -562,6 +564,598 @@ class ProfiledSalesContractSource(SalesContractSource):
                 source_mode="profiled_http",
             )
         )
+
+
+class OfficialJsonSalesContractSource(SalesContractSource):
+    """Read the confirmed Jianlong JSON APIs and build normalized ledger rows.
+
+    The adapter is deliberately read-only. It uses only the documented list/detail
+    relationships confirmed against the official frontend and never persists the
+    bearer token or source credentials.
+    """
+
+    DICTIONARY_TYPES = (
+        "quantity_attribution",
+        "profit_attribution",
+        "source_type",
+        "price_mode",
+    )
+
+    def __init__(
+        self,
+        *,
+        http: Any = requests,
+        auth_provider: Optional[Callable[[], dict[str, str]]] = None,
+        page_size: int = 50,
+        max_pages: int = 1000,
+        timeout_seconds: float = 30,
+    ):
+        if page_size < 1 or max_pages < 1:
+            raise ValueError("page_size 和 max_pages 必须为正整数")
+        self.http = http
+        self.auth_provider = auth_provider
+        self.page_size = page_size
+        self.max_pages = max_pages
+        self.timeout_seconds = timeout_seconds
+
+    @classmethod
+    def from_env(cls) -> "OfficialJsonSalesContractSource":
+        username = (os.getenv("SPOT_LEDGER_SOURCE_USERNAME") or "").strip()
+        password = os.getenv("SPOT_LEDGER_SOURCE_PASSWORD") or ""
+        if not username or not password:
+            return cls()
+        session = requests.Session()
+        provider = JianlongPasswordAuthProvider(username, password, http=session)
+        return cls(http=session, auth_provider=provider)
+
+    def _headers(self, *, refresh: bool = False) -> dict[str, str]:
+        if not callable(self.auth_provider):
+            raise SalesContractSourceError(
+                "auth_unavailable",
+                "个人账号认证未配置",
+                stage="auth_provider_missing",
+            )
+        provider = self.auth_provider
+        if refresh:
+            refresh_provider = getattr(provider, "refresh", None)
+            if not callable(refresh_provider):
+                raise SalesContractSourceError(
+                    "auth_unavailable",
+                    "真实源认证已失效且不能刷新",
+                    stage="source_auth_refresh",
+                )
+            supplied = refresh_provider() or {}
+        else:
+            supplied = provider() or {}
+        if not isinstance(supplied, dict):
+            raise SalesContractSourceError(
+                "auth_unavailable",
+                "真实源认证 provider 返回值无效",
+                stage="source_auth_headers",
+            )
+        return {
+            **supplied,
+            "Origin": JIANLONG_TDS_REDIRECT_URI.rstrip("/"),
+            "Referer": JIANLONG_TDS_REDIRECT_URI,
+        }
+
+    def _request_json(self, method: str, url: str, *, stage: str, **kwargs: Any) -> dict[str, Any]:
+        request = getattr(self.http, method)
+
+        def send(headers: dict[str, str]) -> Any:
+            return request(
+                url,
+                headers=headers,
+                timeout=self.timeout_seconds,
+                **kwargs,
+            )
+
+        try:
+            response = send(self._headers())
+            if ProfiledSalesContractSource._needs_reauthentication(response):
+                response = send(self._headers(refresh=True))
+        except SalesContractSourceError:
+            raise
+        except Exception as exc:
+            raise SalesContractSourceError(
+                "source_request",
+                "正式 JSON 数据源请求失败",
+                stage=f"{stage}_request",
+            ) from exc
+        if ProfiledSalesContractSource._needs_reauthentication(response):
+            raise SalesContractSourceError(
+                "auth_unavailable",
+                "真实源认证失败",
+                stage=f"{stage}_auth",
+                http_status=int(getattr(response, "status_code", 401)),
+            )
+        status = int(getattr(response, "status_code", 200))
+        if status >= 400:
+            raise SalesContractSourceError(
+                "source_request",
+                "正式 JSON 数据源返回错误",
+                stage=f"{stage}_http",
+                http_status=status,
+            )
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 数据源响应无效",
+                stage=f"{stage}_response",
+            ) from exc
+        if not isinstance(payload, dict) or str(payload.get("code") or "") not in {"", "200"}:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 数据源响应不符合已确认协议",
+                stage=f"{stage}_response",
+            )
+        return payload
+
+    @staticmethod
+    def _paged_rows(payload: dict[str, Any], *, stage: str) -> tuple[list[dict[str, Any]], int]:
+        data = payload.get("data")
+        rows = data.get("rows") if isinstance(data, dict) else None
+        total = data.get("total") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 分页响应缺少 rows",
+                stage=f"{stage}_rows",
+            )
+        try:
+            total_count = int(total)
+        except (TypeError, ValueError) as exc:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 分页响应缺少有效 total",
+                stage=f"{stage}_total",
+            ) from exc
+        if total_count < 0 or any(not isinstance(row, dict) for row in rows):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 分页响应内容无效",
+                stage=f"{stage}_rows",
+            )
+        return rows, total_count
+
+    def _fetch_active_contracts(self) -> tuple[list[dict[str, Any]], int]:
+        rows: list[dict[str, Any]] = []
+        expected_total: Optional[int] = None
+        page_count = 1
+        for page_no in range(1, self.max_pages + 1):
+            payload = self._request_json(
+                "post",
+                OFFICIAL_SALES_CONTRACT_LIST_URL,
+                stage="official_contract_list",
+                params={"sheetCode": "G01009", "pageNum": page_no, "pageSize": self.page_size},
+                json={"status": "70", "isQryAll": "N"},
+            )
+            page_rows, total = self._paged_rows(payload, stage="official_contract_list")
+            if expected_total is None:
+                expected_total = total
+                page_count = max(1, (total + self.page_size - 1) // self.page_size)
+                if page_count > self.max_pages:
+                    raise SalesContractSourceError(
+                        "parse_error",
+                        "正式销售合同分页数超过安全上限",
+                        stage="official_contract_list_pages",
+                    )
+            elif total != expected_total:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式销售合同分页统计在扫描过程中发生变化",
+                    stage="official_contract_list_changed",
+                )
+            rows.extend(page_rows)
+            if page_no >= page_count:
+                break
+        if expected_total is None or len(rows) != expected_total:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式销售合同分页记录数与总数不一致",
+                stage="official_contract_list_count",
+            )
+        return rows, page_count
+
+    def _fetch_settlements(self) -> dict[str, float | int]:
+        rows: list[dict[str, Any]] = []
+        expected_total: Optional[int] = None
+        page_count = 1
+        for page_no in range(1, self.max_pages + 1):
+            payload = self._request_json(
+                "post",
+                OFFICIAL_SETTLEMENT_QUERY_URL,
+                stage="official_settlement",
+                params={"pageNum": page_no, "pageSize": self.page_size},
+                json={"status": "70"},
+            )
+            page_rows, total = self._paged_rows(payload, stage="official_settlement")
+            if expected_total is None:
+                expected_total = total
+                page_count = max(1, (total + self.page_size - 1) // self.page_size)
+                if page_count > self.max_pages:
+                    raise SalesContractSourceError(
+                        "parse_error",
+                        "正式结算分页数超过安全上限",
+                        stage="official_settlement_pages",
+                    )
+            elif total != expected_total:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式结算分页统计在扫描过程中发生变化",
+                    stage="official_settlement_changed",
+                )
+            rows.extend(page_rows)
+            if page_no >= page_count:
+                break
+        if expected_total is None or len(rows) != expected_total:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式结算分页记录数与总数不一致",
+                stage="official_settlement_count",
+            )
+        totals: dict[str, float | int] = {}
+        for row in rows:
+            detail_id = str(row.get("saleContractMxId") or "").strip()
+            quantity = row.get("countQuantity")
+            if not detail_id or quantity in (None, ""):
+                continue
+            try:
+                numeric = float(str(quantity).replace(",", ""))
+            except ValueError:
+                continue
+            value: float | int = int(numeric) if numeric.is_integer() else numeric
+            totals[detail_id] = totals.get(detail_id, 0) + value
+        return totals
+
+    def _fetch_dictionaries(self) -> dict[str, dict[str, str]]:
+        dictionaries: dict[str, dict[str, str]] = {}
+        for dictionary_type in self.DICTIONARY_TYPES:
+            payload = self._request_json(
+                "get",
+                OFFICIAL_DICTIONARY_URL,
+                stage=f"official_dictionary_{dictionary_type}",
+                params={"dictType": dictionary_type},
+            )
+            rows = payload.get("data")
+            if not isinstance(rows, list):
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式源字典响应不是数组",
+                    stage=f"official_dictionary_{dictionary_type}_rows",
+                )
+            values: dict[str, str] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("dictValue") or "").strip()
+                label = str(row.get("dictLabel") or "").strip()
+                if code and label:
+                    values[code] = label
+            dictionaries[dictionary_type] = values
+        return dictionaries
+
+    @staticmethod
+    def _dictionary_label(values: dict[str, str], raw: Any) -> tuple[str, bool]:
+        text = str(raw or "").strip()
+        if not text:
+            return "", False
+        if text in values:
+            return values[text], True
+        if text in values.values():
+            return text, True
+        return text, False
+
+    def _get_data_dict(self, url: str, *, stage: str, **kwargs: Any) -> dict[str, Any]:
+        payload = self._request_json("get", url, stage=stage, **kwargs)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 详情响应不是对象",
+                stage=f"{stage}_data",
+            )
+        return data
+
+    def _get_data_list(self, url: str, *, stage: str, **kwargs: Any) -> list[dict[str, Any]]:
+        payload = self._request_json("get", url, stage=stage, **kwargs)
+        data = payload.get("data")
+        if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式 JSON 列表响应不是数组",
+                stage=f"{stage}_data",
+            )
+        return data
+
+    def _purchase_lines(self, contract_id: str) -> dict[str, dict[str, Any]]:
+        relevance = self._get_data_list(
+            (
+                f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/getRelevanceContract/"
+                f"{quote(contract_id, safe='')}?sheetCode=G01009"
+            ),
+            stage="official_relevance",
+        )
+        purchase_lines: dict[str, dict[str, Any]] = {}
+        for row in relevance:
+            purchase_id = str(row.get("purchaseContractId") or "").strip()
+            if not purchase_id:
+                continue
+            detail = self._get_data_dict(
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/purchaseContract/"
+                    f"{quote(purchase_id, safe='')}?sheetCode=G01008"
+                ),
+                stage="official_purchase_detail",
+            )
+            lines = detail.get("tdsPurchaseContractMxVos")
+            if not isinstance(lines, list):
+                lines = detail.get("purchaseContractMxList")
+            if not isinstance(lines, list):
+                lines = []
+            for line in lines:
+                if not isinstance(line, dict):
+                    continue
+                line_id = str(line.get("purchaseContractMxId") or "").strip()
+                if line_id:
+                    purchase_lines[line_id] = line
+        return purchase_lines
+
+    def fetch_full_scan(self) -> FullScanResult:
+        contract_rows, contract_page_count = self._fetch_active_contracts()
+        settlements = self._fetch_settlements()
+        dictionaries = self._fetch_dictionaries()
+        normalized_records: list[dict[str, Any]] = []
+        scan_errors: list[dict[str, str]] = []
+        source_detail_count = 0
+        out_of_scope_count = 0
+        ambiguous_match_count = 0
+        missing_match_count = 0
+        demand_cache: dict[str, dict[str, Any]] = {}
+        resource_cache: dict[str, dict[str, Any]] = {}
+
+        for contract_row in contract_rows:
+            contract_id = str(contract_row.get("saleContractId") or "").strip()
+            if not contract_id:
+                scan_errors.append({"type": "missing_contract_id"})
+                continue
+            detail = self._get_data_dict(
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/"
+                    f"{quote(contract_id, safe='')}?sheetCode=G01009"
+                ),
+                stage="official_contract_detail",
+            )
+            lines = detail.get("tdsSaleContractMxVos")
+            if not isinstance(lines, list):
+                lines = detail.get("saleContractMxList")
+            if not isinstance(lines, list):
+                scan_errors.append({"type": "missing_sale_lines", "contract_id": contract_id})
+                continue
+            lines = [line for line in lines if isinstance(line, dict)]
+            source_detail_count += len(lines)
+            purchase_lines = self._purchase_lines(contract_id)
+            traders_id = str(detail.get("syncTradersId") or "").strip()
+            match_rows = (
+                self._get_data_list(
+                    (
+                        f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
+                        f"{quote(traders_id, safe='')}?sheetCode=G01004"
+                    ),
+                    stage="official_match_result",
+                )
+                if traders_id
+                else []
+            )
+            matches_by_goods: dict[str, list[dict[str, Any]]] = {}
+            for match in match_rows:
+                goods_code = str(match.get("goodsCode") or "").strip()
+                if goods_code:
+                    matches_by_goods.setdefault(goods_code, []).append(match)
+            sale_goods_counts: dict[str, int] = {}
+            for line in lines:
+                goods_code = str(line.get("goodsCode") or "").strip()
+                if goods_code:
+                    sale_goods_counts[goods_code] = sale_goods_counts.get(goods_code, 0) + 1
+
+            for line in lines:
+                detail_id = str(line.get("saleContractMxId") or line.get("id") or "").strip()
+                goods_code = str(line.get("goodsCode") or "").strip()
+                candidates = matches_by_goods.get(goods_code, []) if goods_code else []
+                if not detail_id:
+                    scan_errors.append({"type": "missing_detail_id", "contract_id": contract_id})
+                    continue
+                if not candidates:
+                    missing_match_count += 1
+                    scan_errors.append({"type": "missing_resource_match", "detail_id": detail_id})
+                    continue
+                if len(candidates) != 1 or sale_goods_counts.get(goods_code, 0) != 1:
+                    ambiguous_match_count += 1
+                    scan_errors.append({"type": "ambiguous_resource_match", "detail_id": detail_id})
+                    continue
+                match = candidates[0]
+                demand_id = str(match.get("demandId") or "").strip()
+                if not demand_id:
+                    missing_match_count += 1
+                    scan_errors.append({"type": "missing_demand_link", "detail_id": detail_id})
+                    continue
+                if demand_id not in demand_cache:
+                    demand_cache[demand_id] = self._get_data_dict(
+                        OFFICIAL_DEMAND_DETAIL_URL,
+                        stage="official_demand_detail",
+                        params={"demandId": demand_id},
+                    )
+                demand = demand_cache[demand_id]
+                quantity_group, quantity_group_known = self._dictionary_label(
+                    dictionaries["quantity_attribution"],
+                    demand.get("quantityAttribution"),
+                )
+                profit_group, profit_group_known = self._dictionary_label(
+                    dictionaries["profit_attribution"],
+                    demand.get("profitAttribution"),
+                )
+                source_type, source_type_known = self._dictionary_label(
+                    dictionaries["source_type"],
+                    demand.get("sourceType"),
+                )
+                if not quantity_group_known or not profit_group_known or not source_type_known:
+                    scan_errors.append({"type": "missing_dictionary_mapping", "detail_id": detail_id})
+                    continue
+                status = str(detail.get("status") or contract_row.get("status") or "").strip()
+                contract_active = status in {"70", "生效"}
+                if source_type != "现货" or not contract_active or quantity_group not in SHANGHAI_GROUPS:
+                    out_of_scope_count += 1
+                    continue
+
+                resource_id = str(match.get("saleId") or "").strip()
+                resource: dict[str, Any] = {}
+                record_errors: list[dict[str, str]] = []
+                if resource_id:
+                    if resource_id not in resource_cache:
+                        resource_cache[resource_id] = self._get_data_dict(
+                            OFFICIAL_RESOURCE_DETAIL_URL,
+                            stage="official_resource_detail",
+                            params={"saleId": resource_id},
+                        )
+                    resource = resource_cache[resource_id]
+                else:
+                    record_errors.append(
+                        {
+                            "type": "missing_resource_detail",
+                            "field": "G",
+                            "message": "资源匹配结果缺少资源单 ID",
+                        }
+                    )
+
+                purchase_line_id = str(line.get("upContractMxId") or "").strip()
+                purchase_line = purchase_lines.get(purchase_line_id, {})
+                price_mode, _ = self._dictionary_label(dictionaries["price_mode"], line.get("priceMode"))
+                standard = {
+                    "detail_id": detail_id,
+                    "spot_type": source_type,
+                    "contract_status": "生效" if contract_active else status,
+                    "quantity_group": quantity_group,
+                    "profit_group": profit_group,
+                    "business_category_code": demand.get("businessType"),
+                    "operation_title": detail.get("workCompName") or demand.get("workCompName"),
+                    "resource_date": resource.get("sourceDate"),
+                    "product_name": line.get("goodsName"),
+                    "product_category": line.get("goodsName"),
+                    "port": detail.get("dischargePortName"),
+                    "mode": price_mode,
+                    "vessel_name": resource.get("chineseShipName") or detail.get("chineseShipName"),
+                    "contract_quantity": line.get("countQuantity")
+                    if line.get("countQuantity") not in (None, "")
+                    else line.get("signQuantity"),
+                    "settlement_quantity": settlements.get(detail_id),
+                    "is_closed": detail_id in settlements,
+                    "purchase_price": match.get("matchPrice"),
+                    "supplier": resource.get("supplierName")
+                    or match.get("startSupplierName")
+                    or match.get("lastSupplierName"),
+                    "purchase_business": resource.get("workManName") or purchase_line.get("workManName"),
+                    "purchase_execution": resource.get("createBy") or purchase_line.get("createBy"),
+                    "signed_date": detail.get("signingDate"),
+                    "sales_price": line.get("unitPrice")
+                    if line.get("unitPrice") not in (None, "")
+                    else line.get("taxPrice") or line.get("price"),
+                    "demander": detail.get("coustomName"),
+                    "contract_number": detail.get("contractCode"),
+                    "sales_business": detail.get("workManName"),
+                    "sales_execution": detail.get("createBy"),
+                }
+                record = normalize_sales_contract_record(standard)
+                record["sync_errors"].extend(record_errors)
+                if record.get("eligible"):
+                    normalized_records.append(record)
+                else:
+                    out_of_scope_count += 1
+
+        diagnostics = {
+            "active_contract_count": len(contract_rows),
+            "source_detail_count": source_detail_count,
+            "eligible_record_count": len(normalized_records),
+            "out_of_scope_record_count": out_of_scope_count,
+            "ambiguous_resource_match_count": ambiguous_match_count,
+            "missing_resource_match_count": missing_match_count,
+        }
+        return validate_full_scan(
+            FullScanResult(
+                records=normalized_records,
+                page_count=contract_page_count,
+                expected_page_count=contract_page_count,
+                total_count=len(normalized_records),
+                complete=not scan_errors,
+                errors=scan_errors,
+                source_mode="official_json",
+                diagnostics=diagnostics,
+            )
+        )
+
+
+def _safe_error_type(error: Any) -> str:
+    value = error.get("type") if isinstance(error, dict) else error
+    text = str(value or "").strip().lower()
+    return text if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", text) else "unknown"
+
+
+def _error_type_counts(errors: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for error in errors:
+        error_type = _safe_error_type(error)
+        counts[error_type] = counts.get(error_type, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def summarize_official_source_scan(scan: FullScanResult) -> dict[str, Any]:
+    """Return dry-run evidence without exposing source records or identifiers."""
+    diagnostic_defaults = {
+        "active_contract_count": 0,
+        "source_detail_count": 0,
+        "eligible_record_count": len(scan.records),
+        "out_of_scope_record_count": 0,
+        "ambiguous_resource_match_count": 0,
+        "missing_resource_match_count": 0,
+    }
+    counts: dict[str, int] = {}
+    for name, default in diagnostic_defaults.items():
+        value = (scan.diagnostics or {}).get(name, default)
+        try:
+            counts[name] = max(0, int(value))
+        except (TypeError, ValueError):
+            counts[name] = default
+    field_coverage = {
+        code: {
+            "filled_count": sum(not _empty(record.get(code)) for record in scan.records),
+            "total_count": len(scan.records),
+        }
+        for code in FIELD_CODES
+    }
+    record_errors = [
+        error
+        for record in scan.records
+        for error in (record.get("sync_errors") or [])
+    ]
+    return {
+        "ok": bool(scan.complete),
+        "source_mode": scan.source_mode,
+        "page_count": scan.page_count,
+        "expected_page_count": scan.expected_page_count,
+        "counts": counts,
+        "field_coverage": field_coverage,
+        "scan_error_types": _error_type_counts(list(scan.errors or [])),
+        "record_error_types": _error_type_counts(record_errors),
+    }
+
+
+def run_official_source_dry_run(
+    source: Optional[OfficialJsonSalesContractSource] = None,
+) -> dict[str, Any]:
+    """Execute a full read-only source scan and return aggregate evidence only."""
+    scan = (source or OfficialJsonSalesContractSource.from_env()).fetch_full_scan()
+    return summarize_official_source_scan(scan)
 
 
 def _schema_paths(value: Any, prefix: str = "", depth: int = 0) -> set[str]:
@@ -1292,6 +1886,7 @@ def validate_full_scan(scan: FullScanResult) -> FullScanResult:
         complete=complete,
         errors=errors,
         source_mode=scan.source_mode,
+        diagnostics=dict(scan.diagnostics or {}),
     )
 
 

@@ -229,6 +229,296 @@ def test_profiled_source_from_env_uses_one_session_for_login_and_report(monkeypa
     assert isinstance(source.auth_provider, sync.JianlongPasswordAuthProvider)
 
 
+def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
+    from app import spot_ledger_sync as sync
+
+    class Response:
+        status_code = 200
+        url = "https://tds-api.ejianlong.com/"
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, **kwargs):
+            self.calls.append(("POST", url, kwargs))
+            if "/saleContractList" in url:
+                page = kwargs["params"]["pageNum"]
+                rows = [{"saleContractId": f"contract-{page}"}]
+                return Response({"code": 200, "data": {"rows": rows, "total": 2}})
+            if "/tdsSettle/queryJiesuan" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "rows": [
+                                {
+                                    "saleContractMxId": "sale-line-1",
+                                    "countQuantity": 90,
+                                }
+                            ],
+                            "total": 1,
+                        },
+                    }
+                )
+            raise AssertionError(url)
+
+        def get(self, url, **kwargs):
+            self.calls.append(("GET", url, kwargs))
+            if "/system/dict/data/type" in url:
+                dictionaries = {
+                    "quantity_attribution": [
+                        {"dictValue": "Q1", "dictLabel": "大客户组"},
+                        {"dictValue": "Q2", "dictLabel": "其他组"},
+                    ],
+                    "profit_attribution": [
+                        {"dictValue": "P1", "dictLabel": "东北组"},
+                        {"dictValue": "P2", "dictLabel": "其他组"},
+                    ],
+                    "source_type": [{"dictValue": "10", "dictLabel": "现货"}],
+                    "price_mode": [{"dictValue": "20", "dictLabel": "固定价"}],
+                }
+                return Response({"code": 200, "data": dictionaries[kwargs["params"]["dictType"]]})
+            if "/getRelevanceContract/" in url:
+                contract_id = url.split("/getRelevanceContract/", 1)[1].split("?", 1)[0]
+                return Response({"code": 200, "data": [{"purchaseContractId": f"purchase-{contract_id[-1]}"}]})
+            if "/purchaseContract/" in url:
+                suffix = url.split("/purchaseContract/", 1)[1].split("?", 1)[0]
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "purchaseContractId": suffix,
+                            "tdsPurchaseContractMxVos": [
+                                {
+                                    "purchaseContractMxId": f"purchase-line-{suffix[-1]}",
+                                    "countQuantity": 100,
+                                }
+                            ],
+                        },
+                    }
+                )
+            if "/saleContract/" in url:
+                contract_id = url.split("/saleContract/", 1)[1].split("?", 1)[0]
+                index = contract_id[-1]
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "saleContractId": contract_id,
+                            "contractCode": f"XS-{index}",
+                            "status": "70",
+                            "signingDate": "2026-08-20",
+                            "workCompName": "操作抬头A",
+                            "workManName": "销售业务员",
+                            "createBy": "001_销售执行员",
+                            "coustomName": "客户A",
+                            "dischargePortName": "曹妃甸港",
+                            "syncTradersId": f"traders-{index}",
+                            "tdsSaleContractMxVos": [
+                                {
+                                    "saleContractMxId": f"sale-line-{index}",
+                                    "goodsCode": f"GOODS-{index}",
+                                    "goodsName": "铁矿石",
+                                    "countQuantity": 100,
+                                    "unitPrice": 760,
+                                    "priceMode": "20",
+                                    "upContractMxId": f"purchase-line-{index}",
+                                }
+                            ],
+                        },
+                    }
+                )
+            if "/chain/goods/matchResult/" in url:
+                index = url.split("/matchResult/traders-", 1)[1].split("?", 1)[0]
+                return Response(
+                    {
+                        "code": 200,
+                        "data": [
+                            {
+                                "demandId": f"demand-{index}",
+                                "goodsCode": f"GOODS-{index}",
+                                "matchPrice": 700,
+                                "saleId": f"resource-{index}",
+                            }
+                        ],
+                    }
+                )
+            if "/tradeing/demand?" in url:
+                index = kwargs["params"]["demandId"][-1]
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "demandId": f"demand-{index}",
+                            "sourceType": "10",
+                            "businessType": "B07" if index == "1" else "B05",
+                            "quantityAttribution": "Q1" if index == "1" else "Q2",
+                            "profitAttribution": "P1" if index == "1" else "P2",
+                        },
+                    }
+                )
+            if "/tradeing/sale?" in url:
+                index = kwargs["params"]["saleId"][-1]
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "saleId": f"resource-{index}",
+                            "sourceDate": "2026-08-18",
+                            "chineseShipName": "海运一号",
+                            "supplierName": "供应商A",
+                            "workManName": "采购业务员",
+                            "createBy": "采购执行员",
+                        },
+                    }
+                )
+            raise AssertionError(url)
+
+    class Provider:
+        def __call__(self):
+            return {"Authorization": "Bearer bearer-token"}
+
+    source = sync.OfficialJsonSalesContractSource(
+        http=Http(),
+        auth_provider=Provider(),
+        page_size=1,
+    )
+
+    scan = source.fetch_full_scan()
+
+    assert scan.complete is True
+    assert scan.page_count == 2
+    assert scan.total_count == 1
+    assert scan.source_mode == "official_json"
+    assert scan.diagnostics == {
+        "active_contract_count": 2,
+        "source_detail_count": 2,
+        "eligible_record_count": 1,
+        "out_of_scope_record_count": 1,
+        "ambiguous_resource_match_count": 0,
+        "missing_resource_match_count": 0,
+    }
+    assert len(scan.records) == 1
+    record = scan.records[0]
+    assert record["source_detail_id"] == "sale-line-1"
+    assert record["eligible"] is True
+    assert record["D"] == "现货-市场加价"
+    assert record["E"] == "大客户组"
+    assert record["AP"] == "东北组"
+    assert record["AQ"] == "是"
+    assert record["L"] == record["X"] == 90
+    assert record["M"] == 700
+    assert record["Z"] == 760
+    assert record["U"] == "2026-08-20"
+    assert record["AD"] == "XS-1"
+    assert record["K"] == "海运一号"
+    assert record["source_closed_state"] == "已结案"
+    assert not any(error.get("type") == "group_mismatch" for error in record["sync_errors"])
+    list_calls = [call for call in source.http.calls if "/saleContractList" in call[1]]
+    assert [call[2]["params"]["pageNum"] for call in list_calls] == [1, 2]
+    assert all(call[2]["json"] == {"status": "70", "isQryAll": "N"} for call in list_calls)
+
+
+def test_official_json_source_marks_duplicate_goods_match_as_ambiguous():
+    from app import spot_ledger_sync as sync
+
+    class Source(sync.OfficialJsonSalesContractSource):
+        def __init__(self):
+            super().__init__(auth_provider=lambda: {})
+
+        def _fetch_active_contracts(self):
+            return ([{"saleContractId": "contract-1", "status": "70"}], 1)
+
+        def _fetch_settlements(self):
+            return {}
+
+        def _fetch_dictionaries(self):
+            return {
+                "quantity_attribution": {"Q1": "大客户组"},
+                "profit_attribution": {"P1": "东北组"},
+                "source_type": {"10": "现货"},
+                "price_mode": {"20": "固定价"},
+            }
+
+        def _purchase_lines(self, _contract_id):
+            return {}
+
+        def _get_data_dict(self, _url, *, stage, **_kwargs):
+            assert stage == "official_contract_detail"
+            return {
+                "status": "70",
+                "syncTradersId": "traders-1",
+                "tdsSaleContractMxVos": [
+                    {"saleContractMxId": "sale-line-1", "goodsCode": "GOODS-1"},
+                    {"saleContractMxId": "sale-line-2", "goodsCode": "GOODS-1"},
+                ],
+            }
+
+        def _get_data_list(self, _url, *, stage, **_kwargs):
+            assert stage == "official_match_result"
+            return [{"demandId": "demand-1", "goodsCode": "GOODS-1", "saleId": "resource-1"}]
+
+    scan = Source().fetch_full_scan()
+
+    assert scan.complete is False
+    assert scan.records == []
+    assert scan.diagnostics["ambiguous_resource_match_count"] == 2
+    assert scan.diagnostics["missing_resource_match_count"] == 0
+    assert [error["type"] for error in scan.errors] == [
+        "ambiguous_resource_match",
+        "ambiguous_resource_match",
+    ]
+
+
+def test_official_source_dry_run_summary_contains_only_aggregate_metadata():
+    from app import spot_ledger_sync as sync
+
+    scan = sync.FullScanResult(
+        records=[
+            {
+                "source_detail_id": "sensitive-detail-id",
+                "D": "现货-市场加价",
+                "E": "大客户组",
+                "AP": "东北组",
+                "AB": "敏感客户名称",
+                "sync_errors": [
+                    {
+                        "type": "conversion_mapping",
+                        "field": "F",
+                        "message": "包含敏感操作抬头",
+                    }
+                ],
+            }
+        ],
+        page_count=1,
+        expected_page_count=1,
+        total_count=1,
+        complete=False,
+        errors=[{"type": "ambiguous_resource_match", "detail_id": "sensitive-detail-id"}],
+        source_mode="official_json",
+        diagnostics={"active_contract_count": 1, "eligible_record_count": 1},
+    )
+
+    result = sync.summarize_official_source_scan(scan)
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["ok"] is False
+    assert result["counts"]["eligible_record_count"] == 1
+    assert result["field_coverage"]["AB"] == {"filled_count": 1, "total_count": 1}
+    assert result["scan_error_types"] == {"ambiguous_resource_match": 1}
+    assert result["record_error_types"] == {"conversion_mapping": 1}
+    assert "sensitive-detail-id" not in serialized
+    assert "敏感客户名称" not in serialized
+    assert "包含敏感操作抬头" not in serialized
+
+
 def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
     from app import spot_ledger_sync as sync
 
