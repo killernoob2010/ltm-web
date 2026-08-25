@@ -1097,13 +1097,20 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 contract_id="",
                 errors=[{"type": "missing_contract_id"}],
             )
-        detail = self._get_data_dict(
-            (
-                f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/"
-                f"{quote(contract_id, safe='')}?sheetCode=G01009"
-            ),
-            stage="official_contract_detail",
-        )
+        try:
+            detail = self._get_data_dict(
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/"
+                    f"{quote(contract_id, safe='')}?sheetCode=G01009"
+                ),
+                stage="official_contract_detail",
+            )
+        except SalesContractSourceError as exc:
+            return OfficialContractBundle(
+                contract_row=contract_row,
+                contract_id=contract_id,
+                errors=[{"type": _safe_error_type(exc.stage)}],
+            )
         lines = detail.get("tdsSaleContractMxVos")
         if not isinstance(lines, list):
             lines = detail.get("saleContractMxList")
@@ -1115,19 +1122,28 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 errors=[{"type": "missing_sale_lines", "contract_id": contract_id}],
             )
         lines = [line for line in lines if isinstance(line, dict)]
-        purchase_lines = self._purchase_lines(contract_id)
+        errors: list[dict[str, str]] = []
+        try:
+            purchase_lines = self._purchase_lines(contract_id)
+        except SalesContractSourceError as exc:
+            purchase_lines = {}
+            errors.append({"type": _safe_error_type(exc.stage)})
         traders_id = str(detail.get("syncTradersId") or "").strip()
-        match_rows = (
-            self._get_data_list(
-                (
-                    f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
-                    f"{quote(traders_id, safe='')}?sheetCode=G01004"
-                ),
-                stage="official_match_result",
+        try:
+            match_rows = (
+                self._get_data_list(
+                    (
+                        f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
+                        f"{quote(traders_id, safe='')}?sheetCode=G01004"
+                    ),
+                    stage="official_match_result",
+                )
+                if traders_id
+                else []
             )
-            if traders_id
-            else []
-        )
+        except SalesContractSourceError as exc:
+            match_rows = []
+            errors.append({"type": _safe_error_type(exc.stage)})
         return OfficialContractBundle(
             contract_row=contract_row,
             contract_id=contract_id,
@@ -1135,6 +1151,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             lines=lines,
             purchase_lines=purchase_lines,
             match_rows=match_rows,
+            errors=errors,
         )
 
     def fetch_full_scan(self) -> FullScanResult:
@@ -1158,7 +1175,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         demand_detail_ids: set[str] = set()
         resource_ids: set[str] = set()
         for bundle in contract_bundles:
-            if bundle.errors:
+            if not bundle.lines:
                 continue
             matches_by_goods: dict[str, list[dict[str, Any]]] = {}
             for match in bundle.match_rows:
@@ -1219,7 +1236,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         )
 
         for bundle in contract_bundles:
-            if bundle.errors:
+            if not bundle.lines:
                 continue
             contract_row = bundle.contract_row
             contract_id = bundle.contract_id

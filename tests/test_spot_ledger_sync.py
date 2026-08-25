@@ -624,6 +624,44 @@ def test_official_json_source_marks_duplicate_goods_match_as_ambiguous():
     ]
 
 
+def test_official_contract_bundle_isolates_purchase_detail_parse_error():
+    from app import spot_ledger_sync as sync
+
+    class Source(sync.OfficialJsonSalesContractSource):
+        def __init__(self):
+            super().__init__(auth_provider=lambda: {})
+
+        def _get_data_dict(self, _url, *, stage, **_kwargs):
+            assert stage == "official_contract_detail"
+            return {
+                "syncTradersId": "traders-1",
+                "tdsSaleContractMxVos": [
+                    {"saleContractMxId": "sale-line-1", "goodsCode": "GOODS-1"}
+                ],
+            }
+
+        def _purchase_lines(self, _contract_id):
+            raise sync.SalesContractSourceError(
+                "parse_error",
+                "sensitive purchase response",
+                stage="official_purchase_detail_response",
+            )
+
+        def _get_data_list(self, _url, *, stage, **_kwargs):
+            assert stage == "official_match_result"
+            return [{"demandId": "demand-1", "goodsCode": "GOODS-1"}]
+
+    bundle = Source()._fetch_contract_bundle(
+        {"saleContractId": "contract-sensitive", "status": "70"}
+    )
+
+    assert len(bundle.lines) == 1
+    assert len(bundle.match_rows) == 1
+    assert bundle.purchase_lines == {}
+    assert bundle.errors == [{"type": "official_purchase_detail_response"}]
+    assert "sensitive purchase response" not in repr(bundle)
+
+
 def test_official_source_dry_run_summary_contains_only_aggregate_metadata():
     from app import spot_ledger_sync as sync
 
