@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -632,12 +632,60 @@ def probe_official_sales_contract_api(
             stage="official_list_response",
         )
     response_code = str(payload.get("code") or "")
+    rows = (payload.get("data") or {}).get("rows") if isinstance(payload.get("data"), dict) else None
+    detail_payload: dict[str, Any] = {}
+    detail_response_code = ""
+    if isinstance(rows, list) and rows:
+        contract_id = rows[0].get("saleContractId") if isinstance(rows[0], dict) else None
+        if not contract_id:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式销售合同 JSON 列表缺少合同 ID",
+                stage="official_list_contract_id",
+            )
+        try:
+            detail_response = active_source.http.get(
+                f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/{quote(str(contract_id), safe='')}?sheetCode=G01009",
+                headers=headers,
+                timeout=30,
+            )
+        except Exception as exc:
+            raise SalesContractSourceError(
+                "source_request",
+                "正式销售合同 JSON 详情请求失败",
+                stage="official_detail_request",
+            ) from exc
+        detail_status = int(getattr(detail_response, "status_code", 200))
+        if detail_status >= 400:
+            raise SalesContractSourceError(
+                "source_request",
+                "正式销售合同 JSON 详情返回错误",
+                stage="official_detail_http",
+                http_status=detail_status,
+            )
+        try:
+            detail_payload = detail_response.json()
+        except Exception as exc:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式销售合同 JSON 详情响应无效",
+                stage="official_detail_response",
+            ) from exc
+        if not isinstance(detail_payload, dict):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式销售合同 JSON 详情响应无效",
+                stage="official_detail_response",
+            )
+        detail_response_code = str(detail_payload.get("code") or "")
     return {
-        "ok": response_code in {"", "200"},
+        "ok": response_code in {"", "200"} and detail_response_code in {"", "200"},
         "source_mode": "official_json",
         "http_status": status,
         "response_code": response_code,
+        "detail_response_code": detail_response_code,
         "schema_paths": sorted(_schema_paths(payload))[:300],
+        "detail_schema_paths": sorted(_schema_paths(detail_payload))[:300],
     }
 
 

@@ -235,20 +235,11 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
     class Response:
         status_code = 200
 
+        def __init__(self, payload):
+            self.payload = payload
+
         def json(self):
-            return {
-                "code": 200,
-                "data": {
-                    "rows": [
-                        {
-                            "saleContractId": "must-not-be-returned",
-                            "contractNo": "must-not-be-returned",
-                            "goods": [{"saleContractMxId": "must-not-be-returned"}],
-                        }
-                    ],
-                    "total": 1,
-                },
-            }
+            return self.payload
 
     class Http:
         def __init__(self):
@@ -256,7 +247,38 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
 
         def post(self, url, **kwargs):
             self.calls.append((url, kwargs))
-            return Response()
+            return Response(
+                {
+                    "code": 200,
+                    "data": {
+                        "rows": [
+                            {
+                                "saleContractId": "must-not-be-returned-id",
+                                "contractNo": "must-not-be-returned",
+                                "goods": [{"saleContractMxId": "must-not-be-returned"}],
+                            }
+                        ],
+                        "total": 1,
+                    },
+                }
+            )
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return Response(
+                {
+                    "code": 200,
+                    "data": {
+                        "saleContractId": "must-not-be-returned-id",
+                        "saleContractMxList": [
+                            {
+                                "saleContractMxId": "must-not-be-returned",
+                                "contractQuantity": 100,
+                            }
+                        ],
+                    },
+                }
+            )
 
     class Provider:
         def __call__(self):
@@ -275,6 +297,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "source_mode": "official_json",
         "http_status": 200,
         "response_code": "200",
+        "detail_response_code": "200",
         "schema_paths": [
             "code",
             "data",
@@ -286,6 +309,15 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.rows[].goods[].saleContractMxId",
             "data.rows[].saleContractId",
             "data.total",
+        ],
+        "detail_schema_paths": [
+            "code",
+            "data",
+            "data.saleContractId",
+            "data.saleContractMxList",
+            "data.saleContractMxList[]",
+            "data.saleContractMxList[].contractQuantity",
+            "data.saleContractMxList[].saleContractMxId",
         ],
     }
     assert source.http.calls == [
@@ -301,7 +333,18 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                 },
                 "timeout": 30,
             },
-        )
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/saleContract/must-not-be-returned-id?sheetCode=G01009",
+            {
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
     ]
     assert "must-not-be-returned" not in repr(result)
 

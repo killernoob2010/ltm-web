@@ -100,6 +100,8 @@ def test_source_readiness_returns_only_official_json_schema_metadata(ledger_cont
         "http_status": 200,
         "response_code": "200",
         "schema_paths": ["code", "data.rows[]", "data.rows[].saleContractId"],
+        "detail_response_code": "200",
+        "detail_schema_paths": ["code", "data.saleContractMxList[]"],
     }
     monkeypatch.setattr(sync, "probe_official_sales_contract_api", lambda: probe)
 
