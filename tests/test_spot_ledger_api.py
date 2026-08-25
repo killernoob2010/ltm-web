@@ -127,24 +127,26 @@ def test_source_readiness_returns_only_aggregate_scan_metadata(ledger_context, m
 
 
 @pytest.mark.parametrize(
-    ("source_error", "expected_code"),
+    ("source_error", "expected_detail"),
     [
         pytest.param(
             lambda: __import__("app.spot_ledger_sync", fromlist=["SalesContractSourceError"]).SalesContractSourceError(
                 "auth_unavailable",
                 "personal-password bearer-token source-response",
+                stage="login_page_http",
+                http_status=403,
             ),
-            "auth_unavailable",
+            {"code": "auth_unavailable", "stage": "login_page_http", "http_status": 403},
             id="known-source-error",
         ),
         pytest.param(
             lambda: RuntimeError("personal-password bearer-token source-response"),
-            "source_probe_failed",
+            {"code": "source_probe_failed"},
             id="unexpected-error",
         ),
     ],
 )
-def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, source_error, expected_code):
+def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, source_error, expected_detail):
     from app import spot_ledger_sync as sync
     from app.spot_ledger import source_readiness_view
 
@@ -163,7 +165,7 @@ def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, sou
     with pytest.raises(HTTPException) as failed:
         source_readiness_view(user=admin)
     assert failed.value.status_code == 503
-    assert failed.value.detail == {"code": expected_code}
+    assert failed.value.detail == expected_detail
     assert "personal-password" not in str(failed.value)
     assert "bearer-token" not in str(failed.value)
 

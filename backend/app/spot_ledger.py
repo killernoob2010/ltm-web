@@ -717,7 +717,10 @@ def source_readiness_view(user=Depends(_request_user)):
     try:
         scan = ProfiledSalesContractSource.from_env().fetch_full_scan()
     except SalesContractSourceError as exc:
-        raise HTTPException(status_code=503, detail={"code": exc.code}) from None
+        detail = {"code": exc.code, "stage": exc.stage}
+        if exc.http_status is not None:
+            detail["http_status"] = exc.http_status
+        raise HTTPException(status_code=503, detail=detail) from None
     except Exception:
         raise HTTPException(status_code=503, detail={"code": "source_probe_failed"}) from None
     return {

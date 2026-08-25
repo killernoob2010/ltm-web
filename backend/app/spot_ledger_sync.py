@@ -78,9 +78,17 @@ _scheduler_started = False
 
 
 class SalesContractSourceError(RuntimeError):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        stage: Optional[str] = None,
+        http_status: Optional[int] = None,
+    ):
         self.code = code
-        self.stage = code
+        self.stage = stage or code
+        self.http_status = http_status
         super().__init__(f"{code}: {message}")
 
 
@@ -132,20 +140,20 @@ def _parse_login_contract(html: str) -> tuple[dict[str, str], str]:
     parser.feed(html)
     required = ("redirectUri", "appId", "companyId")
     if any(name not in parser.inputs for name in required):
-        raise SalesContractSourceError("auth_unavailable", "统一认证登录参数不可用")
+        raise SalesContractSourceError("auth_unavailable", "统一认证登录参数不可用", stage="login_contract")
     script = "\n".join(parser.scripts)
     match = re.search(r"\bvar\s+publicKey\s*=\s*(.*?);", script, flags=re.DOTALL)
     if not match:
-        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用")
+        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用", stage="login_contract")
     literals = re.findall(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"", match.group(1))
     try:
         public_key = "".join(ast.literal_eval(item) for item in literals)
     except (SyntaxError, ValueError) as exc:
-        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用") from exc
+        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用", stage="login_contract") from exc
     if not public_key.startswith("-----BEGIN PUBLIC KEY-----") or not public_key.rstrip().endswith(
         "-----END PUBLIC KEY-----"
     ):
-        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用")
+        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用", stage="login_contract")
     return parser.inputs, public_key
 
 
@@ -154,7 +162,11 @@ def _encrypt_login_password(public_key: str, password: str) -> str:
         key = serialization.load_pem_public_key(public_key.encode("ascii"))
         encrypted = key.encrypt(password.encode("utf-8"), padding.PKCS1v15())
     except Exception as exc:
-        raise SalesContractSourceError("auth_unavailable", "统一认证密码加密失败") from exc
+        raise SalesContractSourceError(
+            "auth_unavailable",
+            "统一认证密码加密失败",
+            stage="password_encryption",
+        ) from exc
     return base64.b64encode(encrypted).decode("ascii")
 
 
@@ -170,37 +182,55 @@ class JianlongPasswordAuthProvider:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _json(response: Any) -> dict[str, Any]:
+    def _json(response: Any, *, stage: str) -> dict[str, Any]:
         try:
             payload = response.json()
         except Exception as exc:
-            raise SalesContractSourceError("auth_unavailable", "统一认证响应无效") from exc
+            raise SalesContractSourceError("auth_unavailable", "统一认证响应无效", stage=stage) from exc
         if not isinstance(payload, dict):
-            raise SalesContractSourceError("auth_unavailable", "统一认证响应无效")
+            raise SalesContractSourceError("auth_unavailable", "统一认证响应无效", stage=stage)
         return payload
 
     @staticmethod
-    def _check_http(response: Any) -> None:
-        if int(getattr(response, "status_code", 200)) >= 400:
-            raise SalesContractSourceError("auth_unavailable", "统一认证请求失败")
+    def _check_http(response: Any, *, stage: str) -> None:
+        status = int(getattr(response, "status_code", 200))
+        if status >= 400:
+            raise SalesContractSourceError(
+                "auth_unavailable",
+                "统一认证请求失败",
+                stage=stage,
+                http_status=status,
+            )
+
+    def _request(self, method: str, url: str, *, stage: str, **kwargs: Any) -> Any:
+        try:
+            return getattr(self.http, method)(url, **kwargs)
+        except SalesContractSourceError:
+            raise
+        except Exception as exc:
+            raise SalesContractSourceError("auth_unavailable", "统一认证请求失败", stage=stage) from exc
 
     def _login(self) -> str:
         if not self._username or not self._password:
-            raise SalesContractSourceError("auth_unavailable", "个人账号认证未配置")
+            raise SalesContractSourceError("auth_unavailable", "个人账号认证未配置", stage="credentials_missing")
         try:
             clear_cookies = getattr(getattr(self.http, "cookies", None), "clear", None)
             if callable(clear_cookies):
                 clear_cookies()
-            login_page = self.http.get(
+            login_page = self._request(
+                "get",
                 f"{JIANLONG_AUTH_BASE_URL}/login",
+                stage="login_page_request",
                 params={"appId": JIANLONG_TDS_APP_ID, "redirectUri": JIANLONG_TDS_REDIRECT_URI},
                 timeout=self.timeout_seconds,
             )
-            self._check_http(login_page)
+            self._check_http(login_page, stage="login_page_http")
             inputs, public_key = _parse_login_contract(str(getattr(login_page, "text", "")))
             password = _encrypt_login_password(public_key, self._password)
-            login_response = self.http.post(
+            login_response = self._request(
+                "post",
                 f"{JIANLONG_AUTH_BASE_URL}/login/pwd",
+                stage="password_login_request",
                 json={
                     "redirectUri": inputs["redirectUri"],
                     "appId": inputs["appId"],
@@ -210,28 +240,30 @@ class JianlongPasswordAuthProvider:
                 },
                 timeout=self.timeout_seconds,
             )
-            self._check_http(login_response)
-            login_payload = self._json(login_response)
+            self._check_http(login_response, stage="password_login_http")
+            login_payload = self._json(login_response, stage="password_login_response")
             if str(login_payload.get("code")) != "200" or not isinstance(login_payload.get("data"), str):
-                raise SalesContractSourceError("auth_unavailable", "个人账号认证失败")
+                raise SalesContractSourceError("auth_unavailable", "个人账号认证失败", stage="credentials_rejected")
             code = parse_qs(urlparse(login_payload["data"]).query).get("code", [""])[0]
             if not code:
-                raise SalesContractSourceError("auth_unavailable", "统一认证未返回登录票据")
-            token_response = self.http.get(
+                raise SalesContractSourceError("auth_unavailable", "统一认证未返回登录票据", stage="login_ticket_missing")
+            token_response = self._request(
+                "get",
                 f"{JIANLONG_AUTH_BASE_URL}/login",
+                stage="token_exchange_request",
                 params={"code": code},
                 timeout=self.timeout_seconds,
             )
-            self._check_http(token_response)
-            token_payload = self._json(token_response)
+            self._check_http(token_response, stage="token_exchange_http")
+            token_payload = self._json(token_response, stage="token_exchange_response")
             token = token_payload.get("data")
             if str(token_payload.get("code")) != "200" or not isinstance(token, str) or not token:
-                raise SalesContractSourceError("auth_unavailable", "统一认证未返回访问令牌")
+                raise SalesContractSourceError("auth_unavailable", "统一认证未返回访问令牌", stage="token_missing")
             return token
         except SalesContractSourceError:
             raise
         except Exception as exc:
-            raise SalesContractSourceError("auth_unavailable", "统一认证请求失败") from exc
+            raise SalesContractSourceError("auth_unavailable", "统一认证请求失败", stage="auth_request") from exc
 
     def __call__(self) -> dict[str, str]:
         with self._lock:
@@ -397,7 +429,11 @@ class ProfiledSalesContractSource(SalesContractSource):
         if self.profile.get("url") != CANDIDATE_SOURCE_URL or any(key not in self.profile for key in required):
             raise SalesContractSourceError("auth_unavailable", "真实源 profile 或认证方式尚未确认")
         if not callable(self.auth_provider):
-            raise SalesContractSourceError("auth_unavailable", "无人值守认证 provider 尚未提供")
+            raise SalesContractSourceError(
+                "auth_unavailable",
+                "无人值守认证 provider 尚未提供",
+                stage="auth_provider_missing",
+            )
         pagination = self.profile.get("pagination")
         if not isinstance(pagination, dict) or any(
             not isinstance(pagination.get(key), str) or not pagination.get(key)
@@ -455,7 +491,7 @@ class ProfiledSalesContractSource(SalesContractSource):
         except Exception as exc:
             raise SalesContractSourceError("source_request", "真实源请求失败") from exc
         if self._needs_reauthentication(response):
-            raise SalesContractSourceError("auth_unavailable", "真实源认证失败")
+            raise SalesContractSourceError("auth_unavailable", "真实源认证失败", stage="report_auth")
         if getattr(response, "status_code", 200) >= 400:
             raise SalesContractSourceError("source_request", "真实源返回错误")
         try:

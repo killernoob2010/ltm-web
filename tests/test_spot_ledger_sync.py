@@ -107,8 +107,9 @@ def test_unattended_source_without_profile_is_explicitly_blocked(monkeypatch):
     monkeypatch.delenv("SPOT_LEDGER_SOURCE_USERNAME", raising=False)
     monkeypatch.delenv("SPOT_LEDGER_SOURCE_PASSWORD", raising=False)
     source = ProfiledSalesContractSource.from_env()
-    with pytest.raises(SalesContractSourceError, match="auth_unavailable"):
+    with pytest.raises(SalesContractSourceError, match="auth_unavailable") as error:
         source.fetch_full_scan()
+    assert error.value.stage == "auth_provider_missing"
 
 
 def test_password_auth_uses_official_rsa_code_exchange_and_caches_bearer_token():
@@ -202,6 +203,8 @@ def test_password_auth_errors_never_expose_credentials_or_source_response():
         provider()
     assert "personal-password" not in str(error.value)
     assert "bearer-token" not in str(error.value)
+    assert error.value.stage == "login_page_http"
+    assert error.value.http_status == 503
 
 
 def test_profiled_source_from_env_uses_one_session_for_login_and_report(monkeypatch):
