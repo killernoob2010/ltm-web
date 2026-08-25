@@ -100,8 +100,8 @@ def test_pending_and_sync_error_counts_are_not_capped_by_view_page_size(ledger_c
     assert pending["count"] == 1460
     assert errors["count"] == 1460
     assert requested == [
-        {"supplement_status": "待补录", "limit": 100, "offset": 0},
-        {"sync_error": "true", "limit": 100, "offset": 0},
+        {"supplement_status": "待补录", "limit": 20, "offset": 0},
+        {"sync_error": "true", "limit": 20, "offset": 0},
     ]
 
 

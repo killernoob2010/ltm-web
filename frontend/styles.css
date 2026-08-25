@@ -4254,6 +4254,11 @@ button.order-vessel-detail-btn {
   padding: 4px 10px;
 }
 
+.spot-ledger-pagination .tm-pagination {
+  width: 100%;
+  padding: 10px 0;
+}
+
 .spot-ledger-record-row {
   cursor: pointer;
 }

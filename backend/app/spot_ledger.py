@@ -622,7 +622,7 @@ def get_records(
     product_name: str = "", port: str = "", operation_title: str = "", supplier: str = "", customer: str = "",
     contract_number: str = "", purchase_execution: str = "", sales_execution: str = "", purchase_quantity: str = "",
     sales_quantity: str = "", closed_state: str = "", supplement_status: str = "", sync_error: str = "",
-    limit: int = Query(500, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user),
+    limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user),
 ):
     params = locals().copy()
     return {
@@ -696,7 +696,7 @@ def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request
     return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
 
 
-def get_pending(*, limit: int = 100, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def get_pending(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     params = {"supplement_status": "待补录", "limit": limit, "offset": offset}
     return {
         "records": list_records(params, user=user),
@@ -706,7 +706,7 @@ def get_pending(*, limit: int = 100, offset: int = 0, user: Optional[dict[str, A
     }
 
 
-def get_sync_errors(*, limit: int = 100, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def get_sync_errors(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     params = {"sync_error": "true", "limit": limit, "offset": offset}
     records = list_records(params, user=user)
     try:
@@ -725,12 +725,12 @@ def get_sync_errors(*, limit: int = 100, offset: int = 0, user: Optional[dict[st
 
 
 @router.get("/spot-ledger/pending")
-def pending_view(limit: int = Query(100, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user)):
+def pending_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
     return get_pending(limit=limit, offset=offset, user=user)
 
 
 @router.get("/spot-ledger/sync-errors")
-def sync_errors_view(limit: int = Query(100, ge=1, le=5000), offset: int = Query(0, ge=0), user=Depends(_request_user)):
+def sync_errors_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
     return get_sync_errors(limit=limit, offset=offset, user=user)
 
 

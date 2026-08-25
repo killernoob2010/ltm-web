@@ -10,7 +10,7 @@
     filters: {},
     view: "records",
     page: 1,
-    pageSize: 100,
+    pageSize: 20,
     total: 0,
     selectedRecord: null,
     bound: false,
@@ -130,10 +130,21 @@
   }
 
   function renderPagination() {
-    const totalPages = Math.max(1, Math.ceil(moduleState.total / moduleState.pageSize));
-    $("#spotLedgerPageInfo").textContent = `第 ${moduleState.page} / ${totalPages} 页｜共 ${moduleState.total} 条`;
-    $("#spotLedgerPrevPageBtn").disabled = moduleState.page <= 1;
-    $("#spotLedgerNextPageBtn").disabled = moduleState.page >= totalPages;
+    window.DataVisualizationComponents.renderPagination($("#spotLedgerPagination"), {
+      page: moduleState.page,
+      pageSize: moduleState.pageSize,
+      total: moduleState.total,
+      pageSizes: [20, 50, 100],
+      onPageChange(page) {
+        moduleState.page = page;
+        loadView(moduleState.view);
+      },
+      onPageSizeChange(pageSize) {
+        moduleState.pageSize = pageSize;
+        moduleState.page = 1;
+        loadView(moduleState.view);
+      },
+    });
   }
 
   function renderRows(records) {
@@ -406,16 +417,6 @@
       moduleState.page = 1;
       loadView(button.dataset.view);
     }));
-    $("#spotLedgerPrevPageBtn")?.addEventListener("click", () => {
-      if (moduleState.page <= 1) return;
-      moduleState.page -= 1;
-      loadView(moduleState.view);
-    });
-    $("#spotLedgerNextPageBtn")?.addEventListener("click", () => {
-      if (moduleState.page * moduleState.pageSize >= moduleState.total) return;
-      moduleState.page += 1;
-      loadView(moduleState.view);
-    });
     $("#spotLedgerCloseDetailBtn")?.addEventListener("click", closeDetail);
     $("#spotLedgerDetail")?.addEventListener("close", () => {
       const form = $("#spotLedgerEditForm");
