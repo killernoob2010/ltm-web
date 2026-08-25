@@ -17,7 +17,7 @@
 - 订单全流程管理（测试版）：与旧订单融资表并行的主卡/子记录模型，支持融资与过单两类业务、WPS/邮件标准化批次、状态/风险/数据异常、分页筛选和人工 FCR/字段覆盖；默认不自动连接来源。
 - 用户与权限管理：独立登录账号、用户/领导/管理员类型、部门默认权限、个人例外、查看/日常/敏感操作分级、自助改密、管理员重置和账号停用。
 - 交易管理：单个期货公司日结/月结 TXT 自动识别、完整预检、重复与版本覆盖、期初持仓连续性、支持账户与日/月/季/自定义范围筛选的只读总览、持仓与交易明细、整笔业务归属、上海钧能台账和全量期权台账。总览“全部”显示事实盈亏，“基础套保 / 战略套保”显示业务归属盈亏；普通平仓、行权、履约和到期放弃统一显示在“平仓记录”并以了结类型区分；行权只关联账单中真实形成的期货开仓，不生成交易。首版浮动盈亏与期权风险指标统一显示“待计算”，汇总与导出保留入口暂不执行导出。
-- 贸易台账管理（本地候选）：新增“现货业务台账管理”，覆盖说明书定义的 51 个 A:AY 字段、系统同步/人工字段、待补录、同步异常、组合筛选、敏感权限编辑、战略套保全开全平录入和 Excel 导出。候选 POST 源的 request/response/field profile 已只读确认并内置；真实销售合同跟踪表适配器仍只在受支持的无人值守认证可用时运行，当前默认不自动同步，使用明确标注的 fixture 做本地非生产验收。
+- 贸易台账管理（Staging 已接真实源）：新增“现货业务台账管理”，覆盖说明书定义的 51 个 A:AY 字段、系统同步/人工字段、待补录、同步异常、组合筛选、敏感权限编辑、战略套保全开全平录入、分页和全量 Excel 导出。Render Staging 已通过个人服务账号认证连接正式服务端 JSON 只读接口，并把 7 个销售组内的生效现货销售合同明细同步到独立 Supabase Staging；本地仍使用明确标注的 fixture 验收，不连接真实源。
 - 铁矿石期现：历史 Excel 作为存量底库，新增 EBC 现货指标与新浪 I0 收盘价 API 增量同步；按版本化业务规则计算并保存精简结果与完整明细。期现数据管理提供只读分页查询，期现数据展示提供独立最优仓单、港口页签和按品种/年份绘制的日度基差图表。
 
 ## 本地运行
@@ -47,13 +47,13 @@ http://127.0.0.1:8000
 http://127.0.0.1:8001
 ```
 
-现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、B05/B09 类型转换、跨组标识、待补录和同步异常。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；服务在同步时段内启动时只执行最近一个已到小时，不补跑当天此前所有小时，19:00 后启动不补跑；不提供实时同步或手动立即同步。
+现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、B05/B09 类型转换、跨组标识、待补录和同步异常。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；服务在同步时段内启动时只执行最近一个已到小时，不补跑当天此前所有小时，数据库已有同一时段记录时跳过，19:00 后启动不补跑；不提供实时同步或手动立即同步。Staging 当前使用 `SPOT_LEDGER_SOURCE_MODE=official_json` 并启用上述定时任务；本地默认不启用。
 
 2026-08-25 经用户授权在已登录浏览器中完成只读认证与接口复核：销售合同列表实际调用 `POST https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList`，返回 200 JSON，并使用 Bearer 认证；统一认证采用登录页公钥 RSA 加密密码、`POST /login/pwd` 返回一次性 code、`GET /login?code=...` 换取 Bearer 令牌，令牌失效后没有独立 refresh token，需重新登录。现货适配器因此支持从服务端 Secret 读取 `SPOT_LEDGER_SOURCE_USERNAME`、`SPOT_LEDGER_SOURCE_PASSWORD`，使用同一内存会话重新登录一次，并且不会记录账号、密码、票据、令牌或源响应。
 
-台账完整字段当前仍使用已确认的 JSON 报表 profile：候选 `POST https://tds-report.ejianlong.com/jmreport/show` 使用报表 ID `1055351755192311808` 和 JSON 字符串 `params`；记录路径为 `result.dataList.TJJLYSHZ.list`，`count` 为记录总数，`total` 为总页数，并已确认销售合同商品明细 ID 及台账所需系统源字段。本地测试不保存真实响应或业务明细。普通服务端 HTTP 客户端从当前开发网络访问统一认证页会被源站防护返回 403，而真实 Chrome 可正常访问，因此服务端认证能否从 Render Staging 运行仍需用个人账号完成一次真实只读验证；在该验证成功前，`SPOT_LEDGER_AUTO_SYNC_ENABLED` 必须保持 `false`，fixture、浏览器复核或单元测试均不得称为正式自动同步。不得通过伪装浏览器、网页爬虫或复制个人浏览器 Cookie 绕过此限制。
+真实同步最终使用 `tds-api.ejianlong.com` 的服务端 JSON 接口，不复用个人浏览器会话，不复制 Cookie，也不做网页爬虫。源端列表筛选参数不能可靠限制现货和销售组，因此适配器分页读取需求头，在服务端本地按现货和已确认的 7 个销售组筛选，只为命中需求读取关联合同链、销售合同、结算、采购、匹配和资源明细；仅保留状态为 `70/生效` 的销售合同，并优先使用销售合同商品明细 ID。候选 `POST https://tds-report.ejianlong.com/jmreport/show` 仅保留为已确认报表 profile，不作为当前无人值守同步通路。Staging Secret 只保存 `SPOT_LEDGER_SOURCE_USERNAME`、`SPOT_LEDGER_SOURCE_PASSWORD`，代码、日志、接口响应和文档均不得记录其值。
 
-现货业务台账数据库沿用项目现有 `db.init_db()` 双数据库兼容路径：本地使用 SQLite，Render/Supabase 使用 PostgreSQL 专用的 `TEXT`、`DOUBLE PRECISION` 和幂等 `CREATE TABLE IF NOT EXISTS`。线上两张台账表只允许服务端 FastAPI 连接访问，PostgreSQL 路径启用 RLS 并撤销 `anon` / `authenticated` 的直接表权限；页面不通过 Supabase Data API 直连。部署到 Staging 时仅创建空表和索引，自动同步仍保持关闭，不导入真实销售合同数据。
+现货业务台账数据库沿用项目现有 `db.init_db()` 双数据库兼容路径：本地使用 SQLite，Render/Supabase 使用 PostgreSQL 专用的 `TEXT`、`DOUBLE PRECISION` 和幂等 `CREATE TABLE IF NOT EXISTS`。两张台账表只允许服务端 FastAPI 连接访问，PostgreSQL 路径启用 RLS 并撤销 `anon` / `authenticated` 的直接表权限；页面不通过 Supabase Data API 直连。Staging 已写入真实只读源同步结果；系统字段随源刷新，人工字段在重复同步时保留，只有完整成功扫描才允许软隐藏缺失记录。Production 仍未启用该来源或写入该台账，必须单独通过 Gate B。
 
 ## 铁矿石基差 Excel 导入
 

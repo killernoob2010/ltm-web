@@ -27,7 +27,6 @@ from openpyxl import load_workbook
 from . import db
 from .spot_ledger import (
     FIELD_CODES,
-    FIELD_NAME_TO_CODE,
     FIELD_DEFINITIONS,
     MANUAL_FIELDS,
     SHANGHAI_GROUPS,
@@ -1345,9 +1344,11 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     "purchase_business": resource.get("workManName") or purchase_line.get("workManName"),
                     "purchase_execution": resource.get("createBy") or purchase_line.get("createBy"),
                     "signed_date": detail.get("signingDate"),
-                    "sales_price": line.get("unitPrice")
+                    "sales_price": line.get("taxPrice")
+                    if line.get("taxPrice") not in (None, "")
+                    else line.get("unitPrice")
                     if line.get("unitPrice") not in (None, "")
-                    else line.get("taxPrice") or line.get("price"),
+                    else line.get("price"),
                     "demander": detail.get("coustomName"),
                     "contract_number": detail.get("contractCode"),
                     "sales_business": detail.get("workManName"),
@@ -2767,6 +2768,17 @@ def _history_value(row: dict[str, Any], code: str) -> Any:
 FIELD_BY_CODE_NAME = {item["code"]: item["name"] for item in FIELD_DEFINITIONS}
 
 
+def _normalize_history_header(value: Any) -> str:
+    text = re.sub(r"\s+", "", str(value or "").strip())
+    return text.translate(str.maketrans({"(": "（", ")": "）"}))
+
+
+HISTORY_HEADER_TO_CODE = {
+    _normalize_history_header(item["name"]): item["code"]
+    for item in FIELD_DEFINITIONS
+}
+
+
 def _usable_history_value(value: Any) -> bool:
     if value is None or value == "":
         return False
@@ -2777,14 +2789,19 @@ def _history_row_to_values(headers: list[Any], values: tuple[Any, ...]) -> dict[
     row: dict[str, Any] = {}
     for header, value in zip(headers, values):
         header_text = str(header or "").strip()
-        code = header_text if header_text in FIELD_CODES else FIELD_NAME_TO_CODE.get(header_text)
+        code = header_text if header_text in FIELD_CODES else HISTORY_HEADER_TO_CODE.get(_normalize_history_header(header_text))
         if code:
             row[code] = value
-        elif header_text in {"长协对象", "long_contract_object"}:
+        elif _normalize_history_header(header_text) in {"长协对象", "long_contract_object"}:
             row["long_contract_object"] = value
-        elif header_text == "销售合同商品明细 ID":
+        elif _normalize_history_header(header_text) == "销售合同商品明细ID":
             row["source_detail_id"] = value
     return row
+
+
+def _is_history_header_row(values: tuple[Any, ...]) -> bool:
+    codes = set(_history_row_to_values(list(values), values))
+    return {"AD", "H", "Z"}.issubset(codes) and bool({"X", "L"} & codes)
 
 
 def _matches_history(row: dict[str, Any], candidate: dict[str, Any]) -> bool:
@@ -2824,7 +2841,16 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
     workbook = load_workbook(Path(path), read_only=True, data_only=True)
     sheet = workbook["现货业务台账"] if "现货业务台账" in workbook.sheetnames else workbook.active
     rows = sheet.iter_rows(values_only=True)
-    headers = list(next(rows, ()))
+    headers: list[Any] = []
+    for row_number, values in enumerate(rows, start=1):
+        if _is_history_header_row(values):
+            headers = list(values)
+            break
+        if row_number >= 20:
+            break
+    if not headers:
+        workbook.close()
+        raise ValueError("历史台账前 20 行未找到销售合同号、商品、价格和数量表头")
     history_rows = [_history_row_to_values(headers, values) for values in rows if any(_usable_history_value(value) for value in values)]
     summary: dict[str, Any] = {"matched": 0, "updated": 0, "ambiguous": 0, "unmatched": 0, "dry_run": not apply, "errors": []}
     with db.connect() as conn:

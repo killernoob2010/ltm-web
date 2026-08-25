@@ -519,6 +519,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
                                     "goodsName": "铁矿石",
                                     "countQuantity": 100,
                                     "unitPrice": 760,
+                                    "taxPrice": 858.8,
                                     "priceMode": "20",
                                     "upContractMxId": f"purchase-line-{index}",
                                 }
@@ -613,7 +614,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
     assert record["AQ"] == "是"
     assert record["L"] == record["X"] == 90
     assert record["M"] == 700
-    assert record["Z"] == 760
+    assert record["Z"] == 858.8
     assert record["U"] == "2026-08-20"
     assert record["AD"] == "XS-1"
     assert record["K"] == "海运一号"
@@ -2012,3 +2013,33 @@ def test_history_migration_only_updates_unique_match_and_defaults_to_dry_run(led
     with ledger_db.connect() as conn:
         row = conn.execute("SELECT \"AM\" FROM spot_ledger_records WHERE \"AD\" = 'C-100' ORDER BY source_detail_id LIMIT 1").fetchone()
     assert row["AM"] == "历史人工备注"
+
+
+def test_history_migration_detects_third_row_headers_and_excel_parenthesis_variants(ledger_db, tmp_path):
+    from openpyxl import Workbook
+    from app.spot_ledger_sync import apply_full_scan, migrate_history_workbook
+
+    scan = load_fixture_scan()
+    apply_full_scan(scan, "2026-08-24T09:00+08:00")
+    path = tmp_path / "history-with-title-rows.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "现货业务台账"
+    sheet.append(["现货台账"])
+    sheet.append(["现货业务台账", "", "采购", "", "销售"])
+    sheet.append([
+        "销售合同号",
+        "商品名称",
+        "销售价格\n（元/吨）",
+        "销售数量(吨）",
+        "实物含税盈亏 (万元）",
+        "备注",
+    ])
+    sheet.append(["C-100", "铁矿石", 800, 100, 12.5, "历史人工备注"])
+    workbook.save(path)
+
+    preview = migrate_history_workbook(path)
+
+    assert preview["matched"] == 1
+    assert preview["candidate_updates"] == 1
+    assert preview["unmatched"] == 0
