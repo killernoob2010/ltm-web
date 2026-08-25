@@ -125,7 +125,7 @@
     $("#spotLedgerPendingCount").textContent = pending.count || 0;
     $("#spotLedgerErrorCount").textContent = errors.count || 0;
     const latest = errors.runs?.[0];
-    if (latest) setSyncStatus(`${latest.status}｜${seconds(latest.finished_at || latest.started_at)}｜${latest.source_mode}`);
+    if (latest) setSyncStatus(`最近同步任务：${latest.status}｜${seconds(latest.finished_at || latest.started_at)}｜${latest.source_mode}｜当前范围同步异常：${errors.count || 0} 条`);
     else setSyncStatus("暂无任务记录；真实源认证仍待上线配置");
   }
 
@@ -193,7 +193,7 @@
       renderRows(moduleState.records);
       renderPagination();
       setStatus(`当前 ${moduleState.records.length} 条｜共 ${moduleState.total} 条`);
-      if (view === "errors" && result.runs?.length) setSyncStatus(`${result.runs[0].status}｜${seconds(result.runs[0].finished_at || result.runs[0].started_at)}｜${result.runs[0].source_mode || "来源未标注"}`);
+      if (view === "errors" && result.runs?.length) setSyncStatus(`最近同步任务：${result.runs[0].status}｜${seconds(result.runs[0].finished_at || result.runs[0].started_at)}｜${result.runs[0].source_mode || "来源未标注"}｜当前范围同步异常：${result.count || 0} 条`);
     } catch (error) {
       moduleState.records = [];
       moduleState.total = 0;

@@ -99,9 +99,9 @@ test("manual edit labels expose required fields and conditional long-contract ru
   assert.match(spotJs, /long_contract_object/);
 });
 
-test("sync error view keeps the fixture or source-mode label visible", () => {
+test("sync status distinguishes latest task state from current row errors", () => {
   assert.match(
     spotJs,
-    /view === "errors"[\s\S]*setSyncStatus\(`\$\{result\.runs\[0\]\.status\}[\s\S]*\$\{result\.runs\[0\]\.source_mode/,
+    /setSyncStatus\(`最近同步任务：\$\{latest\.status\}[\s\S]*当前范围同步异常：\$\{errors\.count \|\| 0\} 条`\)/,
   );
 });
