@@ -249,6 +249,23 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             self.calls.append((url, kwargs))
             if "/tradeing/chain/saleList" in url:
                 return Response({"code": 200, "data": []})
+            if "/tdsSettle/queryJiesuan" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "rows": [
+                                {
+                                    "settleObjectDetailId": "must-not-be-returned-settlement-id",
+                                    "saleContractId": "must-not-be-returned-id",
+                                    "saleContractMxId": "must-not-be-returned-sale-line-id",
+                                    "countQuantity": 99,
+                                }
+                            ],
+                            "total": 1,
+                        },
+                    }
+                )
             return Response(
                 {
                     "code": 200,
@@ -386,6 +403,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "resource_list_response_code": "200",
         "match_response_code": "200",
         "resource_detail_response_code": "200",
+        "settlement_response_code": "200",
         "sampled_contract_count": 2,
         "schema_paths": [
             "code",
@@ -457,6 +475,17 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.tdsGoodsList",
             "data.tdsGoodsList[]",
             "data.tdsGoodsList[].price",
+        ],
+        "settlement_schema_paths": [
+            "code",
+            "data",
+            "data.rows",
+            "data.rows[]",
+            "data.rows[].countQuantity",
+            "data.rows[].saleContractId",
+            "data.rows[].saleContractMxId",
+            "data.rows[].settleObjectDetailId",
+            "data.total",
         ],
     }
     assert source.http.calls == [
@@ -578,6 +607,19 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "https://tds-api.ejianlong.com/tradeing/sale?sheetCode=G01003",
             {
                 "params": {"saleId": "must-not-be-returned-resource-id"},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tdsSettle/queryJiesuan?sheetCode=G01112",
+            {
+                "params": {"pageNum": 1, "pageSize": 10},
+                "json": {"status": "70"},
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",

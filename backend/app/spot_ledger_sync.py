@@ -46,6 +46,7 @@ CANDIDATE_REPORT_ID = "1055351755192311808"
 JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
 JIANLONG_TDS_API_BASE_URL = "https://tds-api.ejianlong.com"
 OFFICIAL_SALES_CONTRACT_LIST_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/saleContractList"
+OFFICIAL_SETTLEMENT_QUERY_URL = f"{JIANLONG_TDS_API_BASE_URL}/tdsSettle/queryJiesuan?sheetCode=G01112"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -690,6 +691,8 @@ def probe_official_sales_contract_api(
     match_response_code = ""
     resource_detail_payload: dict[str, Any] = {}
     resource_detail_response_code = ""
+    settlement_payload: dict[str, Any] = {}
+    settlement_response_code = ""
     sampled_contract_count = 0
     resource_id: Any = None
     detail_schema_path_set: set[str] = set()
@@ -964,6 +967,16 @@ def probe_official_sales_contract_api(
                 description="正式销售资源 JSON 详情",
                 params={"saleId": str(resource_id)},
             )
+    settlement_payload, settlement_response_code = _probe_json_request(
+        active_source,
+        "post",
+        OFFICIAL_SETTLEMENT_QUERY_URL,
+        headers=headers,
+        stage="official_settlement_query",
+        description="正式结算 JSON 查询",
+        params={"pageNum": 1, "pageSize": 10},
+        json={"status": "70"},
+    )
     return {
         "ok": (
             response_code in {"", "200"}
@@ -974,6 +987,7 @@ def probe_official_sales_contract_api(
             and resource_list_response_code in {"", "200"}
             and match_response_code in {"", "200"}
             and resource_detail_response_code in {"", "200"}
+            and settlement_response_code in {"", "200"}
         ),
         "source_mode": "official_json",
         "http_status": status,
@@ -985,6 +999,7 @@ def probe_official_sales_contract_api(
         "resource_list_response_code": resource_list_response_code,
         "match_response_code": match_response_code,
         "resource_detail_response_code": resource_detail_response_code,
+        "settlement_response_code": settlement_response_code,
         "sampled_contract_count": sampled_contract_count,
         "schema_paths": sorted(_schema_paths(payload))[:300],
         "detail_schema_paths": sorted(detail_schema_path_set)[:300],
@@ -994,6 +1009,7 @@ def probe_official_sales_contract_api(
         "resource_list_schema_paths": sorted(resource_list_schema_path_set)[:300],
         "match_schema_paths": sorted(match_schema_path_set)[:300],
         "resource_detail_schema_paths": sorted(_schema_paths(resource_detail_payload))[:300],
+        "settlement_schema_paths": sorted(_schema_paths(settlement_payload))[:300],
     }
 
 
