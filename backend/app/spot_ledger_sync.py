@@ -44,6 +44,7 @@ SPOT_LEDGER_SYNC_TIMES = tuple(day_time(hour, 0) for hour in range(9, 19))
 CANDIDATE_SOURCE_URL = "https://tds-report.ejianlong.com/jmreport/show"
 CANDIDATE_REPORT_ID = "1055351755192311808"
 JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
+JIANLONG_TDS_API_BASE_URL = "https://tds-api.ejianlong.com"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -253,7 +254,7 @@ class JianlongPasswordAuthProvider:
                 raise SalesContractSourceError("auth_unavailable", "统一认证未返回登录票据", stage="login_ticket_missing")
             token_response = self._request(
                 "get",
-                f"{JIANLONG_AUTH_BASE_URL}/login",
+                f"{JIANLONG_TDS_API_BASE_URL}/login",
                 stage="token_exchange_request",
                 params={"code": code},
                 headers={
