@@ -671,6 +671,11 @@ def _linkage_counts(
         for row in sale_lines
         if row.get("goodsCode") not in (None, "") and row.get("specification") not in (None, "")
     }
+    demand_goods_specs = {
+        (str(row.get("goodsCode")), str(row.get("spec")))
+        for row in demand_goods
+        if row.get("goodsCode") not in (None, "") and row.get("spec") not in (None, "")
+    }
     return {
         "sale_lines": len(sale_lines),
         "purchase_lines": len(purchase_lines),
@@ -710,6 +715,21 @@ def _linkage_counts(
             (str(row.get("goodsCode")), str(row.get("specs"))) in sale_goods_specs
             for row in match_rows
             if row.get("goodsCode") not in (None, "") and row.get("specs") not in (None, "")
+        ),
+        "match_goods_and_specs_to_demand_goods": sum(
+            (str(row.get("goodsCode")), str(row.get("specs"))) in demand_goods_specs
+            for row in match_rows
+            if row.get("goodsCode") not in (None, "") and row.get("specs") not in (None, "")
+        ),
+        "demand_goods_to_sale_goods_code": sum(
+            str(row.get("goodsCode")) in sale_ids["goods_code"]
+            for row in demand_goods
+            if row.get("goodsCode") not in (None, "")
+        ),
+        "demand_goods_and_spec_to_sale_line": sum(
+            (str(row.get("goodsCode")), str(row.get("spec"))) in sale_goods_specs
+            for row in demand_goods
+            if row.get("goodsCode") not in (None, "") and row.get("spec") not in (None, "")
         ),
         "demand_goods_detail_to_sale_business_detail": sum(
             str(row.get("goodsDetailId")) in sale_ids["business"]

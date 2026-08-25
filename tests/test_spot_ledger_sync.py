@@ -335,7 +335,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                                 "goodsDetailId": "must-not-be-returned-business-detail-id",
                                 "chainGoodId": "must-not-be-returned-chain-good-id",
                                 "goodsCode": "must-not-be-returned-goods-code",
-                                "specification": "must-not-be-returned-specification",
+                                "spec": "must-not-be-returned-specification",
                             }
                         ],
                     }
@@ -430,6 +430,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                     "data": {
                         "chainId": "must-not-be-returned-chain-id",
                         "saleContractId": "must-not-be-returned-id",
+                        "syncTradersId": "must-not-be-returned-traders-id",
                         "tdsSaleContractMxVos": [
                             {
                                 "saleContractMxId": "must-not-be-returned",
@@ -476,7 +477,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "resource_catalog_response_code": "200",
         "quantity_group_dictionary_response_code": "200",
         "profit_group_dictionary_response_code": "200",
-        "sampled_contract_count": 2,
+        "sampled_contract_count": 1,
         "schema_paths": [
             "code",
             "data",
@@ -574,7 +575,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data[].chainGoodId",
             "data[].goodsCode",
             "data[].goodsDetailId",
-            "data[].specification",
+            "data[].spec",
         ],
         "settlement_schema_paths": [
             "code",
@@ -625,6 +626,9 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "match_demand_to_sale_relevance": 0,
             "match_goods_to_sale_goods_code": 1,
             "match_goods_and_specs_to_sale_line": 1,
+            "match_goods_and_specs_to_demand_goods": 1,
+            "demand_goods_to_sale_goods_code": 1,
+            "demand_goods_and_spec_to_sale_line": 1,
             "demand_goods_detail_to_sale_business_detail": 1,
             "demand_goods_chain_good_to_sale_chain_good": 1,
             "purchase_to_sale_up_contract": 1,
@@ -695,40 +699,6 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "https://tds-api.ejianlong.com/tradeing/chain/saleList?sheetCode=G01004",
             {
                 "json": {"chainId": "must-not-be-returned-chain-id", "tradersId": ""},
-                "headers": {
-                    "Authorization": "Bearer bearer-token",
-                    "Origin": "https://tds.ejianlong.com",
-                    "Referer": "https://tds.ejianlong.com/",
-                },
-                "timeout": 30,
-            },
-        ),
-        (
-            "https://tds-api.ejianlong.com/tradeing/saleContract/must-not-be-returned-id-2?sheetCode=G01009",
-            {
-                "headers": {
-                    "Authorization": "Bearer bearer-token",
-                    "Origin": "https://tds.ejianlong.com",
-                    "Referer": "https://tds.ejianlong.com/",
-                },
-                "timeout": 30,
-            },
-        ),
-        (
-            "https://tds-api.ejianlong.com/tradeing/chain/getById/must-not-be-returned-chain-id-2?sheetCode=G01004",
-            {
-                "headers": {
-                    "Authorization": "Bearer bearer-token",
-                    "Origin": "https://tds.ejianlong.com",
-                    "Referer": "https://tds.ejianlong.com/",
-                },
-                "timeout": 30,
-            },
-        ),
-        (
-            "https://tds-api.ejianlong.com/tradeing/chain/saleList?sheetCode=G01004",
-            {
-                "json": {"chainId": "must-not-be-returned-chain-id-2", "tradersId": ""},
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",
