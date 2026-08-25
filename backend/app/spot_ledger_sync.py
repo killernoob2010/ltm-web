@@ -2648,9 +2648,16 @@ def get_active_records() -> list[dict[str, Any]]:
 
 
 def get_sync_runs(limit: int = 20) -> list[dict[str, Any]]:
+    public_columns = (
+        "id", "slot_key", "started_at", "finished_at", "status", "source_mode", "page_count",
+        "expected_page_count", "total_count", "inserted_count", "updated_count", "hidden_count",
+        "error_count", "created_at",
+    )
     with db.connect() as conn:
         rows = db._exec(
-            conn.cursor(), "SELECT * FROM spot_ledger_sync_runs ORDER BY started_at DESC LIMIT ?", (max(1, min(limit, 100)),)
+            conn.cursor(),
+            f"SELECT {', '.join(public_columns)} FROM spot_ledger_sync_runs ORDER BY started_at DESC, slot_key DESC, id DESC LIMIT ?",
+            (max(1, min(limit, 100)),),
         ).fetchall()
     return [record_to_public(dict(row)) for row in rows]
 

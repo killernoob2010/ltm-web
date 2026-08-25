@@ -53,6 +53,10 @@ TECHNICAL_FIELDS = (
     "source_detail_id", "source_closed_state", "record_source_type", "is_active", "supplement_status", "missing_fields",
     "sync_status", "last_synced_at", "sync_error_summary", "strategic_hedging_id",
 )
+LIST_RECORD_FIELDS = (
+    "record_id", "source_detail_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X",
+    "supplement_status", "sync_status", "sync_error_summary",
+)
 
 
 def _field(code: str, name: str, control: str, source_rule: str, required_rule: str = "") -> dict[str, Any]:
@@ -500,14 +504,13 @@ def sync_spot_ledger_permissions(cur) -> None:
 
 def record_to_public(record: dict[str, Any]) -> dict[str, Any]:
     result = dict(record)
-    for field in ("missing_fields", "sync_error_summary", "source_payload_json"):
+    result.pop("source_payload_json", None)
+    for field in ("missing_fields", "sync_error_summary"):
         value = result.get(field)
         if field == "missing_fields":
             result[field] = json.loads(value or "[]") if isinstance(value, str) else (value or [])
         elif field == "sync_error_summary":
             result[field] = json.loads(value or "[]") if isinstance(value, str) and value.startswith("[") else (value or "")
-        elif field == "source_payload_json":
-            result[field] = json.loads(value or "{}") if isinstance(value, str) else (value or {})
     return result
 
 
@@ -579,7 +582,13 @@ def _record_query_conditions(params: dict[str, Any], include_inactive: bool = Fa
     return conditions, values
 
 
-def list_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict[str, Any]] = None, include_inactive: bool = False) -> list[dict[str, Any]]:
+def list_records(
+    params: Optional[dict[str, Any]] = None,
+    *,
+    user: Optional[dict[str, Any]] = None,
+    include_inactive: bool = False,
+    list_projection: bool = False,
+) -> list[dict[str, Any]]:
     params = params or {}
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
     conditions, values = _record_query_conditions(params, include_inactive=include_inactive)
@@ -587,11 +596,15 @@ def list_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict
     offset_value = params.get("offset")
     limit = max(1, min(int(limit_value) if isinstance(limit_value, (int, str)) and str(limit_value).isdigit() else 500, 5000))
     offset = max(0, int(offset_value) if isinstance(offset_value, (int, str)) and str(offset_value).isdigit() else 0)
+    selected_columns = (
+        ", ".join(_quoted(column) if column in FIELD_CODES else column for column in LIST_RECORD_FIELDS)
+        if list_projection else "*"
+    )
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(
             cur,
-            f"SELECT * FROM spot_ledger_records WHERE {' AND '.join(conditions)} ORDER BY \"U\" DESC, record_id LIMIT ? OFFSET ?",
+            f"SELECT {selected_columns} FROM spot_ledger_records WHERE {' AND '.join(conditions)} ORDER BY \"U\" DESC, record_id LIMIT ? OFFSET ?",
             (*values, limit, offset),
         ).fetchall()
     return [record_to_public(_row_dict(row)) for row in rows]
@@ -626,11 +639,10 @@ def get_records(
 ):
     params = locals().copy()
     return {
-        "records": list_records(params, user=user),
+        "records": list_records(params, user=user, list_projection=True),
         "count": count_records(params, user=user),
         "limit": limit,
         "offset": offset,
-        "field_definitions": FIELD_DEFINITIONS,
     }
 
 
@@ -699,7 +711,7 @@ def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request
 def get_pending(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     params = {"supplement_status": "待补录", "limit": limit, "offset": offset}
     return {
-        "records": list_records(params, user=user),
+        "records": list_records(params, user=user, list_projection=True),
         "count": count_records(params, user=user),
         "limit": limit,
         "offset": offset,
@@ -708,11 +720,11 @@ def get_pending(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, An
 
 def get_sync_errors(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     params = {"sync_error": "true", "limit": limit, "offset": offset}
-    records = list_records(params, user=user)
+    records = list_records(params, user=user, list_projection=True)
     try:
         from .spot_ledger_sync import get_sync_runs
 
-        runs = get_sync_runs()
+        runs = get_sync_runs(limit=1)
     except Exception:
         runs = []
     return {

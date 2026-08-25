@@ -60,6 +60,21 @@ def test_full_scan_upsert_is_idempotent_and_preserves_manual_fields(ledger_db):
     assert len(detail) == 2
 
 
+def test_sync_runs_expose_compact_metadata_without_raw_error_details(ledger_db):
+    from app.spot_ledger_sync import apply_full_scan, get_sync_runs
+
+    apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+    with ledger_db.connect() as conn:
+        stored = conn.execute(
+            "SELECT error_summary FROM spot_ledger_sync_runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+
+    runs = get_sync_runs()
+    assert stored["error_summary"]
+    assert runs[0]["error_count"] > 0
+    assert "error_summary" not in runs[0]
+
+
 def test_full_scan_commits_schema_setup_before_opening_data_transaction(ledger_db, monkeypatch):
     from app import spot_ledger_sync as sync
 

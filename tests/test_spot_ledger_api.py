@@ -58,6 +58,35 @@ def test_records_support_combined_filters_and_expose_all_field_definitions(ledge
     assert [field["code"] for field in field_definitions(user=admin)["fields"]] == list(FIELD_CODES)
 
 
+def test_record_pages_are_server_bounded_and_return_only_list_projection(ledger_context):
+    from app.spot_ledger import get_records
+
+    admin, _ = ledger_context
+    first = get_records(limit=2, offset=0, user=admin)
+    second = get_records(limit=2, offset=2, user=admin)
+
+    assert len(first["records"]) == 2
+    assert len(second["records"]) == 2
+    assert first["count"] == second["count"]
+    assert {row["record_id"] for row in first["records"]}.isdisjoint(
+        row["record_id"] for row in second["records"]
+    )
+    assert {"record_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X", "supplement_status", "sync_status"} <= set(first["records"][0])
+    assert "C" not in first["records"][0]
+    assert "source_payload_json" not in first["records"][0]
+    assert "field_definitions" not in first
+
+
+def test_record_detail_returns_all_business_fields_without_source_payload(ledger_context):
+    from app.spot_ledger import FIELD_CODES, get_record
+
+    admin, _ = ledger_context
+    result = get_record("spot:D1001", user=admin)
+
+    assert set(FIELD_CODES) <= set(result["record"])
+    assert "source_payload_json" not in result["record"]
+
+
 def test_closed_state_filter_uses_source_settlement_state_instead_of_ledger_eligibility(ledger_context):
     from app.spot_ledger import get_records
 
@@ -81,13 +110,27 @@ def test_pending_and_sync_error_views_are_explicit(ledger_context):
     assert any(error["type"] == "conversion_mapping" for error in errors["records"][0]["sync_error_summary"])
 
 
+def test_sync_error_view_returns_only_latest_compact_run(ledger_context):
+    from app.spot_ledger import get_sync_errors
+    from app.spot_ledger_sync import FixtureSalesContractSource, apply_full_scan
+
+    admin, _ = ledger_context
+    apply_full_scan(FixtureSalesContractSource(FIXTURE_PATH).fetch_full_scan(), "2026-08-24T10:00+08:00")
+
+    runs = get_sync_errors(limit=1, user=admin)["runs"]
+    assert len(runs) == 1
+    assert runs[0]["slot_key"] == "2026-08-24T10:00+08:00"
+    assert runs[0]["error_count"] > 0
+    assert "error_summary" not in runs[0]
+
+
 def test_pending_and_sync_error_counts_are_not_capped_by_view_page_size(ledger_context, monkeypatch):
     from app import spot_ledger
 
     admin, _ = ledger_context
     requested = []
 
-    def fake_list(params, *, user=None, include_inactive=False):
+    def fake_list(params, *, user=None, include_inactive=False, list_projection=False):
         requested.append(dict(params))
         return [{"record_id": "visible-row"}]
 
