@@ -509,10 +509,20 @@ class ProfiledSalesContractSource(SalesContractSource):
         except SalesContractSourceError:
             raise
         except Exception as exc:
+            if isinstance(exc, requests.Timeout):
+                stage = "report_request_timeout"
+            elif isinstance(exc, requests.exceptions.SSLError):
+                stage = "report_request_tls"
+            elif isinstance(exc, requests.ConnectionError):
+                stage = "report_request_connection"
+            elif isinstance(exc, requests.RequestException):
+                stage = "report_request_http_client"
+            else:
+                stage = "report_request_internal"
             raise SalesContractSourceError(
                 "source_request",
                 "真实源请求失败",
-                stage="report_request",
+                stage=stage,
             ) from exc
         if self._needs_reauthentication(response):
             raise SalesContractSourceError(

@@ -1443,6 +1443,32 @@ def test_profiled_source_reports_http_status_without_response_body():
     assert "sensitive" not in str(error.value)
 
 
+def test_profiled_source_classifies_connection_error_without_message():
+    import requests
+
+    from app.spot_ledger_sync import (
+        ProfiledSalesContractSource,
+        SalesContractSourceError,
+        build_candidate_source_profile,
+    )
+
+    class Http:
+        def post(self, _url, **_kwargs):
+            raise requests.ConnectionError("sensitive upstream address")
+
+    source = ProfiledSalesContractSource(
+        build_candidate_source_profile("2026-08-25", page_size=1),
+        http=Http(),
+        auth_provider=lambda: {"Authorization": "Bearer sensitive-token"},
+    )
+
+    with pytest.raises(SalesContractSourceError) as error:
+        source.fetch_full_scan()
+
+    assert error.value.stage == "report_request_connection"
+    assert "sensitive" not in str(error.value)
+
+
 def test_scheduler_startup_uses_only_latest_due_hour():
     from app.spot_ledger_sync import scheduler_due_slots
 
