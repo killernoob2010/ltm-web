@@ -712,10 +712,10 @@ def source_readiness_view(user=Depends(_request_user)):
     if not is_admin(active_user):
         raise HTTPException(status_code=403, detail="仅管理员可检查真实源")
 
-    from .spot_ledger_sync import ProfiledSalesContractSource, SalesContractSourceError
+    from .spot_ledger_sync import SalesContractSourceError, probe_official_sales_contract_api
 
     try:
-        scan = ProfiledSalesContractSource.from_env().fetch_full_scan()
+        return probe_official_sales_contract_api()
     except SalesContractSourceError as exc:
         detail = {"code": exc.code, "stage": exc.stage}
         if exc.http_status is not None:
@@ -723,16 +723,6 @@ def source_readiness_view(user=Depends(_request_user)):
         raise HTTPException(status_code=503, detail=detail) from None
     except Exception:
         raise HTTPException(status_code=503, detail={"code": "source_probe_failed"}) from None
-    return {
-        "ok": bool(scan.complete and not scan.errors),
-        "source_mode": scan.source_mode,
-        "complete": scan.complete,
-        "page_count": scan.page_count,
-        "expected_page_count": scan.expected_page_count,
-        "total_count": scan.total_count,
-        "eligible_count": len(scan.records),
-        "error_count": len(scan.errors),
-    }
 
 
 class StrategicHedgingIn(BaseModel):

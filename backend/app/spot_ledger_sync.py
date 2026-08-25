@@ -45,6 +45,7 @@ CANDIDATE_SOURCE_URL = "https://tds-report.ejianlong.com/jmreport/show"
 CANDIDATE_REPORT_ID = "1055351755192311808"
 JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
 JIANLONG_TDS_API_BASE_URL = "https://tds-api.ejianlong.com"
+OFFICIAL_SALES_CONTRACT_LIST_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/saleContractList"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -557,6 +558,87 @@ class ProfiledSalesContractSource(SalesContractSource):
                 source_mode="profiled_http",
             )
         )
+
+
+def _schema_paths(value: Any, prefix: str = "", depth: int = 0) -> set[str]:
+    if depth > 6:
+        return set()
+    paths: set[str] = set()
+    if isinstance(value, dict):
+        for key in sorted(value):
+            path = f"{prefix}.{key}" if prefix else str(key)
+            paths.add(path)
+            paths.update(_schema_paths(value[key], path, depth + 1))
+    elif isinstance(value, list):
+        path = f"{prefix}[]"
+        paths.add(path)
+        if value:
+            paths.update(_schema_paths(value[0], path, depth + 1))
+    return paths
+
+
+def probe_official_sales_contract_api(
+    *,
+    source: Optional[ProfiledSalesContractSource] = None,
+) -> dict[str, Any]:
+    active_source = source or ProfiledSalesContractSource.from_env()
+    if not callable(active_source.auth_provider):
+        raise SalesContractSourceError(
+            "auth_unavailable",
+            "无人值守认证 provider 尚未提供",
+            stage="auth_provider_missing",
+        )
+    try:
+        headers = {
+            **(active_source.auth_provider() or {}),
+            "Origin": JIANLONG_TDS_REDIRECT_URI.rstrip("/"),
+            "Referer": JIANLONG_TDS_REDIRECT_URI,
+        }
+        response = active_source.http.post(
+            OFFICIAL_SALES_CONTRACT_LIST_URL,
+            params={"sheetCode": "G01009", "pageNum": 1, "pageSize": 1},
+            json={},
+            headers=headers,
+            timeout=30,
+        )
+    except SalesContractSourceError:
+        raise
+    except Exception as exc:
+        raise SalesContractSourceError(
+            "source_request",
+            "正式销售合同 JSON 接口请求失败",
+            stage="official_list_request",
+        ) from exc
+    status = int(getattr(response, "status_code", 200))
+    if status >= 400:
+        raise SalesContractSourceError(
+            "source_request",
+            "正式销售合同 JSON 接口返回错误",
+            stage="official_list_http",
+            http_status=status,
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise SalesContractSourceError(
+            "parse_error",
+            "正式销售合同 JSON 接口响应无效",
+            stage="official_list_response",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise SalesContractSourceError(
+            "parse_error",
+            "正式销售合同 JSON 接口响应无效",
+            stage="official_list_response",
+        )
+    response_code = str(payload.get("code") or "")
+    return {
+        "ok": response_code in {"", "200"},
+        "source_mode": "official_json",
+        "http_status": status,
+        "response_code": response_code,
+        "schema_paths": sorted(_schema_paths(payload))[:300],
+    }
 
 
 def validate_full_scan(scan: FullScanResult) -> FullScanResult:

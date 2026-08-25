@@ -89,41 +89,21 @@ def test_source_readiness_requires_administrator_role(ledger_context):
     assert denied.value.status_code == 403
 
 
-def test_source_readiness_returns_only_aggregate_scan_metadata(ledger_context, monkeypatch):
+def test_source_readiness_returns_only_official_json_schema_metadata(ledger_context, monkeypatch):
     from app import spot_ledger_sync as sync
     from app.spot_ledger import source_readiness_view
 
     admin, _ = ledger_context
-    scan = sync.FullScanResult(
-        records=[{"source_detail_id": "must-not-be-returned"}],
-        page_count=2,
-        expected_page_count=2,
-        total_count=5,
-        complete=True,
-        errors=[],
-        source_mode="profiled_http",
-    )
-
-    class Source:
-        def fetch_full_scan(self):
-            return scan
-
-    monkeypatch.setattr(
-        sync.ProfiledSalesContractSource,
-        "from_env",
-        classmethod(lambda _cls: Source()),
-    )
-
-    assert source_readiness_view(user=admin) == {
+    probe = {
         "ok": True,
-        "source_mode": "profiled_http",
-        "complete": True,
-        "page_count": 2,
-        "expected_page_count": 2,
-        "total_count": 5,
-        "eligible_count": 1,
-        "error_count": 0,
+        "source_mode": "official_json",
+        "http_status": 200,
+        "response_code": "200",
+        "schema_paths": ["code", "data.rows[]", "data.rows[].saleContractId"],
     }
+    monkeypatch.setattr(sync, "probe_official_sales_contract_api", lambda: probe)
+
+    assert source_readiness_view(user=admin) == probe
 
 
 @pytest.mark.parametrize(
@@ -152,15 +132,10 @@ def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, sou
 
     admin, _ = ledger_context
 
-    class Source:
-        def fetch_full_scan(self):
-            raise source_error()
+    def fail_probe():
+        raise source_error()
 
-    monkeypatch.setattr(
-        sync.ProfiledSalesContractSource,
-        "from_env",
-        classmethod(lambda _cls: Source()),
-    )
+    monkeypatch.setattr(sync, "probe_official_sales_contract_api", fail_probe)
 
     with pytest.raises(HTTPException) as failed:
         source_readiness_view(user=admin)

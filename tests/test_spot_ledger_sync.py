@@ -229,6 +229,83 @@ def test_profiled_source_from_env_uses_one_session_for_login_and_report(monkeypa
     assert isinstance(source.auth_provider, sync.JianlongPasswordAuthProvider)
 
 
+def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
+    from app import spot_ledger_sync as sync
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "code": 200,
+                "data": {
+                    "rows": [
+                        {
+                            "saleContractId": "must-not-be-returned",
+                            "contractNo": "must-not-be-returned",
+                            "goods": [{"saleContractMxId": "must-not-be-returned"}],
+                        }
+                    ],
+                    "total": 1,
+                },
+            }
+
+    class Http:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return Response()
+
+    class Provider:
+        def __call__(self):
+            return {"Authorization": "Bearer bearer-token"}
+
+    source = sync.ProfiledSalesContractSource(
+        sync.build_candidate_source_profile("2026-08-25"),
+        http=Http(),
+        auth_provider=Provider(),
+    )
+
+    result = sync.probe_official_sales_contract_api(source=source)
+
+    assert result == {
+        "ok": True,
+        "source_mode": "official_json",
+        "http_status": 200,
+        "response_code": "200",
+        "schema_paths": [
+            "code",
+            "data",
+            "data.rows",
+            "data.rows[]",
+            "data.rows[].contractNo",
+            "data.rows[].goods",
+            "data.rows[].goods[]",
+            "data.rows[].goods[].saleContractMxId",
+            "data.rows[].saleContractId",
+            "data.total",
+        ],
+    }
+    assert source.http.calls == [
+        (
+            "https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList",
+            {
+                "params": {"sheetCode": "G01009", "pageNum": 1, "pageSize": 1},
+                "json": {},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        )
+    ]
+    assert "must-not-be-returned" not in repr(result)
+
+
 @pytest.mark.parametrize(
     ("expired_status", "expired_url"),
     [
