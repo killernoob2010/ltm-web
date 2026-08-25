@@ -637,6 +637,8 @@ def probe_official_sales_contract_api(
     detail_response_code = ""
     relevance_payload: dict[str, Any] = {}
     relevance_response_code = ""
+    purchase_payload: dict[str, Any] = {}
+    purchase_response_code = ""
     if isinstance(rows, list) and rows:
         contract_id = rows[0].get("saleContractId") if isinstance(rows[0], dict) else None
         if not contract_id:
@@ -718,20 +720,71 @@ def probe_official_sales_contract_api(
                 stage="official_relevance_response",
             )
         relevance_response_code = str(relevance_payload.get("code") or "")
+        relevance_rows = relevance_payload.get("data")
+        purchase_contract_id = next(
+            (
+                row.get("purchaseContractId")
+                for row in relevance_rows
+                if isinstance(row, dict) and row.get("purchaseContractId")
+            ),
+            None,
+        ) if isinstance(relevance_rows, list) else None
+        if purchase_contract_id:
+            try:
+                purchase_response = active_source.http.get(
+                    (
+                        f"{JIANLONG_TDS_API_BASE_URL}/tradeing/purchaseContract/"
+                        f"{quote(str(purchase_contract_id), safe='')}?sheetCode=G01008"
+                    ),
+                    headers=headers,
+                    timeout=30,
+                )
+            except Exception as exc:
+                raise SalesContractSourceError(
+                    "source_request",
+                    "正式采购合同 JSON 详情请求失败",
+                    stage="official_purchase_detail_request",
+                ) from exc
+            purchase_status = int(getattr(purchase_response, "status_code", 200))
+            if purchase_status >= 400:
+                raise SalesContractSourceError(
+                    "source_request",
+                    "正式采购合同 JSON 详情返回错误",
+                    stage="official_purchase_detail_http",
+                    http_status=purchase_status,
+                )
+            try:
+                purchase_payload = purchase_response.json()
+            except Exception as exc:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式采购合同 JSON 详情响应无效",
+                    stage="official_purchase_detail_response",
+                ) from exc
+            if not isinstance(purchase_payload, dict):
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式采购合同 JSON 详情响应无效",
+                    stage="official_purchase_detail_response",
+                )
+            purchase_response_code = str(purchase_payload.get("code") or "")
     return {
         "ok": (
             response_code in {"", "200"}
             and detail_response_code in {"", "200"}
             and relevance_response_code in {"", "200"}
+            and purchase_response_code in {"", "200"}
         ),
         "source_mode": "official_json",
         "http_status": status,
         "response_code": response_code,
         "detail_response_code": detail_response_code,
         "relevance_response_code": relevance_response_code,
+        "purchase_response_code": purchase_response_code,
         "schema_paths": sorted(_schema_paths(payload))[:300],
         "detail_schema_paths": sorted(_schema_paths(detail_payload))[:300],
         "relevance_schema_paths": sorted(_schema_paths(relevance_payload))[:300],
+        "purchase_schema_paths": sorted(_schema_paths(purchase_payload))[:300],
     }
 
 

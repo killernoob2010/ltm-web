@@ -265,6 +265,22 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
 
         def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
+            if "/tradeing/purchaseContract/" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "purchaseContractId": "must-not-be-returned-purchase-id",
+                            "supplierName": "must-not-be-returned-supplier",
+                            "purchaseContractMxList": [
+                                {
+                                    "purchaseContractMxId": "must-not-be-returned-purchase-line-id",
+                                    "price": 88,
+                                }
+                            ],
+                        },
+                    }
+                )
             if "/getRelevanceContract/" in url:
                 return Response(
                     {
@@ -312,6 +328,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "response_code": "200",
         "detail_response_code": "200",
         "relevance_response_code": "200",
+        "purchase_response_code": "200",
         "schema_paths": [
             "code",
             "data",
@@ -341,6 +358,16 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data[].purchaseContractMxId",
             "data[].supplierName",
         ],
+        "purchase_schema_paths": [
+            "code",
+            "data",
+            "data.purchaseContractId",
+            "data.purchaseContractMxList",
+            "data.purchaseContractMxList[]",
+            "data.purchaseContractMxList[].price",
+            "data.purchaseContractMxList[].purchaseContractMxId",
+            "data.supplierName",
+        ],
     }
     assert source.http.calls == [
         (
@@ -369,6 +396,17 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         ),
         (
             "https://tds-api.ejianlong.com/tradeing/saleContract/getRelevanceContract/must-not-be-returned-id?sheetCode=G01009",
+            {
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/purchaseContract/must-not-be-returned-purchase-id?sheetCode=G01008",
             {
                 "headers": {
                     "Authorization": "Bearer bearer-token",
