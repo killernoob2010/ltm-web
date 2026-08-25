@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .permissions import can, is_admin, require_permission
+from .spot_ledger_mapping_data import OPERATION_TITLE_MAPPINGS, PRODUCT_CATEGORY_MAPPINGS
 
 
 router = APIRouter()
@@ -124,9 +125,20 @@ FIELD_NAME_TO_CODE = {item["name"]: item["code"] for item in FIELD_DEFINITIONS}
 
 # 这些是标准 source contract 中已经确认的名称映射。未知名称不丢失，保留原值并报错。
 DEFAULT_NAME_MAPPINGS = {
-    "operation_title": {"操作抬头A": "操作抬头A", "公司A": "公司A", "": ""},
+    "operation_title": {
+        **OPERATION_TITLE_MAPPINGS,
+        "操作抬头A": "操作抬头A",
+        "公司A": "公司A",
+        "": "",
+    },
     "supplier": {"供应商A": "供应商A", "供应商B": "供应商B", "": ""},
-    "product_category": {"铁矿石": "铁矿石", "螺纹钢": "钢材", "焦煤": "煤炭", "": ""},
+    "product_category": {
+        **PRODUCT_CATEGORY_MAPPINGS,
+        "铁矿石": "铁矿石",
+        "螺纹钢": "钢材",
+        "焦煤": "煤炭",
+        "": "",
+    },
 }
 
 

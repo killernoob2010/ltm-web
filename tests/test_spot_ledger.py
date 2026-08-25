@@ -68,6 +68,23 @@ def test_system_conversion_preserves_unknown_type_and_normalizes_placeholders():
     assert any(error["type"] == "conversion_mapping" for error in record["sync_errors"])
 
 
+def test_confirmed_history_dictionaries_map_operation_title_and_product_category():
+    from app.spot_ledger import normalize_sales_contract_record
+
+    record = normalize_sales_contract_record({
+        "detail_id": "D-DICTIONARY", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组",
+        "contract_number": "C-DICTIONARY", "product_name": "PB粉",
+        "product_category": "PB粉", "operation_title": "天津建龙钢铁实业有限公司",
+        "signed_date": "2026-08-25", "contract_quantity": 20,
+        "business_category_code": "B0701",
+    })
+
+    assert record["F"] == "天津建龙"
+    assert record["AU"] == "主流"
+    assert not any(error["field"] in {"F", "AU"} for error in record["sync_errors"])
+
+
 @pytest.mark.parametrize(
     ("source_category", "expected_type"),
     [
