@@ -58,6 +58,10 @@ LIST_RECORD_FIELDS = (
     "record_id", "source_detail_id", "AD", "E", "AP", "D", "U", "H", "AU", "I", "Q", "AB", "L", "X",
     "supplement_status", "sync_status", "sync_error_summary",
 )
+BACKFILL_SNAPSHOT_FIELDS = (
+    "record_id", "source_detail_id", "AD", "H", "U", "L", "X", "Z",
+    *sorted(MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS),
+)
 
 
 def _field(code: str, name: str, control: str, source_rule: str, required_rule: str = "") -> dict[str, Any]:
@@ -220,6 +224,19 @@ def _number(value: Any) -> Optional[float | int]:
     except ValueError:
         return None
     return int(number) if number.is_integer() else number
+
+
+def _expected_value_equal(field: str, current: Any, expected: Any) -> bool:
+    if field in NUMERIC_FIELDS:
+        current_number = _number(current)
+        expected_number = _number(expected)
+        if current_number is not None or expected_number is not None:
+            return (
+                current_number is not None
+                and expected_number is not None
+                and abs(float(current_number) - float(expected_number)) <= 0.000001
+            )
+    return _text(current) == _text(expected)
 
 
 def _is_true(value: Any) -> bool:
@@ -672,6 +689,34 @@ def count_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dic
     return int(_row_dict(row).get("count") or 0)
 
 
+def get_backfill_snapshot(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Return the admin-only current-scope fields needed for safe Excel backfill matching."""
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可读取补录匹配快照")
+    selected_columns = ", ".join(
+        _quoted(column) if column in FIELD_CODES else column for column in BACKFILL_SNAPSHOT_FIELDS
+    )
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            f"""
+            SELECT {selected_columns}
+            FROM spot_ledger_records
+            WHERE record_source_type = '现货同步'
+              AND is_active = 1
+              AND "U" >= ?
+              AND LENGTH("U") = 10
+              AND SUBSTR("U", 5, 1) = '-'
+              AND SUBSTR("U", 8, 1) = '-'
+            ORDER BY "U" DESC, record_id
+            """,
+            (SPOT_LEDGER_FOCUS_START_DATE,),
+        ).fetchall()
+    records = [record_to_public(_row_dict(row)) for row in rows]
+    return {"records": records, "count": len(records), "from_date": SPOT_LEDGER_FOCUS_START_DATE}
+
+
 @router.get("/spot-ledger/field-definitions")
 def field_definitions(user=Depends(_request_user)):
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
@@ -707,6 +752,7 @@ def get_record(record_id: str, user=Depends(_request_user)):
 
 class SpotLedgerPatch(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
+    expected_values: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.patch("/spot-ledger/records/{record_id}")
@@ -715,10 +761,14 @@ def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request
     require_permission(active_user, SPOT_LEDGER_RESOURCE, "edit")
     require_permission(active_user, SPOT_LEDGER_RESOURCE, "manage")
     values = payload.values or {}
+    expected_values = payload.expected_values or {}
     allowed = MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS
     unknown = sorted(set(values) - allowed)
     if unknown:
         raise HTTPException(status_code=400, detail={"message": "包含不可编辑的系统字段", "fields": unknown})
+    unknown_expected = sorted(set(expected_values) - allowed)
+    if unknown_expected:
+        raise HTTPException(status_code=400, detail={"message": "包含不可校验的系统字段", "fields": unknown_expected})
     if not values:
         raise HTTPException(status_code=400, detail="没有可保存的人工字段")
     with db.connect() as conn:
@@ -727,6 +777,12 @@ def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request
         if not row:
             raise HTTPException(status_code=404, detail="台账记录不存在")
         current = _row_dict(row)
+        conflicts = [
+            field for field, expected in expected_values.items()
+            if not _expected_value_equal(field, current.get(field), expected)
+        ]
+        if conflicts:
+            raise HTTPException(status_code=409, detail={"message": "记录已被其他操作更新", "fields": conflicts})
         projected = dict(current)
         for field, value in values.items():
             if field in NUMERIC_FIELDS:
@@ -788,6 +844,11 @@ def get_sync_errors(*, limit: int = 20, offset: int = 0, user: Optional[dict[str
 @router.get("/spot-ledger/pending")
 def pending_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
     return get_pending(limit=limit, offset=offset, user=user)
+
+
+@router.get("/spot-ledger/backfill-snapshot")
+def backfill_snapshot_view(user=Depends(_request_user)):
+    return get_backfill_snapshot(user=user)
 
 
 @router.get("/spot-ledger/sync-errors")

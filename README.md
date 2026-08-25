@@ -55,7 +55,7 @@ http://127.0.0.1:8001
 
 销售价格优先采用源接口明确返回的含税字段 `taxPrice`，没有该字段时才回退 `unitPrice` 或 `price`，不得自行乘税率推算。操作抬头、供应商和商品分类使用版本化显式字典；供应商法定全称现在是 Q 的标准主数据，已确认简称只作为页面展示别名，未命中简称但有完整法定全称不再作为同步异常；商品分类 AU 继续采用系统显式分类字典，Excel 中重复 H 的 AU 不覆盖系统分类。历史工作簿导入会在前 20 行识别真实表头，只处理 U >= 2026-01-01 的记录，并忽略只有预填公式、没有合同/商品/价格/数量业务标识的空行；唯一匹配且 Excel 有值才迁移人工字段或空白 K，无法匹配、存在歧义或非空冲突时保持原状，数值字段中的文字说明会跳过而不会写入错误类型。
 
-测试版现货台账的 Excel 回填使用 `scripts/import_spot_ledger_staging.py`，默认只做 dry-run，要求通过 `STAGING_LEDGER_USERNAME` 和 `STAGING_LEDGER_PASSWORD` 环境变量登录，并且脚本只接受 `https://ltm-web-staging.onrender.com`。确认 dry-run 后显式增加 `--apply` 才写入测试版；脚本只回填 Excel 实际有值且唯一精确匹配的字段，不写 Q/AU，也不把空值写成占位符。
+测试版现货台账的 Excel 回填使用 `scripts/import_spot_ledger_staging.py`，默认只做 dry-run，要求通过 `STAGING_LEDGER_USERNAME` 和 `STAGING_LEDGER_PASSWORD` 环境变量登录，并且脚本只接受 `https://ltm-web-staging.onrender.com`。脚本通过管理员专用的 2026 年匹配快照一次读取识别字段和待回填字段；确认 dry-run 后显式增加 `--apply` 才写入测试版，写入接口会校验快照中的原值仍未被其他操作修改。脚本只回填 Excel 实际有值且唯一精确匹配的字段，不写 Q/AU，也不把空值写成占位符。
 
 现货业务台账数据库沿用项目现有 `db.init_db()` 双数据库兼容路径：本地使用 SQLite，Render/Supabase 使用 PostgreSQL 专用的 `TEXT`、`DOUBLE PRECISION` 和幂等 `CREATE TABLE IF NOT EXISTS`。两张台账表只允许服务端 FastAPI 连接访问，PostgreSQL 路径启用 RLS 并撤销 `anon` / `authenticated` 的直接表权限；页面不通过 Supabase Data API 直连。Staging 已写入真实只读源同步结果；系统字段随源刷新，人工字段在重复同步时保留，只有完整成功扫描才允许软隐藏缺失记录。Production 仍未启用该来源或写入该台账，必须单独通过 Gate B。
 

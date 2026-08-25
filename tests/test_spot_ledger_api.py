@@ -88,6 +88,38 @@ def test_record_detail_returns_all_business_fields_without_source_payload(ledger
     assert "source_payload_json" not in result["record"]
 
 
+def test_backfill_snapshot_is_admin_only_current_scope_and_omits_payload(ledger_context):
+    from app.spot_ledger import get_backfill_snapshot
+
+    admin, trade_user = ledger_context
+    snapshot = get_backfill_snapshot(user=admin)
+
+    assert snapshot["count"] == len(snapshot["records"])
+    assert snapshot["records"]
+    assert all(row["U"] >= "2026-01-01" for row in snapshot["records"])
+    assert {"record_id", "AD", "H", "U", "L", "X", "Z", "K"} <= set(snapshot["records"][0])
+    assert all("source_payload_json" not in row for row in snapshot["records"])
+    with pytest.raises(HTTPException) as denied:
+        get_backfill_snapshot(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_patch_record_honors_expected_values_for_backfill_race_safety(ledger_context):
+    from app.spot_ledger import SpotLedgerPatch, get_record, patch_record
+
+    admin, _ = ledger_context
+    current = get_record("spot:D1001", user=admin)["record"]["K"]
+    expected = "不匹配的并发值" if current != "不匹配的并发值" else "另一个并发值"
+
+    with pytest.raises(HTTPException) as conflict:
+        patch_record(
+            "spot:D1001",
+            SpotLedgerPatch(values={"K": "不应写入"}, expected_values={"K": expected}),
+            user=admin,
+        )
+    assert conflict.value.status_code == 409
+
+
 def test_closed_state_filter_uses_source_settlement_state_instead_of_ledger_eligibility(ledger_context):
     from app.spot_ledger import get_records
 

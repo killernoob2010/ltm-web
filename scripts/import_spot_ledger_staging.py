@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 import json
 import os
@@ -213,21 +212,6 @@ def build_backfill_plan(
     return result
 
 
-def candidate_detail_ids(source_rows: Iterable[dict[str, Any]], records: list[dict[str, Any]]) -> list[str]:
-    source_keys = {
-        (_text(row.get("AD")), _text(row.get("H")), _normalize_date(row.get("U")), _text(_quantity(row)))
-        for row in source_rows
-        if _date_status(row.get("U")) == "focus" and any(_usable(row.get(field)) for field in BACKFILL_FIELDS)
-    }
-    return [
-        str(record["record_id"])
-        for record in records
-        if record.get("record_id") and (
-            _text(record.get("AD")), _text(record.get("H")), _normalize_date(record.get("U")), _text(_quantity(record))
-        ) in source_keys
-    ]
-
-
 class StagingLedgerClient:
     def __init__(self, base_url: str, username: str, password: str, timeout: float = 30, session: requests.Session | None = None):
         self.base_url = validate_staging_base_url(base_url)
@@ -255,56 +239,41 @@ class StagingLedgerClient:
         if not self.token:
             raise RuntimeError("Staging login returned no token")
 
-    def list_records(self) -> list[dict[str, Any]]:
-        records: list[dict[str, Any]] = []
-        offset = 0
-        while True:
-            result = self._request("GET", "/api/spot-ledger/records", params={"limit": 100, "offset": offset})
-            page = result.get("records") or []
-            records.extend(item for item in page if isinstance(item, dict))
-            total = int(result.get("count") or len(records))
-            if not page or len(records) >= total:
-                return records
-            offset += len(page)
+    def get_backfill_snapshot(self) -> list[dict[str, Any]]:
+        result = self._request("GET", "/api/spot-ledger/backfill-snapshot")
+        return [item for item in result.get("records", []) if isinstance(item, dict)]
 
-    def get_detail(self, record_id: str) -> dict[str, Any]:
-        return self._request("GET", f"/api/spot-ledger/records/{quote(record_id, safe='')}").get("record") or {}
-
-    def patch(self, record_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        return self._request("PATCH", f"/api/spot-ledger/records/{quote(record_id, safe='')}", json={"values": values})
+    def patch(
+        self,
+        record_id: str,
+        values: dict[str, Any],
+        expected_values: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"values": values}
+        if expected_values is not None:
+            payload["expected_values"] = expected_values
+        return self._request("PATCH", f"/api/spot-ledger/records/{quote(record_id, safe='')}", json=payload)
 
     def reconcile_mappings(self, apply: bool = False) -> dict[str, Any]:
         return self._request("POST", "/api/spot-ledger/reconcile-mappings", params={"apply": str(apply).lower()})
 
-    def get_details_concurrent(self, record_ids: Iterable[str], max_workers: int = 8) -> dict[str, dict[str, Any]]:
-        ids = list(record_ids)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            details = executor.map(self.get_detail, ids)
-        return dict(zip(ids, details))
-
-
 def apply_backfill_plan(client: StagingLedgerClient, result: dict[str, Any], change_log: Path) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
     applied = 0
-    skipped_race = 0
     failed = 0
     for plan in result.get("plans", []):
         record_id = str(plan["record_id"])
-        current = client.get_detail(record_id)
-        if any(not _value_equal(field, current.get(field), expected) for field, expected in plan.get("current_values", {}).items()):
-            skipped_race += 1
-            continue
         changes.append({"record_id": record_id, "values": plan["values"], "previous": plan.get("current_values", {})})
     change_log.parent.mkdir(parents=True, exist_ok=True)
     change_log.write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding="utf-8")
     for change in changes:
         try:
-            client.patch(change["record_id"], change["values"])
+            client.patch(change["record_id"], change["values"], expected_values=change["previous"])
             applied += 1
         except (OSError, RuntimeError, requests.RequestException):
             failed += 1
             break
-    return {"change_log": str(change_log), "applied": applied, "skipped_race": skipped_race, "failed": failed}
+    return {"change_log": str(change_log), "applied": applied, "skipped_race": 0, "failed": failed}
 
 
 def safe_summary(result: dict[str, Any]) -> str:
@@ -336,8 +305,8 @@ def main() -> int:
             if args.reconcile_only:
                 return 0
         sheet, source_rows = read_workbook_rows(args.workbook)
-        records = client.list_records()
-        details = client.get_details_concurrent(candidate_detail_ids(source_rows, records))
+        records = client.get_backfill_snapshot()
+        details = {str(record["record_id"]): record for record in records if record.get("record_id")}
         result = build_backfill_plan(source_rows, records, details)
         result["sheet"] = sheet
         result["dry_run"] = not args.apply

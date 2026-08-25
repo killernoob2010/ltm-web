@@ -49,10 +49,33 @@ def test_build_backfill_plan_is_2026_only_blank_only_and_conflict_safe():
     assert result["field_updates"] == {"K": 1, "AM": 1}
     assert result["plans"][0]["record_id"] == "r-102"
     assert result["plans"][0]["values"] == {"K": "补录船", "AM": "来源备注"}
-    assert staging_import.candidate_detail_ids(source_rows, records) == ["r-102", "r-101"]
 
 
 def test_cli_summary_does_not_include_credentials():
     summary = staging_import.safe_summary({"username": "admin", "password": "secret", "updated": 3})
     assert "password" not in summary
     assert "secret" not in summary
+
+
+def test_apply_backfill_plan_uses_snapshot_and_expected_values(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.patches = []
+
+        def get_detail(self, record_id):
+            raise AssertionError("apply must not refetch every detail")
+
+        def patch(self, record_id, values, expected_values=None):
+            self.patches.append((record_id, values, expected_values))
+            return {"ok": True}
+
+    client = FakeClient()
+    result = {
+        "plans": [{"record_id": "r-1", "values": {"K": "船名A"}, "current_values": {"K": ""}}],
+    }
+
+    applied = staging_import.apply_backfill_plan(client, result, tmp_path / "changes.json")
+
+    assert applied["applied"] == 1
+    assert applied["failed"] == 0
+    assert client.patches == [("r-1", {"K": "船名A"}, {"K": ""})]
