@@ -127,6 +127,17 @@ class OfficialContractScope:
     diagnostics: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class OfficialContractBundle:
+    contract_row: dict[str, Any]
+    contract_id: str
+    detail: dict[str, Any] = field(default_factory=dict)
+    lines: list[dict[str, Any]] = field(default_factory=list)
+    purchase_lines: dict[str, dict[str, Any]] = field(default_factory=dict)
+    match_rows: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
+
+
 class SalesContractSource:
     def fetch_full_scan(self) -> FullScanResult:
         raise NotImplementedError
@@ -825,21 +836,31 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 errors.append({"type": "duplicate_demand_id", "demand_id": demand_id})
                 continue
             demands[demand_id] = row
+            raw_source_type = str(row.get("sourceType") or "").strip()
             source_type, source_known = self._dictionary_label(
                 dictionaries.get("source_type", {}),
-                row.get("sourceType"),
+                raw_source_type,
             )
+            if not source_known:
+                if raw_source_type:
+                    unclassified_demand_scope_count += 1
+                    errors.append({"type": "unclassified_demand_scope", "demand_id": demand_id})
+                continue
+            if source_type != "现货":
+                continue
+            spot_demand_count += 1
+
+            raw_quantity_group = str(row.get("quantityAttribution") or "").strip()
             quantity_group, quantity_group_known = self._dictionary_label(
                 dictionaries.get("quantity_attribution", {}),
-                row.get("quantityAttribution"),
+                raw_quantity_group,
             )
-            if not source_known or not quantity_group_known:
-                unclassified_demand_scope_count += 1
-                errors.append({"type": "unclassified_demand_scope", "demand_id": demand_id})
+            if not quantity_group_known:
+                if raw_quantity_group:
+                    unclassified_demand_scope_count += 1
+                    errors.append({"type": "unclassified_demand_scope", "demand_id": demand_id})
                 continue
-            if source_type == "现货":
-                spot_demand_count += 1
-            if source_type == "现货" and quantity_group in SHANGHAI_GROUPS:
+            if quantity_group in SHANGHAI_GROUPS:
                 in_scope_demand_ids.add(demand_id)
                 in_scope_demand_order.append(demand_id)
 
@@ -1068,6 +1089,54 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     purchase_lines[line_id] = line
         return purchase_lines
 
+    def _fetch_contract_bundle(self, contract_row: dict[str, Any]) -> OfficialContractBundle:
+        contract_id = str(contract_row.get("saleContractId") or "").strip()
+        if not contract_id:
+            return OfficialContractBundle(
+                contract_row=contract_row,
+                contract_id="",
+                errors=[{"type": "missing_contract_id"}],
+            )
+        detail = self._get_data_dict(
+            (
+                f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/"
+                f"{quote(contract_id, safe='')}?sheetCode=G01009"
+            ),
+            stage="official_contract_detail",
+        )
+        lines = detail.get("tdsSaleContractMxVos")
+        if not isinstance(lines, list):
+            lines = detail.get("saleContractMxList")
+        if not isinstance(lines, list):
+            return OfficialContractBundle(
+                contract_row=contract_row,
+                contract_id=contract_id,
+                detail=detail,
+                errors=[{"type": "missing_sale_lines", "contract_id": contract_id}],
+            )
+        lines = [line for line in lines if isinstance(line, dict)]
+        purchase_lines = self._purchase_lines(contract_id)
+        traders_id = str(detail.get("syncTradersId") or "").strip()
+        match_rows = (
+            self._get_data_list(
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
+                    f"{quote(traders_id, safe='')}?sheetCode=G01004"
+                ),
+                stage="official_match_result",
+            )
+            if traders_id
+            else []
+        )
+        return OfficialContractBundle(
+            contract_row=contract_row,
+            contract_id=contract_id,
+            detail=detail,
+            lines=lines,
+            purchase_lines=purchase_lines,
+            match_rows=match_rows,
+        )
+
     def fetch_full_scan(self) -> FullScanResult:
         dictionaries = self._fetch_dictionaries()
         contract_scope = self._fetch_contract_scope(dictionaries)
@@ -1081,41 +1150,83 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         ambiguous_match_count = 0
         missing_match_count = 0
         demand_cache: dict[str, dict[str, Any]] = dict(contract_scope.demands)
-        resource_cache: dict[str, dict[str, Any]] = {}
+        contract_bundles = self._map_bounded(self._fetch_contract_bundle, contract_rows)
+        for bundle in contract_bundles:
+            scan_errors.extend(bundle.errors)
+            source_detail_count += len(bundle.lines)
 
-        for contract_row in contract_rows:
-            contract_id = str(contract_row.get("saleContractId") or "").strip()
-            if not contract_id:
-                scan_errors.append({"type": "missing_contract_id"})
+        demand_detail_ids: set[str] = set()
+        resource_ids: set[str] = set()
+        for bundle in contract_bundles:
+            if bundle.errors:
                 continue
-            detail = self._get_data_dict(
-                (
-                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/"
-                    f"{quote(contract_id, safe='')}?sheetCode=G01009"
-                ),
-                stage="official_contract_detail",
+            matches_by_goods: dict[str, list[dict[str, Any]]] = {}
+            for match in bundle.match_rows:
+                goods_code = str(match.get("goodsCode") or "").strip()
+                if goods_code:
+                    matches_by_goods.setdefault(goods_code, []).append(match)
+            sale_goods_counts: dict[str, int] = {}
+            for line in bundle.lines:
+                goods_code = str(line.get("goodsCode") or "").strip()
+                if goods_code:
+                    sale_goods_counts[goods_code] = sale_goods_counts.get(goods_code, 0) + 1
+            for line in bundle.lines:
+                goods_code = str(line.get("goodsCode") or "").strip()
+                candidates = matches_by_goods.get(goods_code, []) if goods_code else []
+                if len(candidates) != 1 or sale_goods_counts.get(goods_code, 0) != 1:
+                    continue
+                match = candidates[0]
+                demand_id = str(match.get("demandId") or "").strip()
+                if demand_id not in contract_scope.in_scope_demand_ids:
+                    continue
+                demand = demand_cache.get(demand_id, {})
+                if any(
+                    demand.get(field_name) in (None, "")
+                    for field_name in (
+                        "sourceType",
+                        "quantityAttribution",
+                        "profitAttribution",
+                        "businessType",
+                    )
+                ):
+                    demand_detail_ids.add(demand_id)
+                resource_id = str(match.get("saleId") or "").strip()
+                if resource_id:
+                    resource_ids.add(resource_id)
+
+        def fetch_demand_detail(demand_id: str) -> tuple[str, dict[str, Any]]:
+            return demand_id, self._get_data_dict(
+                OFFICIAL_DEMAND_DETAIL_URL,
+                stage="official_demand_detail",
+                params={"demandId": demand_id},
             )
-            lines = detail.get("tdsSaleContractMxVos")
-            if not isinstance(lines, list):
-                lines = detail.get("saleContractMxList")
-            if not isinstance(lines, list):
-                scan_errors.append({"type": "missing_sale_lines", "contract_id": contract_id})
+
+        for demand_id, detail in self._map_bounded(
+            fetch_demand_detail,
+            sorted(demand_detail_ids),
+        ):
+            demand_cache[demand_id] = {**demand_cache.get(demand_id, {}), **detail}
+
+        def fetch_resource_detail(resource_id: str) -> tuple[str, dict[str, Any]]:
+            return resource_id, self._get_data_dict(
+                OFFICIAL_RESOURCE_DETAIL_URL,
+                stage="official_resource_detail",
+                params={"saleId": resource_id},
+            )
+
+        resource_cache = dict(
+            self._map_bounded(fetch_resource_detail, sorted(resource_ids))
+        )
+
+        for bundle in contract_bundles:
+            if bundle.errors:
                 continue
-            lines = [line for line in lines if isinstance(line, dict)]
-            source_detail_count += len(lines)
-            purchase_lines = self._purchase_lines(contract_id)
-            traders_id = str(detail.get("syncTradersId") or "").strip()
-            match_rows = (
-                self._get_data_list(
-                    (
-                        f"{JIANLONG_TDS_API_BASE_URL}/chain/goods/matchResult/"
-                        f"{quote(traders_id, safe='')}?sheetCode=G01004"
-                    ),
-                    stage="official_match_result",
-                )
-                if traders_id
-                else []
-            )
+            contract_row = bundle.contract_row
+            contract_id = bundle.contract_id
+            detail = bundle.detail
+            lines = bundle.lines
+            purchase_lines = bundle.purchase_lines
+            match_rows = bundle.match_rows
             matches_by_goods: dict[str, list[dict[str, Any]]] = {}
             for match in match_rows:
                 goods_code = str(match.get("goodsCode") or "").strip()
@@ -1149,30 +1260,10 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     scan_errors.append({"type": "missing_demand_link", "detail_id": detail_id})
                     continue
                 if demand_id not in demand_cache:
-                    demand_cache[demand_id] = self._get_data_dict(
-                        OFFICIAL_DEMAND_DETAIL_URL,
-                        stage="official_demand_detail",
-                        params={"demandId": demand_id},
-                    )
+                    missing_match_count += 1
+                    scan_errors.append({"type": "missing_demand_scope", "detail_id": detail_id})
+                    continue
                 demand = demand_cache[demand_id]
-                if any(
-                    demand.get(field_name) in (None, "")
-                    for field_name in (
-                        "sourceType",
-                        "quantityAttribution",
-                        "profitAttribution",
-                        "businessType",
-                    )
-                ):
-                    demand = {
-                        **demand,
-                        **self._get_data_dict(
-                            OFFICIAL_DEMAND_DETAIL_URL,
-                            stage="official_demand_detail",
-                            params={"demandId": demand_id},
-                        ),
-                    }
-                    demand_cache[demand_id] = demand
                 quantity_group, quantity_group_known = self._dictionary_label(
                     dictionaries["quantity_attribution"],
                     demand.get("quantityAttribution"),
@@ -1198,13 +1289,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 resource: dict[str, Any] = {}
                 record_errors: list[dict[str, str]] = []
                 if resource_id:
-                    if resource_id not in resource_cache:
-                        resource_cache[resource_id] = self._get_data_dict(
-                            OFFICIAL_RESOURCE_DETAIL_URL,
-                            stage="official_resource_detail",
-                            params={"saleId": resource_id},
-                        )
-                    resource = resource_cache[resource_id]
+                    resource = resource_cache.get(resource_id, {})
                 else:
                     record_errors.append(
                         {

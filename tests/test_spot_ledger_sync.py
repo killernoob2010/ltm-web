@@ -275,10 +275,15 @@ def test_official_contract_scope_starts_from_locally_filtered_demands():
                             "demandId": "demand-futures",
                             "sourceType": "20",
                             "quantityAttribution": "Q1",
-                        }
+                        },
+                        {
+                            "demandId": "demand-without-group",
+                            "sourceType": "10",
+                            "quantityAttribution": "",
+                        },
                     ],
                 }[page]
-                return {"code": 200, "data": {"rows": rows, "total": 3}}
+                return {"code": 200, "data": {"rows": rows, "total": 4}}
             if "/relatedToDemand/" in url:
                 assert "demand-in-scope" in url
                 return {
@@ -310,13 +315,14 @@ def test_official_contract_scope_starts_from_locally_filtered_demands():
         "demand-in-scope",
         "demand-other-group",
         "demand-futures",
+        "demand-without-group",
     }
     assert scope.in_scope_demand_ids == {"demand-in-scope"}
     assert scope.active_contracts == [{"saleContractId": "contract-active", "status": "70"}]
     assert scope.errors == []
     assert scope.diagnostics == {
-        "source_demand_count": 3,
-        "spot_demand_count": 2,
+        "source_demand_count": 4,
+        "spot_demand_count": 3,
         "in_scope_demand_count": 1,
         "duplicate_demand_id_count": 0,
         "unclassified_demand_scope_count": 0,
