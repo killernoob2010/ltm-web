@@ -635,6 +635,8 @@ def probe_official_sales_contract_api(
     rows = (payload.get("data") or {}).get("rows") if isinstance(payload.get("data"), dict) else None
     detail_payload: dict[str, Any] = {}
     detail_response_code = ""
+    relevance_payload: dict[str, Any] = {}
+    relevance_response_code = ""
     if isinstance(rows, list) and rows:
         contract_id = rows[0].get("saleContractId") if isinstance(rows[0], dict) else None
         if not contract_id:
@@ -678,14 +680,58 @@ def probe_official_sales_contract_api(
                 stage="official_detail_response",
             )
         detail_response_code = str(detail_payload.get("code") or "")
+        try:
+            relevance_response = active_source.http.get(
+                (
+                    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/getRelevanceContract/"
+                    f"{quote(str(contract_id), safe='')}?sheetCode=G01009"
+                ),
+                headers=headers,
+                timeout=30,
+            )
+        except Exception as exc:
+            raise SalesContractSourceError(
+                "source_request",
+                "正式销售合同 JSON 关联合同请求失败",
+                stage="official_relevance_request",
+            ) from exc
+        relevance_status = int(getattr(relevance_response, "status_code", 200))
+        if relevance_status >= 400:
+            raise SalesContractSourceError(
+                "source_request",
+                "正式销售合同 JSON 关联合同返回错误",
+                stage="official_relevance_http",
+                http_status=relevance_status,
+            )
+        try:
+            relevance_payload = relevance_response.json()
+        except Exception as exc:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式销售合同 JSON 关联合同响应无效",
+                stage="official_relevance_response",
+            ) from exc
+        if not isinstance(relevance_payload, dict):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式销售合同 JSON 关联合同响应无效",
+                stage="official_relevance_response",
+            )
+        relevance_response_code = str(relevance_payload.get("code") or "")
     return {
-        "ok": response_code in {"", "200"} and detail_response_code in {"", "200"},
+        "ok": (
+            response_code in {"", "200"}
+            and detail_response_code in {"", "200"}
+            and relevance_response_code in {"", "200"}
+        ),
         "source_mode": "official_json",
         "http_status": status,
         "response_code": response_code,
         "detail_response_code": detail_response_code,
+        "relevance_response_code": relevance_response_code,
         "schema_paths": sorted(_schema_paths(payload))[:300],
         "detail_schema_paths": sorted(_schema_paths(detail_payload))[:300],
+        "relevance_schema_paths": sorted(_schema_paths(relevance_payload))[:300],
     }
 
 

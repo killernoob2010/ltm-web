@@ -265,6 +265,19 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
 
         def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
+            if "/getRelevanceContract/" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": [
+                            {
+                                "purchaseContractId": "must-not-be-returned-purchase-id",
+                                "purchaseContractMxId": "must-not-be-returned-purchase-line-id",
+                                "supplierName": "must-not-be-returned-supplier",
+                            }
+                        ],
+                    }
+                )
             return Response(
                 {
                     "code": 200,
@@ -298,6 +311,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "http_status": 200,
         "response_code": "200",
         "detail_response_code": "200",
+        "relevance_response_code": "200",
         "schema_paths": [
             "code",
             "data",
@@ -319,6 +333,14 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.saleContractMxList[].contractQuantity",
             "data.saleContractMxList[].saleContractMxId",
         ],
+        "relevance_schema_paths": [
+            "code",
+            "data",
+            "data[]",
+            "data[].purchaseContractId",
+            "data[].purchaseContractMxId",
+            "data[].supplierName",
+        ],
     }
     assert source.http.calls == [
         (
@@ -336,6 +358,17 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         ),
         (
             "https://tds-api.ejianlong.com/tradeing/saleContract/must-not-be-returned-id?sheetCode=G01009",
+            {
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/saleContract/getRelevanceContract/must-not-be-returned-id?sheetCode=G01009",
             {
                 "headers": {
                     "Authorization": "Bearer bearer-token",
