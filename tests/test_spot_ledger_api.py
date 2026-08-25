@@ -73,6 +73,7 @@ def test_record_pages_are_server_bounded_and_return_only_list_projection(ledger_
     )
     assert {"record_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X", "supplement_status", "sync_status"} <= set(first["records"][0])
     assert "C" not in first["records"][0]
+    assert "missing_fields" not in first["records"][0]
     assert "source_payload_json" not in first["records"][0]
     assert "field_definitions" not in first
 

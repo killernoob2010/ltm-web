@@ -506,6 +506,8 @@ def record_to_public(record: dict[str, Any]) -> dict[str, Any]:
     result = dict(record)
     result.pop("source_payload_json", None)
     for field in ("missing_fields", "sync_error_summary"):
+        if field not in result:
+            continue
         value = result.get(field)
         if field == "missing_fields":
             result[field] = json.loads(value or "[]") if isinstance(value, str) else (value or [])
