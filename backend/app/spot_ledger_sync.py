@@ -509,11 +509,26 @@ class ProfiledSalesContractSource(SalesContractSource):
         except SalesContractSourceError:
             raise
         except Exception as exc:
-            raise SalesContractSourceError("source_request", "真实源请求失败") from exc
+            raise SalesContractSourceError(
+                "source_request",
+                "真实源请求失败",
+                stage="report_request",
+            ) from exc
         if self._needs_reauthentication(response):
-            raise SalesContractSourceError("auth_unavailable", "真实源认证失败", stage="report_auth")
-        if getattr(response, "status_code", 200) >= 400:
-            raise SalesContractSourceError("source_request", "真实源返回错误")
+            raise SalesContractSourceError(
+                "auth_unavailable",
+                "真实源认证失败",
+                stage="report_auth",
+                http_status=int(getattr(response, "status_code", 401)),
+            )
+        status = int(getattr(response, "status_code", 200))
+        if status >= 400:
+            raise SalesContractSourceError(
+                "source_request",
+                "真实源返回错误",
+                stage="report_http",
+                http_status=status,
+            )
         try:
             payload = response.json()
             external_records = _extract_path(payload, self.profile["records_path"])

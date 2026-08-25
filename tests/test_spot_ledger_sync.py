@@ -1413,6 +1413,36 @@ def test_profiled_source_reauthenticates_once_after_bearer_expiry(expired_status
     ]
 
 
+def test_profiled_source_reports_http_status_without_response_body():
+    from app.spot_ledger_sync import (
+        ProfiledSalesContractSource,
+        SalesContractSourceError,
+        build_candidate_source_profile,
+    )
+
+    class Response:
+        status_code = 502
+        url = "https://tds-report.ejianlong.com/jmreport/show"
+        text = "sensitive upstream response"
+
+    class Http:
+        def post(self, _url, **_kwargs):
+            return Response()
+
+    source = ProfiledSalesContractSource(
+        build_candidate_source_profile("2026-08-25", page_size=1),
+        http=Http(),
+        auth_provider=lambda: {"Authorization": "Bearer sensitive-token"},
+    )
+
+    with pytest.raises(SalesContractSourceError) as error:
+        source.fetch_full_scan()
+
+    assert error.value.stage == "report_http"
+    assert error.value.http_status == 502
+    assert "sensitive" not in str(error.value)
+
+
 def test_scheduler_startup_uses_only_latest_due_hour():
     from app.spot_ledger_sync import scheduler_due_slots
 
