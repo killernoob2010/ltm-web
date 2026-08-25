@@ -143,6 +143,8 @@ profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它�
 - `GET /api/spot-ledger/export`
 - `POST /api/spot-ledger/strategic-hedging`
 
+`records`、`pending` 和 `sync-errors` 均为服务端分页，默认 20 条，前端只提供 20/50/100 条三档并通过 `limit + offset` 请求当前页；后端拒绝超过 100 条的普通列表请求。列表接口只返回表格摘要字段，完整 51 字段仅在读取单条详情时返回；源标准化快照和同步任务原始错误明细保留在服务端，不进入列表、详情或同步状态响应。Excel 导出是用户明确触发的独立全量批处理，不复用普通列表页大小。
+
 不提供手动立即同步 API。fixture 同步仅通过本地开发脚本/测试调用，不暴露为业务页面按钮。
 
 ## 6. 历史迁移与战略套保
