@@ -80,6 +80,94 @@ def test_pending_and_sync_error_views_are_explicit(ledger_context):
     assert any(error["type"] == "conversion_mapping" for error in errors["records"][0]["sync_error_summary"])
 
 
+def test_source_readiness_requires_administrator_role(ledger_context):
+    from app.spot_ledger import source_readiness_view
+
+    _, trade_user = ledger_context
+    with pytest.raises(HTTPException) as denied:
+        source_readiness_view(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_readiness_returns_only_aggregate_scan_metadata(ledger_context, monkeypatch):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_readiness_view
+
+    admin, _ = ledger_context
+    scan = sync.FullScanResult(
+        records=[{"source_detail_id": "must-not-be-returned"}],
+        page_count=2,
+        expected_page_count=2,
+        total_count=5,
+        complete=True,
+        errors=[],
+        source_mode="profiled_http",
+    )
+
+    class Source:
+        def fetch_full_scan(self):
+            return scan
+
+    monkeypatch.setattr(
+        sync.ProfiledSalesContractSource,
+        "from_env",
+        classmethod(lambda _cls: Source()),
+    )
+
+    assert source_readiness_view(user=admin) == {
+        "ok": True,
+        "source_mode": "profiled_http",
+        "complete": True,
+        "page_count": 2,
+        "expected_page_count": 2,
+        "total_count": 5,
+        "eligible_count": 1,
+        "error_count": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source_error", "expected_code"),
+    [
+        pytest.param(
+            lambda: __import__("app.spot_ledger_sync", fromlist=["SalesContractSourceError"]).SalesContractSourceError(
+                "auth_unavailable",
+                "personal-password bearer-token source-response",
+            ),
+            "auth_unavailable",
+            id="known-source-error",
+        ),
+        pytest.param(
+            lambda: RuntimeError("personal-password bearer-token source-response"),
+            "source_probe_failed",
+            id="unexpected-error",
+        ),
+    ],
+)
+def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, source_error, expected_code):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_readiness_view
+
+    admin, _ = ledger_context
+
+    class Source:
+        def fetch_full_scan(self):
+            raise source_error()
+
+    monkeypatch.setattr(
+        sync.ProfiledSalesContractSource,
+        "from_env",
+        classmethod(lambda _cls: Source()),
+    )
+
+    with pytest.raises(HTTPException) as failed:
+        source_readiness_view(user=admin)
+    assert failed.value.status_code == 503
+    assert failed.value.detail == {"code": expected_code}
+    assert "personal-password" not in str(failed.value)
+    assert "bearer-token" not in str(failed.value)
+
+
 def test_manual_edit_requires_sensitive_permission_and_cannot_change_system_field(ledger_context):
     from app.spot_ledger import SpotLedgerPatch, patch_record
 
@@ -142,4 +230,5 @@ def test_spot_ledger_routes_are_registered_in_main_app():
     assert "/api/spot-ledger/records" in paths
     assert "/api/spot-ledger/export" in paths
     assert "/api/spot-ledger/strategic-hedging" in paths
+    assert "/api/spot-ledger/source-readiness" in paths
     assert not any(path.endswith("/sync-now") for path in paths)

@@ -22,7 +22,7 @@ from openpyxl import Workbook
 from pydantic import BaseModel, Field
 
 from . import db
-from .permissions import can, require_permission
+from .permissions import can, is_admin, require_permission
 
 
 router = APIRouter()
@@ -703,6 +703,32 @@ def sync_status_view(user=Depends(_request_user)):
         "source_mode": (os.getenv("SPOT_LEDGER_SOURCE_MODE") or "profiled_http").strip(),
         "slots": [f"{hour:02d}:00" for hour in range(9, 19)],
         "runs": runs,
+    }
+
+
+@router.post("/spot-ledger/source-readiness")
+def source_readiness_view(user=Depends(_request_user)):
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可检查真实源")
+
+    from .spot_ledger_sync import ProfiledSalesContractSource, SalesContractSourceError
+
+    try:
+        scan = ProfiledSalesContractSource.from_env().fetch_full_scan()
+    except SalesContractSourceError as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code}) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail={"code": "source_probe_failed"}) from None
+    return {
+        "ok": bool(scan.complete and not scan.errors),
+        "source_mode": scan.source_mode,
+        "complete": scan.complete,
+        "page_count": scan.page_count,
+        "expected_page_count": scan.expected_page_count,
+        "total_count": scan.total_count,
+        "eligible_count": len(scan.records),
+        "error_count": len(scan.errors),
     }
 
 
