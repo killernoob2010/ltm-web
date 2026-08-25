@@ -175,6 +175,26 @@ def test_source_dry_run_returns_only_aggregate_result(ledger_context, monkeypatc
     assert source_dry_run_view(user=admin) == aggregate
 
 
+def test_source_scope_readiness_returns_only_aggregate_result(ledger_context, monkeypatch):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_scope_readiness_view
+
+    admin, _ = ledger_context
+    aggregate = {
+        "ok": True,
+        "source_mode": "official_json",
+        "demand_filter": {
+            "group_counts": {"大客户组": 8},
+            "sampled_group_count": 1,
+            "sample_match_count": 1,
+        },
+        "settlement_filters": {"saleContractMxId": {"total": 1, "effective": True}},
+    }
+    monkeypatch.setattr(sync, "probe_official_scope_filters", lambda: aggregate)
+
+    assert source_scope_readiness_view(user=admin) == aggregate
+
+
 def test_manual_edit_requires_sensitive_permission_and_cannot_change_system_field(ledger_context):
     from app.spot_ledger import SpotLedgerPatch, patch_record
 
@@ -239,4 +259,5 @@ def test_spot_ledger_routes_are_registered_in_main_app():
     assert "/api/spot-ledger/strategic-hedging" in paths
     assert "/api/spot-ledger/source-readiness" in paths
     assert "/api/spot-ledger/source-dry-run" in paths
+    assert "/api/spot-ledger/source-scope-readiness" in paths
     assert not any(path.endswith("/sync-now") for path in paths)

@@ -519,6 +519,80 @@ def test_official_source_dry_run_summary_contains_only_aggregate_metadata():
     assert "包含敏感操作抬头" not in serialized
 
 
+def test_official_scope_probe_confirms_demand_and_settlement_filters_without_values():
+    from app import spot_ledger_sync as sync
+
+    class Source(sync.OfficialJsonSalesContractSource):
+        def __init__(self):
+            super().__init__(auth_provider=lambda: {})
+
+        def _fetch_dictionaries(self):
+            return {
+                "quantity_attribution": {
+                    f"Q{index}": group for index, group in enumerate(sync.SHANGHAI_GROUPS, start=1)
+                },
+                "profit_attribution": {},
+                "source_type": {"10": "现货"},
+                "price_mode": {},
+            }
+
+        def _request_json(self, method, url, *, stage, **kwargs):
+            if "/tradeing/demand/list" in url:
+                group_code = kwargs["params"]["quantityAttribution"]
+                index = int(group_code[1:])
+                return {
+                    "code": 200,
+                    "data": {
+                        "rows": [
+                            {
+                                "demandId": f"demand-sensitive-{index}",
+                                "sourceType": "10",
+                                "quantityAttribution": group_code,
+                            }
+                        ],
+                        "total": index,
+                    },
+                }
+            if "/relatedToDemand/" in url:
+                return {"code": 200, "data": [{"chainId": "chain-sensitive"}]}
+            if "/tradeing/chain/saleContractList" in url:
+                assert kwargs["json"] == {"chainId": "chain-sensitive", "tradersId": ""}
+                return {
+                    "code": 200,
+                    "data": [
+                        {"saleContractId": "sale-sensitive-1", "status": "70"},
+                        {"saleContractId": "sale-sensitive-2", "status": "60"},
+                    ],
+                }
+            if "/tdsSettle/queryJiesuan" in url:
+                body = kwargs["json"]
+                row = {
+                    "salesContractNo": "contract-sensitive",
+                    "saleContractId": "sale-sensitive-1",
+                    "saleContractMxId": "line-sensitive-1",
+                }
+                filter_names = [name for name in row if name in body]
+                if filter_names:
+                    assert body[filter_names[0]] == row[filter_names[0]]
+                    return {"code": 200, "data": {"rows": [row], "total": 1}}
+                return {"code": 200, "data": {"rows": [row], "total": 100}}
+            raise AssertionError((method, url, stage, kwargs))
+
+    result = sync.probe_official_scope_filters(source=Source())
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["ok"] is True
+    assert result["demand_filter"]["sampled_group_count"] == 7
+    assert result["demand_filter"]["sample_match_count"] == 7
+    assert result["demand_filter"]["group_counts"]["大客户组"] == 1
+    assert result["related_chain_count"] == 1
+    assert result["related_sale_contract_count"] == 2
+    assert result["related_active_sale_contract_count"] == 1
+    assert result["settlement_filter_baseline_total"] == 100
+    assert all(item["effective"] for item in result["settlement_filters"].values())
+    assert "sensitive" not in serialized
+
+
 def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
     from app import spot_ledger_sync as sync
 

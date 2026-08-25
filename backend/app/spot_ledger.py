@@ -744,6 +744,25 @@ def source_dry_run_view(user=Depends(_request_user)):
         raise HTTPException(status_code=503, detail={"code": "source_dry_run_failed"}) from None
 
 
+@router.post("/spot-ledger/source-scope-readiness")
+def source_scope_readiness_view(user=Depends(_request_user)):
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可检查真实源范围")
+
+    from .spot_ledger_sync import SalesContractSourceError, probe_official_scope_filters
+
+    try:
+        return probe_official_scope_filters()
+    except SalesContractSourceError as exc:
+        detail = {"code": exc.code, "stage": exc.stage}
+        if exc.http_status is not None:
+            detail["http_status"] = exc.http_status
+        raise HTTPException(status_code=503, detail=detail) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail={"code": "source_scope_probe_failed"}) from None
+
+
 class StrategicHedgingIn(BaseModel):
     group_name: str = Field(min_length=1)
     account: str = Field(min_length=1)

@@ -49,8 +49,12 @@ OFFICIAL_SALES_CONTRACT_LIST_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleCo
 OFFICIAL_SETTLEMENT_QUERY_URL = f"{JIANLONG_TDS_API_BASE_URL}/tdsSettle/queryJiesuan?sheetCode=G01112"
 OFFICIAL_RESOURCE_CATALOG_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale/list?sheetCode=G01003"
 OFFICIAL_DICTIONARY_URL = f"{JIANLONG_TDS_API_BASE_URL}/system/dict/data/type"
+OFFICIAL_DEMAND_LIST_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/demand/list?sheetCode=G01002"
 OFFICIAL_DEMAND_DETAIL_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/demand?sheetCode=G01002"
 OFFICIAL_RESOURCE_DETAIL_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale?sheetCode=G01003"
+OFFICIAL_CHAIN_SALE_CONTRACT_LIST_URL = (
+    f"{JIANLONG_TDS_API_BASE_URL}/tradeing/chain/saleContractList?sheetCode=G01004"
+)
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -1156,6 +1160,182 @@ def run_official_source_dry_run(
     """Execute a full read-only source scan and return aggregate evidence only."""
     scan = (source or OfficialJsonSalesContractSource.from_env()).fetch_full_scan()
     return summarize_official_source_scan(scan)
+
+
+def probe_official_scope_filters(
+    *,
+    source: Optional[OfficialJsonSalesContractSource] = None,
+) -> dict[str, Any]:
+    """Confirm server-side scope paths using aggregate, read-only evidence only."""
+    active_source = source or OfficialJsonSalesContractSource.from_env()
+    dictionaries = active_source._fetch_dictionaries()
+    quantity_codes = {
+        label: code
+        for code, label in dictionaries.get("quantity_attribution", {}).items()
+        if label in SHANGHAI_GROUPS
+    }
+    spot_code = next(
+        (code for code, label in dictionaries.get("source_type", {}).items() if label == "现货"),
+        "",
+    )
+    if not spot_code or len(quantity_codes) != len(SHANGHAI_GROUPS):
+        raise SalesContractSourceError(
+            "parse_error",
+            "正式源范围字典不完整",
+            stage="official_scope_dictionary",
+        )
+
+    group_counts: dict[str, int] = {}
+    sampled_group_count = 0
+    sample_match_count = 0
+    demand_schema_paths: set[str] = set()
+    first_demand_id = ""
+    for group in SHANGHAI_GROUPS:
+        group_code = quantity_codes[group]
+        payload = active_source._request_json(
+            "get",
+            OFFICIAL_DEMAND_LIST_URL,
+            stage="official_scope_demand_list",
+            params={
+                "pageNum": 1,
+                "pageSize": 10,
+                "sourceType": spot_code,
+                "quantityAttribution": group_code,
+            },
+        )
+        demand_schema_paths.update(_schema_paths(payload))
+        rows, total = active_source._paged_rows(payload, stage="official_scope_demand_list")
+        group_counts[group] = total
+        if not rows:
+            continue
+        sampled_group_count += 1
+        sample = rows[0]
+        demand_id = str(sample.get("demandId") or "").strip()
+        if not first_demand_id and demand_id:
+            first_demand_id = demand_id
+        if sample.get("sourceType") in (None, "") or sample.get("quantityAttribution") in (None, ""):
+            if not demand_id:
+                continue
+            sample = active_source._get_data_dict(
+                OFFICIAL_DEMAND_DETAIL_URL,
+                stage="official_scope_demand_detail",
+                params={"demandId": demand_id},
+            )
+        sample_source, source_known = active_source._dictionary_label(
+            dictionaries["source_type"],
+            sample.get("sourceType"),
+        )
+        sample_group, group_known = active_source._dictionary_label(
+            dictionaries["quantity_attribution"],
+            sample.get("quantityAttribution"),
+        )
+        if source_known and group_known and sample_source == "现货" and sample_group == group:
+            sample_match_count += 1
+
+    related_chains: list[dict[str, Any]] = []
+    related_chain_schema_paths: set[str] = set()
+    related_sales: list[dict[str, Any]] = []
+    related_sale_schema_paths: set[str] = set()
+    if first_demand_id:
+        related_payload = active_source._request_json(
+            "get",
+            (
+                f"{JIANLONG_TDS_API_BASE_URL}/tradeing/chain/relatedToDemand/"
+                f"{quote(first_demand_id, safe='')}?sheetCode=G01004"
+            ),
+            stage="official_scope_related_chain",
+        )
+        related_chain_schema_paths.update(_schema_paths(related_payload))
+        related_data = related_payload.get("data")
+        if isinstance(related_data, list):
+            related_chains = [row for row in related_data if isinstance(row, dict)]
+        chain_id = next(
+            (str(row.get("chainId")) for row in related_chains if row.get("chainId") not in (None, "")),
+            "",
+        )
+        if chain_id:
+            sale_payload = active_source._request_json(
+                "post",
+                OFFICIAL_CHAIN_SALE_CONTRACT_LIST_URL,
+                stage="official_scope_chain_sales",
+                json={"chainId": chain_id, "tradersId": ""},
+            )
+            related_sale_schema_paths.update(_schema_paths(sale_payload))
+            sale_data = sale_payload.get("data")
+            if isinstance(sale_data, list):
+                related_sales = [row for row in sale_data if isinstance(row, dict)]
+
+    settlement_baseline_payload = active_source._request_json(
+        "post",
+        OFFICIAL_SETTLEMENT_QUERY_URL,
+        stage="official_scope_settlement_baseline",
+        params={"pageNum": 1, "pageSize": 10},
+        json={"status": "70"},
+    )
+    settlement_rows, settlement_baseline_total = active_source._paged_rows(
+        settlement_baseline_payload,
+        stage="official_scope_settlement_baseline",
+    )
+    settlement_filters: dict[str, dict[str, Any]] = {}
+    settlement_sample = settlement_rows[0] if settlement_rows else {}
+    for field_name in ("salesContractNo", "saleContractId", "saleContractMxId"):
+        value = settlement_sample.get(field_name)
+        if value in (None, ""):
+            settlement_filters[field_name] = {
+                "total": 0,
+                "sample_count": 0,
+                "sample_match_count": 0,
+                "effective": False,
+            }
+            continue
+        filtered_payload = active_source._request_json(
+            "post",
+            OFFICIAL_SETTLEMENT_QUERY_URL,
+            stage=f"official_scope_settlement_{field_name}",
+            params={"pageNum": 1, "pageSize": 10},
+            json={"status": "70", field_name: value},
+        )
+        filtered_rows, filtered_total = active_source._paged_rows(
+            filtered_payload,
+            stage=f"official_scope_settlement_{field_name}",
+        )
+        match_count = sum(str(row.get(field_name) or "") == str(value) for row in filtered_rows)
+        settlement_filters[field_name] = {
+            "total": filtered_total,
+            "sample_count": len(filtered_rows),
+            "sample_match_count": match_count,
+            "effective": bool(
+                filtered_rows
+                and filtered_total < settlement_baseline_total
+                and match_count == len(filtered_rows)
+            ),
+        }
+
+    active_related_sales = sum(str(row.get("status") or "") in {"70", "生效"} for row in related_sales)
+    filter_confirmed = any(item["effective"] for item in settlement_filters.values())
+    return {
+        "ok": bool(
+            sampled_group_count
+            and sample_match_count == sampled_group_count
+            and related_chains
+            and related_sales
+            and filter_confirmed
+        ),
+        "source_mode": "official_json",
+        "demand_filter": {
+            "group_counts": group_counts,
+            "sampled_group_count": sampled_group_count,
+            "sample_match_count": sample_match_count,
+        },
+        "demand_schema_paths": sorted(demand_schema_paths)[:300],
+        "related_chain_count": len(related_chains),
+        "related_chain_schema_paths": sorted(related_chain_schema_paths)[:300],
+        "related_sale_contract_count": len(related_sales),
+        "related_active_sale_contract_count": active_related_sales,
+        "related_sale_contract_schema_paths": sorted(related_sale_schema_paths)[:300],
+        "settlement_filter_baseline_total": settlement_baseline_total,
+        "settlement_filters": settlement_filters,
+    }
 
 
 def _schema_paths(value: Any, prefix: str = "", depth: int = 0) -> set[str]:
