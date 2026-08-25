@@ -259,5 +259,6 @@ def test_spot_ledger_routes_are_registered_in_main_app():
     assert "/api/spot-ledger/strategic-hedging" in paths
     assert "/api/spot-ledger/source-readiness" in paths
     assert "/api/spot-ledger/source-dry-run" in paths
+    assert "/api/spot-ledger/source-report-dry-run" in paths
     assert "/api/spot-ledger/source-scope-readiness" in paths
     assert not any(path.endswith("/sync-now") for path in paths)

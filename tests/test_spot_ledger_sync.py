@@ -519,6 +519,37 @@ def test_official_source_dry_run_summary_contains_only_aggregate_metadata():
     assert "包含敏感操作抬头" not in serialized
 
 
+def test_profiled_report_dry_run_returns_aggregate_only():
+    from app import spot_ledger_sync as sync
+
+    class Source:
+        def fetch_full_scan(self):
+            return sync.FullScanResult(
+                records=[
+                    {
+                        "source_detail_id": "sensitive-detail-id",
+                        "E": "大客户组",
+                        "AB": "敏感客户名称",
+                        "sync_errors": [],
+                    }
+                ],
+                page_count=1,
+                expected_page_count=1,
+                total_count=1,
+                complete=True,
+                source_mode="profiled_http",
+            )
+
+    result = sync.run_profiled_source_dry_run(source=Source())
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["ok"] is True
+    assert result["source_mode"] == "profiled_http"
+    assert result["field_coverage"]["E"] == {"filled_count": 1, "total_count": 1}
+    assert "sensitive-detail-id" not in serialized
+    assert "敏感客户名称" not in serialized
+
+
 def test_official_scope_probe_confirms_demand_and_settlement_filters_without_values():
     from app import spot_ledger_sync as sync
 

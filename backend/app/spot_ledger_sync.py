@@ -1162,6 +1162,14 @@ def run_official_source_dry_run(
     return summarize_official_source_scan(scan)
 
 
+def run_profiled_source_dry_run(
+    source: Optional[ProfiledSalesContractSource] = None,
+) -> dict[str, Any]:
+    """Read the confirmed JSON report without persisting records or source values."""
+    scan = (source or ProfiledSalesContractSource.from_env()).fetch_full_scan()
+    return summarize_official_source_scan(scan)
+
+
 def probe_official_scope_filters(
     *,
     source: Optional[OfficialJsonSalesContractSource] = None,

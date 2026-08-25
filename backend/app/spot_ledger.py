@@ -744,6 +744,25 @@ def source_dry_run_view(user=Depends(_request_user)):
         raise HTTPException(status_code=503, detail={"code": "source_dry_run_failed"}) from None
 
 
+@router.post("/spot-ledger/source-report-dry-run")
+def source_report_dry_run_view(user=Depends(_request_user)):
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可执行聚合报表干跑")
+
+    from .spot_ledger_sync import SalesContractSourceError, run_profiled_source_dry_run
+
+    try:
+        return run_profiled_source_dry_run()
+    except SalesContractSourceError as exc:
+        detail = {"code": exc.code, "stage": exc.stage}
+        if exc.http_status is not None:
+            detail["http_status"] = exc.http_status
+        raise HTTPException(status_code=503, detail=detail) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail={"code": "source_report_dry_run_failed"}) from None
+
+
 @router.post("/spot-ledger/source-scope-readiness")
 def source_scope_readiness_view(user=Depends(_request_user)):
     active_user = _get_user(user)
