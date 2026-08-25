@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .permissions import can, is_admin, require_permission
-from .spot_ledger_mapping_data import OPERATION_TITLE_MAPPINGS, PRODUCT_CATEGORY_MAPPINGS
+from .spot_ledger_mapping_data import OPERATION_TITLE_MAPPINGS, PRODUCT_CATEGORY_MAPPINGS, SUPPLIER_MAPPINGS
 
 
 router = APIRouter()
@@ -135,7 +135,7 @@ DEFAULT_NAME_MAPPINGS = {
         "公司A": "公司A",
         "": "",
     },
-    "supplier": {"供应商A": "供应商A", "供应商B": "供应商B", "": ""},
+    "supplier": {**SUPPLIER_MAPPINGS, "供应商A": "供应商A", "供应商B": "供应商B", "": ""},
     "product_category": {
         **PRODUCT_CATEGORY_MAPPINGS,
         "铁矿石": "铁矿石",

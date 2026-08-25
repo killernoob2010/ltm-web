@@ -86,6 +86,37 @@ def test_confirmed_history_dictionaries_map_operation_title_and_product_category
 
 
 @pytest.mark.parametrize(
+    ("source_supplier", "expected_supplier"),
+    [
+        ("上海德天钢铁发展有限公司", "上海德天"),
+        ("厦门建发矿业资源有限公司", "建发"),
+        ("宁夏建龙龙祥钢铁有限公司", "宁夏特钢"),
+        ("宁波凯创物产有限公司", "凯创"),
+        ("山能（济南）智慧投资有限公司", "山能（济南）智慧-过"),
+        ("张家港保税区沙钢矿产品有限公司", "沙钢矿产"),
+        ("杭州热联集团股份有限公司", "热联"),
+        ("浙江杭钢国贸有限公司", "杭钢国贸"),
+        ("瑞钢联集团有限公司", "瑞钢联"),
+        ("鞍钢集团国际经济贸易有限公司本溪分公司", "本钢"),
+    ],
+)
+def test_confirmed_history_supplier_dictionary_maps_repeated_exact_matches(source_supplier, expected_supplier):
+    from app.spot_ledger import normalize_sales_contract_record
+
+    record = normalize_sales_contract_record({
+        "detail_id": "D-SUPPLIER-DICTIONARY", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组",
+        "contract_number": "C-SUPPLIER-DICTIONARY", "product_name": "PB粉",
+        "product_category": "PB粉", "operation_title": "天津建龙钢铁实业有限公司",
+        "supplier": source_supplier, "signed_date": "2026-08-25", "contract_quantity": 20,
+        "business_category_code": "B0701",
+    })
+
+    assert record["Q"] == expected_supplier
+    assert not any(error["field"] == "Q" for error in record["sync_errors"])
+
+
+@pytest.mark.parametrize(
     ("source_category", "expected_type"),
     [
         ("贸易-港口现货-市场加价-B07", "现货-市场加价"),
