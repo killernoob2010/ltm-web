@@ -258,7 +258,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                                 {
                                     "settleObjectDetailId": "must-not-be-returned-settlement-id",
                                     "saleContractId": "must-not-be-returned-id",
-                                    "saleContractMxId": "must-not-be-returned-sale-line-id",
+                                    "saleContractMxId": "must-not-be-returned",
                                     "countQuantity": 99,
                                 }
                             ],
@@ -285,6 +285,36 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
 
         def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
+            if "/system/dict/data/type" in url:
+                dictionary = kwargs["params"]["dictType"]
+                return Response(
+                    {
+                        "code": 200,
+                        "data": [
+                            {
+                                "dictLabel": group,
+                                "dictValue": f"must-not-be-returned-{dictionary}-{index}",
+                            }
+                            for index, group in enumerate(sync.SHANGHAI_GROUPS)
+                        ],
+                    }
+                )
+            if "/tradeing/sale/list?" in url:
+                return Response(
+                    {
+                        "code": 200,
+                        "data": {
+                            "rows": [
+                                {
+                                    "saleId": "must-not-be-returned-resource-id",
+                                    "quantityAttribution": "must-not-be-returned-quantity-group",
+                                    "profitAttribution": "must-not-be-returned-profit-group",
+                                }
+                            ],
+                            "total": 1,
+                        },
+                    }
+                )
             if "/tradeing/chain/getById/" in url:
                 chain_id = "must-not-be-returned-chain-id-2" if "chain-id-2" in url else "must-not-be-returned-chain-id"
                 return Response(
@@ -305,7 +335,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                             "chainId": "must-not-be-returned-chain-id-2",
                             "saleContractId": "must-not-be-returned-id-2",
                             "syncTradersId": "must-not-be-returned-traders-id",
-                            "saleContractMxList": [],
+                            "tdsSaleContractMxVos": [],
                         },
                     }
                 )
@@ -318,6 +348,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                                 "saleId": "must-not-be-returned-resource-id",
                                 "saleNo": "must-not-be-returned-resource-no",
                                 "sourceDate": "must-not-be-returned-resource-date",
+                                "demandId": "must-not-be-returned-business-detail-id",
                             }
                         ],
                     }
@@ -341,9 +372,12 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                         "data": {
                             "purchaseContractId": "must-not-be-returned-purchase-id",
                             "supplierName": "must-not-be-returned-supplier",
-                            "purchaseContractMxList": [
+                            "tdsPurchaseContractMxVos": [
                                 {
                                     "purchaseContractMxId": "must-not-be-returned-purchase-line-id",
+                                    "businessDetailId": "must-not-be-returned-purchase-business-detail-id",
+                                    "chainGoodId": "must-not-be-returned-chain-good-id",
+                                    "relevanceId": "must-not-be-returned-relevance-id",
                                     "price": 88,
                                 }
                             ],
@@ -369,9 +403,13 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
                     "data": {
                         "chainId": "must-not-be-returned-chain-id",
                         "saleContractId": "must-not-be-returned-id",
-                        "saleContractMxList": [
+                        "tdsSaleContractMxVos": [
                             {
                                 "saleContractMxId": "must-not-be-returned",
+                                "businessDetailId": "must-not-be-returned-business-detail-id",
+                                "chainGoodId": "must-not-be-returned-chain-good-id",
+                                "relevanceId": "must-not-be-returned-relevance-id",
+                                "upContractMxId": "must-not-be-returned-purchase-line-id",
                                 "contractQuantity": 100,
                             }
                         ],
@@ -404,6 +442,9 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
         "match_response_code": "200",
         "resource_detail_response_code": "200",
         "settlement_response_code": "200",
+        "resource_catalog_response_code": "200",
+        "quantity_group_dictionary_response_code": "200",
+        "profit_group_dictionary_response_code": "200",
         "sampled_contract_count": 2,
         "schema_paths": [
             "code",
@@ -422,11 +463,15 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data",
             "data.chainId",
             "data.saleContractId",
-            "data.saleContractMxList",
-            "data.saleContractMxList[]",
-            "data.saleContractMxList[].contractQuantity",
-            "data.saleContractMxList[].saleContractMxId",
             "data.syncTradersId",
+            "data.tdsSaleContractMxVos",
+            "data.tdsSaleContractMxVos[]",
+            "data.tdsSaleContractMxVos[].businessDetailId",
+            "data.tdsSaleContractMxVos[].chainGoodId",
+            "data.tdsSaleContractMxVos[].contractQuantity",
+            "data.tdsSaleContractMxVos[].relevanceId",
+            "data.tdsSaleContractMxVos[].saleContractMxId",
+            "data.tdsSaleContractMxVos[].upContractMxId",
         ],
         "relevance_schema_paths": [
             "code",
@@ -440,11 +485,14 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "code",
             "data",
             "data.purchaseContractId",
-            "data.purchaseContractMxList",
-            "data.purchaseContractMxList[]",
-            "data.purchaseContractMxList[].price",
-            "data.purchaseContractMxList[].purchaseContractMxId",
             "data.supplierName",
+            "data.tdsPurchaseContractMxVos",
+            "data.tdsPurchaseContractMxVos[]",
+            "data.tdsPurchaseContractMxVos[].businessDetailId",
+            "data.tdsPurchaseContractMxVos[].chainGoodId",
+            "data.tdsPurchaseContractMxVos[].price",
+            "data.tdsPurchaseContractMxVos[].purchaseContractMxId",
+            "data.tdsPurchaseContractMxVos[].relevanceId",
         ],
         "chain_schema_paths": [
             "code",
@@ -462,6 +510,7 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "code",
             "data",
             "data[]",
+            "data[].demandId",
             "data[].saleId",
             "data[].saleNo",
             "data[].sourceDate",
@@ -487,6 +536,46 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             "data.rows[].settleObjectDetailId",
             "data.total",
         ],
+        "resource_catalog_schema_paths": [
+            "code",
+            "data",
+            "data.rows",
+            "data.rows[]",
+            "data.rows[].profitAttribution",
+            "data.rows[].quantityAttribution",
+            "data.rows[].saleId",
+            "data.total",
+        ],
+        "quantity_group_dictionary_schema_paths": [
+            "code",
+            "data",
+            "data[]",
+            "data[].dictLabel",
+            "data[].dictValue",
+        ],
+        "profit_group_dictionary_schema_paths": [
+            "code",
+            "data",
+            "data[]",
+            "data[].dictLabel",
+            "data[].dictValue",
+        ],
+        "group_dictionary_coverage": {"quantity": 7, "profit": 7},
+        "linkage_counts": {
+            "sale_lines": 1,
+            "purchase_lines": 1,
+            "settlement_rows": 1,
+            "match_rows": 1,
+            "settlement_to_sale_detail": 1,
+            "match_demand_to_sale_detail": 0,
+            "match_demand_to_sale_business_detail": 1,
+            "match_demand_to_sale_chain_good": 0,
+            "match_demand_to_sale_relevance": 0,
+            "purchase_to_sale_up_contract": 1,
+            "purchase_business_detail_to_sale_business_detail": 0,
+            "purchase_chain_good_to_sale_chain_good": 1,
+            "purchase_relevance_to_sale_relevance": 1,
+        },
     }
     assert source.http.calls == [
         (
@@ -620,6 +709,52 @@ def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():
             {
                 "params": {"pageNum": 1, "pageSize": 10},
                 "json": {"status": "70"},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/tradeing/sale/list?sheetCode=G01003",
+            {
+                "params": {
+                    "saleNo": "",
+                    "workCompId": "",
+                    "coustomName": "",
+                    "workDeptList": "",
+                    "workMan": "",
+                    "status": "70",
+                    "pageNum": 1,
+                    "pageSize": 10,
+                    "sheetCode": "G01003",
+                },
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/system/dict/data/type",
+            {
+                "params": {"dictType": "quantity_attribution"},
+                "headers": {
+                    "Authorization": "Bearer bearer-token",
+                    "Origin": "https://tds.ejianlong.com",
+                    "Referer": "https://tds.ejianlong.com/",
+                },
+                "timeout": 30,
+            },
+        ),
+        (
+            "https://tds-api.ejianlong.com/system/dict/data/type",
+            {
+                "params": {"dictType": "profit_attribution"},
                 "headers": {
                     "Authorization": "Bearer bearer-token",
                     "Origin": "https://tds.ejianlong.com",

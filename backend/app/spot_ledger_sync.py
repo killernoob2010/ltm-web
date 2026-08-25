@@ -47,6 +47,8 @@ JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
 JIANLONG_TDS_API_BASE_URL = "https://tds-api.ejianlong.com"
 OFFICIAL_SALES_CONTRACT_LIST_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/saleContract/saleContractList"
 OFFICIAL_SETTLEMENT_QUERY_URL = f"{JIANLONG_TDS_API_BASE_URL}/tdsSettle/queryJiesuan?sheetCode=G01112"
+OFFICIAL_RESOURCE_CATALOG_URL = f"{JIANLONG_TDS_API_BASE_URL}/tradeing/sale/list?sheetCode=G01003"
+OFFICIAL_DICTIONARY_URL = f"{JIANLONG_TDS_API_BASE_URL}/system/dict/data/type"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
@@ -621,6 +623,106 @@ def _probe_json_request(
     return payload, str(payload.get("code") or "")
 
 
+def _payload_rows(payload: dict[str, Any], *paths: tuple[str, ...]) -> list[dict[str, Any]]:
+    for path in paths:
+        current: Any = payload
+        for key in path:
+            current = current.get(key) if isinstance(current, dict) else None
+        if isinstance(current, list):
+            return [row for row in current if isinstance(row, dict)]
+    return []
+
+
+def _nonempty_ids(rows: list[dict[str, Any]], key: str) -> set[str]:
+    return {str(row[key]) for row in rows if row.get(key) not in (None, "")}
+
+
+def _linkage_counts(
+    detail_payload: dict[str, Any],
+    purchase_payload: dict[str, Any],
+    match_payload: dict[str, Any],
+    settlement_payload: dict[str, Any],
+) -> dict[str, int]:
+    sale_lines = _payload_rows(
+        detail_payload,
+        ("data", "tdsSaleContractMxVos"),
+        ("data", "saleContractMxList"),
+    )
+    purchase_lines = _payload_rows(
+        purchase_payload,
+        ("data", "tdsPurchaseContractMxVos"),
+        ("data", "purchaseContractMxList"),
+    )
+    match_rows = _payload_rows(match_payload, ("data",))
+    settlement_rows = _payload_rows(settlement_payload, ("data", "rows"))
+    sale_ids = {
+        "detail": _nonempty_ids(sale_lines, "saleContractMxId"),
+        "business": _nonempty_ids(sale_lines, "businessDetailId"),
+        "chain_good": _nonempty_ids(sale_lines, "chainGoodId"),
+        "relevance": _nonempty_ids(sale_lines, "relevanceId"),
+        "up_contract": _nonempty_ids(sale_lines, "upContractMxId"),
+    }
+    return {
+        "sale_lines": len(sale_lines),
+        "purchase_lines": len(purchase_lines),
+        "settlement_rows": len(settlement_rows),
+        "match_rows": len(match_rows),
+        "settlement_to_sale_detail": sum(
+            str(row.get("saleContractMxId")) in sale_ids["detail"]
+            for row in settlement_rows
+            if row.get("saleContractMxId") not in (None, "")
+        ),
+        "match_demand_to_sale_detail": sum(
+            str(row.get("demandId")) in sale_ids["detail"]
+            for row in match_rows
+            if row.get("demandId") not in (None, "")
+        ),
+        "match_demand_to_sale_business_detail": sum(
+            str(row.get("demandId")) in sale_ids["business"]
+            for row in match_rows
+            if row.get("demandId") not in (None, "")
+        ),
+        "match_demand_to_sale_chain_good": sum(
+            str(row.get("demandId")) in sale_ids["chain_good"]
+            for row in match_rows
+            if row.get("demandId") not in (None, "")
+        ),
+        "match_demand_to_sale_relevance": sum(
+            str(row.get("demandId")) in sale_ids["relevance"]
+            for row in match_rows
+            if row.get("demandId") not in (None, "")
+        ),
+        "purchase_to_sale_up_contract": sum(
+            str(row.get("purchaseContractMxId")) in sale_ids["up_contract"]
+            for row in purchase_lines
+            if row.get("purchaseContractMxId") not in (None, "")
+        ),
+        "purchase_business_detail_to_sale_business_detail": sum(
+            str(row.get("businessDetailId")) in sale_ids["business"]
+            for row in purchase_lines
+            if row.get("businessDetailId") not in (None, "")
+        ),
+        "purchase_chain_good_to_sale_chain_good": sum(
+            str(row.get("chainGoodId")) in sale_ids["chain_good"]
+            for row in purchase_lines
+            if row.get("chainGoodId") not in (None, "")
+        ),
+        "purchase_relevance_to_sale_relevance": sum(
+            str(row.get("relevanceId")) in sale_ids["relevance"]
+            for row in purchase_lines
+            if row.get("relevanceId") not in (None, "")
+        ),
+    }
+
+
+def _group_dictionary_coverage(payload: dict[str, Any]) -> int:
+    labels = {
+        str(row.get("dictLabel") or "").strip()
+        for row in _payload_rows(payload, ("data",))
+    }
+    return len(labels.intersection(SHANGHAI_GROUPS))
+
+
 def probe_official_sales_contract_api(
     *,
     source: Optional[ProfiledSalesContractSource] = None,
@@ -693,6 +795,12 @@ def probe_official_sales_contract_api(
     resource_detail_response_code = ""
     settlement_payload: dict[str, Any] = {}
     settlement_response_code = ""
+    resource_catalog_payload: dict[str, Any] = {}
+    resource_catalog_response_code = ""
+    quantity_group_dictionary_payload: dict[str, Any] = {}
+    quantity_group_dictionary_response_code = ""
+    profit_group_dictionary_payload: dict[str, Any] = {}
+    profit_group_dictionary_response_code = ""
     sampled_contract_count = 0
     resource_id: Any = None
     detail_schema_path_set: set[str] = set()
@@ -977,6 +1085,43 @@ def probe_official_sales_contract_api(
         params={"pageNum": 1, "pageSize": 10},
         json={"status": "70"},
     )
+    resource_catalog_payload, resource_catalog_response_code = _probe_json_request(
+        active_source,
+        "get",
+        OFFICIAL_RESOURCE_CATALOG_URL,
+        headers=headers,
+        stage="official_resource_catalog",
+        description="正式销售资源 JSON 台账",
+        params={
+            "saleNo": "",
+            "workCompId": "",
+            "coustomName": "",
+            "workDeptList": "",
+            "workMan": "",
+            "status": "70",
+            "pageNum": 1,
+            "pageSize": 10,
+            "sheetCode": "G01003",
+        },
+    )
+    quantity_group_dictionary_payload, quantity_group_dictionary_response_code = _probe_json_request(
+        active_source,
+        "get",
+        OFFICIAL_DICTIONARY_URL,
+        headers=headers,
+        stage="official_quantity_group_dictionary",
+        description="正式量归属组字典",
+        params={"dictType": "quantity_attribution"},
+    )
+    profit_group_dictionary_payload, profit_group_dictionary_response_code = _probe_json_request(
+        active_source,
+        "get",
+        OFFICIAL_DICTIONARY_URL,
+        headers=headers,
+        stage="official_profit_group_dictionary",
+        description="正式毛利归属组字典",
+        params={"dictType": "profit_attribution"},
+    )
     return {
         "ok": (
             response_code in {"", "200"}
@@ -988,6 +1133,9 @@ def probe_official_sales_contract_api(
             and match_response_code in {"", "200"}
             and resource_detail_response_code in {"", "200"}
             and settlement_response_code in {"", "200"}
+            and resource_catalog_response_code in {"", "200"}
+            and quantity_group_dictionary_response_code in {"", "200"}
+            and profit_group_dictionary_response_code in {"", "200"}
         ),
         "source_mode": "official_json",
         "http_status": status,
@@ -1000,6 +1148,9 @@ def probe_official_sales_contract_api(
         "match_response_code": match_response_code,
         "resource_detail_response_code": resource_detail_response_code,
         "settlement_response_code": settlement_response_code,
+        "resource_catalog_response_code": resource_catalog_response_code,
+        "quantity_group_dictionary_response_code": quantity_group_dictionary_response_code,
+        "profit_group_dictionary_response_code": profit_group_dictionary_response_code,
         "sampled_contract_count": sampled_contract_count,
         "schema_paths": sorted(_schema_paths(payload))[:300],
         "detail_schema_paths": sorted(detail_schema_path_set)[:300],
@@ -1010,6 +1161,19 @@ def probe_official_sales_contract_api(
         "match_schema_paths": sorted(match_schema_path_set)[:300],
         "resource_detail_schema_paths": sorted(_schema_paths(resource_detail_payload))[:300],
         "settlement_schema_paths": sorted(_schema_paths(settlement_payload))[:300],
+        "resource_catalog_schema_paths": sorted(_schema_paths(resource_catalog_payload))[:300],
+        "quantity_group_dictionary_schema_paths": sorted(_schema_paths(quantity_group_dictionary_payload))[:300],
+        "profit_group_dictionary_schema_paths": sorted(_schema_paths(profit_group_dictionary_payload))[:300],
+        "group_dictionary_coverage": {
+            "quantity": _group_dictionary_coverage(quantity_group_dictionary_payload),
+            "profit": _group_dictionary_coverage(profit_group_dictionary_payload),
+        },
+        "linkage_counts": _linkage_counts(
+            detail_payload,
+            purchase_payload,
+            match_payload,
+            settlement_payload,
+        ),
     }
 
 
