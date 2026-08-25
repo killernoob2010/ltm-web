@@ -2034,8 +2034,10 @@ def test_history_migration_detects_third_row_headers_and_excel_parenthesis_varia
         "销售数量(吨）",
         "实物含税盈亏 (万元）",
         "备注",
+        "利润合计校验",
     ])
-    sheet.append(["C-100", "铁矿石", 800, 100, 12.5, "历史人工备注"])
+    sheet.append(["C-100", "铁矿石", 800, 100, 12.5, "历史人工备注", "一致"])
+    sheet.append([None, None, None, None, None, None, 0])
     workbook.save(path)
 
     preview = migrate_history_workbook(path)

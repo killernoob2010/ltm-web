@@ -2851,7 +2851,11 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
     if not headers:
         workbook.close()
         raise ValueError("历史台账前 20 行未找到销售合同号、商品、价格和数量表头")
-    history_rows = [_history_row_to_values(headers, values) for values in rows if any(_usable_history_value(value) for value in values)]
+    history_rows: list[dict[str, Any]] = []
+    for values in rows:
+        history = _history_row_to_values(headers, values)
+        if any(_usable_history_value(history.get(code)) for code in ("AD", "H", "Z", "X", "L")):
+            history_rows.append(history)
     summary: dict[str, Any] = {"matched": 0, "updated": 0, "ambiguous": 0, "unmatched": 0, "dry_run": not apply, "errors": []}
     with db.connect() as conn:
         initialize_schema(conn)
