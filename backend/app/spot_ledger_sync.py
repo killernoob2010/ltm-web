@@ -46,6 +46,7 @@ CANDIDATE_REPORT_ID = "1055351755192311808"
 JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
 JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
 JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
+JIANLONG_SOURCE_USER_AGENT = "ltm-spot-ledger/1.0"
 CONFIRMED_SOURCE_FIELD_MAP = {
     "detail_id": "销售合同商品明细id",
     "spot_type": "期现货",
@@ -177,6 +178,9 @@ class JianlongPasswordAuthProvider:
         self._username = username.strip()
         self._password = password
         self.http = http or requests.Session()
+        headers = getattr(self.http, "headers", None)
+        if hasattr(headers, "update"):
+            headers.update({"User-Agent": JIANLONG_SOURCE_USER_AGENT})
         self.timeout_seconds = timeout_seconds
         self._token: Optional[str] = None
         self._lock = threading.Lock()

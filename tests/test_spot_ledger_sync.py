@@ -146,6 +146,7 @@ def test_password_auth_uses_official_rsa_code_exchange_and_caches_bearer_token()
     class Session:
         def __init__(self):
             self.calls = []
+            self.headers = {}
             self.cookies = type("CookieJar", (), {"clear_calls": 0})()
             self.cookies.clear = lambda: setattr(
                 self.cookies, "clear_calls", self.cookies.clear_calls + 1
@@ -171,6 +172,7 @@ def test_password_auth_uses_official_rsa_code_exchange_and_caches_bearer_token()
 
     assert provider() == {"Authorization": "Bearer bearer-token"}
     assert provider() == {"Authorization": "Bearer bearer-token"}
+    assert session.headers["User-Agent"] == "ltm-spot-ledger/1.0"
     assert len(session.calls) == 3
     password_payload = session.calls[1][2]["json"]["password"]
     decrypted = private_key.decrypt(base64.b64decode(password_payload), padding.PKCS1v15())
