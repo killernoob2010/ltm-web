@@ -51,6 +51,21 @@ def test_build_backfill_plan_is_2026_only_blank_only_and_conflict_safe():
     assert result["plans"][0]["values"] == {"K": "补录船", "AM": "来源备注"}
 
 
+def test_build_backfill_plan_accepts_known_vat_price_and_settlement_quantity_differences():
+    source_rows = [{"AD": "C-201", "H": "PB粉", "Z": 606.19469, "X": 7200, "U": "2026-08-05", "K": "瑞明"}]
+    records = [{"record_id": "r-201", "AD": "C-201", "H": "PB粉", "U": "2026-08-05", "L": 7173.62, "X": 7173.62}]
+    details = {"r-201": {**records[0], "Z": 685, "K": ""}}
+
+    result = staging_import.build_backfill_plan(source_rows, records, details)
+
+    assert result["unique_matches"] == 1
+    assert result["unmatched"] == 0
+    assert result["quantity_conflicts"] == 1
+    assert result["price_vat_normalized"] == 1
+    assert result["candidate_updates"] == 1
+    assert result["plans"] == [{"record_id": "r-201", "values": {"K": "瑞明"}, "current_values": {"K": ""}}]
+
+
 def test_cli_summary_does_not_include_credentials():
     summary = staging_import.safe_summary({"username": "admin", "password": "secret", "updated": 3})
     assert "password" not in summary

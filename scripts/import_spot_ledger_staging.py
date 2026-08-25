@@ -40,6 +40,7 @@ STAGING_BASE_URL = "https://ltm-web-staging.onrender.com"
 BACKFILL_FIELDS = MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS
 SOURCE_KEY_FIELDS = {"AD", "H", "Z", "X", "L", "U"}
 PLACEHOLDERS = {"", "-", "--", "—", "——", "***"}
+EXCEL_NET_PRICE_VAT_FACTOR = 1.13
 HEADER_TO_CODE = {
     re.sub(r"\s+", "", str(item["name"])).translate(str.maketrans({"(": "（", ")": "）"})): item["code"]
     for item in FIELD_DEFINITIONS
@@ -132,9 +133,19 @@ def _candidate_matches(source: dict[str, Any], candidate: dict[str, Any], detail
         return False
     if _normalize_date(source.get("U")) != _normalize_date(candidate.get("U")):
         return False
-    if not _value_equal("X", _quantity(source), _quantity(candidate)):
-        return False
-    return _value_equal("Z", source.get("Z"), detail.get("Z"))
+    return True
+
+
+def _price_relation(source: Any, current: Any) -> str:
+    source_number = _number(source)
+    current_number = _number(current)
+    if source_number is None or current_number is None:
+        return "unavailable"
+    if abs(float(source_number) - float(current_number)) <= 0.000001:
+        return "exact"
+    if abs(float(current_number) - float(source_number) * EXCEL_NET_PRICE_VAT_FACTOR) <= 0.0001:
+        return "vat_13_percent"
+    return "conflict"
 
 
 def build_backfill_plan(
@@ -159,6 +170,9 @@ def build_backfill_plan(
         "candidate_updates": 0,
         "conflicts": 0,
         "conflict_field_counts": {},
+        "quantity_conflicts": 0,
+        "price_vat_normalized": 0,
+        "price_conflicts": 0,
         "field_updates": {},
         "plans": [],
     }
@@ -171,7 +185,7 @@ def build_backfill_plan(
             result["skipped_invalid_date"] += 1
             continue
         result["focus_rows"] += 1
-        if not all(_usable(source.get(field)) for field in ("AD", "H", "Z")) or not _usable(_quantity(source)):
+        if not all(_usable(source.get(field)) for field in ("AD", "H")):
             result["skipped_invalid_key"] += 1
             continue
         candidates = [
@@ -185,6 +199,13 @@ def build_backfill_plan(
         result["unique_matches"] += 1
         candidate = candidates[0]
         detail = details.get(str(candidate.get("record_id")), {})
+        if not _value_equal("X", _quantity(source), _quantity(candidate)):
+            result["quantity_conflicts"] += 1
+        price_relation = _price_relation(source.get("Z"), detail.get("Z"))
+        if price_relation == "vat_13_percent":
+            result["price_vat_normalized"] += 1
+        elif price_relation == "conflict":
+            result["price_conflicts"] += 1
         values: dict[str, Any] = {}
         current_values: dict[str, Any] = {}
         for field in sorted(BACKFILL_FIELDS):

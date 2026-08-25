@@ -57,7 +57,7 @@
 **Files:** new `scripts/import_spot_ledger_staging.py`, new script tests or testable helper module.
 
 - [ ] Add failing tests for exact host guard, default dry-run, 2026 filtering, unique matching, blank-only updates, conflict reporting, and no credential logging.
-- [ ] Implement login, paginated record reads, exact matching using contract/product/date/quantity checks, and PATCH only for permitted fields.
+- [ ] Implement login, one-shot current-scope snapshot reads, exact AD/H/U identity matching with X/L quantity and Z price consistency checks, and PATCH only for permitted fields.
 - [ ] Require `--apply` for writes and require the base URL to be exactly `https://ltm-web-staging.onrender.com` (allowing the app query suffix only for page navigation, not API writes).
 - [ ] Keep source workbook path explicit and report source sheet/row counts without dumping source payloads.
 - [ ] Run script unit tests, then run a real Staging dry-run. Do not apply until the code and mapping reconciliation are deployed.
