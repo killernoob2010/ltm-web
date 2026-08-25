@@ -101,7 +101,7 @@ def test_confirmed_history_dictionaries_map_operation_title_and_product_category
     ],
 )
 def test_confirmed_history_supplier_dictionary_maps_repeated_exact_matches(source_supplier, expected_supplier):
-    from app.spot_ledger import normalize_sales_contract_record
+    from app.spot_ledger import normalize_sales_contract_record, record_to_public
 
     record = normalize_sales_contract_record({
         "detail_id": "D-SUPPLIER-DICTIONARY", "spot_type": "现货", "contract_status": "生效",
@@ -112,7 +112,8 @@ def test_confirmed_history_supplier_dictionary_maps_repeated_exact_matches(sourc
         "business_category_code": "B0701",
     })
 
-    assert record["Q"] == expected_supplier
+    assert record["Q"] == source_supplier
+    assert record_to_public(record)["supplier_display_name"] == expected_supplier
     assert not any(error["field"] == "Q" for error in record["sync_errors"])
 
 
@@ -204,3 +205,99 @@ def test_spot_ledger_is_a_visible_trade_module_with_sensitive_admin_permission(t
             (admin["id"],),
         ).fetchone()
     assert tuple(permission) == (1, 1, 1)
+
+
+def test_spot_ledger_is_the_first_sidebar_module_and_precedes_trading_management():
+    from app import db
+
+    spot_index = next(index for index, item in enumerate(db.MODULES) if item[1] == "spot_ledger")
+    trading_index = next(index for index, item in enumerate(db.MODULES) if item[0] == "交易管理")
+
+    assert spot_index == 0
+    assert spot_index < trading_index
+
+
+def test_supplier_legal_name_is_canonical_and_confirmed_alias_is_display_only():
+    from app.spot_ledger import SUPPLIER_MAPPINGS, normalize_sales_contract_record, record_to_public
+
+    source_supplier = next(iter(SUPPLIER_MAPPINGS))
+    record = normalize_sales_contract_record({
+        "detail_id": "D-SUPPLIER-CANONICAL", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组", "contract_number": "C-SUPPLIER-CANONICAL",
+        "product_name": "PB粉", "product_category": "PB粉", "supplier": source_supplier,
+        "signed_date": "2026-08-25", "contract_quantity": 20, "business_category_code": "B0701",
+    })
+
+    assert record["Q"] == source_supplier
+    assert not any(error["field"] == "Q" for error in record["sync_errors"])
+    public = record_to_public(record)
+    assert public["supplier_display_name"] == SUPPLIER_MAPPINGS[source_supplier]
+
+
+def test_unknown_nonempty_supplier_is_usable_without_mapping_anomaly():
+    from app.spot_ledger import normalize_sales_contract_record, record_to_public
+
+    source_supplier = "未配置映射但有法定全称的供应商有限公司"
+    record = normalize_sales_contract_record({
+        "detail_id": "D-SUPPLIER-UNKNOWN", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组", "contract_number": "C-SUPPLIER-UNKNOWN",
+        "product_name": "PB粉", "product_category": "PB粉", "supplier": source_supplier,
+        "signed_date": "2026-08-25", "contract_quantity": 20, "business_category_code": "B0701",
+    })
+
+    assert record["Q"] == source_supplier
+    assert not any(error["field"] == "Q" for error in record["sync_errors"])
+    assert record_to_public(record)["supplier_display_name"] == source_supplier
+
+
+def test_empty_supplier_remains_a_true_sync_anomaly():
+    from app.spot_ledger import normalize_sales_contract_record
+
+    record = normalize_sales_contract_record({
+        "detail_id": "D-SUPPLIER-MISSING", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组", "contract_number": "C-SUPPLIER-MISSING",
+        "product_name": "PB粉", "product_category": "PB粉", "supplier": "",
+        "signed_date": "2026-08-25", "contract_quantity": 20, "business_category_code": "B0701",
+    })
+
+    assert any(error["type"] == "missing_supplier" and error["field"] == "Q" for error in record["sync_errors"])
+
+
+@pytest.mark.parametrize("source_category", [
+    "SFGB粉", "IOH4粉", "南非钒钛块", "进口主焦煤", "PMC粉", "委内瑞拉精粉", "铁矿粉",
+    "气煤", "主焦煤", "OH粉", "库兰粉", "进口钒钛球团矿", "昆巴粉",
+])
+def test_current_unknown_product_names_use_the_system_category_dictionary(source_category):
+    from app.spot_ledger import normalize_sales_contract_record
+
+    record = normalize_sales_contract_record({
+        "detail_id": f"D-CATEGORY-{source_category}", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组", "contract_number": f"C-CATEGORY-{source_category}",
+        "product_name": source_category, "product_category": source_category,
+        "signed_date": "2026-08-25", "contract_quantity": 20, "business_category_code": "B0701",
+    })
+
+    assert record["AU"] == "非主流"
+    assert not any(error["field"] == "AU" for error in record["sync_errors"])
+
+
+def test_historical_records_are_publicly_out_of_scope_and_query_filters_have_2026_cutoff():
+    from app.spot_ledger import _record_query_conditions, record_to_public
+
+    historical = record_to_public({
+        "record_id": "r-historical",
+        "U": "2025-12-31", "sync_status": "异常", "supplement_status": "待补录",
+        "sync_error_summary": '[{"field":"Q"}]',
+    })
+    current = record_to_public({
+        "record_id": "r-current",
+        "U": "2026-01-01", "sync_status": "异常", "supplement_status": "待补录",
+        "sync_error_summary": '[{"field":"Q"}]',
+    })
+    assert historical["sync_status"] == "历史范围外"
+    assert historical["supplement_status"] == "历史范围外"
+    assert historical["sync_error_summary"] == []
+    assert current["sync_status"] == "异常"
+    conditions, values = _record_query_conditions({"sync_error": "true"})
+    assert any('"U" >= ?' in condition for condition in conditions)
+    assert "2026-01-01" in values

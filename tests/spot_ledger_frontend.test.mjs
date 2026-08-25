@@ -24,6 +24,11 @@ test("spot ledger keeps the complete field contract while presenting pending/err
   assert.match(spotJs, /spot-ledger-export/);
   assert.match(spotJs, /strategic-hedging/);
   assert.match(spotJs, /sync_error_summary/);
+  assert.match(spotJs, /supplier_display_name/);
+  assert.match(spotJs, /法定全称/);
+  assert.match(spotJs, /历史范围外：不纳入 2026 年补录与异常检查/);
+  assert.match(indexHtml, /商品分类/);
+  assert.match(indexHtml, /供应商/);
   assert.match(indexHtml, /id="spotLedgerFilters"/);
   assert.match(indexHtml, /id="spotLedgerPendingTab"/);
   assert.match(indexHtml, /id="spotLedgerErrorsTab"/);

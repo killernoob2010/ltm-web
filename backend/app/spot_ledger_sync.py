@@ -26,14 +26,19 @@ from openpyxl import load_workbook
 
 from . import db
 from .spot_ledger import (
+    DEFAULT_NAME_MAPPINGS,
     FIELD_CODES,
     FIELD_DEFINITIONS,
     MANUAL_FIELDS,
     NUMERIC_FIELDS,
+    SPOT_LEDGER_FOCUS_START_DATE,
     SHANGHAI_GROUPS,
+    SUPPLIER_MAPPINGS,
     SYSTEM_PRIORITY_FIELDS,
+    _normalize_date,
     calculate_derived_fields,
     initialize_schema,
+    is_historical_scope,
     missing_required_fields,
     normalize_sales_contract_record,
     record_to_public,
@@ -2664,6 +2669,99 @@ def get_sync_runs(limit: int = 20) -> list[dict[str, Any]]:
     return [record_to_public(dict(row)) for row in rows]
 
 
+def _stored_sync_errors(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+        return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+    return []
+
+
+def reconcile_stored_mapping_state(*, apply: bool = False) -> dict[str, Any]:
+    """Reclassify already stored current-scope rows after mapping rules change.
+
+    This is deliberately separate from source synchronization: it reads existing rows,
+    applies only exact reversible mapping changes, and never hides a non-mapping error.
+    """
+    reverse_supplier = {display: legal for legal, display in SUPPLIER_MAPPINGS.items()}
+    category_mapping = DEFAULT_NAME_MAPPINGS["product_category"]
+    summary: dict[str, Any] = {
+        "dry_run": not apply,
+        "scanned": 0,
+        "in_scope": 0,
+        "candidate_updates": 0,
+        "updated": 0,
+        "supplier_canonicalized": 0,
+        "category_reclassified": 0,
+        "errors_cleared": 0,
+    }
+    with db.connect() as conn:
+        initialize_schema(conn)
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            "SELECT * FROM spot_ledger_records WHERE record_source_type = '现货同步' AND is_active = 1",
+        ).fetchall()
+        for raw_row in rows:
+            summary["scanned"] += 1
+            row = dict(raw_row)
+            if is_historical_scope(row.get("U")):
+                continue
+            summary["in_scope"] += 1
+            updates: dict[str, Any] = {}
+            canonical_supplier = reverse_supplier.get(str(row.get("Q") or "").strip())
+            if canonical_supplier and canonical_supplier != str(row.get("Q") or "").strip():
+                updates["Q"] = canonical_supplier
+                summary["supplier_canonicalized"] += 1
+            product_name = str(row.get("H") or "").strip()
+            expected_category = category_mapping.get(product_name)
+            if expected_category and expected_category != row.get("AU"):
+                updates["AU"] = expected_category
+                summary["category_reclassified"] += 1
+
+            errors = _stored_sync_errors(row.get("sync_error_summary"))
+            resolved_errors: list[dict[str, Any]] = []
+            for error in errors:
+                field = error.get("field")
+                resolved = (
+                    field == "Q" and bool(str(row.get("Q") or "").strip())
+                    and (canonical_supplier or str(row.get("Q") or "").strip())
+                ) or (
+                    field == "AU" and bool(expected_category)
+                )
+                if resolved:
+                    summary["errors_cleared"] += 1
+                else:
+                    resolved_errors.append(error)
+            if len(resolved_errors) != len(errors):
+                updates["sync_error_summary"] = json.dumps(resolved_errors, ensure_ascii=False) if resolved_errors else ""
+                updates["sync_status"] = "异常" if resolved_errors else "正常"
+            if not updates:
+                continue
+            summary["candidate_updates"] += 1
+            if not apply:
+                continue
+            assignments: list[str] = []
+            values: list[Any] = []
+            for field, value in updates.items():
+                column = f'"{field}"' if field in FIELD_CODES else field
+                assignments.append(f"{column} = ?")
+                values.append(value)
+            assignments.append("updated_at = ?")
+            values.extend([_timestamp(), row["record_id"]])
+            _raw_execute(
+                cur,
+                f"UPDATE spot_ledger_records SET {', '.join(assignments)} WHERE record_id = ?",
+                tuple(values),
+            )
+            summary["updated"] += 1
+    return summary
+
+
 def _sync_run_exists(slot_key: str) -> bool:
     with db.connect() as conn:
         row = _raw_execute(
@@ -2846,6 +2944,29 @@ def _split_long_contract(value: Any, explicit_object: Any) -> tuple[str, str]:
     return "", explicit
 
 
+def _history_date_status(value: Any) -> str:
+    normalized = _normalize_date(value)
+    if not normalized or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        return "invalid"
+    try:
+        date.fromisoformat(normalized)
+    except ValueError:
+        return "invalid"
+    return "historical" if normalized < SPOT_LEDGER_FOCUS_START_DATE else "focus"
+
+
+def _history_value_equal(field: str, current: Any, incoming: Any) -> bool:
+    if field in NUMERIC_FIELDS:
+        current_number = _number(current)
+        incoming_number = _number(incoming)
+        return current_number is not None and incoming_number is not None and abs(current_number - incoming_number) <= 0.000001
+    return str(current or "").strip() == str(incoming or "").strip()
+
+
+def _history_current_empty(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
 def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str, Any]:
     workbook = load_workbook(Path(path), read_only=True, data_only=True)
     sheet = workbook["现货业务台账"] if "现货业务台账" in workbook.sheetnames else workbook.active
@@ -2865,21 +2986,41 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
         history = _history_row_to_values(headers, values)
         if any(_usable_history_value(history.get(code)) for code in ("AD", "H", "Z", "X", "L")):
             history_rows.append(history)
-    summary: dict[str, Any] = {"matched": 0, "updated": 0, "ambiguous": 0, "unmatched": 0, "dry_run": not apply, "errors": []}
+    summary: dict[str, Any] = {
+        "matched": 0,
+        "updated": 0,
+        "ambiguous": 0,
+        "unmatched": 0,
+        "skipped_historical": 0,
+        "skipped_invalid_date": 0,
+        "identical": 0,
+        "conflicts": 0,
+        "conflict_field_counts": {},
+        "candidate_updates": 0,
+        "dry_run": not apply,
+        "errors": [],
+    }
     with db.connect() as conn:
         initialize_schema(conn)
         cur = conn.cursor()
         candidates = [record_to_public(dict(row)) for row in db._exec(cur, "SELECT * FROM spot_ledger_records WHERE source_detail_id IS NOT NULL").fetchall()]
         updates: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for history in history_rows:
+            date_status = _history_date_status(history.get("U"))
+            if date_status == "historical":
+                summary["skipped_historical"] += 1
+                continue
+            if date_status != "focus":
+                summary["skipped_invalid_date"] += 1
+                continue
             matches = [candidate for candidate in candidates if _matches_history(history, candidate)]
             if len(matches) != 1:
                 summary["ambiguous" if len(matches) > 1 else "unmatched"] += 1
                 continue
             summary["matched"] += 1
             candidate = matches[0]
-            update: dict[str, Any] = {}
-            for field in MANUAL_FIELDS:
+            proposed: dict[str, Any] = {}
+            for field in MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS:
                 if field == "long_contract_object":
                     continue
                 value = history.get(field)
@@ -2888,12 +3029,23 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
                         value = _number(value)
                         if value is None:
                             continue
-                    update[field] = value
+                    proposed[field] = value
             p_value, object_value = _split_long_contract(history.get("P"), history.get("long_contract_object"))
             if p_value:
-                update["P"] = p_value
+                proposed["P"] = p_value
             if object_value:
-                update["long_contract_object"] = object_value
+                proposed["long_contract_object"] = object_value
+            update: dict[str, Any] = {}
+            for field, value in proposed.items():
+                current = candidate.get(field)
+                if _history_current_empty(current):
+                    update[field] = value
+                elif _history_value_equal(field, current, value):
+                    summary["identical"] += 1
+                else:
+                    summary["conflicts"] += 1
+                    field_counts = summary["conflict_field_counts"]
+                    field_counts[field] = field_counts.get(field, 0) + 1
             if not update:
                 continue
             updates.append((candidate, update))
@@ -2911,7 +3063,6 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
                 values.append(candidate["record_id"])
                 _raw_execute(cur, f"UPDATE spot_ledger_records SET {', '.join(assignments)} WHERE record_id = ?", tuple(values))
                 summary["updated"] += 1
-        if not apply:
-            summary["candidate_updates"] = len(updates)
+        summary["candidate_updates"] = len(updates)
     workbook.close()
     return summary

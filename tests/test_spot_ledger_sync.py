@@ -2016,9 +2016,9 @@ def test_history_migration_only_updates_unique_match_and_defaults_to_dry_run(led
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "现货业务台账"
-    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "备注"])
-    sheet.append(["C-100", "铁矿石", 800, 100, "历史人工备注"])
-    sheet.append(["不存在", "铁矿石", 800, 100, "不应写入"])
+    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "销售日期", "备注"])
+    sheet.append(["C-100", "铁矿石", 800, 100, "2026-08-20", "历史人工备注"])
+    sheet.append(["不存在", "铁矿石", 800, 100, "2026-08-20", "不应写入"])
     workbook.save(path)
     preview = migrate_history_workbook(path)
     assert preview["matched"] == 1
@@ -2039,8 +2039,8 @@ def test_history_migration_skips_non_numeric_text_in_numeric_manual_fields(ledge
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "现货业务台账"
-    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "期货量", "备注"])
-    sheet.append(["C-100", "铁矿石", 800, 100, "无期货业务", "合法备注仍应迁移"])
+    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "销售日期", "期货量", "备注"])
+    sheet.append(["C-100", "铁矿石", 800, 100, "2026-08-20", "无期货业务", "合法备注仍应迁移"])
     workbook.save(path)
 
     result = migrate_history_workbook(path, apply=True)
@@ -2071,12 +2071,13 @@ def test_history_migration_detects_third_row_headers_and_excel_parenthesis_varia
         "商品名称",
         "销售价格\n（元/吨）",
         "销售数量(吨）",
+        "销售日期",
         "实物含税盈亏 (万元）",
         "备注",
         "利润合计校验",
     ])
-    sheet.append(["C-100", "铁矿石", 800, 100, 12.5, "历史人工备注", "一致"])
-    sheet.append([None, None, None, None, None, None, 0])
+    sheet.append(["C-100", "铁矿石", 800, 100, "2026-08-20", 12.5, "历史人工备注", "一致"])
+    sheet.append([None, None, None, None, None, None, None, 0])
     workbook.save(path)
 
     preview = migrate_history_workbook(path)
@@ -2084,3 +2085,73 @@ def test_history_migration_detects_third_row_headers_and_excel_parenthesis_varia
     assert preview["matched"] == 1
     assert preview["candidate_updates"] == 1
     assert preview["unmatched"] == 0
+
+
+def test_stored_mapping_reconciliation_canonicalizes_supplier_and_product_without_touching_other_errors(ledger_db):
+    from app.spot_ledger import SUPPLIER_MAPPINGS
+    from app.spot_ledger_sync import apply_full_scan, reconcile_stored_mapping_state
+
+    apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+    source_supplier = next(iter(SUPPLIER_MAPPINGS))
+    with ledger_db.connect() as conn:
+        conn.execute(
+            'UPDATE spot_ledger_records SET "Q" = ?, "AU" = ?, sync_status = ?, sync_error_summary = ? WHERE "AD" = ?',
+            (
+                SUPPLIER_MAPPINGS[source_supplier], "SFGB粉", "异常",
+                '[{"type":"conversion_mapping","field":"Q"},{"type":"category_mapping","field":"AU"},{"type":"source","field":"AD"}]',
+                "C-101",
+            ),
+        )
+
+    preview = reconcile_stored_mapping_state()
+    assert preview["dry_run"] is True
+    assert preview["candidate_updates"] == 1
+    assert preview["supplier_canonicalized"] == 1
+    assert preview["category_reclassified"] == 1
+    assert preview["errors_cleared"] == 2
+
+    applied = reconcile_stored_mapping_state(apply=True)
+    assert applied["updated"] == 1
+    with ledger_db.connect() as conn:
+        row = conn.execute(
+            'SELECT "Q", "AU", sync_status, sync_error_summary FROM spot_ledger_records WHERE "AD" = ?',
+            ("C-101",),
+        ).fetchone()
+    assert row["Q"] == source_supplier
+    assert row["AU"] == "铁矿石"
+    assert row["sync_status"] == "异常"
+    assert json.loads(row["sync_error_summary"])[0]["field"] == "AD"
+
+
+def test_history_migration_is_2026_only_and_does_not_overwrite_nonempty_conflicts(ledger_db, tmp_path):
+    from openpyxl import Workbook
+    from app.spot_ledger_sync import apply_full_scan, migrate_history_workbook
+
+    apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+    path = tmp_path / "history-focus-and-conflict.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "现货业务台账"
+    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "销售日期", "船名", "备注"])
+    sheet.append(["C-102", "铁矿石", 820, 100, "2026-08-18", "补录船", "应写入"])
+    sheet.append(["C-101", "铁矿石", 795, 80, "2026-08-19", "Excel船", None])
+    sheet.append(["C-103", "铁矿石", 790, 60, "2025-08-17", "历史船", "历史不写入"])
+    workbook.save(path)
+
+    preview = migrate_history_workbook(path)
+    assert preview["skipped_historical"] == 1
+    assert preview["conflicts"] == 1
+    assert preview["candidate_updates"] == 1
+
+    applied = migrate_history_workbook(path, apply=True)
+    assert applied["updated"] == 1
+    with ledger_db.connect() as conn:
+        rows = conn.execute(
+            'SELECT "AD", "K", "AM" FROM spot_ledger_records WHERE "AD" IN (?, ?, ?) ORDER BY "AD"',
+            ("C-101", "C-102", "C-103"),
+        ).fetchall()
+    by_contract = {row["AD"]: row for row in rows}
+    assert by_contract["C-102"]["K"] == "补录船"
+    assert by_contract["C-102"]["AM"] == "应写入"
+    assert by_contract["C-101"]["K"] == "船B"
+    assert by_contract["C-103"]["AM"] in (None, "")

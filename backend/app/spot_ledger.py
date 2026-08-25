@@ -32,6 +32,7 @@ SPOT_LEDGER_RESOURCE = "spot_ledger.records"
 SPOT_LEDGER_EXPORT_RESOURCE = "spot_ledger.export"
 SHANGHAI_GROUPS = ("大客户组", "东北组", "山东组", "黄骅组", "天津组", "唐山组", "南方组")
 LAND_SALES_TYPE = "船货-落地"
+SPOT_LEDGER_FOCUS_START_DATE = "2026-01-01"
 SALES_TYPE_MAP = {
     "B07": "现货-市场加价",
     "B06": "现货-背对背",
@@ -54,7 +55,7 @@ TECHNICAL_FIELDS = (
     "sync_status", "last_synced_at", "sync_error_summary", "strategic_hedging_id",
 )
 LIST_RECORD_FIELDS = (
-    "record_id", "source_detail_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X",
+    "record_id", "source_detail_id", "AD", "E", "AP", "D", "U", "H", "AU", "I", "Q", "AB", "L", "X",
     "supplement_status", "sync_status", "sync_error_summary",
 )
 
@@ -127,7 +128,7 @@ FIELD_CODES = tuple(item["code"] for item in FIELD_DEFINITIONS)
 FIELD_BY_CODE = {item["code"]: item for item in FIELD_DEFINITIONS}
 FIELD_NAME_TO_CODE = {item["name"]: item["code"] for item in FIELD_DEFINITIONS}
 
-# 这些是标准 source contract 中已经确认的名称映射。未知名称不丢失，保留原值并报错。
+# 这些是标准 source contract 中已经确认的名称映射。供应商映射仅用于展示别名；未知商品保留原值并报错。
 DEFAULT_NAME_MAPPINGS = {
     "operation_title": {
         **OPERATION_TITLE_MAPPINGS,
@@ -181,6 +182,27 @@ def _normalize_date(value: Any) -> str:
 def _month_start(value: Any) -> str:
     normalized = _normalize_date(value)
     return f"{normalized[:7]}-01" if re.match(r"^\d{4}-\d{2}-\d{2}$", normalized) else ""
+
+
+def _is_valid_iso_date(value: Any) -> bool:
+    normalized = _normalize_date(value)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        return False
+    try:
+        date.fromisoformat(normalized)
+    except ValueError:
+        return False
+    return True
+
+
+def is_historical_scope(value: Any) -> bool:
+    normalized = _normalize_date(value)
+    return _is_valid_iso_date(normalized) and normalized < SPOT_LEDGER_FOCUS_START_DATE
+
+
+def supplier_display_name(value: Any) -> str:
+    canonical = _text(value)
+    return SUPPLIER_MAPPINGS.get(canonical, canonical)
 
 
 def _number(value: Any) -> Optional[float | int]:
@@ -296,8 +318,14 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
     category_raw = _text(_value(raw, "product_category", "product_name"))
     category_mapping = mappings.get("product_category", DEFAULT_NAME_MAPPINGS["product_category"])
     category = category_mapping.get(category_raw, category_raw)
-    if category_raw and category_raw not in category_mapping:
+    if not category_raw:
+        errors.append({"type": "missing_product_name", "field": "H", "message": "商品名称为空，无法确定商品分类"})
+    elif category_raw not in category_mapping:
         errors.append({"type": "category_mapping", "field": "AU", "message": f"商品分类未配置: {category_raw}"})
+
+    supplier_raw = _text(_value(raw, "supplier", "Q"))
+    if not supplier_raw:
+        errors.append({"type": "missing_supplier", "field": "Q", "message": "供应商法定全称为空"})
 
     record: dict[str, Any] = {code: "" for code in FIELD_CODES}
     record.update({
@@ -317,7 +345,9 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
         "N": _number(_value(raw, "cargo_cost_price", "N")),
         "O": _number(_value(raw, "funding_cost_price", "O")),
         "P": _text(_value(raw, "is_long_contract", "P")) if sales_type == LAND_SALES_TYPE else "",
-        "Q": _mapped_value(_value(raw, "supplier", "Q"), "supplier", mappings, errors, "Q"),
+        # Q is the legal supplier name used for identity, search, export and audit.
+        # A confirmed short name is exposed separately as a display-only alias.
+        "Q": supplier_raw,
         "R": _text(_value(raw, "payment_condition", "R")),
         "S": _text(_value(raw, "purchase_business", "S")),
         "T": _text(_value(raw, "purchase_execution", "T")),
@@ -513,6 +543,14 @@ def record_to_public(record: dict[str, Any]) -> dict[str, Any]:
             result[field] = json.loads(value or "[]") if isinstance(value, str) else (value or [])
         elif field == "sync_error_summary":
             result[field] = json.loads(value or "[]") if isinstance(value, str) and value.startswith("[") else (value or "")
+    is_record = any(key in result for key in ("record_id", "source_detail_id", "AD", "Q", "H"))
+    if is_record:
+        result["supplier_display_name"] = supplier_display_name(result.get("Q"))
+        result["scope_status"] = "历史范围外" if is_historical_scope(result.get("U")) else "当前范围"
+        if result["scope_status"] == "历史范围外":
+            result["supplement_status"] = "历史范围外"
+            result["sync_status"] = "历史范围外"
+            result["sync_error_summary"] = []
     return result
 
 
@@ -579,8 +617,17 @@ def _record_query_conditions(params: dict[str, Any], include_inactive: bool = Fa
     if supplement:
         conditions.append("supplement_status = ?")
         values.append(supplement)
-    if params.get("sync_error") in (True, "true", "1", "是"):
+    sync_error = params.get("sync_error") in (True, "true", "1", "是")
+    if sync_error:
         conditions.append("sync_status = '异常'")
+    if supplement == "待补录" or sync_error:
+        # Only quality-worklist views are scoped. The normal list keeps history
+        # queryable. Invalid or missing dates remain visible for true anomaly review.
+        conditions.append(
+            '("U" >= ? OR "U" IS NULL OR "U" = ? OR LENGTH("U") <> 10 '
+            'OR SUBSTR("U", 5, 1) <> ? OR SUBSTR("U", 8, 1) <> ?)'
+        )
+        values.extend([SPOT_LEDGER_FOCUS_START_DATE, "", "-", "-"])
     return conditions, values
 
 
@@ -746,6 +793,16 @@ def pending_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge
 @router.get("/spot-ledger/sync-errors")
 def sync_errors_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
     return get_sync_errors(limit=limit, offset=offset, user=user)
+
+
+@router.post("/spot-ledger/reconcile-mappings")
+def reconcile_mappings_view(apply: bool = False, user=Depends(_request_user)):
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可执行存量映射重分类")
+    from .spot_ledger_sync import reconcile_stored_mapping_state
+
+    return reconcile_stored_mapping_state(apply=apply)
 
 
 @router.get("/spot-ledger/sync-status")

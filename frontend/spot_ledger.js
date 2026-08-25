@@ -20,7 +20,7 @@
     "C", "K", "N", "O", "P", "R", "V", "W", "Y", "AA", "AC", "AE", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "AO", "long_contract_object",
   ];
   const REQUIRED_MANUAL_FIELDS = new Set(["C", "K", "N", "O", "Y"]);
-  const DETAIL_HIDDEN_FIELDS = new Set(["A", "B", "AQ", "AR", "AS", "AT", "AU", "AV", "AW", "AX", "AY"]);
+  const DETAIL_HIDDEN_FIELDS = new Set(["A", "B", "AQ", "AR", "AS", "AT", "AV", "AW", "AX", "AY"]);
   const PLACEHOLDER_VALUES = new Set(["--", "***", "---", "**", "****", "—", "——"]);
   const NUMERIC_FIELDS = new Set(["N", "O", "Y", "AA", "AH", "AI", "AJ", "AK", "AL"]);
   const FIELD_LABELS = {
@@ -151,7 +151,7 @@
     const body = $("#spotLedgerTableBody");
     if (!body) return;
     if (!records.length) {
-      body.innerHTML = '<tr><td colspan="12" class="empty-cell">暂无符合条件的记录</td></tr>';
+      body.innerHTML = '<tr><td colspan="14" class="empty-cell">暂无符合条件的记录</td></tr>';
       return;
     }
     body.innerHTML = records.map((record) => {
@@ -163,6 +163,8 @@
         <td>${escapeHtml(displayValue(record.D))}</td>
         <td>${escapeHtml(seconds(record.U))}</td>
         <td>${escapeHtml(displayValue(record.H))}</td>
+        <td>${escapeHtml(displayValue(record.AU))}</td>
+        <td>${escapeHtml(supplierDisplayValue(record))}</td>
         <td>${escapeHtml(displayValue(record.I))}</td>
         <td>${escapeHtml(displayValue(record.AB))}</td>
         <td>${escapeHtml(displayValue(record.L))}</td>
@@ -229,7 +231,15 @@
   }
 
   function detailFieldValue(record, field) {
+    if (field.code === "Q") return supplierDisplayValue(record);
     return hasDisplayValue(record[field.code]) ? displayValue(record[field.code]) : "";
+  }
+
+  function supplierDisplayValue(record) {
+    const legalName = hasDisplayValue(record.Q) ? displayValue(record.Q) : "";
+    const alias = hasDisplayValue(record.supplier_display_name) ? displayValue(record.supplier_display_name) : "";
+    if (alias && legalName && alias !== legalName) return `${alias}（法定全称：${legalName}）`;
+    return alias || legalName || "";
   }
 
   function renderSystemField(field, record) {
@@ -251,12 +261,12 @@
     if (detail.showModal && !detail.open) detail.showModal();
     const errorText = syncErrorText(record.sync_error_summary);
     const systemFields = moduleState.fields.filter((field) => !MANUAL_FIELDS.includes(field.code) && !DETAIL_HIDDEN_FIELDS.has(field.code) && hasDisplayValue(record[field.code]));
-    $("#spotLedgerDetailMeta").innerHTML = `<div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div>${hasDisplayValue(record.last_synced_at) ? `<div><span>最近刷新</span><strong>${escapeHtml(seconds(record.last_synced_at))}</strong></div>` : ""}${errorText ? `<div class="spot-ledger-detail-alert"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
+    $("#spotLedgerDetailMeta").innerHTML = `<div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div>${record.scope_status === "历史范围外" ? `<div><span>检查范围</span><strong>历史范围外：不纳入 2026 年补录与异常检查</strong></div>` : ""}${hasDisplayValue(record.last_synced_at) ? `<div><span>最近刷新</span><strong>${escapeHtml(seconds(record.last_synced_at))}</strong></div>` : ""}${errorText ? `<div class="spot-ledger-detail-alert"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
     $("#spotLedgerSystemCount").textContent = `${systemFields.length} 项`;
     $("#spotLedgerSystemFields").innerHTML = systemFields.length ? systemFields.map((field) => renderSystemField(field, record)).join("") : '<p class="spot-ledger-detail-empty">暂无已带出的系统字段</p>';
-    $("#spotLedgerManualHint").textContent = record.missing_fields?.length ? `待补录 ${record.missing_fields.length} 项` : "可按需修改";
+    $("#spotLedgerManualHint").textContent = record.scope_status === "历史范围外" ? "历史范围外，本轮不要求补录" : record.missing_fields?.length ? `待补录 ${record.missing_fields.length} 项` : "可按需修改";
     renderManualContent(record);
-    $("#spotLedgerEditStatus").textContent = record.missing_fields?.length ? `待补录：${record.missing_fields.join("、")}` : "必填字段已完成";
+    $("#spotLedgerEditStatus").textContent = record.scope_status === "历史范围外" ? "历史范围外，本轮不要求补录" : record.missing_fields?.length ? `待补录：${record.missing_fields.join("、")}` : "必填字段已完成";
   }
 
   function closeDetail() {

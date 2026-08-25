@@ -45,6 +45,7 @@ TRADING_MANAGEMENT_TABLES = (
 )
 
 MODULES = [
+    ("贸易台账管理", "spot_ledger", "现货业务台账管理"),
     ("台账管理", "sh_junneng", "上海钧能台账"),
     ("台账管理", "steel_export", "钢材出口套保台账"),
     ("台账管理", "subsidiary_hedging", "子公司套保台账"),
@@ -64,7 +65,6 @@ MODULES = [
     ("订单融资管理", "order_finance_progress", "订单融资进度"),
     ("订单融资管理", "order_finance_capital", "融资资金监控"),
     ("订单融资管理", "order_lifecycle_progress", "订单全流程管理"),
-    ("贸易台账管理", "spot_ledger", "现货业务台账管理"),
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "data_management", "数据管理"),
 ]

@@ -111,6 +111,26 @@ def test_pending_and_sync_error_views_are_explicit(ledger_context):
     assert any(error["type"] == "conversion_mapping" for error in errors["records"][0]["sync_error_summary"])
 
 
+def test_quality_worklists_exclude_pre_2026_records_but_normal_list_keeps_history(ledger_context):
+    from app.spot_ledger import get_pending, get_records, get_sync_errors
+
+    admin, _ = ledger_context
+    with db.connect() as conn:
+        conn.execute(
+            'UPDATE spot_ledger_records SET "U" = ?, supplement_status = ?, sync_status = ?, sync_error_summary = ? WHERE record_id = ?',
+            ("2025-12-31", "待补录", "异常", '[{"field":"Q"}]', "spot:D1001"),
+        )
+
+    pending = get_pending(user=admin)
+    errors = get_sync_errors(user=admin)
+    assert "D1001" not in {row["source_detail_id"] for row in pending["records"]}
+    assert "D1001" not in {row["source_detail_id"] for row in errors["records"]}
+    historical = next(row for row in get_records(user=admin)["records"] if row["source_detail_id"] == "D1001")
+    assert historical["supplement_status"] == "历史范围外"
+    assert historical["sync_status"] == "历史范围外"
+    assert historical["sync_error_summary"] == []
+
+
 def test_sync_error_view_returns_only_latest_compact_run(ledger_context):
     from app.spot_ledger import get_sync_errors
     from app.spot_ledger_sync import FixtureSalesContractSource, apply_full_scan
