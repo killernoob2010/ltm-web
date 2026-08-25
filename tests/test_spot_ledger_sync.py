@@ -538,6 +538,21 @@ def test_official_scope_probe_confirms_demand_and_settlement_filters_without_val
 
         def _request_json(self, method, url, *, stage, **kwargs):
             if "/tradeing/demand/list" in url:
+                if "quantityAttribution" not in kwargs["params"]:
+                    return {
+                        "code": 200,
+                        "data": {
+                            "rows": [
+                                {
+                                    "demandId": f"demand-sensitive-{index}",
+                                    "sourceType": "10",
+                                    "quantityAttribution": f"Q{index}",
+                                }
+                                for index in range(1, 8)
+                            ],
+                            "total": 7,
+                        },
+                    }
                 group_code = kwargs["params"]["quantityAttribution"]
                 index = int(group_code[1:])
                 return {
@@ -585,12 +600,102 @@ def test_official_scope_probe_confirms_demand_and_settlement_filters_without_val
     assert result["demand_filter"]["sampled_group_count"] == 7
     assert result["demand_filter"]["sample_match_count"] == 7
     assert result["demand_filter"]["group_counts"]["大客户组"] == 1
+    assert result["local_scope_scan"] == {
+        "source_total_count": 7,
+        "page_count": 1,
+        "scanned_row_count": 7,
+        "duplicate_demand_id_count": 0,
+        "spot_demand_count": 7,
+        "seven_group_spot_demand_count": 7,
+        "group_counts": {group: 1 for group in sync.SHANGHAI_GROUPS},
+    }
+    assert result["related_chain_sample_attempt_count"] == 1
     assert result["related_chain_count"] == 1
     assert result["related_sale_contract_count"] == 2
     assert result["related_active_sale_contract_count"] == 1
     assert result["settlement_filter_baseline_total"] == 100
     assert all(item["effective"] for item in result["settlement_filters"].values())
     assert "sensitive" not in serialized
+
+
+def test_official_scope_probe_paginates_local_demand_rows_and_deduplicates_ids():
+    from app import spot_ledger_sync as sync
+
+    class Source(sync.OfficialJsonSalesContractSource):
+        def __init__(self):
+            super().__init__(auth_provider=lambda: {})
+
+        def _fetch_dictionaries(self):
+            return {
+                "quantity_attribution": {
+                    f"Q{index}": group for index, group in enumerate(sync.SHANGHAI_GROUPS, start=1)
+                },
+                "profit_attribution": {},
+                "source_type": {"10": "现货"},
+                "price_mode": {},
+            }
+
+        def _request_json(self, method, url, *, stage, **kwargs):
+            if "/tradeing/demand/list" in url:
+                params = kwargs["params"]
+                if "quantityAttribution" in params:
+                    return {
+                        "code": 200,
+                        "data": {
+                            "rows": [
+                                {
+                                    "demandId": f"filtered-{params['quantityAttribution']}",
+                                    "sourceType": "10",
+                                    "quantityAttribution": params["quantityAttribution"],
+                                }
+                            ],
+                            "total": 1,
+                        },
+                    }
+                if params["pageNum"] == 1:
+                    rows = [
+                        {
+                            "demandId": f"demand-{index}",
+                            "sourceType": "10",
+                            "quantityAttribution": "Q1",
+                        }
+                        for index in range(500)
+                    ]
+                else:
+                    rows = [
+                        {
+                            "demandId": "demand-0",
+                            "sourceType": "10",
+                            "quantityAttribution": "Q1",
+                        }
+                    ]
+                return {"code": 200, "data": {"rows": rows, "total": 501}}
+            if "/relatedToDemand/" in url:
+                if url.endswith("/demand-0?sheetCode=G01004"):
+                    return {"code": 200, "data": []}
+                return {"code": 200, "data": [{"chainId": "chain-sensitive"}]}
+            if "/tradeing/chain/saleContractList" in url:
+                return {
+                    "code": 200,
+                    "data": [{"saleContractId": "sale-sensitive", "status": "70"}],
+                }
+            if "/tdsSettle/queryJiesuan" in url:
+                row = {
+                    "salesContractNo": "contract-sensitive",
+                    "saleContractId": "sale-sensitive",
+                    "saleContractMxId": "line-sensitive",
+                }
+                total = 1 if len(kwargs["json"]) > 1 else 100
+                return {"code": 200, "data": {"rows": [row], "total": total}}
+            raise AssertionError((method, url, stage, kwargs))
+
+    result = sync.probe_official_scope_filters(source=Source())
+
+    assert result["local_scope_scan"]["page_count"] == 2
+    assert result["local_scope_scan"]["scanned_row_count"] == 501
+    assert result["local_scope_scan"]["duplicate_demand_id_count"] == 1
+    assert result["local_scope_scan"]["seven_group_spot_demand_count"] == 501
+    assert result["related_chain_sample_attempt_count"] == 2
 
 
 def test_official_json_probe_uses_confirmed_post_and_returns_schema_only():

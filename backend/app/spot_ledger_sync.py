@@ -1189,7 +1189,6 @@ def probe_official_scope_filters(
     sampled_group_count = 0
     sample_match_count = 0
     demand_schema_paths: set[str] = set()
-    first_demand_id = ""
     for group in SHANGHAI_GROUPS:
         group_code = quantity_codes[group]
         payload = active_source._request_json(
@@ -1211,8 +1210,6 @@ def probe_official_scope_filters(
         sampled_group_count += 1
         sample = rows[0]
         demand_id = str(sample.get("demandId") or "").strip()
-        if not first_demand_id and demand_id:
-            first_demand_id = demand_id
         if sample.get("sourceType") in (None, "") or sample.get("quantityAttribution") in (None, ""):
             if not demand_id:
                 continue
@@ -1232,16 +1229,104 @@ def probe_official_scope_filters(
         if source_known and group_known and sample_source == "现货" and sample_group == group:
             sample_match_count += 1
 
+    local_page_size = 500
+    local_rows: list[dict[str, Any]] = []
+    local_total: Optional[int] = None
+    local_page_count = 1
+    for page_no in range(1, active_source.max_pages + 1):
+        payload = active_source._request_json(
+            "get",
+            OFFICIAL_DEMAND_LIST_URL,
+            stage="official_scope_local_demand_list",
+            params={"pageNum": page_no, "pageSize": local_page_size},
+        )
+        demand_schema_paths.update(_schema_paths(payload))
+        rows, total = active_source._paged_rows(
+            payload,
+            stage="official_scope_local_demand_list",
+        )
+        if local_total is None:
+            local_total = total
+            local_page_count = max(1, (total + local_page_size - 1) // local_page_size)
+            if local_page_count > active_source.max_pages:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式需求分页数超过安全上限",
+                    stage="official_scope_local_demand_pages",
+                )
+        elif total != local_total:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式需求分页统计在扫描过程中发生变化",
+                stage="official_scope_local_demand_changed",
+            )
+        local_rows.extend(rows)
+        if page_no >= local_page_count:
+            break
+    if local_total is None or len(local_rows) != local_total:
+        raise SalesContractSourceError(
+            "parse_error",
+            "正式需求分页记录数与总数不一致",
+            stage="official_scope_local_demand_count",
+        )
+
+    local_group_counts = {group: 0 for group in SHANGHAI_GROUPS}
+    spot_demand_count = 0
+    seven_group_spot_demand_count = 0
+    duplicate_demand_id_count = 0
+    seen_demand_ids: set[str] = set()
+    in_scope_demand_ids: list[str] = []
+    for row in local_rows:
+        source_type, source_known = active_source._dictionary_label(
+            dictionaries["source_type"],
+            row.get("sourceType"),
+        )
+        quantity_group, quantity_group_known = active_source._dictionary_label(
+            dictionaries["quantity_attribution"],
+            row.get("quantityAttribution"),
+        )
+        if source_known and source_type == "现货":
+            spot_demand_count += 1
+        if not (
+            source_known
+            and quantity_group_known
+            and source_type == "现货"
+            and quantity_group in SHANGHAI_GROUPS
+        ):
+            continue
+        seven_group_spot_demand_count += 1
+        local_group_counts[quantity_group] += 1
+        demand_id = str(row.get("demandId") or "").strip()
+        if not demand_id:
+            continue
+        if demand_id in seen_demand_ids:
+            duplicate_demand_id_count += 1
+            continue
+        seen_demand_ids.add(demand_id)
+        in_scope_demand_ids.append(demand_id)
+
+    local_scope_scan = {
+        "source_total_count": local_total,
+        "page_count": local_page_count,
+        "scanned_row_count": len(local_rows),
+        "duplicate_demand_id_count": duplicate_demand_id_count,
+        "spot_demand_count": spot_demand_count,
+        "seven_group_spot_demand_count": seven_group_spot_demand_count,
+        "group_counts": local_group_counts,
+    }
+
     related_chains: list[dict[str, Any]] = []
     related_chain_schema_paths: set[str] = set()
     related_sales: list[dict[str, Any]] = []
     related_sale_schema_paths: set[str] = set()
-    if first_demand_id:
+    related_chain_sample_attempt_count = 0
+    for demand_id in in_scope_demand_ids[:20]:
+        related_chain_sample_attempt_count += 1
         related_payload = active_source._request_json(
             "get",
             (
                 f"{JIANLONG_TDS_API_BASE_URL}/tradeing/chain/relatedToDemand/"
-                f"{quote(first_demand_id, safe='')}?sheetCode=G01004"
+                f"{quote(demand_id, safe='')}?sheetCode=G01004"
             ),
             stage="official_scope_related_chain",
         )
@@ -1249,6 +1334,10 @@ def probe_official_scope_filters(
         related_data = related_payload.get("data")
         if isinstance(related_data, list):
             related_chains = [row for row in related_data if isinstance(row, dict)]
+        if related_chains:
+            break
+
+    if related_chains:
         chain_id = next(
             (str(row.get("chainId")) for row in related_chains if row.get("chainId") not in (None, "")),
             "",
@@ -1327,7 +1416,9 @@ def probe_official_scope_filters(
             "sampled_group_count": sampled_group_count,
             "sample_match_count": sample_match_count,
         },
+        "local_scope_scan": local_scope_scan,
         "demand_schema_paths": sorted(demand_schema_paths)[:300],
+        "related_chain_sample_attempt_count": related_chain_sample_attempt_count,
         "related_chain_count": len(related_chains),
         "related_chain_schema_paths": sorted(related_chain_schema_paths)[:300],
         "related_sale_contract_count": len(related_sales),
