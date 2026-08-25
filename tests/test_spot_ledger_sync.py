@@ -2030,6 +2030,30 @@ def test_history_migration_only_updates_unique_match_and_defaults_to_dry_run(led
     assert row["AM"] == "历史人工备注"
 
 
+def test_history_migration_skips_non_numeric_text_in_numeric_manual_fields(ledger_db, tmp_path):
+    from openpyxl import Workbook
+    from app.spot_ledger_sync import apply_full_scan, migrate_history_workbook
+
+    apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+    path = tmp_path / "history-invalid-numeric.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "现货业务台账"
+    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "期货量", "备注"])
+    sheet.append(["C-100", "铁矿石", 800, 100, "无期货业务", "合法备注仍应迁移"])
+    workbook.save(path)
+
+    result = migrate_history_workbook(path, apply=True)
+
+    assert result["updated"] == 1
+    with ledger_db.connect() as conn:
+        row = conn.execute(
+            "SELECT \"AJ\", \"AM\" FROM spot_ledger_records WHERE \"AD\" = 'C-100' ORDER BY source_detail_id LIMIT 1"
+        ).fetchone()
+    assert row["AJ"] in (None, "")
+    assert row["AM"] == "合法备注仍应迁移"
+
+
 def test_history_migration_detects_third_row_headers_and_excel_parenthesis_variants(ledger_db, tmp_path):
     from openpyxl import Workbook
     from app.spot_ledger_sync import apply_full_scan, migrate_history_workbook

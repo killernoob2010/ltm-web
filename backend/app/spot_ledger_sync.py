@@ -29,6 +29,7 @@ from .spot_ledger import (
     FIELD_CODES,
     FIELD_DEFINITIONS,
     MANUAL_FIELDS,
+    NUMERIC_FIELDS,
     SHANGHAI_GROUPS,
     SYSTEM_PRIORITY_FIELDS,
     calculate_derived_fields,
@@ -36,6 +37,7 @@ from .spot_ledger import (
     missing_required_fields,
     normalize_sales_contract_record,
     record_to_public,
+    _number,
 )
 
 
@@ -2882,6 +2884,10 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
                     continue
                 value = history.get(field)
                 if _usable_history_value(value):
+                    if field in NUMERIC_FIELDS:
+                        value = _number(value)
+                        if value is None:
+                            continue
                     update[field] = value
             p_value, object_value = _split_long_contract(history.get("P"), history.get("long_contract_object"))
             if p_value:
