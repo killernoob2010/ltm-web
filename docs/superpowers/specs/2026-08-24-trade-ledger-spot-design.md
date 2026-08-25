@@ -2,9 +2,9 @@
 
 版本：V1.0
 日期：2026-08-24
-状态：Gate A/设计已确认，进入本地实现
+状态：Gate A/设计已确认，进入 Staging 真实源认证验证
 业务依据：`/Users/wangjingze/Documents/ChatGPT/贸易处台账/outputs/贸易台账管理_现货业务台账管理_业务需求说明书_V1.0.docx`
-实现边界：当前隔离 feature worktree；仅本地和明确的非生产 fixture，不进入 main、Production 或正式数据。
+实现边界：当前隔离 feature worktree、本地和明确的 Staging；不进入 main、Production 或正式数据。
 
 ## 1. 目标与边界
 
@@ -12,7 +12,7 @@
 
 本期明确不做实时同步、手动立即同步、字段修改审计、待历史匹配、复杂部分套保、期货系统接入、真实交易操作、生产环境变量、生产数据库、正式数据迁移或 Production 部署。
 
-无人值守接口目前只确认登录浏览器会话内可调用，未取得后端可持续刷新或服务账号方案。真实 HTTP 适配器只使用 2026-08-25 已只读验证的 request/response/field profile；认证缺失时任务以 `auth_unavailable` 明确失败，不猜请求协议、不读取网页 DOM、不把 fixture 结果标为真实同步。该认证限制是上线阻塞，不阻止本地开发和 fixture 验收。
+2026-08-25 已在用户授权的登录浏览器内只读确认正式销售合同 JSON 列表接口使用 Bearer 认证，并从统一认证页面及前端代码确认“登录页公钥 RSA 加密密码 → 一次性 code → Bearer 令牌”的个人账号登录流程；令牌失效后通过同一流程重新登录一次，不复用个人浏览器会话。真实 HTTP 适配器只使用已确认的请求、响应、字段和认证 contract；认证缺失或失败时任务以 `auth_unavailable` 明确失败，不猜请求协议、不读取业务网页 DOM、不把 fixture 结果标为真实同步。普通服务端 HTTP 客户端从当前开发网络访问认证页被源站防护返回 403，因此 Render Staging 能否完成该流程仍需使用用户个人凭据做一次只读验证；该验证结果是自动同步启用前门禁。
 
 ## 2. Gate A 评估与验收
 
@@ -20,7 +20,7 @@
 - T3：覆盖源适配、业务规则、数据库、API 和本地真实页面；不形成跨模块业务流程，因此不是 T4。
 - R3：涉及数据库结构、核心业务口径、权限和外部认证；执行仅限本地/非生产。
 - C1：单 Agent inline execution；不创建子 Agent。
-- 回滚点：实现前 `76ee22b3cf40f84b8a6bcbaa710f6ed2de444ab7`；当前隔离 worktree 保留此前用户确认的前端改动，并包含本轮真实源适配器测试/实现，未推送 staging。
+- 回滚点：实现前 `76ee22b3cf40f84b8a6bcbaa710f6ed2de444ab7`；现货台账基础功能已在 Staging 提交 `c45c1f15b670e500c89b6d1ee458d98e8cf956bc` 验收，本轮个人账号服务端认证增强仍在当前隔离 worktree 验证。
 
 ### 2.1 验收条目
 
@@ -113,7 +113,9 @@
 
 profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它要求显式提供 request body、分页参数位置、记录路径、总数路径、页数路径、认证提供器和外部字段映射。2026-08-25 经用户授权在登录浏览器会话内做一次只读复核，确认候选地址为 `https://tds-report.ejianlong.com/jmreport/show`、报表 ID 为 `1055351755192311808`，请求体包含 `apiUrl`、`id` 和 JSON 字符串 `params`，其中使用 `pageNo`、`pageSize`、`periodDate`、`releaseDate`、现货、生效及 7 个销售组筛选。该请求返回 200 JSON；记录路径为 `result.dataList.TJJLYSHZ.list`，`result.dataList.TJJLYSHZ.count` 为记录总数，`result.dataList.TJJLYSHZ.total` 为总页数。响应行以中文字段名返回，已按需求说明书 8.2 的来源口径映射销售合同商品明细 ID、组别、类型、公司、日期、商品、港口、模式、船名、数量、价格、供应商、人员、客户和合同号。适配器内置该脱敏 profile，不按网页列序推断，也不保存真实响应或业务明细。
 
-本次请求头形态只观察到 Cookie 会话认证，未观察到 Authorization 头，也未取得源系统正式支持的服务端登录、续期或刷新协议。个人账号可作为授权主体的业务决定已经确认，但不得提取或复用个人浏览器 Cookie 作为定时任务凭据。无人值守认证 provider 缺失或认证过期时返回 `auth_unavailable`，不发起猜测请求；凭据只能由后续确认的服务端认证通道在运行时提供，不写入仓库、前端、导出或日志。
+同日进一步只读确认销售合同页面调用 `POST https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList`，响应为 JSON，请求使用 Bearer 令牌；统一认证登录页提交 RSA 加密密码到 `POST https://server-auth.ejianlong.com/login/pwd`，取得一次性 code 后通过 `GET /login?code=...` 换取 Bearer 令牌，未观察到独立 refresh token。个人账号作为授权主体已由用户确认；服务端只从 Secret 读取工号和密码并保存在进程内存，令牌过期或响应重定向到登录页时至多重新登录一次。不得提取或复用个人浏览器 Cookie，凭据、票据、令牌、认证响应和源业务响应均不得写入仓库、前端、导出或日志。
+
+完整 51 字段仍以 `POST https://tds-report.ejianlong.com/jmreport/show` 的已确认 JSON 报表 profile 作为候选聚合通路；正式销售合同 JSON API 是已确认的业务接口，但当前仅确认列表及详情的部分字段，不能在缺少字段 contract 时擅自拼接替代完整报表。Staging 验证先判断个人账号服务端登录能否成功，再判断同一内存会话和 Bearer 令牌能否读取候选报表；任一步失败均保留为 `auth_unavailable` 或脱敏同步异常，不宣称真实自动同步完成。
 
 ### 4.2 全量扫描门禁
 
@@ -123,7 +125,7 @@ profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它�
 
 ### 4.3 调度
 
-调度时区为 Asia/Shanghai，slot 为每天 09:00、10:00、11:00、12:00、13:00、14:00、15:00、16:00、17:00、18:00。模块启动默认不启用；只有 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 且 source mode 配置完整时启动。页面不提供手动立即同步按钮，只显示调度和最近一次结果。
+调度时区为 Asia/Shanghai，slot 为每天 09:00、10:00、11:00、12:00、13:00、14:00、15:00、16:00、17:00、18:00。模块启动默认不启用；只有 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 且 source mode 配置完整时启动。服务在同步时段内启动时仅执行最近一个已到 slot，不补跑此前 slot；19:00 后启动不执行当天补跑。页面不提供手动立即同步按钮，只显示调度和最近一次结果。
 
 ## 5. 权限与 API
 
@@ -153,4 +155,4 @@ profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它�
 
 实现前先为字段映射、数量/日期/类型、完整扫描隐藏、权限/待补录、历史迁移、战略套保、导出和调度写失败测试并确认失败；再逐项实现并复跑。完成后执行 Python 定向/全量测试、Node 前端测试、Python 编译、JavaScript 语法、`git diff --check`，启动本地 SQLite 服务并用管理员登录真实页面完成统一验收。
 
-本轮停在本地验收，不推送 staging，不修改任何 Supabase 数据库。真实 request/response/field profile 已完成只读确认并进入可测试适配层；真实合同源无人值守认证和真实历史 Excel 迁移执行仍未完成，因此不能宣称正式自动同步或真实历史迁移完成。这两项作为上线前 Gate B 阻塞项保留。
+现货台账基础功能和空表结构已进入 Staging，真实源自动同步仍保持关闭。真实 request/response/field profile、个人账号服务端认证适配和脱敏错误通路已进入可测试代码；下一门禁是在 Render Staging Secret 中由用户亲自录入个人工号和密码，验证认证与只读 JSON 取数。验证成功前不得启用 Staging 定时写入；若源站防护仍返回 403，则需源系统提供服务器访问许可或正式 API 认证支持。Production 发布、生产 Supabase、正式数据迁移和 Gate B 均未授权。

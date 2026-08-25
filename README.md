@@ -47,7 +47,11 @@ http://127.0.0.1:8000
 http://127.0.0.1:8001
 ```
 
-现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、B05/B09 类型转换、跨组标识、待补录和同步异常。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；不提供实时同步或手动立即同步。2026-08-25 经用户授权在已登录浏览器中完成一次只读复核：候选 `POST https://tds-report.ejianlong.com/jmreport/show` 返回 200 JSON，请求使用报表 ID `1055351755192311808` 和 JSON 字符串 `params`；记录路径为 `result.dataList.TJJLYSHZ.list`，`count` 为记录总数，`total` 为总页数，并确认了销售合同商品明细 ID 及台账所需系统源字段。适配器已内置该脱敏 request/response/field profile 和分页规则；本地测试不保存真实响应或业务明细。浏览器请求当前仅观察到 Cookie 会话认证，尚未确认源系统支持的服务端登录/刷新方式，因此无人值守认证仍是上线阻塞，fixture 或浏览器只读复核均不得称为正式自动同步。
+现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、B05/B09 类型转换、跨组标识、待补录和同步异常。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；服务在同步时段内启动时只执行最近一个已到小时，不补跑当天此前所有小时，19:00 后启动不补跑；不提供实时同步或手动立即同步。
+
+2026-08-25 经用户授权在已登录浏览器中完成只读认证与接口复核：销售合同列表实际调用 `POST https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList`，返回 200 JSON，并使用 Bearer 认证；统一认证采用登录页公钥 RSA 加密密码、`POST /login/pwd` 返回一次性 code、`GET /login?code=...` 换取 Bearer 令牌，令牌失效后没有独立 refresh token，需重新登录。现货适配器因此支持从服务端 Secret 读取 `SPOT_LEDGER_SOURCE_USERNAME`、`SPOT_LEDGER_SOURCE_PASSWORD`，使用同一内存会话重新登录一次，并且不会记录账号、密码、票据、令牌或源响应。
+
+台账完整字段当前仍使用已确认的 JSON 报表 profile：候选 `POST https://tds-report.ejianlong.com/jmreport/show` 使用报表 ID `1055351755192311808` 和 JSON 字符串 `params`；记录路径为 `result.dataList.TJJLYSHZ.list`，`count` 为记录总数，`total` 为总页数，并已确认销售合同商品明细 ID 及台账所需系统源字段。本地测试不保存真实响应或业务明细。普通服务端 HTTP 客户端从当前开发网络访问统一认证页会被源站防护返回 403，而真实 Chrome 可正常访问，因此服务端认证能否从 Render Staging 运行仍需用个人账号完成一次真实只读验证；在该验证成功前，`SPOT_LEDGER_AUTO_SYNC_ENABLED` 必须保持 `false`，fixture、浏览器复核或单元测试均不得称为正式自动同步。不得通过伪装浏览器、网页爬虫或复制个人浏览器 Cookie 绕过此限制。
 
 现货业务台账数据库沿用项目现有 `db.init_db()` 双数据库兼容路径：本地使用 SQLite，Render/Supabase 使用 PostgreSQL 专用的 `TEXT`、`DOUBLE PRECISION` 和幂等 `CREATE TABLE IF NOT EXISTS`。线上两张台账表只允许服务端 FastAPI 连接访问，PostgreSQL 路径启用 RLS 并撤销 `anon` / `authenticated` 的直接表权限；页面不通过 Supabase Data API 直连。部署到 Staging 时仅创建空表和索引，自动同步仍保持关闭，不导入真实销售合同数据。
 

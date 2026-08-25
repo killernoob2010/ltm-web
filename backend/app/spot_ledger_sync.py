@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import base64
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as day_time
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -11,9 +14,12 @@ import re
 import threading
 import time
 from typing import Any, Callable, Optional
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 import requests
 from openpyxl import load_workbook
 
@@ -37,6 +43,9 @@ SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 SPOT_LEDGER_SYNC_TIMES = tuple(day_time(hour, 0) for hour in range(9, 19))
 CANDIDATE_SOURCE_URL = "https://tds-report.ejianlong.com/jmreport/show"
 CANDIDATE_REPORT_ID = "1055351755192311808"
+JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
+JIANLONG_TDS_APP_ID = "2d948bd76f7b432193b6bb2823eee6a5"
+JIANLONG_TDS_REDIRECT_URI = "https://tds.ejianlong.com/"
 CONFIRMED_SOURCE_FIELD_MAP = {
     "detail_id": "销售合同商品明细id",
     "spot_type": "期现货",
@@ -89,6 +98,151 @@ class FullScanResult:
 class SalesContractSource:
     def fetch_full_scan(self) -> FullScanResult:
         raise NotImplementedError
+
+
+class _LoginPageParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.inputs: dict[str, str] = {}
+        self.scripts: list[str] = []
+        self._in_script = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() == "script":
+            self._in_script = True
+            return
+        if tag.lower() != "input":
+            return
+        values = {key: value for key, value in attrs}
+        name = values.get("name")
+        if name:
+            self.inputs[name] = values.get("value") or ""
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script":
+            self._in_script = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_script:
+            self.scripts.append(data)
+
+
+def _parse_login_contract(html: str) -> tuple[dict[str, str], str]:
+    parser = _LoginPageParser()
+    parser.feed(html)
+    required = ("redirectUri", "appId", "companyId")
+    if any(name not in parser.inputs for name in required):
+        raise SalesContractSourceError("auth_unavailable", "统一认证登录参数不可用")
+    script = "\n".join(parser.scripts)
+    match = re.search(r"\bvar\s+publicKey\s*=\s*(.*?);", script, flags=re.DOTALL)
+    if not match:
+        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用")
+    literals = re.findall(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"", match.group(1))
+    try:
+        public_key = "".join(ast.literal_eval(item) for item in literals)
+    except (SyntaxError, ValueError) as exc:
+        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用") from exc
+    if not public_key.startswith("-----BEGIN PUBLIC KEY-----") or not public_key.rstrip().endswith(
+        "-----END PUBLIC KEY-----"
+    ):
+        raise SalesContractSourceError("auth_unavailable", "统一认证公钥不可用")
+    return parser.inputs, public_key
+
+
+def _encrypt_login_password(public_key: str, password: str) -> str:
+    try:
+        key = serialization.load_pem_public_key(public_key.encode("ascii"))
+        encrypted = key.encrypt(password.encode("utf-8"), padding.PKCS1v15())
+    except Exception as exc:
+        raise SalesContractSourceError("auth_unavailable", "统一认证密码加密失败") from exc
+    return base64.b64encode(encrypted).decode("ascii")
+
+
+class JianlongPasswordAuthProvider:
+    """Use the confirmed Jianlong SSO password flow without persisting credentials."""
+
+    def __init__(self, username: str, password: str, *, http: Any = None, timeout_seconds: float = 30):
+        self._username = username.strip()
+        self._password = password
+        self.http = http or requests.Session()
+        self.timeout_seconds = timeout_seconds
+        self._token: Optional[str] = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _json(response: Any) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise SalesContractSourceError("auth_unavailable", "统一认证响应无效") from exc
+        if not isinstance(payload, dict):
+            raise SalesContractSourceError("auth_unavailable", "统一认证响应无效")
+        return payload
+
+    @staticmethod
+    def _check_http(response: Any) -> None:
+        if int(getattr(response, "status_code", 200)) >= 400:
+            raise SalesContractSourceError("auth_unavailable", "统一认证请求失败")
+
+    def _login(self) -> str:
+        if not self._username or not self._password:
+            raise SalesContractSourceError("auth_unavailable", "个人账号认证未配置")
+        try:
+            clear_cookies = getattr(getattr(self.http, "cookies", None), "clear", None)
+            if callable(clear_cookies):
+                clear_cookies()
+            login_page = self.http.get(
+                f"{JIANLONG_AUTH_BASE_URL}/login",
+                params={"appId": JIANLONG_TDS_APP_ID, "redirectUri": JIANLONG_TDS_REDIRECT_URI},
+                timeout=self.timeout_seconds,
+            )
+            self._check_http(login_page)
+            inputs, public_key = _parse_login_contract(str(getattr(login_page, "text", "")))
+            password = _encrypt_login_password(public_key, self._password)
+            login_response = self.http.post(
+                f"{JIANLONG_AUTH_BASE_URL}/login/pwd",
+                json={
+                    "redirectUri": inputs["redirectUri"],
+                    "appId": inputs["appId"],
+                    "companyId": inputs["companyId"],
+                    "username": self._username,
+                    "password": password,
+                },
+                timeout=self.timeout_seconds,
+            )
+            self._check_http(login_response)
+            login_payload = self._json(login_response)
+            if str(login_payload.get("code")) != "200" or not isinstance(login_payload.get("data"), str):
+                raise SalesContractSourceError("auth_unavailable", "个人账号认证失败")
+            code = parse_qs(urlparse(login_payload["data"]).query).get("code", [""])[0]
+            if not code:
+                raise SalesContractSourceError("auth_unavailable", "统一认证未返回登录票据")
+            token_response = self.http.get(
+                f"{JIANLONG_AUTH_BASE_URL}/login",
+                params={"code": code},
+                timeout=self.timeout_seconds,
+            )
+            self._check_http(token_response)
+            token_payload = self._json(token_response)
+            token = token_payload.get("data")
+            if str(token_payload.get("code")) != "200" or not isinstance(token, str) or not token:
+                raise SalesContractSourceError("auth_unavailable", "统一认证未返回访问令牌")
+            return token
+        except SalesContractSourceError:
+            raise
+        except Exception as exc:
+            raise SalesContractSourceError("auth_unavailable", "统一认证请求失败") from exc
+
+    def __call__(self) -> dict[str, str]:
+        with self._lock:
+            if not self._token:
+                self._token = self._login()
+            return {"Authorization": f"Bearer {self._token}"}
+
+    def refresh(self) -> dict[str, str]:
+        with self._lock:
+            self._token = self._login()
+            return {"Authorization": f"Bearer {self._token}"}
 
 
 def build_candidate_request_body(report_date: Any, *, page_no: int = 1, page_size: int = 20) -> dict[str, Any]:
@@ -230,7 +384,12 @@ class ProfiledSalesContractSource(SalesContractSource):
                 profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise SalesContractSourceError("auth_unavailable", "source profile 读取失败") from exc
-        # 不从环境变量读取或拼装未验证的 cookie/header；认证 provider 需由部署代码显式注入。
+        username = (os.getenv("SPOT_LEDGER_SOURCE_USERNAME") or "").strip()
+        password = os.getenv("SPOT_LEDGER_SOURCE_PASSWORD") or ""
+        if username and password:
+            session = requests.Session()
+            provider = JianlongPasswordAuthProvider(username, password, http=session)
+            return cls(profile, http=session, auth_provider=provider)
         return cls(profile)
 
     def _validate_profile(self) -> None:
@@ -265,6 +424,14 @@ class ProfiledSalesContractSource(SalesContractSource):
         body[params_key] = json.dumps(params, ensure_ascii=False, separators=(",", ":")) if params_was_string else params
         return body
 
+    @staticmethod
+    def _needs_reauthentication(response: Any) -> bool:
+        if getattr(response, "status_code", 200) in {401, 403}:
+            return True
+        response_url = str(getattr(response, "url", ""))
+        parsed = urlparse(response_url)
+        return parsed.hostname == "server-auth.ejianlong.com" and parsed.path.rstrip("/") == "/login"
+
     def _fetch_page(self, request_body: dict[str, Any]) -> tuple[list[dict[str, Any]], int, int]:
         try:
             headers = self.auth_provider() or {}
@@ -274,11 +441,20 @@ class ProfiledSalesContractSource(SalesContractSource):
                 headers=headers,
                 timeout=float(self.profile.get("timeout_seconds", 30)),
             )
+            if self._needs_reauthentication(response):
+                refresh = getattr(self.auth_provider, "refresh", None)
+                if callable(refresh):
+                    response = self.http.post(
+                        self.profile["url"],
+                        json=request_body,
+                        headers=refresh() or {},
+                        timeout=float(self.profile.get("timeout_seconds", 30)),
+                    )
         except SalesContractSourceError:
             raise
         except Exception as exc:
             raise SalesContractSourceError("source_request", "真实源请求失败") from exc
-        if getattr(response, "status_code", 200) in {401, 403}:
+        if self._needs_reauthentication(response):
             raise SalesContractSourceError("auth_unavailable", "真实源认证失败")
         if getattr(response, "status_code", 200) >= 400:
             raise SalesContractSourceError("source_request", "真实源返回错误")
@@ -513,6 +689,18 @@ def due_spot_ledger_slots(now: datetime, attempted_slots: Optional[set[str]] = N
     ]
 
 
+def scheduler_due_slots(now: datetime, attempted_slots: set[str], *, startup: bool) -> list[str]:
+    current = _now(now)
+    due = due_spot_ledger_slots(current, attempted_slots)
+    if current.hour > SPOT_LEDGER_SYNC_TIMES[-1].hour:
+        attempted_slots.update(due)
+        return []
+    if startup and due:
+        attempted_slots.update(due[:-1])
+        return due[-1:]
+    return due
+
+
 def _source_from_env() -> SalesContractSource:
     mode = (os.getenv("SPOT_LEDGER_SOURCE_MODE") or "profiled_http").strip().lower()
     if mode == "fixture":
@@ -543,15 +731,17 @@ def run_spot_ledger_sync_once(slot_key: str, source: Optional[SalesContractSourc
 
 def _scheduler_loop(interval_seconds: int) -> None:
     attempted: set[str] = set()
+    startup = True
     while True:
         current = _now()
-        for slot_key in due_spot_ledger_slots(current, attempted):
+        for slot_key in scheduler_due_slots(current, attempted, startup=startup):
             attempted.add(slot_key)
             try:
                 run_spot_ledger_sync_once(slot_key)
             except Exception:
                 # 错误已写入 sync_runs；调度线程继续等待下一 slot。
                 pass
+        startup = False
         cutoff = (current.date().toordinal() - 3)
         attempted = {slot for slot in attempted if datetime.fromisoformat(slot).date().toordinal() >= cutoff}
         time.sleep(max(1, interval_seconds))

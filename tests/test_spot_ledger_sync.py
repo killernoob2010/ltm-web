@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from datetime import datetime
@@ -103,9 +104,239 @@ def test_unattended_source_without_profile_is_explicitly_blocked(monkeypatch):
     from app.spot_ledger_sync import ProfiledSalesContractSource, SalesContractSourceError
 
     monkeypatch.delenv("SPOT_LEDGER_SOURCE_PROFILE", raising=False)
+    monkeypatch.delenv("SPOT_LEDGER_SOURCE_USERNAME", raising=False)
+    monkeypatch.delenv("SPOT_LEDGER_SOURCE_PASSWORD", raising=False)
     source = ProfiledSalesContractSource.from_env()
     with pytest.raises(SalesContractSourceError, match="auth_unavailable"):
         source.fetch_full_scan()
+
+
+def test_password_auth_uses_official_rsa_code_exchange_and_caches_bearer_token():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    from app.spot_ledger_sync import JianlongPasswordAuthProvider
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_pem = private_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    public_key_expression = " +\n".join(repr(line) for line in public_pem.splitlines(keepends=True))
+    login_html = f"""
+        <form>
+          <input name="redirectUri" value="https://tds.ejianlong.com/">
+          <input name="appId" value="confirmed-app-id">
+          <input name="companyId" value="">
+        </form>
+        <script>var publicKey = {public_key_expression};</script>
+    """
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, *, text="", payload=None):
+            self.text = text
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+            self.cookies = type("CookieJar", (), {"clear_calls": 0})()
+            self.cookies.clear = lambda: setattr(
+                self.cookies, "clear_calls", self.cookies.clear_calls + 1
+            )
+
+        def get(self, url, **kwargs):
+            self.calls.append(("GET", url, kwargs))
+            if kwargs.get("params", {}).get("code"):
+                return Response(payload={"code": 200, "data": "bearer-token"})
+            return Response(text=login_html)
+
+        def post(self, url, **kwargs):
+            self.calls.append(("POST", url, kwargs))
+            return Response(
+                payload={
+                    "code": 200,
+                    "data": "https://tds.ejianlong.com/?code=one-time-code#/sign/saleContract",
+                }
+            )
+
+    session = Session()
+    provider = JianlongPasswordAuthProvider("employee-id", "personal-password", http=session)
+
+    assert provider() == {"Authorization": "Bearer bearer-token"}
+    assert provider() == {"Authorization": "Bearer bearer-token"}
+    assert len(session.calls) == 3
+    password_payload = session.calls[1][2]["json"]["password"]
+    decrypted = private_key.decrypt(base64.b64decode(password_payload), padding.PKCS1v15())
+    assert decrypted == b"personal-password"
+    assert session.calls[1][2]["json"]["username"] == "employee-id"
+    assert session.calls[2][2]["params"] == {"code": "one-time-code"}
+    assert "personal-password" not in repr(session.calls)
+    assert session.cookies.clear_calls == 1
+    assert provider.refresh() == {"Authorization": "Bearer bearer-token"}
+    assert session.cookies.clear_calls == 2
+
+
+def test_password_auth_errors_never_expose_credentials_or_source_response():
+    from app.spot_ledger_sync import JianlongPasswordAuthProvider, SalesContractSourceError
+
+    class Response:
+        status_code = 503
+        text = "personal-password bearer-token"
+
+        def json(self):
+            return {"code": 503, "msg": self.text}
+
+    class Session:
+        def get(self, _url, **_kwargs):
+            return Response()
+
+    provider = JianlongPasswordAuthProvider("employee-id", "personal-password", http=Session())
+
+    with pytest.raises(SalesContractSourceError) as error:
+        provider()
+    assert "personal-password" not in str(error.value)
+    assert "bearer-token" not in str(error.value)
+
+
+def test_profiled_source_from_env_uses_one_session_for_login_and_report(monkeypatch):
+    from app import spot_ledger_sync as sync
+
+    session = object()
+    monkeypatch.setenv("SPOT_LEDGER_SOURCE_USERNAME", "employee-id")
+    monkeypatch.setenv("SPOT_LEDGER_SOURCE_PASSWORD", "personal-password")
+    monkeypatch.delenv("SPOT_LEDGER_SOURCE_PROFILE", raising=False)
+    monkeypatch.setattr(sync.requests, "Session", lambda: session)
+
+    source = sync.ProfiledSalesContractSource.from_env()
+
+    assert source.http is session
+    assert isinstance(source.auth_provider, sync.JianlongPasswordAuthProvider)
+
+
+@pytest.mark.parametrize(
+    ("expired_status", "expired_url"),
+    [
+        (401, "https://tds-report.ejianlong.com/jmreport/show"),
+        (200, "https://server-auth.ejianlong.com/login?appId=confirmed-app-id"),
+    ],
+)
+def test_profiled_source_reauthenticates_once_after_bearer_expiry(expired_status, expired_url):
+    from app.spot_ledger_sync import ProfiledSalesContractSource, build_candidate_source_profile
+
+    class Response:
+        def __init__(self, status_code, payload=None, *, url="https://tds-report.ejianlong.com/jmreport/show"):
+            self.status_code = status_code
+            self.payload = payload or {}
+            self.url = url
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, _url, **kwargs):
+            self.calls.append(kwargs["headers"])
+            if len(self.calls) == 1:
+                return Response(expired_status, url=expired_url)
+            row = {
+                "销售合同商品明细id": "DETAIL-1",
+                "期现货": "现货",
+                "合同状态": "生效",
+                "量归属组": "大客户组",
+                "业务毛利归属组": "大客户组",
+                "业务类别": "B07",
+                "公司": "操作抬头",
+                "资源日期": "2026-08-20",
+                "物资名称": "铁矿石",
+                "合同卸货港": "曹妃甸港",
+                "定价模式": "固定价",
+                "中文船名": "",
+                "合同数量": 100,
+                "结算数量": None,
+                "结案状态": "未结案",
+                "资源单单价": 700,
+                "资源方": "供应商",
+                "资源业务员": "采购员",
+                "初始资源单创建人": "执行员",
+                "签订日期": "2026-08-21",
+                "合同单价": 750,
+                "需求方": "客户",
+                "销售合同号": "XS-1",
+                "需求业务员": "销售员",
+                "合同创建人": "销售执行员",
+            }
+            return Response(
+                200,
+                {
+                    "code": 200,
+                    "result": {
+                        "dataList": {
+                            "TJJLYSHZ": {"list": [row], "count": 1, "total": 1}
+                        }
+                    },
+                },
+            )
+
+    class Provider:
+        def __init__(self):
+            self.refresh_count = 0
+
+        def __call__(self):
+            return {"Authorization": "Bearer old-token"}
+
+        def refresh(self):
+            self.refresh_count += 1
+            return {"Authorization": "Bearer new-token"}
+
+    http = Http()
+    provider = Provider()
+    source = ProfiledSalesContractSource(
+        build_candidate_source_profile("2026-08-25", page_size=1),
+        http=http,
+        auth_provider=provider,
+    )
+
+    scan = source.fetch_full_scan()
+
+    assert scan.complete is True
+    assert provider.refresh_count == 1
+    assert http.calls == [
+        {"Authorization": "Bearer old-token"},
+        {"Authorization": "Bearer new-token"},
+    ]
+
+
+def test_scheduler_startup_uses_only_latest_due_hour():
+    from app.spot_ledger_sync import scheduler_due_slots
+
+    now = datetime.fromisoformat("2026-08-24T18:15:42+08:00")
+    attempted = set()
+    latest = scheduler_due_slots(now, attempted, startup=True)
+    assert latest == ["2026-08-24T18:00+08:00"]
+    assert len(attempted) == 9
+    attempted.update(latest)
+    assert scheduler_due_slots(now, attempted, startup=False) == []
+    assert len(scheduler_due_slots(now, set(), startup=False)) == 10
+
+
+def test_scheduler_startup_after_sync_window_does_not_run_catch_up():
+    from app.spot_ledger_sync import scheduler_due_slots
+
+    attempted = set()
+    assert scheduler_due_slots(
+        datetime.fromisoformat("2026-08-24T19:00:00+08:00"),
+        attempted,
+        startup=True,
+    ) == []
+    assert len(attempted) == 10
 
 
 def test_confirmed_candidate_request_body_matches_observed_contract():
