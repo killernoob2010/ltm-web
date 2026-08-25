@@ -108,6 +108,190 @@ def test_unattended_source_without_profile_is_explicitly_blocked(monkeypatch):
         source.fetch_full_scan()
 
 
+def test_confirmed_candidate_request_body_matches_observed_contract():
+    from app.spot_ledger_sync import build_candidate_request_body
+
+    body = build_candidate_request_body("2026-08-24", page_no=1, page_size=20)
+    assert body == {
+        "id": "1055351755192311808",
+        "apiUrl": "",
+        "params": json.dumps(
+            {
+                "pageNo": 1,
+                "periodDate": "2026-08-24",
+                "releaseDate": "2026-08-24",
+                "TJJLYSHZ__期现货": "现货",
+                "TJJLYSHZ__合同状态": "生效",
+                "TJJLYSHZ__业务毛利归属组": "大客户组,东北组,山东组,黄骅组,天津组,唐山组,南方组",
+                "pageSize": "20",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    }
+
+
+def test_profiled_source_paginates_confirmed_json_request_without_guessing_response_shape():
+    from app.spot_ledger_sync import CANDIDATE_SOURCE_URL, ProfiledSalesContractSource, build_candidate_request_body
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, rows):
+            self.rows = rows
+
+        def json(self):
+            return {"result": {"rows": self.rows, "total": 2, "pageCount": 2}}
+
+    class Http:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, **kwargs):
+            request_body = kwargs["json"]
+            self.calls.append({"url": url, "json": request_body, "headers": kwargs["headers"], "timeout": kwargs["timeout"]})
+            params = json.loads(request_body["params"])
+            row = {
+                "detail_id": f"D{params['pageNo']}",
+                "spot_type": "现货",
+                "contract_status": "生效",
+                "quantity_group": "大客户组",
+                "profit_group": "大客户组",
+                "contract_number": f"C-{params['pageNo']}",
+                "product_name": "铁矿石",
+                "signed_date": "2026-08-20",
+                "resource_date": "2026-08-15",
+                "contract_quantity": 100,
+                "business_category_code": "B07",
+            }
+            return Response([row])
+
+    http = Http()
+    profile = {
+        "url": CANDIDATE_SOURCE_URL,
+        "request_body": build_candidate_request_body("2026-08-24", page_no=1, page_size=1),
+        "records_path": "result.rows",
+        "total_path": "result.total",
+        "page_count_path": "result.pageCount",
+        "field_map": {
+            "detail_id": "detail_id",
+            "spot_type": "spot_type",
+            "contract_status": "contract_status",
+            "quantity_group": "quantity_group",
+            "profit_group": "profit_group",
+            "contract_number": "contract_number",
+            "product_name": "product_name",
+            "signed_date": "signed_date",
+            "resource_date": "resource_date",
+            "contract_quantity": "contract_quantity",
+            "business_category_code": "business_category_code",
+        },
+        "pagination": {
+            "params_key": "params",
+            "page_number_key": "pageNo",
+            "page_size_key": "pageSize",
+        },
+    }
+    source = ProfiledSalesContractSource(profile, http=http, auth_provider=lambda: {"X-Test": "fixture"})
+
+    scan = source.fetch_full_scan()
+
+    assert scan.complete is True
+    assert scan.source_mode == "profiled_http"
+    assert scan.total_count == 2
+    assert [record["source_detail_id"] for record in scan.records] == ["D1", "D2"]
+    assert [json.loads(call["json"]["params"])["pageNo"] for call in http.calls] == [1, 2]
+    assert all(call["url"] == CANDIDATE_SOURCE_URL for call in http.calls)
+
+
+def test_confirmed_profile_reads_observed_jmreport_shape_and_maps_system_fields():
+    from app.spot_ledger_sync import ProfiledSalesContractSource, build_candidate_source_profile
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, page_no):
+            self.page_no = page_no
+
+        def json(self):
+            row = {
+                "销售合同商品明细id": f"REAL-{self.page_no}",
+                "期现货": "现货",
+                "合同状态": "生效",
+                "量归属组": "山东组",
+                "业务毛利归属组": "唐山组",
+                "业务类别": "贸易-代理落地-B09",
+                "公司": "操作抬头A",
+                "资源日期": "2026-08-20 00:00:00",
+                "物资名称": "铁矿石",
+                "合同卸货港": "日照港",
+                "定价模式": "固定价",
+                "中文船名": "测试船",
+                "合同数量": "120.0000",
+                "结算数量": "100.0000",
+                "结案状态": "已结案",
+                "资源单单价": "770.50",
+                "资源方": "供应商A",
+                "资源业务员": "采购业务员",
+                "初始资源单创建人": "采购执行员",
+                "签订日期": "2026-08-21 00:00:00",
+                "合同单价": "820.25",
+                "需求方": "签约客户",
+                "销售合同号": f"XS-{self.page_no}",
+                "需求业务员": "销售业务员",
+                "合同创建人": "920109_销售执行员",
+            }
+            return {
+                "success": True,
+                "message": "",
+                "code": 200,
+                "result": {
+                    "id": "1055351755192311808",
+                    "dataList": {
+                        "expData": {},
+                        "replaceParams": {"pageNo": self.page_no, "pageSize": 1},
+                        "TJJLYSHZ": {
+                            "total": 2,
+                            "count": 2,
+                            "isPage": "1",
+                            "isList": "1",
+                            "dbType": "mysql",
+                            "list": [row],
+                            "linkList": None,
+                        },
+                    },
+                },
+                "timestamp": 1787587200000,
+            }
+
+    class Http:
+        def post(self, _url, **kwargs):
+            page_no = json.loads(kwargs["json"]["params"])["pageNo"]
+            return Response(page_no)
+
+    profile = build_candidate_source_profile("2026-08-25", page_size=1)
+    source = ProfiledSalesContractSource(profile, http=Http(), auth_provider=lambda: {"X-Test-Auth": "fixture"})
+
+    scan = source.fetch_full_scan()
+
+    assert scan.complete is True
+    assert scan.total_count == 2
+    assert scan.page_count == 2
+    assert [record["source_detail_id"] for record in scan.records] == ["REAL-1", "REAL-2"]
+    first = scan.records[0]
+    assert first["D"] == "船货-落地"
+    assert first["E"] == "山东组" and first["AP"] == "唐山组" and first["AQ"] == "是"
+    assert first["F"] == "操作抬头A"
+    assert first["G"] == "2026-08-20" and first["U"] == "2026-08-21"
+    assert first["H"] == "铁矿石" and first["I"] == "日照港" and first["J"] == "固定价"
+    assert first["K"] == "测试船" and first["L"] == first["X"] == 100
+    assert first["M"] == 770.5 and first["Z"] == 820.25
+    assert first["Q"] == "供应商A" and first["S"] == "采购业务员" and first["T"] == "采购执行员"
+    assert first["AB"] == "签约客户" and first["AD"] == "XS-1"
+    assert first["AF"] == "销售业务员" and first["AG"] == "销售执行员"
+    assert first["source_closed_state"] == "已结案"
+
+
 def test_due_slots_are_daily_nine_to_eighteen_and_second_free():
     from app.spot_ledger_sync import due_spot_ledger_slots
 

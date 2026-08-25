@@ -68,6 +68,29 @@ def test_system_conversion_preserves_unknown_type_and_normalizes_placeholders():
     assert any(error["type"] == "conversion_mapping" for error in record["sync_errors"])
 
 
+@pytest.mark.parametrize(
+    ("source_category", "expected_type"),
+    [
+        ("贸易-港口现货-市场加价-B07", "现货-市场加价"),
+        ("贸易-港口现货-背对背-B06", "现货-背对背"),
+        ("贸易-代理落地-B09", "船货-落地"),
+        ("贸易-落地-固定价-B05", "船货-落地"),
+    ],
+)
+def test_confirmed_source_business_categories_map_without_false_sync_errors(source_category, expected_type):
+    from app.spot_ledger import normalize_sales_contract_record
+
+    record = normalize_sales_contract_record({
+        "detail_id": "D-SOURCE", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组",
+        "contract_number": "C-SOURCE", "product_name": "铁矿石", "signed_date": "2026-08-25",
+        "contract_quantity": "20", "business_category_code": source_category,
+    })
+
+    assert record["D"] == expected_type
+    assert not any(error["type"] == "conversion_mapping" and error["field"] == "D" for error in record["sync_errors"])
+
+
 def test_schema_is_idempotent_and_contains_all_business_columns(tmp_path, monkeypatch):
     from app import db
     from app.spot_ledger import FIELD_DEFINITIONS, initialize_schema
@@ -80,7 +103,9 @@ def test_schema_is_idempotent_and_contains_all_business_columns(tmp_path, monkey
         initialize_schema(conn)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(spot_ledger_records)").fetchall()}
     assert {item["code"] for item in FIELD_DEFINITIONS}.issubset(columns)
-    assert {"record_id", "source_detail_id", "is_active", "missing_fields", "sync_error_summary"}.issubset(columns)
+    assert {
+        "record_id", "source_detail_id", "source_closed_state", "is_active", "missing_fields", "sync_error_summary",
+    }.issubset(columns)
 
 
 def test_spot_ledger_is_a_visible_trade_module_with_sensitive_admin_permission(tmp_path, monkeypatch):

@@ -36,6 +36,10 @@ SALES_TYPE_MAP = {
     "B06": "现货-背对背",
     "B09": LAND_SALES_TYPE,
     "B05": LAND_SALES_TYPE,
+    "贸易-港口现货-市场加价-B07": "现货-市场加价",
+    "贸易-港口现货-背对背-B06": "现货-背对背",
+    "贸易-代理落地-B09": LAND_SALES_TYPE,
+    "贸易-落地-固定价-B05": LAND_SALES_TYPE,
 }
 PLACEHOLDER_VALUES = {"--", "***", "---", "**", "****", "—", "——"}
 NUMERIC_FIELDS = {"L", "M", "N", "O", "X", "Y", "Z", "AA", "AH", "AI", "AJ", "AK", "AL"}
@@ -45,7 +49,7 @@ MANUAL_FIELDS = {
 }
 SYSTEM_PRIORITY_FIELDS = {"K"}
 TECHNICAL_FIELDS = (
-    "source_detail_id", "record_source_type", "is_active", "supplement_status", "missing_fields",
+    "source_detail_id", "source_closed_state", "record_source_type", "is_active", "supplement_status", "missing_fields",
     "sync_status", "last_synced_at", "sync_error_summary", "strategic_hedging_id",
 )
 
@@ -269,6 +273,7 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
 
     signed_date = _normalize_date(_value(raw, "signed_date", "sales_date"))
     purchase_date = _normalize_date(_value(raw, "resource_date", "purchase_date"))
+    source_closed_state = "已结案" if _is_true(_value(raw, "is_closed", "closed")) else "未结案"
     quantity = _quantity(raw)
     category_raw = _text(_value(raw, "product_category", "product_name"))
     category_mapping = mappings.get("product_category", DEFAULT_NAME_MAPPINGS["product_category"])
@@ -328,6 +333,7 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
         "AY": _text(_value(raw, "customer_nature_check", "AY")),
         "long_contract_object": _text(_value(raw, "long_contract_object")),
         "source_detail_id": detail_id,
+        "source_closed_state": source_closed_state,
         "eligible": _text(_value(raw, "spot_type", "trade_type")) == "现货"
         and _text(_value(raw, "contract_status", "status")) == "生效"
         and quantity_group in SHANGHAI_GROUPS,
@@ -386,6 +392,7 @@ def initialize_schema(conn) -> None:
         CREATE TABLE IF NOT EXISTS spot_ledger_records (
             record_id TEXT PRIMARY KEY,
             source_detail_id TEXT UNIQUE,
+            source_closed_state TEXT NOT NULL DEFAULT '未结案',
             record_source_type TEXT NOT NULL DEFAULT '现货同步',
 {field_sql},
             long_contract_object TEXT,
@@ -419,6 +426,12 @@ def initialize_schema(conn) -> None:
         )
         """
     )
+    if db._is_pg():
+        cur.execute("ALTER TABLE spot_ledger_records ADD COLUMN IF NOT EXISTS source_closed_state TEXT NOT NULL DEFAULT '未结案'")
+    else:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(spot_ledger_records)").fetchall()}
+        if "source_closed_state" not in columns:
+            conn.execute("ALTER TABLE spot_ledger_records ADD COLUMN source_closed_state TEXT NOT NULL DEFAULT '未结案'")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS spot_ledger_sync_runs (
@@ -518,17 +531,17 @@ def _record_query_conditions(params: dict[str, Any], include_inactive: bool = Fa
         "sales_group": "\"E\"", "profit_group": "\"AP\"", "sales_type": "\"D\"",
         "product_name": "\"H\"", "port": "\"I\"", "operation_title": "\"F\"",
         "supplier": "\"Q\"", "customer": "\"AB\"", "contract_number": "\"AD\"",
-        "purchase_execution": "\"T\"", "sales_execution": "\"AG\"", "closed_state": "eligible",
+        "purchase_execution": "\"T\"", "sales_execution": "\"AG\"",
     }
     for key, column in mapping.items():
         value = _text(params.get(key))
         if value:
-            if key == "closed_state":
-                conditions.append("eligible = ?")
-                values.append(1 if value in {"已结案", "是", "1", "true"} else 0)
-            else:
-                conditions.append(f"{column} LIKE ?")
-                values.append(f"%{value}%")
+            conditions.append(f"{column} LIKE ?")
+            values.append(f"%{value}%")
+    closed_state = _text(params.get("closed_state"))
+    if closed_state:
+        conditions.append("source_closed_state = ?")
+        values.append("已结案" if closed_state in {"已结案", "结案", "是", "1", "true"} else "未结案")
     for key, column in (("from_date", '"U"'), ("to_date", '"U"')):
         value = _normalize_date(params.get(key))
         if value:

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=inline-edit-20260824" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
@@ -455,34 +455,49 @@
               <h2>筛选条件</h2>
               <span>默认仅显示当前有效的现货生效明细</span>
             </div>
-            <form id="spotLedgerFilterForm" class="spot-ledger-filter-grid">
-              <label>销售日期起<input name="from_date" type="date"></label>
-              <label>销售日期止<input name="to_date" type="date"></label>
-              <label>销售组别<select name="sales_group"><option value="">全部</option><option>大客户组</option><option>东北组</option><option>山东组</option><option>黄骅组</option><option>天津组</option><option>唐山组</option><option>南方组</option></select></label>
-              <label>利润组别<select name="profit_group"><option value="">全部</option><option>大客户组</option><option>东北组</option><option>山东组</option><option>黄骅组</option><option>天津组</option><option>唐山组</option><option>南方组</option></select></label>
-              <label>销售类型<select name="sales_type"><option value="">全部</option><option>现货-市场加价</option><option>现货-背对背</option><option>船货-落地</option></select></label>
-              <label>商品<input name="product_name" placeholder="商品名称"></label>
-              <label>港口<input name="port" placeholder="港口"></label>
-              <label>操作抬头<input name="operation_title" placeholder="操作抬头"></label>
-              <label>供应商<input name="supplier" placeholder="供应商"></label>
-              <label>客户<input name="customer" placeholder="合同签约客户"></label>
-              <label>销售合同号<input name="contract_number" placeholder="合同号"></label>
-              <label>采购执行<input name="purchase_execution" placeholder="采购执行"></label>
-              <label>销售执行<input name="sales_execution" placeholder="销售执行"></label>
-              <label>采购数量<input name="purchase_quantity" type="number" step="0.01"></label>
-              <label>销售数量<input name="sales_quantity" type="number" step="0.01"></label>
-              <label>结案状态<select name="closed_state"><option value="">全部</option><option value="已结案">已结案</option><option value="未结案">未结案</option></select></label>
-              <label>补录状态<select name="supplement_status"><option value="">全部</option><option>已完成</option><option>待补录</option></select></label>
-              <label>同步异常<select name="sync_error"><option value="">全部</option><option value="true">仅异常</option></select></label>
-              <div class="spot-ledger-filter-actions"><button type="submit">查询</button><button id="spotLedgerResetBtn" type="button" class="secondary">重置</button></div>
+            <form id="spotLedgerFilterForm" class="spot-ledger-filter-form">
+              <div id="spotLedgerPrimaryFilters" class="spot-ledger-filter-grid spot-ledger-filter-primary">
+                <label>销售组别<select name="sales_group"><option value="">全部</option><option>大客户组</option><option>东北组</option><option>山东组</option><option>黄骅组</option><option>天津组</option><option>唐山组</option><option>南方组</option></select></label>
+                <label>利润组别<select name="profit_group"><option value="">全部</option><option>大客户组</option><option>东北组</option><option>山东组</option><option>黄骅组</option><option>天津组</option><option>唐山组</option><option>南方组</option></select></label>
+                <label>销售类型<select name="sales_type"><option value="">全部</option><option>现货-市场加价</option><option>现货-背对背</option><option>船货-落地</option></select></label>
+                <label>补录状态<select name="supplement_status"><option value="">全部</option><option>已完成</option><option>待补录</option></select></label>
+              </div>
+              <div id="spotLedgerAdvancedFilters" class="spot-ledger-filter-grid spot-ledger-filter-advanced hidden">
+                <label>销售日期起<input name="from_date" type="date"></label>
+                <label>销售日期止<input name="to_date" type="date"></label>
+                <label>商品<input name="product_name" placeholder="商品名称"></label>
+                <label>港口<input name="port" placeholder="港口"></label>
+                <label>操作抬头<input name="operation_title" placeholder="操作抬头"></label>
+                <label>供应商<input name="supplier" placeholder="供应商"></label>
+                <label>客户<input name="customer" placeholder="合同签约客户"></label>
+                <label>销售合同号<input name="contract_number" placeholder="合同号"></label>
+                <label>采购执行<input name="purchase_execution" placeholder="采购执行"></label>
+                <label>销售执行<input name="sales_execution" placeholder="销售执行"></label>
+                <label>采购数量<input name="purchase_quantity" type="number" step="0.01"></label>
+                <label>销售数量<input name="sales_quantity" type="number" step="0.01"></label>
+                <label>结案状态<select name="closed_state"><option value="">全部</option><option value="已结案">已结案</option><option value="未结案">未结案</option></select></label>
+                <label>同步异常<select name="sync_error"><option value="">全部</option><option value="true">仅异常</option></select></label>
+              </div>
+              <div class="spot-ledger-filter-footer">
+                <div class="spot-ledger-filter-disclosure">
+                  <button id="spotLedgerToggleFiltersBtn" type="button" class="secondary" aria-expanded="false" aria-controls="spotLedgerAdvancedFilters">
+                    <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/></svg>
+                    <span id="spotLedgerToggleFiltersText">展开更多</span>
+                  </button>
+                  <span id="spotLedgerAdvancedFilterCount" class="spot-ledger-filter-count hidden" aria-live="polite"></span>
+                </div>
+                <div class="spot-ledger-filter-actions"><button type="submit">查询</button><button id="spotLedgerResetBtn" type="button" class="secondary">重置</button></div>
+              </div>
             </form>
           </section>
 
           <section class="panel spot-ledger-list-panel">
-            <div class="spot-ledger-tabs" role="tablist" aria-label="台账视图">
-              <button id="spotLedgerRecordsTab" class="spot-ledger-tab active" type="button" data-view="records">台账列表</button>
-              <button id="spotLedgerPendingTab" class="spot-ledger-tab" type="button" data-view="pending">待补录 <span id="spotLedgerPendingCount">0</span></button>
-              <button id="spotLedgerErrorsTab" class="spot-ledger-tab" type="button" data-view="errors">同步异常 <span id="spotLedgerErrorCount">0</span></button>
+            <div class="spot-ledger-tabs-row">
+              <div class="dv-tabs spot-ledger-tabs" role="tablist" aria-label="台账视图">
+                <button id="spotLedgerRecordsTab" class="dv-tab spot-ledger-tab active" type="button" role="tab" aria-selected="true" data-view="records">台账列表</button>
+                <button id="spotLedgerPendingTab" class="dv-tab spot-ledger-tab" type="button" role="tab" aria-selected="false" data-view="pending">待补录 <span id="spotLedgerPendingCount" class="spot-ledger-tab-count">0</span></button>
+                <button id="spotLedgerErrorsTab" class="dv-tab spot-ledger-tab" type="button" role="tab" aria-selected="false" data-view="errors">同步异常 <span id="spotLedgerErrorCount" class="spot-ledger-tab-count">0</span></button>
+              </div>
               <span id="spotLedgerListStatus" class="toolbar-status"></span>
             </div>
             <div class="table-wrap spot-ledger-table-wrap">
@@ -493,13 +508,45 @@
             </div>
           </section>
 
-          <section id="spotLedgerDetail" class="panel spot-ledger-detail hidden">
-            <div class="panel-head"><h2>记录详情</h2><button id="spotLedgerCloseDetailBtn" type="button" class="secondary">关闭详情</button></div>
-            <div id="spotLedgerDetailMeta" class="spot-ledger-detail-meta"></div>
-            <div id="spotLedgerFieldDefinitions" class="spot-ledger-field-grid"></div>
-            <form id="spotLedgerEditForm" class="spot-ledger-edit-form hidden"></form>
-            <div class="spot-ledger-detail-actions"><button id="spotLedgerEditBtn" type="button" class="secondary hidden">编辑人工字段</button><span id="spotLedgerEditStatus" class="toolbar-status"></span></div>
-          </section>
+          <dialog id="spotLedgerDetail" class="spot-ledger-detail" aria-labelledby="spotLedgerDetailTitle">
+            <div class="spot-ledger-detail-shell">
+              <div class="spot-ledger-detail-head">
+                <div>
+                  <h2 id="spotLedgerDetailTitle">记录详情</h2>
+                  <span id="spotLedgerEditStatus" class="toolbar-status"></span>
+                </div>
+                <div class="row-actions">
+                  <button id="spotLedgerCloseDetailBtn" type="button" class="secondary">关闭</button>
+                </div>
+              </div>
+              <div class="spot-ledger-detail-body">
+                <div id="spotLedgerDetailMeta" class="spot-ledger-detail-meta"></div>
+                <section class="spot-ledger-detail-section">
+                  <div class="spot-ledger-detail-section-head">
+                    <div>
+                      <h3>系统已带出内容</h3>
+                      <p>仅展示本条记录已有的系统或计算结果</p>
+                    </div>
+                    <span id="spotLedgerSystemCount" class="spot-ledger-detail-count"></span>
+                  </div>
+                  <div id="spotLedgerSystemFields" class="spot-ledger-system-list"></div>
+                </section>
+                <section class="spot-ledger-detail-section">
+                  <div class="spot-ledger-detail-section-head">
+                    <div>
+                      <h3>待录入内容</h3>
+                      <p>空白项保留录入位置，已有人工值仍会保留显示</p>
+                      </div>
+                    <span id="spotLedgerManualHint" class="spot-ledger-detail-count"></span>
+                  </div>
+                  <form id="spotLedgerEditForm" class="spot-ledger-inline-edit-form" aria-label="待录入内容">
+                    <div id="spotLedgerManualFields" class="spot-ledger-manual-list"></div>
+                    <div id="spotLedgerEditActions" class="dialog-actions hidden"></div>
+                  </form>
+                </section>
+              </div>
+            </div>
+          </dialog>
 
           <dialog id="spotLedgerStrategyDialog">
             <form id="spotLedgerStrategyForm" class="dialog-form">
@@ -1576,7 +1623,7 @@
     <script src="/static/trading_management.js?v=20260722d"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
-    <script src="/static/spot_ledger.js?v=spot-ledger-local-fixture-20260824"></script>
+    <script src="/static/spot_ledger.js?v=spot-ledger-inline-edit-20260824"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>

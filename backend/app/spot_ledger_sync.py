@@ -36,6 +36,34 @@ from .spot_ledger import (
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 SPOT_LEDGER_SYNC_TIMES = tuple(day_time(hour, 0) for hour in range(9, 19))
 CANDIDATE_SOURCE_URL = "https://tds-report.ejianlong.com/jmreport/show"
+CANDIDATE_REPORT_ID = "1055351755192311808"
+CONFIRMED_SOURCE_FIELD_MAP = {
+    "detail_id": "销售合同商品明细id",
+    "spot_type": "期现货",
+    "contract_status": "合同状态",
+    "quantity_group": "量归属组",
+    "profit_group": "业务毛利归属组",
+    "business_category_code": "业务类别",
+    "operation_title": "公司",
+    "resource_date": "资源日期",
+    "product_name": "物资名称",
+    "port": "合同卸货港",
+    "mode": "定价模式",
+    "vessel_name": "中文船名",
+    "contract_quantity": "合同数量",
+    "settlement_quantity": "结算数量",
+    "is_closed": "结案状态",
+    "purchase_price": "资源单单价",
+    "supplier": "资源方",
+    "purchase_business": "资源业务员",
+    "purchase_execution": "初始资源单创建人",
+    "signed_date": "签订日期",
+    "sales_price": "合同单价",
+    "demander": "需求方",
+    "contract_number": "销售合同号",
+    "sales_business": "需求业务员",
+    "sales_execution": "合同创建人",
+}
 _scheduler_lock = threading.Lock()
 _scheduler_started = False
 
@@ -61,6 +89,50 @@ class FullScanResult:
 class SalesContractSource:
     def fetch_full_scan(self) -> FullScanResult:
         raise NotImplementedError
+
+
+def build_candidate_request_body(report_date: Any, *, page_no: int = 1, page_size: int = 20) -> dict[str, Any]:
+    """Build the request body confirmed from the logged-in sales report page.
+
+    This contains only the non-secret report identifier and business filters. It does
+    not create or copy authentication material; the caller still needs an explicit,
+    supported auth provider before the HTTP adapter can run.
+    """
+    if page_no < 1 or page_size < 1:
+        raise ValueError("page_no 和 page_size 必须为正整数")
+    period_date = report_date.isoformat() if isinstance(report_date, (date, datetime)) else str(report_date)
+    params = {
+        "pageNo": page_no,
+        "periodDate": period_date,
+        "releaseDate": period_date,
+        "TJJLYSHZ__期现货": "现货",
+        "TJJLYSHZ__合同状态": "生效",
+        "TJJLYSHZ__业务毛利归属组": ",".join(SHANGHAI_GROUPS),
+        "pageSize": str(page_size),
+    }
+    return {
+        "id": CANDIDATE_REPORT_ID,
+        "apiUrl": "",
+        "params": json.dumps(params, ensure_ascii=False, separators=(",", ":")),
+    }
+
+
+def build_candidate_source_profile(report_date: Any, *, page_size: int = 20) -> dict[str, Any]:
+    """Return the request/response profile confirmed from the JSON report response."""
+    return {
+        "url": CANDIDATE_SOURCE_URL,
+        "request_body": build_candidate_request_body(report_date, page_no=1, page_size=page_size),
+        "records_path": "result.dataList.TJJLYSHZ.list",
+        "total_path": "result.dataList.TJJLYSHZ.count",
+        "page_count_path": "result.dataList.TJJLYSHZ.total",
+        "field_map": dict(CONFIRMED_SOURCE_FIELD_MAP),
+        "pagination": {
+            "params_key": "params",
+            "page_number_key": "pageNo",
+            "page_size_key": "pageSize",
+            "page_size": page_size,
+        },
+    }
 
 
 def _now(value: Optional[datetime] = None) -> datetime:
@@ -152,7 +224,7 @@ class ProfiledSalesContractSource(SalesContractSource):
     @classmethod
     def from_env(cls) -> "ProfiledSalesContractSource":
         profile_path = (os.getenv("SPOT_LEDGER_SOURCE_PROFILE") or "").strip()
-        profile: dict[str, Any] = {}
+        profile: dict[str, Any] = build_candidate_source_profile(datetime.now(SHANGHAI_TZ).date())
         if profile_path:
             try:
                 profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
@@ -162,19 +234,43 @@ class ProfiledSalesContractSource(SalesContractSource):
         return cls(profile)
 
     def _validate_profile(self) -> None:
-        required = ("request_body", "records_path", "total_path", "page_count_path", "field_map")
+        required = ("request_body", "records_path", "total_path", "page_count_path", "field_map", "pagination")
         if self.profile.get("url") != CANDIDATE_SOURCE_URL or any(key not in self.profile for key in required):
             raise SalesContractSourceError("auth_unavailable", "真实源 profile 或认证方式尚未确认")
         if not callable(self.auth_provider):
             raise SalesContractSourceError("auth_unavailable", "无人值守认证 provider 尚未提供")
+        pagination = self.profile.get("pagination")
+        if not isinstance(pagination, dict) or any(
+            not isinstance(pagination.get(key), str) or not pagination.get(key)
+            for key in ("params_key", "page_number_key", "page_size_key")
+        ):
+            raise SalesContractSourceError("auth_unavailable", "真实源分页 profile 尚未确认")
 
-    def fetch_full_scan(self) -> FullScanResult:
-        self._validate_profile()
+    def _request_body_for_page(self, page_no: int) -> dict[str, Any]:
+        body = json.loads(json.dumps(self.profile["request_body"], ensure_ascii=False))
+        pagination = self.profile["pagination"]
+        params_key = pagination["params_key"]
+        params = body.get(params_key)
+        params_was_string = isinstance(params, str)
+        if params_was_string:
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError as exc:
+                raise SalesContractSourceError("parse_error", "真实源分页参数不是有效 JSON") from exc
+        if not isinstance(params, dict):
+            raise SalesContractSourceError("parse_error", "真实源分页参数不是对象")
+        params[pagination["page_number_key"]] = page_no
+        if pagination.get("page_size") is not None:
+            params[pagination["page_size_key"]] = str(pagination["page_size"])
+        body[params_key] = json.dumps(params, ensure_ascii=False, separators=(",", ":")) if params_was_string else params
+        return body
+
+    def _fetch_page(self, request_body: dict[str, Any]) -> tuple[list[dict[str, Any]], int, int]:
         try:
             headers = self.auth_provider() or {}
             response = self.http.post(
                 self.profile["url"],
-                json=self.profile["request_body"],
+                json=request_body,
                 headers=headers,
                 timeout=float(self.profile.get("timeout_seconds", 30)),
             )
@@ -195,6 +291,9 @@ class ProfiledSalesContractSource(SalesContractSource):
             raise SalesContractSourceError("parse_error", "真实源响应不符合已确认 profile") from exc
         if not isinstance(external_records, list):
             raise SalesContractSourceError("parse_error", "真实源记录路径不是数组")
+        return external_records, total_count, page_count
+
+    def _normalize_external_records(self, external_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         field_map = self.profile["field_map"]
         if not isinstance(field_map, dict) or not field_map:
             raise SalesContractSourceError("auth_unavailable", "真实源字段映射尚未确认")
@@ -202,9 +301,30 @@ class ProfiledSalesContractSource(SalesContractSource):
         for external in external_records:
             if not isinstance(external, dict):
                 raise SalesContractSourceError("parse_error", "真实源记录不是对象")
-            standard_records.append({target: _extract_path(external, path) for target, path in field_map.items()})
+            try:
+                standard_records.append({target: _extract_path(external, path) for target, path in field_map.items()})
+            except (KeyError, TypeError) as exc:
+                raise SalesContractSourceError("parse_error", "真实源字段映射无法读取记录") from exc
         records = [normalize_sales_contract_record(item) for item in standard_records]
-        records = [item for item in records if item.get("eligible")]
+        return [item for item in records if item.get("eligible")]
+
+    def fetch_full_scan(self) -> FullScanResult:
+        self._validate_profile()
+        first_records, total_count, page_count = self._fetch_page(self._request_body_for_page(1))
+        if page_count < 1 or total_count < 0:
+            raise SalesContractSourceError("parse_error", "真实源分页统计值无效")
+        max_pages = int(self.profile.get("max_pages", 1000))
+        if page_count > max_pages:
+            raise SalesContractSourceError("parse_error", "真实源分页数超过安全上限")
+        external_records = list(first_records)
+        for page_no in range(2, page_count + 1):
+            page_records, page_total, page_count_again = self._fetch_page(self._request_body_for_page(page_no))
+            if page_total != total_count or page_count_again != page_count:
+                raise SalesContractSourceError("parse_error", "真实源分页统计在扫描过程中发生变化")
+            external_records.extend(page_records)
+        if len(external_records) != total_count:
+            raise SalesContractSourceError("parse_error", "真实源分页记录数与总数不一致")
+        records = self._normalize_external_records(external_records)
         return validate_full_scan(
             FullScanResult(
                 records=records,
@@ -264,7 +384,7 @@ def _merge_record(incoming: dict[str, Any], existing: Optional[dict[str, Any]]) 
 
 def _record_columns() -> list[str]:
     return [
-        "record_id", "source_detail_id", "record_source_type", *FIELD_CODES, "long_contract_object", "eligible",
+        "record_id", "source_detail_id", "source_closed_state", "record_source_type", *FIELD_CODES, "long_contract_object", "eligible",
         "is_active", "supplement_status", "missing_fields", "sync_status", "last_synced_at", "sync_error_summary",
         "source_payload_json", "source_mode",
     ]
@@ -274,6 +394,7 @@ def _record_values(record: dict[str, Any], *, existing: Optional[dict[str, Any]]
     serialized = dict(record)
     serialized["record_id"] = record.get("record_id") or _record_id(str(record["source_detail_id"]))
     serialized["source_detail_id"] = record.get("source_detail_id")
+    serialized["source_closed_state"] = record.get("source_closed_state") or "未结案"
     serialized["record_source_type"] = "现货同步"
     serialized["long_contract_object"] = record.get("long_contract_object") or ""
     missing = missing_required_fields(record)

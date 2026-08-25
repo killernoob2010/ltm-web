@@ -57,6 +57,18 @@ def test_records_support_combined_filters_and_expose_all_field_definitions(ledge
     assert [field["code"] for field in field_definitions(user=admin)["fields"]] == list(FIELD_CODES)
 
 
+def test_closed_state_filter_uses_source_settlement_state_instead_of_ledger_eligibility(ledger_context):
+    from app.spot_ledger import get_records
+
+    admin, _ = ledger_context
+    closed = get_records(closed_state="已结案", user=admin)["records"]
+    open_records = get_records(closed_state="未结案", user=admin)["records"]
+
+    assert [row["source_detail_id"] for row in closed] == ["D1004"]
+    assert "D1004" not in {row["source_detail_id"] for row in open_records}
+    assert "D1001" in {row["source_detail_id"] for row in open_records}
+
+
 def test_pending_and_sync_error_views_are_explicit(ledger_context):
     from app.spot_ledger import get_pending, get_sync_errors
 

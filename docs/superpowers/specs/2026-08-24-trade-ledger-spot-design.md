@@ -12,7 +12,7 @@
 
 本期明确不做实时同步、手动立即同步、字段修改审计、待历史匹配、复杂部分套保、期货系统接入、真实交易操作、生产环境变量、生产数据库、正式数据迁移或 Production 部署。
 
-无人值守接口目前只确认登录浏览器会话内可调用，未取得后端可持续刷新或服务账号方案。实现真实 HTTP 适配器时必须使用外部提供的已验证 request/response profile；profile 或认证缺失时任务以 `auth_unavailable` 明确失败，不猜请求协议、不读取网页 DOM、不把 fixture 结果标为真实同步。该限制是上线阻塞，不阻止本地开发和 fixture 验收。
+无人值守接口目前只确认登录浏览器会话内可调用，未取得后端可持续刷新或服务账号方案。真实 HTTP 适配器只使用 2026-08-25 已只读验证的 request/response/field profile；认证缺失时任务以 `auth_unavailable` 明确失败，不猜请求协议、不读取网页 DOM、不把 fixture 结果标为真实同步。该认证限制是上线阻塞，不阻止本地开发和 fixture 验收。
 
 ## 2. Gate A 评估与验收
 
@@ -20,7 +20,7 @@
 - T3：覆盖源适配、业务规则、数据库、API 和本地真实页面；不形成跨模块业务流程，因此不是 T4。
 - R3：涉及数据库结构、核心业务口径、权限和外部认证；执行仅限本地/非生产。
 - C1：单 Agent inline execution；不创建子 Agent。
-- 回滚点：实现前 `76ee22b3cf40f84b8a6bcbaa710f6ed2de444ab7`，当前 worktree 无未提交改动。
+- 回滚点：实现前 `76ee22b3cf40f84b8a6bcbaa710f6ed2de444ab7`；当前隔离 worktree 保留此前用户确认的前端改动，并包含本轮真实源适配器测试/实现，未推送 staging。
 
 ### 2.1 验收条目
 
@@ -111,7 +111,9 @@
 
 同步核心只接收标准化 `SalesContractRecord` 字典。真实报表字段必须由已经验证的 profile 明确映射到标准字段；核心逻辑不按列序、模糊名称或网页 DOM 猜测字段。fixture 使用同一标准 contract，文件名和运行结果明确标为 `fixture`。
 
-profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它要求显式提供 request body、分页路径、记录路径、总数路径、认证提供器和外部字段映射。缺 profile、缺认证或认证过期时返回 `auth_unavailable`，不发起猜测请求。凭据只能从运行时安全环境取得，不写入仓库、前端、导出或日志。
+profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它要求显式提供 request body、分页参数位置、记录路径、总数路径、页数路径、认证提供器和外部字段映射。2026-08-25 经用户授权在登录浏览器会话内做一次只读复核，确认候选地址为 `https://tds-report.ejianlong.com/jmreport/show`、报表 ID 为 `1055351755192311808`，请求体包含 `apiUrl`、`id` 和 JSON 字符串 `params`，其中使用 `pageNo`、`pageSize`、`periodDate`、`releaseDate`、现货、生效及 7 个销售组筛选。该请求返回 200 JSON；记录路径为 `result.dataList.TJJLYSHZ.list`，`result.dataList.TJJLYSHZ.count` 为记录总数，`result.dataList.TJJLYSHZ.total` 为总页数。响应行以中文字段名返回，已按需求说明书 8.2 的来源口径映射销售合同商品明细 ID、组别、类型、公司、日期、商品、港口、模式、船名、数量、价格、供应商、人员、客户和合同号。适配器内置该脱敏 profile，不按网页列序推断，也不保存真实响应或业务明细。
+
+本次请求头形态只观察到 Cookie 会话认证，未观察到 Authorization 头，也未取得源系统正式支持的服务端登录、续期或刷新协议。个人账号可作为授权主体的业务决定已经确认，但不得提取或复用个人浏览器 Cookie 作为定时任务凭据。无人值守认证 provider 缺失或认证过期时返回 `auth_unavailable`，不发起猜测请求；凭据只能由后续确认的服务端认证通道在运行时提供，不写入仓库、前端、导出或日志。
 
 ### 4.2 全量扫描门禁
 
@@ -151,4 +153,4 @@ profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它�
 
 实现前先为字段映射、数量/日期/类型、完整扫描隐藏、权限/待补录、历史迁移、战略套保、导出和调度写失败测试并确认失败；再逐项实现并复跑。完成后执行 Python 定向/全量测试、Node 前端测试、Python 编译、JavaScript 语法、`git diff --check`，启动本地 SQLite 服务并用管理员登录真实页面完成统一验收。
 
-本轮停在本地验收，不推送 staging，不修改任何 Supabase 数据库。真实合同源无人值守认证、实际来源字段 profile 和真实历史 Excel 文件仍未取得，因此不能宣称真实接口同步或真实历史迁移完成；这三项作为上线前 Gate B 阻塞项保留。
+本轮停在本地验收，不推送 staging，不修改任何 Supabase 数据库。真实 request/response/field profile 已完成只读确认并进入可测试适配层；真实合同源无人值守认证和真实历史 Excel 迁移执行仍未完成，因此不能宣称正式自动同步或真实历史迁移完成。这两项作为上线前 Gate B 阻塞项保留。

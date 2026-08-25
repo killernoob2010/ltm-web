@@ -16,10 +16,18 @@
   const MANUAL_FIELDS = [
     "C", "K", "N", "O", "P", "R", "V", "W", "Y", "AA", "AC", "AE", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "AO", "long_contract_object",
   ];
+  const REQUIRED_MANUAL_FIELDS = new Set(["C", "K", "N", "O", "Y"]);
+  const DETAIL_HIDDEN_FIELDS = new Set(["A", "B", "AQ", "AR", "AS", "AT", "AU", "AV", "AW", "AX", "AY"]);
+  const PLACEHOLDER_VALUES = new Set(["--", "***", "---", "**", "****", "—", "——"]);
   const NUMERIC_FIELDS = new Set(["N", "O", "Y", "AA", "AH", "AI", "AJ", "AK", "AL"]);
   const FIELD_LABELS = {
     long_contract_object: "长协对象",
   };
+  const ADVANCED_FILTER_NAMES = [
+    "from_date", "to_date", "product_name", "port", "operation_title", "supplier", "customer",
+    "contract_number", "purchase_execution", "sales_execution", "purchase_quantity", "sales_quantity",
+    "closed_state", "sync_error",
+  ];
   const VIEW_LABELS = { records: "台账列表", pending: "待补录", errors: "同步异常" };
 
   function $(selector) {
@@ -82,8 +90,28 @@
   function setActiveTab(view) {
     moduleState.view = view;
     document.querySelectorAll(".spot-ledger-tab").forEach((button) => {
-      button.classList.toggle("active", button.dataset.view === view);
+      const active = button.dataset.view === view;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
     });
+  }
+
+  function updateAdvancedFilterCount() {
+    const form = $("#spotLedgerFilterForm");
+    const indicator = $("#spotLedgerAdvancedFilterCount");
+    if (!form || !indicator) return;
+    const count = ADVANCED_FILTER_NAMES.filter((name) => form.elements[name]?.value !== "").length;
+    indicator.textContent = count ? `已启用 ${count} 项高级条件` : "";
+    indicator.classList.toggle("hidden", count === 0);
+  }
+
+  function setAdvancedFiltersExpanded(expanded) {
+    const advanced = $("#spotLedgerAdvancedFilters");
+    const button = $("#spotLedgerToggleFiltersBtn");
+    if (!advanced || !button) return;
+    advanced.classList.toggle("hidden", !expanded);
+    button.setAttribute("aria-expanded", String(expanded));
+    $("#spotLedgerToggleFiltersText").textContent = expanded ? "收起更多" : "展开更多";
   }
 
   async function loadCounts() {
@@ -139,7 +167,7 @@
       if (result.field_definitions?.length) moduleState.fields = result.field_definitions;
       renderRows(moduleState.records);
       setStatus(`当前 ${moduleState.records.length} 条`);
-      if (view === "errors" && result.runs?.length) setSyncStatus(`${result.runs[0].status}｜${seconds(result.runs[0].finished_at || result.runs[0].started_at)}`);
+      if (view === "errors" && result.runs?.length) setSyncStatus(`${result.runs[0].status}｜${seconds(result.runs[0].finished_at || result.runs[0].started_at)}｜${result.runs[0].source_mode || "来源未标注"}`);
     } catch (error) {
       moduleState.records = [];
       renderRows([]);
@@ -159,18 +187,57 @@
     }).join("；");
   }
 
+  function hasDisplayValue(value) {
+    if (value === null || value === undefined || value === "") return false;
+    return !(typeof value === "string" && PLACEHOLDER_VALUES.has(value.trim()));
+  }
+
+  function isRequiredField(field, record) {
+    if (REQUIRED_MANUAL_FIELDS.has(field)) return true;
+    if (field === "P") return record.D === "船货-落地";
+    return field === "long_contract_object" && record.D === "船货-落地" && record.P === "是";
+  }
+
+  function requiredMarker(required) {
+    return `<span class="spot-ledger-required-marker${required ? "" : " hidden"}" aria-hidden="true">*</span>`;
+  }
+
+  function detailFieldValue(record, field) {
+    return hasDisplayValue(record[field.code]) ? displayValue(record[field.code]) : "";
+  }
+
+  function renderSystemField(field, record) {
+    return `<div class="spot-ledger-system-row"><dt>${escapeHtml(field.name)}</dt><dd>${escapeHtml(detailFieldValue(record, field))}</dd></div>`;
+  }
+
+  function renderManualField(field, record) {
+    const definition = fieldDefinition(field);
+    const label = FIELD_LABELS[field] || definition.name;
+    const required = isRequiredField(field, record);
+    const value = hasDisplayValue(record[field]) ? displayValue(record[field]) : "";
+    return `<div class="spot-ledger-manual-slot${value ? "" : " is-missing"}"><div class="spot-ledger-manual-label"><span>${escapeHtml(label)}</span>${requiredMarker(required)}</div><div class="spot-ledger-manual-value">${escapeHtml(value)}</div></div>`;
+  }
+
   function renderDetail(record) {
     moduleState.selectedRecord = record;
     const detail = $("#spotLedgerDetail");
     detail.classList.remove("hidden");
+    if (detail.showModal && !detail.open) detail.showModal();
     const errorText = syncErrorText(record.sync_error_summary);
-    $("#spotLedgerDetailMeta").innerHTML = `<div><span>明细 ID</span><strong>${escapeHtml(displayValue(record.source_detail_id))}</strong></div><div><span>来源类型</span><strong>${escapeHtml(displayValue(record.record_source_type))}</strong></div><div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div><div><span>最近同步</span><strong>${escapeHtml(seconds(record.last_synced_at) || "空白")}</strong></div>${errorText ? `<div class="spot-ledger-error-summary"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
-    $("#spotLedgerFieldDefinitions").innerHTML = moduleState.fields.map((field) => `<article class="spot-ledger-field-card"><div class="spot-ledger-field-card-head"><span>${escapeHtml(field.code)}</span><strong>${escapeHtml(field.name)}</strong></div><div class="spot-ledger-field-value">${escapeHtml(displayValue(record[field.code]))}</div><small>${escapeHtml(field.control)} · ${escapeHtml(field.source_rule)}</small></article>`).join("");
-    const editButton = $("#spotLedgerEditBtn");
-    editButton.classList.toggle("hidden", !moduleState.canSensitive);
-    editButton.textContent = "编辑人工字段";
-    $("#spotLedgerEditForm").classList.add("hidden");
+    const systemFields = moduleState.fields.filter((field) => !MANUAL_FIELDS.includes(field.code) && !DETAIL_HIDDEN_FIELDS.has(field.code) && hasDisplayValue(record[field.code]));
+    $("#spotLedgerDetailMeta").innerHTML = `<div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div>${hasDisplayValue(record.last_synced_at) ? `<div><span>最近刷新</span><strong>${escapeHtml(seconds(record.last_synced_at))}</strong></div>` : ""}${errorText ? `<div class="spot-ledger-detail-alert"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
+    $("#spotLedgerSystemCount").textContent = `${systemFields.length} 项`;
+    $("#spotLedgerSystemFields").innerHTML = systemFields.length ? systemFields.map((field) => renderSystemField(field, record)).join("") : '<p class="spot-ledger-detail-empty">暂无已带出的系统字段</p>';
+    $("#spotLedgerManualHint").textContent = record.missing_fields?.length ? `待补录 ${record.missing_fields.length} 项` : "可按需修改";
+    renderManualContent(record);
     $("#spotLedgerEditStatus").textContent = record.missing_fields?.length ? `待补录：${record.missing_fields.join("、")}` : "必填字段已完成";
+  }
+
+  function closeDetail() {
+    const detail = $("#spotLedgerDetail");
+    if (!detail) return;
+    if (detail.open && detail.close) detail.close();
+    else detail.classList.add("hidden");
   }
 
   async function openRecord(recordId) {
@@ -187,21 +254,51 @@
     const definition = fieldDefinition(field);
     const label = FIELD_LABELS[field] || definition.name;
     const current = record[field] == null ? "" : record[field];
-    if (field === "C") return `<label>${escapeHtml(label)}<select name="${field}"><option value="">空白</option><option value="自主建仓" ${current === "自主建仓" ? "selected" : ""}>自主建仓</option><option value="非自主建仓" ${current === "非自主建仓" ? "selected" : ""}>非自主建仓</option></select></label>`;
-    if (field === "P") return `<label>${escapeHtml(label)}<select name="${field}"><option value="">空白</option><option value="是" ${current === "是" ? "selected" : ""}>是</option><option value="否" ${current === "否" ? "selected" : ""}>否</option></select></label>`;
-    if (field === "V") return `<label>${escapeHtml(label)}<select name="${field}"><option value="">空白</option><option value="其他钢厂" ${current === "其他钢厂" ? "selected" : ""}>其他钢厂</option><option value="贸易商" ${current === "贸易商" ? "selected" : ""}>贸易商</option><option value="子公司" ${current === "子公司" ? "selected" : ""}>子公司</option></select></label>`;
+    const required = isRequiredField(field, record);
+    const requiredAttribute = required ? " required" : "";
+    const labelHtml = `<span class="spot-ledger-edit-label">${escapeHtml(label)}${requiredMarker(required)}</span>`;
+    if (field === "C") return `<label>${labelHtml}<select name="${field}"${requiredAttribute}><option value="">空白</option><option value="自主建仓" ${current === "自主建仓" ? "selected" : ""}>自主建仓</option><option value="非自主建仓" ${current === "非自主建仓" ? "selected" : ""}>非自主建仓</option></select></label>`;
+    if (field === "P") return `<label>${labelHtml}<select name="${field}"${requiredAttribute}><option value="">空白</option><option value="是" ${current === "是" ? "selected" : ""}>是</option><option value="否" ${current === "否" ? "selected" : ""}>否</option></select></label>`;
+    if (field === "V") return `<label>${labelHtml}<select name="${field}"><option value="">空白</option><option value="其他钢厂" ${current === "其他钢厂" ? "selected" : ""}>其他钢厂</option><option value="贸易商" ${current === "贸易商" ? "selected" : ""}>贸易商</option><option value="子公司" ${current === "子公司" ? "selected" : ""}>子公司</option></select></label>`;
     const type = field === "AO" ? "date" : NUMERIC_FIELDS.has(field) ? "number" : "text";
     const step = NUMERIC_FIELDS.has(field) ? ' step="0.01"' : "";
-    return `<label>${escapeHtml(label)}<input name="${field}" type="${type}"${step} value="${escapeHtml(current)}"></label>`;
+    return `<label>${labelHtml}<input name="${field}" type="${type}"${step}${requiredAttribute} value="${escapeHtml(current)}"></label>`;
   }
 
-  function showEditForm() {
-    const record = moduleState.selectedRecord;
-    if (!record || !moduleState.canSensitive) return;
+  function syncRequiredInputs(form, record) {
+    const draftRecord = { ...record, P: form.elements.P?.value || "" };
+    MANUAL_FIELDS.forEach((field) => {
+      const input = form.elements[field];
+      if (!input) return;
+      const required = isRequiredField(field, draftRecord);
+      input.required = required;
+      input.closest("label")?.querySelector(".spot-ledger-required-marker")?.classList.toggle("hidden", !required);
+    });
+  }
+
+  function renderManualContent(record) {
     const form = $("#spotLedgerEditForm");
-    form.innerHTML = `<div class="spot-ledger-edit-grid">${MANUAL_FIELDS.map((field) => editInput(field, record)).join("")}</div><div class="dialog-actions"><button type="submit">保存人工字段</button><button id="spotLedgerCancelEditBtn" type="button" class="secondary">取消</button></div>`;
+    const fields = $("#spotLedgerManualFields");
+    const actions = $("#spotLedgerEditActions");
+    if (!form || !fields || !actions) return;
     form.classList.remove("hidden");
-    $("#spotLedgerEditBtn").textContent = "收起编辑";
+    form.onsubmit = null;
+    form.onchange = null;
+    if (!moduleState.canSensitive) {
+      form.classList.add("spot-ledger-edit-form-readonly");
+      fields.className = "spot-ledger-manual-list";
+      fields.innerHTML = MANUAL_FIELDS.map((field) => renderManualField(field, record)).join("");
+      actions.classList.add("hidden");
+      actions.innerHTML = "";
+      return;
+    }
+    form.classList.remove("spot-ledger-edit-form-readonly");
+    fields.className = "spot-ledger-edit-grid";
+    fields.innerHTML = MANUAL_FIELDS.map((field) => editInput(field, record)).join("");
+    actions.classList.remove("hidden");
+    actions.innerHTML = '<button type="submit">保存人工字段</button><button id="spotLedgerResetEditBtn" type="button" class="secondary">重置本次修改</button>';
+    form.onchange = () => syncRequiredInputs(form, record);
+    syncRequiredInputs(form, record);
     form.onsubmit = async (event) => {
       event.preventDefault();
       const values = {};
@@ -219,9 +316,9 @@
         $("#spotLedgerEditStatus").textContent = error.message || "保存失败";
       }
     };
-    $("#spotLedgerCancelEditBtn").addEventListener("click", () => {
-      form.classList.add("hidden");
-      $("#spotLedgerEditBtn").textContent = "编辑人工字段";
+    $("#spotLedgerResetEditBtn").addEventListener("click", () => {
+      form.reset();
+      syncRequiredInputs(form, record);
     });
   }
 
@@ -278,16 +375,23 @@
     $("#spotLedgerResetBtn")?.addEventListener("click", () => {
       $("#spotLedgerFilterForm")?.reset();
       moduleState.filters = {};
+      setAdvancedFiltersExpanded(false);
+      updateAdvancedFilterCount();
       loadView("records");
     });
+    $("#spotLedgerToggleFiltersBtn")?.addEventListener("click", () => {
+      const expanded = $("#spotLedgerToggleFiltersBtn").getAttribute("aria-expanded") === "true";
+      setAdvancedFiltersExpanded(!expanded);
+    });
+    $("#spotLedgerFilterForm")?.addEventListener("input", updateAdvancedFilterCount);
+    $("#spotLedgerFilterForm")?.addEventListener("change", updateAdvancedFilterCount);
     document.querySelectorAll(".spot-ledger-tab").forEach((button) => button.addEventListener("click", () => loadView(button.dataset.view)));
-    $("#spotLedgerCloseDetailBtn")?.addEventListener("click", () => $("#spotLedgerDetail")?.classList.add("hidden"));
-    $("#spotLedgerEditBtn")?.addEventListener("click", () => {
+    $("#spotLedgerCloseDetailBtn")?.addEventListener("click", closeDetail);
+    $("#spotLedgerDetail")?.addEventListener("close", () => {
       const form = $("#spotLedgerEditForm");
-      if (form.classList.contains("hidden")) showEditForm();
-      else {
-        form.classList.add("hidden");
-        $("#spotLedgerEditBtn").textContent = "编辑人工字段";
+      if (form) {
+        form.onsubmit = null;
+        form.onchange = null;
       }
     });
     $("#spotLedgerExportBtn")?.addEventListener("click", () => downloadExport().catch((error) => setStatus(error.message, true)));
@@ -295,6 +399,8 @@
     $("#spotLedgerCancelStrategyBtn")?.addEventListener("click", () => $("#spotLedgerStrategyDialog")?.close());
     $("#spotLedgerStrategyForm")?.addEventListener("submit", saveStrategy);
     $("#spotLedgerSaveStrategyBtn")?.addEventListener("click", saveStrategy);
+    setAdvancedFiltersExpanded(false);
+    updateAdvancedFilterCount();
   }
 
   async function activate(config) {
