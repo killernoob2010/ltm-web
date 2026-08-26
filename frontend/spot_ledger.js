@@ -205,8 +205,8 @@
     try {
       let result;
       const pageParams = { limit: moduleState.pageSize, offset: (moduleState.page - 1) * moduleState.pageSize };
-      if (view === "pending") result = await moduleState.api(`/api/spot-ledger/pending${queryString(pageParams)}`);
-      else if (view === "errors") result = await moduleState.api(`/api/spot-ledger/sync-errors${queryString(pageParams)}`);
+      if (view === "pending") result = await moduleState.api(`/api/spot-ledger/pending${queryString({ ...moduleState.filters, ...pageParams })}`);
+      else if (view === "errors") result = await moduleState.api(`/api/spot-ledger/sync-errors${queryString({ ...moduleState.filters, ...pageParams })}`);
       else result = await moduleState.api(`/api/spot-ledger/records${queryString({ ...moduleState.filters, ...pageParams })}`);
       moduleState.records = result.records || [];
       moduleState.total = Number(result.count ?? moduleState.records.length);
@@ -429,7 +429,7 @@
       event.preventDefault();
       moduleState.filters = filterValues();
       moduleState.page = 1;
-      loadView("records");
+      loadView(moduleState.view);
     });
     $("#spotLedgerResetBtn")?.addEventListener("click", () => {
       $("#spotLedgerFilterForm")?.reset();

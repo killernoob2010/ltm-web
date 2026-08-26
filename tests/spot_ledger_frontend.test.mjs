@@ -44,6 +44,8 @@ test("spot ledger keeps the complete field contract while presenting pending/err
   assert.match(spotJs, /pageSizes:\s*\[20, 50, 100\]/);
   assert.match(spotJs, /limit:\s*moduleState\.pageSize/);
   assert.match(spotJs, /offset:\s*\(moduleState\.page - 1\) \* moduleState\.pageSize/);
+  assert.match(spotJs, /pending\$\{queryString\(\{ \.\.\.moduleState\.filters, \.\.\.pageParams \}\)\}/);
+  assert.match(spotJs, /sync-errors\$\{queryString\(\{ \.\.\.moduleState\.filters, \.\.\.pageParams \}\)\}/);
   assert.match(indexHtml, /id="spotLedgerPagination"/);
 });
 

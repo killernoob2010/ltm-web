@@ -34,8 +34,9 @@ SHANGHAI_GROUPS = ("大客户组", "东北组", "山东组", "黄骅组", "天�
 LAND_SALES_TYPE = "船货-落地"
 SPOT_LEDGER_FOCUS_START_DATE = "2026-01-01"
 KNOWN_SALES_TYPE_VALUES = frozenset({"现货-市场加价", "现货-背对背", LAND_SALES_TYPE})
-LAND_SALES_TYPE_VALUES = frozenset({LAND_SALES_TYPE, "贸易-代理落地-B09", "贸易-落地-固定价-B05"})
+LAND_SALES_TYPE_VALUES = frozenset({LAND_SALES_TYPE, "贸易-代理落地-B09"})
 SALES_TYPE_CODE_PATTERN = re.compile(r"(?<![A-Z0-9])B(?:05|06|07|09)\d*(?![A-Z0-9])", re.IGNORECASE)
+SOURCE_SALES_TYPE_CODE_PATTERN = re.compile(r"^[A-Z]{1,3}\d{2,}$", re.IGNORECASE)
 HISTORY_SOURCE_FALLBACK_FIELDS = frozenset({"D"})
 PLACEHOLDER_VALUES = {"--", "***", "---", "**", "****", "—", "——"}
 NUMERIC_FIELDS = {"L", "M", "N", "O", "X", "Y", "Z", "AA", "AH", "AI", "AJ", "AK", "AL"}
@@ -73,7 +74,7 @@ FIELD_DEFINITIONS = [
     _field("A", "数据来源", "计算", "业务台账-销售组别"),
     _field("B", "序列", "计算", "同销售组当前最大序列加一，不重排历史"),
     _field("C", "建仓", "手工/必填", "人工录入", "自主建仓或非自主建仓"),
-    _field("D", "销售类型", "系统", "销售合同业务类别原值", "落地货判定由系统编码关系单独计算"),
+    _field("D", "销售类型", "系统", "按销售合同商品明细 ID 回接正式源报表业务类别完整原文", "落地货仅按完整原文或明确 B09 系列判定"),
     _field("E", "销售组别", "系统", "量归属组"),
     _field("F", "操作抬头", "系统转换", "源系统名称经显式字典转换"),
     _field("G", "采购日期", "系统", "资源日期"),
@@ -270,18 +271,31 @@ def _sales_type_code(raw_value: Any) -> str:
 
 
 def is_land_sales_type(raw_value: Any) -> bool:
-    """Return the long-contract business relation without changing the raw D value."""
+    """Return the land-goods relation from the source label without changing D.
+
+    The official dictionary contains more than one label carrying the same base
+    code (notably B05 and B07). A bare code is therefore not enough to classify a
+    record as land goods; only an explicit ``落地`` label or the unambiguous B09
+    family qualifies.
+    """
     text = _text(raw_value)
     if text in LAND_SALES_TYPE_VALUES:
         return True
-    return _sales_type_code(text) in {"B05", "B09"}
+    if "落地" in text:
+        return True
+    return _sales_type_code(text) == "B09"
 
 
 def _sales_type_value(raw_value: Any, errors: list[dict[str, str]]) -> str:
     value = _text(raw_value)
     if not value:
         return ""
-    if value in KNOWN_SALES_TYPE_VALUES or _sales_type_code(value):
+    if (
+        value in KNOWN_SALES_TYPE_VALUES
+        or _sales_type_code(value)
+        or SOURCE_SALES_TYPE_CODE_PATTERN.fullmatch(value)
+        or ("-" in value and re.search(r"[\u4e00-\u9fff]", value))
+    ):
         return value
     errors.append({"type": "conversion_mapping", "field": "D", "message": f"未知销售类型: {value}"})
     return value
@@ -877,8 +891,14 @@ def patch_system_fallback(record_id: str, payload: SpotLedgerSystemFallbackPatch
     return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
 
 
-def get_pending(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    params = {"supplement_status": "待补录", "limit": limit, "offset": offset}
+def get_pending(
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    filters: Optional[dict[str, Any]] = None,
+    user: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    params = {**(filters or {}), "supplement_status": "待补录", "limit": limit, "offset": offset}
     return {
         "records": list_records(params, user=user, list_projection=True),
         "count": count_records(params, user=user),
@@ -888,8 +908,14 @@ def get_pending(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, An
     }
 
 
-def get_sync_errors(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    params = {"sync_error": "true", "limit": limit, "offset": offset}
+def get_sync_errors(
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    filters: Optional[dict[str, Any]] = None,
+    user: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    params = {**(filters or {}), "sync_error": "true", "limit": limit, "offset": offset}
     records = list_records(params, user=user, list_projection=True)
     try:
         from .spot_ledger_sync import get_sync_runs
@@ -908,8 +934,8 @@ def get_sync_errors(*, limit: int = 20, offset: int = 0, user: Optional[dict[str
 
 
 @router.get("/spot-ledger/pending")
-def pending_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
-    return get_pending(limit=limit, offset=offset, user=user)
+def pending_view(request: Request, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
+    return get_pending(limit=limit, offset=offset, filters=dict(request.query_params), user=user)
 
 
 @router.get("/spot-ledger/backfill-snapshot")
@@ -918,8 +944,8 @@ def backfill_snapshot_view(user=Depends(_request_user)):
 
 
 @router.get("/spot-ledger/sync-errors")
-def sync_errors_view(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
-    return get_sync_errors(limit=limit, offset=offset, user=user)
+def sync_errors_view(request: Request, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(_request_user)):
+    return get_sync_errors(limit=limit, offset=offset, filters=dict(request.query_params), user=user)
 
 
 @router.post("/spot-ledger/reconcile-mappings")

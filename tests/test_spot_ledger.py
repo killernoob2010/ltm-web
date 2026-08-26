@@ -121,15 +121,19 @@ def test_confirmed_history_supplier_dictionary_maps_repeated_exact_matches(sourc
 @pytest.mark.parametrize(
     ("source_category", "expected_land_goods"),
     [
+        ("贸易-船货-直销-长协加价-B01", False),
         ("贸易-港口现货-市场加价-B07", False),
         ("贸易-港口现货-背对背-B06", False),
         ("贸易-代理落地-B09", True),
-        ("贸易-落地-固定价-B05", True),
+        ("贸易-落地-B05", True),
+        ("贸易-船货-换月-已做套保-B05", False),
+        ("贸易-船货-落地-已做套保-B07", True),
         ("贸易-代理落地-B0901", True),
         ("B0701", False),
         ("B0601", False),
         ("B0901", True),
-        ("B0501", True),
+        ("B0501", False),
+        ("AB02", False),
     ],
 )
 def test_source_business_categories_are_preserved_and_classified_without_conversion_errors(source_category, expected_land_goods):

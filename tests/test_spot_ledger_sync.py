@@ -323,6 +323,7 @@ def test_source_factory_selects_official_json_mode(monkeypatch):
     assert isinstance(source, sync.OfficialJsonSalesContractSource)
     assert source.http is session
     assert isinstance(source.auth_provider, sync.JianlongPasswordAuthProvider)
+    assert source.enrich_sales_type_labels is True
 
 
 def test_official_contract_scope_starts_from_locally_filtered_demands():
@@ -432,6 +433,26 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
 
         def post(self, url, **kwargs):
             self.calls.append(("POST", url, kwargs))
+            if url == sync.CANDIDATE_SOURCE_URL:
+                return Response(
+                    {
+                        "code": 200,
+                        "result": {
+                            "dataList": {
+                                "TJJLYSHZ": {
+                                    "list": [
+                                        {
+                                            "销售合同商品明细id": "sale-line-1",
+                                            "业务类别": "贸易-港口现货-市场加价-B07",
+                                        }
+                                    ],
+                                    "count": 1,
+                                    "total": 1,
+                                }
+                            }
+                        },
+                    }
+                )
             if "/tradeing/chain/saleContractList" in url:
                 assert kwargs["json"] == {"chainId": "chain-1", "tradersId": ""}
                 return Response(
@@ -469,6 +490,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
                         "demandId": f"demand-{page}",
                         "sourceType": "10",
                         "businessType": "B07" if page == 1 else "B05",
+                        "businessTypeName": "贸易-港口现货-市场加价-B07" if page == 1 else "贸易-落地-B05",
                         "quantityAttribution": "Q1" if page == 1 else "Q2",
                         "profitAttribution": "P1" if page == 1 else "P2",
                     }
@@ -566,6 +588,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
                             "demandId": f"demand-{index}",
                             "sourceType": "10",
                             "businessType": "B07" if index == "1" else "B05",
+                            "businessTypeName": "贸易-港口现货-市场加价-B07" if index == "1" else "贸易-落地-B05",
                             "quantityAttribution": "Q1" if index == "1" else "Q2",
                             "profitAttribution": "P1" if index == "1" else "P2",
                         },
@@ -596,6 +619,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
         http=Http(),
         auth_provider=Provider(),
         page_size=1,
+        enrich_sales_type_labels=True,
     )
 
     scan = source.fetch_full_scan()
@@ -618,12 +642,13 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
         "out_of_scope_record_count": 0,
         "ambiguous_resource_match_count": 0,
         "missing_resource_match_count": 0,
+        "source_sales_type_label_count": 1,
     }
     assert len(scan.records) == 1
     record = scan.records[0]
     assert record["source_detail_id"] == "sale-line-1"
     assert record["eligible"] is True
-    assert record["D"] == "B07"
+    assert record["D"] == "贸易-港口现货-市场加价-B07"
     assert record["E"] == "大客户组"
     assert record["AP"] == "东北组"
     assert record["AQ"] == "是"

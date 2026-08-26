@@ -648,6 +648,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         max_pages: int = 1000,
         max_workers: int = 8,
         timeout_seconds: float = 30,
+        enrich_sales_type_labels: bool = False,
     ):
         if page_size < 1 or max_pages < 1 or not 1 <= max_workers <= 16:
             raise ValueError("page_size、max_pages 和 max_workers 必须在安全范围内")
@@ -657,6 +658,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         self.max_pages = max_pages
         self.max_workers = max_workers
         self.timeout_seconds = timeout_seconds
+        self.enrich_sales_type_labels = bool(enrich_sales_type_labels)
 
     @classmethod
     def from_env(cls) -> "OfficialJsonSalesContractSource":
@@ -666,7 +668,8 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             return cls()
         session = requests.Session()
         provider = JianlongPasswordAuthProvider(username, password, http=session)
-        return cls(http=session, auth_provider=provider)
+        enrich_labels = (os.getenv("SPOT_LEDGER_SOURCE_LABEL_ENRICHMENT", "true") or "").strip().lower() not in {"0", "false", "no", "off"}
+        return cls(http=session, auth_provider=provider, enrich_sales_type_labels=enrich_labels)
 
     def _headers(self, *, refresh: bool = False) -> dict[str, str]:
         if not callable(self.auth_provider):
@@ -1041,6 +1044,120 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             return text, True
         return text, False
 
+    @staticmethod
+    def _business_category_value(demand: dict[str, Any]) -> Any:
+        """Use a full source label when the official detail exposes one.
+
+        ``businessType`` is a code in the current list response. Some source
+        deployments also return the already-resolved business category under a
+        sibling label field; when present, that system value is the one that must
+        reach D. No local code-to-label conversion is performed here.
+        """
+        for key in (
+            "businessTypeName",
+            "businessTypeLabel",
+            "businessTypeText",
+            "businessCategoryName",
+            "businessCategoryLabel",
+        ):
+            value = demand.get(key)
+            if value not in (None, ""):
+                return value
+        return demand.get("businessType")
+
+    @staticmethod
+    def _report_rows(payload: dict[str, Any], *, stage: str) -> tuple[list[dict[str, Any]], int, int]:
+        result = payload.get("result")
+        data_list = result.get("dataList") if isinstance(result, dict) else None
+        report = data_list.get("TJJLYSHZ") if isinstance(data_list, dict) else None
+        rows = report.get("list") if isinstance(report, dict) else None
+        total = report.get("count") if isinstance(report, dict) else None
+        page_count = report.get("total") if isinstance(report, dict) else None
+        if not isinstance(rows, list):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式源销售合同报表响应缺少 list",
+                stage=f"{stage}_rows",
+            )
+        try:
+            total_count = int(total)
+            total_pages = int(page_count)
+        except (TypeError, ValueError) as exc:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式源销售合同报表响应缺少有效分页统计",
+                stage=f"{stage}_total",
+            ) from exc
+        if total_count < 0 or total_pages < 0 or any(not isinstance(row, dict) for row in rows):
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式源销售合同报表响应内容无效",
+                stage=f"{stage}_rows",
+            )
+        return rows, total_count, max(1, total_pages)
+
+    def _fetch_report_sales_type_labels(self) -> dict[str, str]:
+        """Read the confirmed report's complete ``业务类别`` labels by detail ID."""
+        page_size = min(max(self.page_size, 20), 500)
+        report_date = _now().date()
+        first_body = build_candidate_request_body(report_date, page_no=1, page_size=page_size)
+        first_payload = self._request_json(
+            "post",
+            CANDIDATE_SOURCE_URL,
+            stage="official_sales_type_report",
+            json=first_body,
+        )
+        first_rows, total_count, page_count = self._report_rows(
+            first_payload,
+            stage="official_sales_type_report",
+        )
+        if page_count > self.max_pages:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式源销售合同报表分页数超过安全上限",
+                stage="official_sales_type_report_pages",
+            )
+        rows = list(first_rows)
+        for page_no in range(2, page_count + 1):
+            payload = self._request_json(
+                "post",
+                CANDIDATE_SOURCE_URL,
+                stage="official_sales_type_report",
+                json=build_candidate_request_body(report_date, page_no=page_no, page_size=page_size),
+            )
+            page_rows, page_total, page_count_again = self._report_rows(
+                payload,
+                stage="official_sales_type_report",
+            )
+            if page_total != total_count or page_count_again != page_count:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式源销售合同报表分页统计在扫描过程中发生变化",
+                    stage="official_sales_type_report_changed",
+                )
+            rows.extend(page_rows)
+        if len(rows) != total_count:
+            raise SalesContractSourceError(
+                "parse_error",
+                "正式源销售合同报表记录数与总数不一致",
+                stage="official_sales_type_report_count",
+            )
+        labels: dict[str, str] = {}
+        for row in rows:
+            detail_id = str(row.get("销售合同商品明细id") or "").strip()
+            label = str(row.get("业务类别") or "").strip()
+            if not detail_id or not label:
+                continue
+            previous = labels.get(detail_id)
+            if previous and previous != label:
+                raise SalesContractSourceError(
+                    "parse_error",
+                    "正式源销售合同报表同一明细返回多个业务类别",
+                    stage="official_sales_type_report_duplicate",
+                )
+            labels[detail_id] = label
+        return labels
+
     def _get_data_dict(self, url: str, *, stage: str, **kwargs: Any) -> dict[str, Any]:
         payload = self._request_json("get", url, stage=stage, **kwargs)
         data = payload.get("data")
@@ -1169,6 +1286,12 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         settlements = self._fetch_settlements()
         normalized_records: list[dict[str, Any]] = []
         scan_errors: list[dict[str, str]] = list(contract_scope.errors)
+        report_sales_type_labels: dict[str, str] = {}
+        if self.enrich_sales_type_labels:
+            try:
+                report_sales_type_labels = self._fetch_report_sales_type_labels()
+            except SalesContractSourceError as exc:
+                scan_errors.append({"type": _safe_error_type(exc.stage)})
         source_detail_count = 0
         out_of_scope_count = 0
         ambiguous_match_count = 0
@@ -1326,13 +1449,22 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 purchase_line_id = str(line.get("upContractMxId") or "").strip()
                 purchase_line = purchase_lines.get(purchase_line_id, {})
                 price_mode, _ = self._dictionary_label(dictionaries["price_mode"], line.get("priceMode"))
+                business_category = report_sales_type_labels.get(detail_id) or self._business_category_value(demand)
+                if self.enrich_sales_type_labels and re.fullmatch(r"B(?:05|06|07|09)\d*", str(business_category or ""), flags=re.IGNORECASE):
+                    record_errors.append(
+                        {
+                            "type": "missing_source_sales_type_label",
+                            "field": "D",
+                            "message": "源系统未返回完整业务类别原文",
+                        }
+                    )
                 standard = {
                     "detail_id": detail_id,
                     "spot_type": source_type,
                     "contract_status": "生效" if contract_active else status,
                     "quantity_group": quantity_group,
                     "profit_group": profit_group,
-                    "business_category_code": demand.get("businessType"),
+                    "business_category_code": business_category,
                     "operation_title": detail.get("workCompName") or demand.get("workCompName"),
                     "resource_date": resource.get("sourceDate"),
                     "product_name": line.get("goodsName"),
@@ -1377,6 +1509,8 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             "ambiguous_resource_match_count": ambiguous_match_count,
             "missing_resource_match_count": missing_match_count,
         }
+        if self.enrich_sales_type_labels:
+            diagnostics["source_sales_type_label_count"] = len(report_sales_type_labels)
         return validate_full_scan(
             FullScanResult(
                 records=normalized_records,
