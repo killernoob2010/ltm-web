@@ -103,6 +103,7 @@ test("sales type keeps the source value and uses the backend land-goods relation
   assert.match(spotJs, /record\.is_land_goods/);
   assert.match(spotJs, /sales_type_options/);
   assert.match(indexHtml, /spotLedgerSalesTypeOptions/);
+  assert.match(indexHtml, /spot-ledger-source-values-20260826/);
   assert.doesNotMatch(indexHtml, /<option>现货-市场加价<\/option>/);
 });
 
