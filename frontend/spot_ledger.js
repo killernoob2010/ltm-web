@@ -81,6 +81,27 @@
     return values;
   }
 
+  function renderSalesTypeOptions(options) {
+    const select = $("#spotLedgerSalesTypeOptions");
+    if (!select) return;
+    const current = select.value;
+    const values = [...new Set((options || []).map((value) => String(value || "").trim()).filter(Boolean))].sort();
+    select.innerHTML = '<option value="">全部</option>';
+    values.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+    if (current && !values.includes(current)) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = current;
+      select.appendChild(option);
+    }
+    select.value = current;
+  }
+
   function queryString(values) {
     const params = new URLSearchParams();
     Object.entries(values || {}).forEach(([key, value]) => {
@@ -189,6 +210,7 @@
       else result = await moduleState.api(`/api/spot-ledger/records${queryString({ ...moduleState.filters, ...pageParams })}`);
       moduleState.records = result.records || [];
       moduleState.total = Number(result.count ?? moduleState.records.length);
+      renderSalesTypeOptions(result.sales_type_options || []);
       if (result.field_definitions?.length) moduleState.fields = result.field_definitions;
       renderRows(moduleState.records);
       renderPagination();
@@ -222,8 +244,8 @@
 
   function isRequiredField(field, record) {
     if (REQUIRED_MANUAL_FIELDS.has(field)) return true;
-    if (field === "P") return record.D === "船货-落地";
-    return field === "long_contract_object" && record.D === "船货-落地" && record.P === "是";
+    if (field === "P") return Boolean(record.is_land_goods);
+    return field === "long_contract_object" && Boolean(record.is_land_goods) && record.P === "是";
   }
 
   function requiredMarker(required) {

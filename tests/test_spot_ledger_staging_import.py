@@ -66,6 +66,32 @@ def test_build_backfill_plan_accepts_known_vat_price_and_settlement_quantity_dif
     assert result["plans"] == [{"record_id": "r-201", "values": {"K": "瑞明"}, "current_values": {"K": ""}}]
 
 
+def test_build_backfill_plan_prefers_system_sales_type_and_uses_excel_only_when_blank():
+    source_rows = [
+        {"AD": "C-102", "H": "铁矿石", "Z": 820, "X": 120, "U": "2026-08-18", "D": "B05"},
+        {"AD": "C-104", "H": "铁矿石", "Z": 780, "X": 0, "U": "2026-08-16", "D": "贸易-代理落地-B09"},
+    ]
+    records = [
+        {"record_id": "r-102", "AD": "C-102", "H": "铁矿石", "U": "2026-08-18", "L": 120, "X": 120},
+        {"record_id": "r-104", "AD": "C-104", "H": "铁矿石", "U": "2026-08-16", "L": 0, "X": 0},
+    ]
+    details = {
+        "r-102": {**records[0], "Z": 820, "D": "B09"},
+        "r-104": {**records[1], "Z": 780, "D": ""},
+    }
+
+    result = staging_import.build_backfill_plan(source_rows, records, details)
+
+    assert result["field_updates"] == {"D": 1}
+    assert result["conflicts"] == 1
+    assert result["conflict_field_counts"] == {"D": 1}
+    assert result["plans"] == [{
+        "record_id": "r-104",
+        "values": {"D": "贸易-代理落地-B09"},
+        "current_values": {"D": ""},
+    }]
+
+
 def test_cli_summary_does_not_include_credentials():
     summary = staging_import.safe_summary({"username": "admin", "password": "secret", "updated": 3})
     assert "password" not in summary
@@ -94,3 +120,35 @@ def test_apply_backfill_plan_uses_snapshot_and_expected_values(tmp_path):
     assert applied["applied"] == 1
     assert applied["failed"] == 0
     assert client.patches == [("r-1", {"K": "船名A"}, {"K": ""})]
+
+
+def test_apply_backfill_plan_routes_sales_type_fallback_separately(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def patch(self, record_id, values, expected_values=None):
+            self.calls.append(("patch", record_id, values, expected_values))
+            return {"ok": True}
+
+        def system_fallback(self, record_id, values, expected_values=None):
+            self.calls.append(("system_fallback", record_id, values, expected_values))
+            return {"ok": True}
+
+    client = FakeClient()
+    result = {
+        "plans": [{
+            "record_id": "r-1",
+            "values": {"D": "B05", "K": "船名A"},
+            "current_values": {"D": "", "K": ""},
+        }],
+    }
+
+    applied = staging_import.apply_backfill_plan(client, result, tmp_path / "changes.json")
+
+    assert applied["applied"] == 1
+    assert applied["failed"] == 0
+    assert client.calls == [
+        ("system_fallback", "r-1", {"D": "B05"}, {"D": ""}),
+        ("patch", "r-1", {"K": "船名A"}, {"K": ""}),
+    ]

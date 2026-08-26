@@ -29,6 +29,7 @@ from .spot_ledger import (
     DEFAULT_NAME_MAPPINGS,
     FIELD_CODES,
     FIELD_DEFINITIONS,
+    HISTORY_SOURCE_FALLBACK_FIELDS,
     MANUAL_FIELDS,
     NUMERIC_FIELDS,
     SPOT_LEDGER_FOCUS_START_DATE,
@@ -3020,7 +3021,7 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
             summary["matched"] += 1
             candidate = matches[0]
             proposed: dict[str, Any] = {}
-            for field in MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS:
+            for field in MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS | HISTORY_SOURCE_FALLBACK_FIELDS:
                 if field == "long_contract_object":
                     continue
                 value = history.get(field)

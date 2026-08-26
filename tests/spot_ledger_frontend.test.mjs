@@ -99,6 +99,13 @@ test("manual edit labels expose required fields and conditional long-contract ru
   assert.match(spotJs, /long_contract_object/);
 });
 
+test("sales type keeps the source value and uses the backend land-goods relation", () => {
+  assert.match(spotJs, /record\.is_land_goods/);
+  assert.match(spotJs, /sales_type_options/);
+  assert.match(indexHtml, /spotLedgerSalesTypeOptions/);
+  assert.doesNotMatch(indexHtml, /<option>现货-市场加价<\/option>/);
+});
+
 test("sync status distinguishes latest task state from current row errors", () => {
   assert.match(
     spotJs,

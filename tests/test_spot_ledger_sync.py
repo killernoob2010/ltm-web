@@ -41,7 +41,7 @@ def test_fixture_scan_accepts_only_seven_groups_spot_and_effective_records():
     assert all(record["eligible"] for record in scan.records)
     assert len({record["source_detail_id"] for record in scan.records}) == len(scan.records)
     assert sum(record["AD"] == "C-100" for record in scan.records) == 2
-    assert {record["D"] for record in scan.records} >= {"现货-市场加价", "现货-背对背", "船货-落地"}
+    assert {record["D"] for record in scan.records} >= {"B05", "B06", "B07", "B09"}
 
 
 def test_full_scan_upsert_is_idempotent_and_preserves_manual_fields(ledger_db):
@@ -623,7 +623,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
     record = scan.records[0]
     assert record["source_detail_id"] == "sale-line-1"
     assert record["eligible"] is True
-    assert record["D"] == "现货-市场加价"
+    assert record["D"] == "B07"
     assert record["E"] == "大客户组"
     assert record["AP"] == "东北组"
     assert record["AQ"] == "是"
@@ -1983,7 +1983,7 @@ def test_confirmed_profile_reads_observed_jmreport_shape_and_maps_system_fields(
     assert scan.page_count == 2
     assert [record["source_detail_id"] for record in scan.records] == ["REAL-1", "REAL-2"]
     first = scan.records[0]
-    assert first["D"] == "船货-落地"
+    assert first["D"] == "贸易-代理落地-B09"
     assert first["E"] == "山东组" and first["AP"] == "唐山组" and first["AQ"] == "是"
     assert first["F"] == "操作抬头A"
     assert first["G"] == "2026-08-20" and first["U"] == "2026-08-21"
@@ -2155,3 +2155,36 @@ def test_history_migration_is_2026_only_and_does_not_overwrite_nonempty_conflict
     assert by_contract["C-102"]["AM"] == "应写入"
     assert by_contract["C-101"]["K"] == "船B"
     assert by_contract["C-103"]["AM"] in (None, "")
+
+
+def test_history_sales_type_prefers_system_value_and_uses_excel_only_when_system_is_blank(ledger_db, tmp_path):
+    from openpyxl import Workbook
+    from app.spot_ledger_sync import apply_full_scan, migrate_history_workbook
+
+    apply_full_scan(load_fixture_scan(), "2026-08-24T09:00+08:00")
+    with ledger_db.connect() as conn:
+        conn.execute('UPDATE spot_ledger_records SET "D" = ? WHERE "AD" = ?', ("", "C-103"))
+
+    path = tmp_path / "history-sales-type.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "现货业务台账"
+    sheet.append(["销售合同号", "商品名称", "销售价格（元/吨）", "销售数量（吨）", "销售日期", "销售类型"])
+    sheet.append(["C-102", "铁矿石", 820, 100, "2026-08-18", "B05"])
+    sheet.append(["C-103", "铁矿石", 790, 60, "2026-08-17", "贸易-落地-固定价-B05"])
+    workbook.save(path)
+
+    preview = migrate_history_workbook(path)
+    assert preview["conflicts"] == 1
+    assert preview["candidate_updates"] == 1
+    applied = migrate_history_workbook(path, apply=True)
+    assert applied["updated"] == 1
+
+    with ledger_db.connect() as conn:
+        rows = conn.execute(
+            'SELECT "AD", "D" FROM spot_ledger_records WHERE "AD" IN (?, ?) ORDER BY "AD"',
+            ("C-102", "C-103"),
+        ).fetchall()
+    by_contract = {row["AD"]: row for row in rows}
+    assert by_contract["C-102"]["D"] == "B09"
+    assert by_contract["C-103"]["D"] == "贸易-落地-固定价-B05"

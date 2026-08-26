@@ -49,12 +49,13 @@ def test_records_support_combined_filters_and_expose_all_field_definitions(ledge
 
     admin, _ = ledger_context
     result = get_records(
-        sales_group="山东组", profit_group="唐山组", sales_type="船货-落地", product_name="铁矿石",
+        sales_group="山东组", profit_group="唐山组", sales_type="B09", product_name="铁矿石",
         port="日照港", operation_title="操作抬头A", supplier="供应商A", customer="客户C",
         contract_number="C-102", user=admin,
     )
     assert [row["source_detail_id"] for row in result["records"]] == ["D1004"]
     assert result["count"] == 1
+    assert {"B05", "B06", "B07", "B09"} <= set(result["sales_type_options"])
     assert [field["code"] for field in field_definitions(user=admin)["fields"]] == list(FIELD_CODES)
 
 
@@ -71,7 +72,7 @@ def test_record_pages_are_server_bounded_and_return_only_list_projection(ledger_
     assert {row["record_id"] for row in first["records"]}.isdisjoint(
         row["record_id"] for row in second["records"]
     )
-    assert {"record_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X", "supplement_status", "sync_status"} <= set(first["records"][0])
+    assert {"record_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X", "supplement_status", "sync_status", "is_land_goods"} <= set(first["records"][0])
     assert "C" not in first["records"][0]
     assert "missing_fields" not in first["records"][0]
     assert "source_payload_json" not in first["records"][0]
@@ -97,7 +98,7 @@ def test_backfill_snapshot_is_admin_only_current_scope_and_omits_payload(ledger_
     assert snapshot["count"] == len(snapshot["records"])
     assert snapshot["records"]
     assert all(row["U"] >= "2026-01-01" for row in snapshot["records"])
-    assert {"record_id", "AD", "H", "U", "L", "X", "Z", "K"} <= set(snapshot["records"][0])
+    assert {"record_id", "AD", "H", "U", "L", "X", "Z", "K", "D"} <= set(snapshot["records"][0])
     assert all("source_payload_json" not in row for row in snapshot["records"])
     with pytest.raises(HTTPException) as denied:
         get_backfill_snapshot(user=trade_user)
@@ -330,6 +331,40 @@ def test_manual_edit_requires_sensitive_permission_and_cannot_change_system_fiel
     with pytest.raises(HTTPException) as readonly:
         patch_record("spot:D1001", SpotLedgerPatch(values={"AD": "不能改合同号"}), user=admin)
     assert readonly.value.status_code == 400
+
+
+def test_system_fallback_only_fills_blank_sales_type_for_admin(ledger_context):
+    from app.spot_ledger import SpotLedgerSystemFallbackPatch, get_record, patch_system_fallback
+
+    admin, trade_user = ledger_context
+    with db.connect() as conn:
+        conn.execute('UPDATE spot_ledger_records SET "D" = ? WHERE record_id = ?', ("", "spot:D1001"))
+
+    updated = patch_system_fallback(
+        "spot:D1001",
+        SpotLedgerSystemFallbackPatch(values={"D": "贸易-代理落地-B09"}, expected_values={"D": ""}),
+        user=admin,
+    )
+    assert updated["record"]["D"] == "贸易-代理落地-B09"
+    assert updated["record"]["is_land_goods"] is True
+
+    with pytest.raises(HTTPException) as denied:
+        patch_system_fallback(
+            "spot:D1002",
+            SpotLedgerSystemFallbackPatch(values={"D": "B05"}),
+            user=trade_user,
+        )
+    assert denied.value.status_code == 403
+
+    with pytest.raises(HTTPException) as occupied:
+        patch_system_fallback(
+            "spot:D1002",
+            SpotLedgerSystemFallbackPatch(values={"D": "B05"}),
+            user=admin,
+        )
+    assert occupied.value.status_code == 409
+
+    assert get_record("spot:D1001", user=admin)["record"]["D"] == "贸易-代理落地-B09"
 
 
 def test_strategy_hedging_requires_complete_open_close_and_rejects_partial_close(ledger_context):

@@ -18,7 +18,7 @@ def test_field_contract_contains_exactly_a_to_ay():
 
 
 def test_contract_mapping_uses_signed_date_and_settlement_after_close():
-    from app.spot_ledger import normalize_sales_contract_record
+    from app.spot_ledger import normalize_sales_contract_record, record_to_public
 
     record = normalize_sales_contract_record({
         "detail_id": "D-1", "spot_type": "现货", "contract_status": "生效",
@@ -29,7 +29,8 @@ def test_contract_mapping_uses_signed_date_and_settlement_after_close():
     })
     assert record["U"] == "2026-08-24"
     assert record["L"] == record["X"] == 100
-    assert record["D"] == "船货-落地"
+    assert record["D"] == "B09"
+    assert record_to_public(record)["is_land_goods"] is True
     assert record["E"] == "山东组" and record["AP"] == "唐山组"
     assert record["AQ"] == "是"
 
@@ -118,20 +119,21 @@ def test_confirmed_history_supplier_dictionary_maps_repeated_exact_matches(sourc
 
 
 @pytest.mark.parametrize(
-    ("source_category", "expected_type"),
+    ("source_category", "expected_land_goods"),
     [
-        ("贸易-港口现货-市场加价-B07", "现货-市场加价"),
-        ("贸易-港口现货-背对背-B06", "现货-背对背"),
-        ("贸易-代理落地-B09", "船货-落地"),
-        ("贸易-落地-固定价-B05", "船货-落地"),
-        ("B0701", "现货-市场加价"),
-        ("B0601", "现货-背对背"),
-        ("B0901", "船货-落地"),
-        ("B0501", "船货-落地"),
+        ("贸易-港口现货-市场加价-B07", False),
+        ("贸易-港口现货-背对背-B06", False),
+        ("贸易-代理落地-B09", True),
+        ("贸易-落地-固定价-B05", True),
+        ("贸易-代理落地-B0901", True),
+        ("B0701", False),
+        ("B0601", False),
+        ("B0901", True),
+        ("B0501", True),
     ],
 )
-def test_confirmed_source_business_categories_map_without_false_sync_errors(source_category, expected_type):
-    from app.spot_ledger import normalize_sales_contract_record
+def test_source_business_categories_are_preserved_and_classified_without_conversion_errors(source_category, expected_land_goods):
+    from app.spot_ledger import normalize_sales_contract_record, record_to_public
 
     record = normalize_sales_contract_record({
         "detail_id": "D-SOURCE", "spot_type": "现货", "contract_status": "生效",
@@ -140,7 +142,8 @@ def test_confirmed_source_business_categories_map_without_false_sync_errors(sour
         "contract_quantity": "20", "business_category_code": source_category,
     })
 
-    assert record["D"] == expected_type
+    assert record["D"] == source_category
+    assert record_to_public(record)["is_land_goods"] is expected_land_goods
     assert not any(error["type"] == "conversion_mapping" and error["field"] == "D" for error in record["sync_errors"])
 
 

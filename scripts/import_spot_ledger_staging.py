@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.spot_ledger import (  # noqa: E402
     FIELD_DEFINITIONS,
+    HISTORY_SOURCE_FALLBACK_FIELDS,
     MANUAL_FIELDS,
     NUMERIC_FIELDS,
     SPOT_LEDGER_FOCUS_START_DATE,
@@ -37,7 +38,7 @@ from app.spot_ledger import (  # noqa: E402
 
 
 STAGING_BASE_URL = "https://ltm-web-staging.onrender.com"
-BACKFILL_FIELDS = MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS
+BACKFILL_FIELDS = MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS | HISTORY_SOURCE_FALLBACK_FIELDS
 SOURCE_KEY_FIELDS = {"AD", "H", "Z", "X", "L", "U"}
 PLACEHOLDERS = {"", "-", "--", "—", "——", "***"}
 EXCEL_NET_PRICE_VAT_FACTOR = 1.13
@@ -275,6 +276,17 @@ class StagingLedgerClient:
             payload["expected_values"] = expected_values
         return self._request("PATCH", f"/api/spot-ledger/records/{quote(record_id, safe='')}", json=payload)
 
+    def system_fallback(
+        self,
+        record_id: str,
+        values: dict[str, Any],
+        expected_values: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"values": values}
+        if expected_values is not None:
+            payload["expected_values"] = expected_values
+        return self._request("PATCH", f"/api/spot-ledger/records/{quote(record_id, safe='')}/system-fallback", json=payload)
+
     def reconcile_mappings(self, apply: bool = False) -> dict[str, Any]:
         return self._request("POST", "/api/spot-ledger/reconcile-mappings", params={"apply": str(apply).lower()})
 
@@ -289,7 +301,14 @@ def apply_backfill_plan(client: StagingLedgerClient, result: dict[str, Any], cha
     change_log.write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding="utf-8")
     for change in changes:
         try:
-            client.patch(change["record_id"], change["values"], expected_values=change["previous"])
+            system_values = {field: value for field, value in change["values"].items() if field in HISTORY_SOURCE_FALLBACK_FIELDS}
+            system_expected = {field: change["previous"].get(field) for field in system_values}
+            if system_values:
+                client.system_fallback(change["record_id"], system_values, expected_values=system_expected)
+            manual_values = {field: value for field, value in change["values"].items() if field not in HISTORY_SOURCE_FALLBACK_FIELDS}
+            manual_expected = {field: change["previous"].get(field) for field in manual_values}
+            if manual_values:
+                client.patch(change["record_id"], manual_values, expected_values=manual_expected)
             applied += 1
         except (OSError, RuntimeError, requests.RequestException):
             failed += 1

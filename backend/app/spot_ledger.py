@@ -33,16 +33,10 @@ SPOT_LEDGER_EXPORT_RESOURCE = "spot_ledger.export"
 SHANGHAI_GROUPS = ("大客户组", "东北组", "山东组", "黄骅组", "天津组", "唐山组", "南方组")
 LAND_SALES_TYPE = "船货-落地"
 SPOT_LEDGER_FOCUS_START_DATE = "2026-01-01"
-SALES_TYPE_MAP = {
-    "B07": "现货-市场加价",
-    "B06": "现货-背对背",
-    "B09": LAND_SALES_TYPE,
-    "B05": LAND_SALES_TYPE,
-    "贸易-港口现货-市场加价-B07": "现货-市场加价",
-    "贸易-港口现货-背对背-B06": "现货-背对背",
-    "贸易-代理落地-B09": LAND_SALES_TYPE,
-    "贸易-落地-固定价-B05": LAND_SALES_TYPE,
-}
+KNOWN_SALES_TYPE_VALUES = frozenset({"现货-市场加价", "现货-背对背", LAND_SALES_TYPE})
+LAND_SALES_TYPE_VALUES = frozenset({LAND_SALES_TYPE, "贸易-代理落地-B09", "贸易-落地-固定价-B05"})
+SALES_TYPE_CODE_PATTERN = re.compile(r"(?<![A-Z0-9])B(?:05|06|07|09)\d*(?![A-Z0-9])", re.IGNORECASE)
+HISTORY_SOURCE_FALLBACK_FIELDS = frozenset({"D"})
 PLACEHOLDER_VALUES = {"--", "***", "---", "**", "****", "—", "——"}
 NUMERIC_FIELDS = {"L", "M", "N", "O", "X", "Y", "Z", "AA", "AH", "AI", "AJ", "AK", "AL"}
 MANUAL_FIELDS = {
@@ -59,7 +53,7 @@ LIST_RECORD_FIELDS = (
     "supplement_status", "sync_status", "sync_error_summary",
 )
 BACKFILL_SNAPSHOT_FIELDS = (
-    "record_id", "source_detail_id", "AD", "H", "U", "L", "X", "Z",
+    "record_id", "source_detail_id", "AD", "H", "U", "L", "X", "Z", *sorted(HISTORY_SOURCE_FALLBACK_FIELDS),
     *sorted(MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS),
 )
 
@@ -79,7 +73,7 @@ FIELD_DEFINITIONS = [
     _field("A", "数据来源", "计算", "业务台账-销售组别"),
     _field("B", "序列", "计算", "同销售组当前最大序列加一，不重排历史"),
     _field("C", "建仓", "手工/必填", "人工录入", "自主建仓或非自主建仓"),
-    _field("D", "销售类型", "系统映射", "销售合同业务类别编码 B07/B06/B09/B05"),
+    _field("D", "销售类型", "系统", "销售合同业务类别原值", "落地货判定由系统编码关系单独计算"),
     _field("E", "销售组别", "系统", "量归属组"),
     _field("F", "操作抬头", "系统转换", "源系统名称经显式字典转换"),
     _field("G", "采购日期", "系统", "资源日期"),
@@ -91,7 +85,7 @@ FIELD_DEFINITIONS = [
     _field("M", "采购价格（元/吨）", "系统", "销售合同采购价格"),
     _field("N", "实物货物成本含税单价（锁汇）", "手工/必填", "人工录入", "非负数"),
     _field("O", "实物资金成本含税单价", "手工/必填", "人工录入", "数值，0和负数有效"),
-    _field("P", "是否长协", "条件必填", "船货-落地人工录入", "船货-落地时必填是/否"),
+    _field("P", "是否长协", "条件必填", "落地货人工录入", "落地货判定为是时必填是/否"),
     _field("Q", "供应商", "系统转换", "源供应商经显式字典转换"),
     _field("R", "付款条件", "手工", "人工录入"),
     _field("S", "采购业务", "系统", "销售合同采购业务"),
@@ -269,17 +263,28 @@ def _mapped_value(
     return text
 
 
-def _business_type(raw_value: Any, errors: list[dict[str, str]]) -> str:
-    code = _text(raw_value)
-    if code in SALES_TYPE_MAP:
-        return SALES_TYPE_MAP[code]
-    if re.fullmatch(r"B(?:05|06|07|09)\d*", code):
-        return SALES_TYPE_MAP[code[:3]]
-    if code in SALES_TYPE_MAP.values():
-        return code
-    if code:
-        errors.append({"type": "conversion_mapping", "field": "D", "message": f"未知销售类型: {code}"})
-    return code
+def _sales_type_code(raw_value: Any) -> str:
+    text = _text(raw_value).upper()
+    match = SALES_TYPE_CODE_PATTERN.search(text)
+    return match.group(0)[:3] if match else ""
+
+
+def is_land_sales_type(raw_value: Any) -> bool:
+    """Return the long-contract business relation without changing the raw D value."""
+    text = _text(raw_value)
+    if text in LAND_SALES_TYPE_VALUES:
+        return True
+    return _sales_type_code(text) in {"B05", "B09"}
+
+
+def _sales_type_value(raw_value: Any, errors: list[dict[str, str]]) -> str:
+    value = _text(raw_value)
+    if not value:
+        return ""
+    if value in KNOWN_SALES_TYPE_VALUES or _sales_type_code(value):
+        return value
+    errors.append({"type": "conversion_mapping", "field": "D", "message": f"未知销售类型: {value}"})
+    return value
 
 
 def _quantity(raw: dict[str, Any]) -> Optional[float | int]:
@@ -302,7 +307,7 @@ def calculate_derived_fields(record: dict[str, Any]) -> dict[str, Any]:
         result["AQ"] = ""
     result["AS"] = _month_start(result.get("U"))
     result["AT"] = _month_start(result.get("AO")) or result["AS"]
-    if result.get("D") == LAND_SALES_TYPE and not result.get("P"):
+    if is_land_sales_type(result.get("D")) and not result.get("P"):
         result["P"] = ""
     return result
 
@@ -320,7 +325,7 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
     if not detail_id:
         errors.append({"type": "missing_detail_id", "field": "source_detail_id", "message": "销售合同商品明细 ID 为空"})
 
-    sales_type = _business_type(_value(raw, "business_category_code", "sales_type"), errors)
+    sales_type = _sales_type_value(_value(raw, "business_category_code", "sales_type"), errors)
     quantity_group = _text(_value(raw, "quantity_group", "sales_group"))
     profit_group = _text(_value(raw, "profit_group", "profit_group_name"))
     if quantity_group and quantity_group not in SHANGHAI_GROUPS:
@@ -361,7 +366,7 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
         "M": _number(_value(raw, "purchase_price", "M")),
         "N": _number(_value(raw, "cargo_cost_price", "N")),
         "O": _number(_value(raw, "funding_cost_price", "O")),
-        "P": _text(_value(raw, "is_long_contract", "P")) if sales_type == LAND_SALES_TYPE else "",
+        "P": _text(_value(raw, "is_long_contract", "P")) if is_land_sales_type(sales_type) else "",
         # Q is the legal supplier name used for identity, search, export and audit.
         # A confirmed short name is exposed separately as a display-only alias.
         "Q": supplier_raw,
@@ -417,7 +422,7 @@ def missing_required_fields(record: dict[str, Any]) -> list[str]:
     for code, name in required:
         if record.get(code) is None or _text(record.get(code)) == "":
             missing.append(name)
-    if _text(record.get("D")) == LAND_SALES_TYPE:
+    if is_land_sales_type(record.get("D")):
         if _text(record.get("P")) not in {"是", "否"}:
             missing.append("是否长协")
         elif _text(record.get("P")) == "是" and _text(record.get("long_contract_object")) == "":
@@ -435,7 +440,7 @@ def validate_record_values(record: dict[str, Any]) -> dict[str, str]:
         value = _number(record.get(code))
         if value is not None and value < 0:
             errors[code] = "该字段不能为负数"
-    if _text(record.get("D")) == LAND_SALES_TYPE and _text(record.get("P")) not in {"", "是", "否"}:
+    if is_land_sales_type(record.get("D")) and _text(record.get("P")) not in {"", "是", "否"}:
         errors["P"] = "是否长协只能选择是或否"
     if _text(record.get("V")) and _text(record.get("V")) not in {"其他钢厂", "贸易商", "子公司"}:
         errors["V"] = "客户性质不在允许值域"
@@ -563,6 +568,7 @@ def record_to_public(record: dict[str, Any]) -> dict[str, Any]:
     is_record = any(key in result for key in ("record_id", "source_detail_id", "AD", "Q", "H"))
     if is_record:
         result["supplier_display_name"] = supplier_display_name(result.get("Q"))
+        result["is_land_goods"] = is_land_sales_type(result.get("D"))
         result["scope_status"] = "历史范围外" if is_historical_scope(result.get("U")) else "当前范围"
         if result["scope_status"] == "历史范围外":
             result["supplement_status"] = "历史范围外"
@@ -689,6 +695,24 @@ def count_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dic
     return int(_row_dict(row).get("count") or 0)
 
 
+def list_sales_type_options(*, user: Optional[dict[str, Any]] = None) -> list[str]:
+    require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            """
+            SELECT DISTINCT "D" AS sales_type
+            FROM spot_ledger_records
+            WHERE record_source_type = '现货同步'
+              AND is_active = 1
+              AND "D" IS NOT NULL
+              AND TRIM("D") <> ''
+            ORDER BY "D"
+            """,
+        ).fetchall()
+    return [_text(_row_dict(row).get("sales_type")) for row in rows if _text(_row_dict(row).get("sales_type"))]
+
+
 def get_backfill_snapshot(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Return the admin-only current-scope fields needed for safe Excel backfill matching."""
     active_user = _get_user(user)
@@ -735,6 +759,7 @@ def get_records(
     return {
         "records": list_records(params, user=user, list_projection=True),
         "count": count_records(params, user=user),
+        "sales_type_options": list_sales_type_options(user=user),
         "limit": limit,
         "offset": offset,
     }
@@ -753,6 +778,10 @@ def get_record(record_id: str, user=Depends(_request_user)):
 class SpotLedgerPatch(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     expected_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class SpotLedgerSystemFallbackPatch(SpotLedgerPatch):
+    """Admin-only source fallback used when the system field is blank."""
 
 
 @router.patch("/spot-ledger/records/{record_id}")
@@ -813,11 +842,47 @@ def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request
     return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
 
 
+@router.patch("/spot-ledger/records/{record_id}/system-fallback")
+def patch_system_fallback(record_id: str, payload: SpotLedgerSystemFallbackPatch, user=Depends(_request_user)):
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可写入系统字段兜底值")
+    values = payload.values or {}
+    expected_values = payload.expected_values or {}
+    unknown = sorted(set(values) - set(HISTORY_SOURCE_FALLBACK_FIELDS))
+    unknown_expected = sorted(set(expected_values) - set(HISTORY_SOURCE_FALLBACK_FIELDS))
+    if unknown or unknown_expected or set(values) != set(HISTORY_SOURCE_FALLBACK_FIELDS):
+        raise HTTPException(status_code=400, detail={"message": "系统兜底只允许写入销售类型原值", "fields": unknown or unknown_expected})
+    incoming = _text(values.get("D"))
+    if not incoming:
+        raise HTTPException(status_code=400, detail="销售类型兜底值不能为空")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(cur, "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="台账记录不存在")
+        current = _row_dict(row)
+        if expected_values and not _expected_value_equal("D", current.get("D"), expected_values.get("D")):
+            raise HTTPException(status_code=409, detail={"message": "记录已被其他操作更新", "fields": ["D"]})
+        if _text(current.get("D")):
+            raise HTTPException(status_code=409, detail={"message": "系统已有销售类型，Excel 不能覆盖", "fields": ["D"]})
+        projected = calculate_derived_fields({**current, "D": incoming})
+        missing = missing_required_fields(projected)
+        db._exec(
+            cur,
+            'UPDATE spot_ledger_records SET "D" = ?, missing_fields = ?, supplement_status = ?, updated_at = ? WHERE record_id = ?',
+            (incoming, json.dumps(missing, ensure_ascii=False), "待补录" if missing else "已完成", datetime.now().isoformat(timespec="seconds"), record_id),
+        )
+        saved = db._exec(cur, "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
+    return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
+
+
 def get_pending(*, limit: int = 20, offset: int = 0, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     params = {"supplement_status": "待补录", "limit": limit, "offset": offset}
     return {
         "records": list_records(params, user=user, list_projection=True),
         "count": count_records(params, user=user),
+        "sales_type_options": list_sales_type_options(user=user),
         "limit": limit,
         "offset": offset,
     }
@@ -836,6 +901,7 @@ def get_sync_errors(*, limit: int = 20, offset: int = 0, user: Optional[dict[str
         "records": records,
         "runs": runs,
         "count": count_records(params, user=user),
+        "sales_type_options": list_sales_type_options(user=user),
         "limit": limit,
         "offset": offset,
     }
