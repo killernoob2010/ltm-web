@@ -1450,7 +1450,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 purchase_line = purchase_lines.get(purchase_line_id, {})
                 price_mode, _ = self._dictionary_label(dictionaries["price_mode"], line.get("priceMode"))
                 business_category = report_sales_type_labels.get(detail_id) or self._business_category_value(demand)
-                if self.enrich_sales_type_labels and re.fullmatch(r"B(?:05|06|07|09)\d*", str(business_category or ""), flags=re.IGNORECASE):
+                if self.enrich_sales_type_labels and re.fullmatch(r"[A-Z]{1,3}\d{2,}", str(business_category or ""), flags=re.IGNORECASE):
                     record_errors.append(
                         {
                             "type": "missing_source_sales_type_label",
