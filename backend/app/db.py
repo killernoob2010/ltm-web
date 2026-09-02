@@ -39,6 +39,14 @@ TRADING_MANAGEMENT_TABLES = (
     "trading_fact_source_differences",
 )
 
+TRADING_COLLECTOR_TABLES = (
+    "trading_collector_pairing_codes",
+    "trading_collector_devices",
+    "trading_intraday_fill_observations",
+    "trading_intraday_fills",
+    "trading_collector_issues",
+)
+
 MODULES = [
     ("台账管理", "sh_junneng", "上海钧能台账"),
     ("台账管理", "steel_export", "钢材出口套保台账"),
@@ -1101,6 +1109,7 @@ def init_db() -> None:
         migrate_dv_integration_schema(conn)
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
+        migrate_trading_collector_schema(conn)
 
         ensure_admin_user(cur, "管理员")
         ensure_admin_user(cur, "admin")
@@ -2064,6 +2073,203 @@ def migrate_trading_management_schema(conn) -> None:
                 (exchange, product_code, asset_type, multiplier, tick),
             )
     conn.commit()
+
+
+def migrate_trading_collector_schema(conn) -> None:
+    """Create the isolated, provisional WH6 collector data model."""
+    cur = conn.cursor()
+    if _is_pg():
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trading_collector_pairing_codes (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                code_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_by INTEGER REFERENCES users(id),
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS trading_collector_devices (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                device_name TEXT NOT NULL,
+                client_version TEXT NOT NULL DEFAULT '',
+                fingerprint TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                bound_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT,
+                revoked_at TEXT,
+                last_error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS trading_intraday_fill_observations (
+                id SERIAL PRIMARY KEY,
+                device_id INTEGER NOT NULL REFERENCES trading_collector_devices(id),
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                source_event_key TEXT NOT NULL,
+                observation_hash TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'accepted',
+                observed_at TEXT,
+                received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(device_id, source_event_key, observation_hash)
+            );
+            CREATE TABLE IF NOT EXISTS trading_intraday_fills (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                source_event_key TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                trade_time TEXT NOT NULL DEFAULT '',
+                trade_timestamp TEXT NOT NULL DEFAULT '',
+                exchange TEXT NOT NULL,
+                contract TEXT NOT NULL,
+                raw_contract TEXT NOT NULL DEFAULT '',
+                asset_type TEXT NOT NULL,
+                side TEXT NOT NULL,
+                open_close TEXT NOT NULL,
+                quantity DOUBLE PRECISION NOT NULL,
+                price TEXT NOT NULL,
+                fee TEXT,
+                turnover TEXT,
+                premium_cashflow TEXT,
+                close_profit TEXT,
+                trade_id TEXT,
+                order_id TEXT,
+                option_kind TEXT,
+                underlying TEXT,
+                expiry_month TEXT,
+                strike TEXT,
+                parser_version TEXT NOT NULL,
+                source_record_sha256 TEXT NOT NULL,
+                source_path TEXT NOT NULL DEFAULT '',
+                source_record_index INTEGER NOT NULL DEFAULT 0,
+                data_status TEXT NOT NULL DEFAULT 'provisional',
+                verification_status TEXT NOT NULL DEFAULT 'pending',
+                first_received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                canonical_hash TEXT NOT NULL,
+                UNIQUE(account_id, source_event_key)
+            );
+            CREATE TABLE IF NOT EXISTS trading_collector_issues (
+                id SERIAL PRIMARY KEY,
+                device_id INTEGER REFERENCES trading_collector_devices(id),
+                account_id INTEGER REFERENCES trading_accounts(id),
+                issue_code TEXT NOT NULL,
+                source_event_key TEXT,
+                message TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_collector_pairing_active
+                ON trading_collector_pairing_codes(account_id, expires_at, used_at);
+            CREATE INDEX IF NOT EXISTS idx_collector_devices_account
+                ON trading_collector_devices(account_id, status, last_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_collector_observations_account
+                ON trading_intraday_fill_observations(account_id, received_at);
+            CREATE INDEX IF NOT EXISTS idx_intraday_fills_query
+                ON trading_intraday_fills(account_id, trade_date, trade_time, contract);
+            CREATE INDEX IF NOT EXISTS idx_collector_issues_account
+                ON trading_collector_issues(account_id, created_at);
+            """
+        )
+        _secure_postgres_tables(cur, TRADING_COLLECTOR_TABLES)
+        return
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS trading_collector_pairing_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            code_hash TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_by INTEGER REFERENCES users(id),
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS trading_collector_devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            device_name TEXT NOT NULL,
+            client_version TEXT NOT NULL DEFAULT '',
+            fingerprint TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'active',
+            bound_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT,
+            revoked_at TEXT,
+            last_error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS trading_intraday_fill_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL REFERENCES trading_collector_devices(id),
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            source_event_key TEXT NOT NULL,
+            observation_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'accepted',
+            observed_at TEXT,
+            received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(device_id, source_event_key, observation_hash)
+        );
+        CREATE TABLE IF NOT EXISTS trading_intraday_fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            source_event_key TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            trade_time TEXT NOT NULL DEFAULT '',
+            trade_timestamp TEXT NOT NULL DEFAULT '',
+            exchange TEXT NOT NULL,
+            contract TEXT NOT NULL,
+            raw_contract TEXT NOT NULL DEFAULT '',
+            asset_type TEXT NOT NULL,
+            side TEXT NOT NULL,
+            open_close TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price TEXT NOT NULL,
+            fee TEXT,
+            turnover TEXT,
+            premium_cashflow TEXT,
+            close_profit TEXT,
+            trade_id TEXT,
+            order_id TEXT,
+            option_kind TEXT,
+            underlying TEXT,
+            expiry_month TEXT,
+            strike TEXT,
+            parser_version TEXT NOT NULL,
+            source_record_sha256 TEXT NOT NULL,
+            source_path TEXT NOT NULL DEFAULT '',
+            source_record_index INTEGER NOT NULL DEFAULT 0,
+            data_status TEXT NOT NULL DEFAULT 'provisional',
+            verification_status TEXT NOT NULL DEFAULT 'pending',
+            first_received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            canonical_hash TEXT NOT NULL,
+            UNIQUE(account_id, source_event_key)
+        );
+        CREATE TABLE IF NOT EXISTS trading_collector_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER REFERENCES trading_collector_devices(id),
+            account_id INTEGER REFERENCES trading_accounts(id),
+            issue_code TEXT NOT NULL,
+            source_event_key TEXT,
+            message TEXT NOT NULL,
+            payload_json TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_collector_pairing_active
+            ON trading_collector_pairing_codes(account_id, expires_at, used_at);
+        CREATE INDEX IF NOT EXISTS idx_collector_devices_account
+            ON trading_collector_devices(account_id, status, last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_collector_observations_account
+            ON trading_intraday_fill_observations(account_id, received_at);
+        CREATE INDEX IF NOT EXISTS idx_intraday_fills_query
+            ON trading_intraday_fills(account_id, trade_date, trade_time, contract);
+        CREATE INDEX IF NOT EXISTS idx_collector_issues_account
+            ON trading_collector_issues(account_id, created_at);
+        """
+    )
 
 
 def sync_trading_module_permissions(cur) -> None:
