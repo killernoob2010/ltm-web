@@ -19,6 +19,7 @@ from .discovery import discover_wh6_sources, validate_sources
 from .local_store import LocalOutbox
 from .models import AccountIdentity
 from .monitor import scan_source
+from .setup_ui import run_first_setup
 from .uploader import StagingUploader
 
 
@@ -235,7 +236,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if not args.configure and not args.once and not args.service:
+            if not args.config.exists():
+                setup_result = run_first_setup(args.config)
+                if setup_result != 0:
+                    return setup_result
+            config = CollectorConfig.load(args.config)
+            run_service(config)
+            return 0
         if args.configure:
+            if not args.source and not args.pairing_code:
+                return run_first_setup(args.config)
             if args.source:
                 selected_path = args.source.expanduser()
                 sources = validate_sources(selected_path)
