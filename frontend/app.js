@@ -146,6 +146,8 @@ function applyUiPermissions() {
   setHidden("#spotLedgerExportBtn", guest || !canModuleSensitive("spot_ledger"));
   setHidden("#spotLedgerStrategyBtn", guest || !canModuleSensitive("spot_ledger"));
   setHidden("#spotLedgerEditBtn", guest || !canModuleSensitive("spot_ledger"));
+  setHidden("#collectorPairingBtn", guest || !canModuleSensitive("trading_collector"));
+  setHidden("#collectorAccountId", guest || !canModuleSensitive("trading_collector"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -154,6 +156,7 @@ const midEventPage = document.querySelector("#midEventPage");
 const shJunnengPage = document.querySelector("#shJunnengPage");
 const riskAlertPage = document.querySelector("#riskAlertPage");
 const userManagementPage = document.querySelector("#userManagementPage");
+const tradingCollectorPage = document.querySelector("#tradingCollectorPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
@@ -565,7 +568,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderVesselOverviewPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, tradingCollectorPage, orderVesselOverviewPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -645,6 +648,11 @@ async function activateModule(code, subName, subView = "") {
   if (code === "order_finance_vessel_overview") {
     showOnly(orderVesselOverviewPage);
     await loadOrderVesselOverview();
+    return;
+  }
+  if (code === "trading_collector") {
+    showOnly(tradingCollectorPage);
+    await window.TradingCollector.activate({ canManage: canModuleSensitive("trading_collector") });
     return;
   }
   if (code === "order_finance_progress") {

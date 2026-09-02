@@ -6,6 +6,7 @@
     <title>轻量化交易管理系统 Web</title>
     <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=server-pagination-20260825" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
+    <link rel="stylesheet" href="/static/trading_collector.css?v=20260902a" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
   </head>
   <body>
@@ -416,6 +417,31 @@
                 <tbody id="usersTable"></tbody>
               </table>
             </div>
+          </section>
+        </section>
+
+        <section id="tradingCollectorPage" class="page hidden collector-page">
+          <div class="toolbar">
+            <label class="collector-account-picker">账户
+              <select id="collectorAccountId" aria-label="采集账户"></select>
+            </label>
+            <button id="collectorPairingBtn" type="button">生成设备连接码</button>
+            <span id="collectorPairingCode" class="collector-pairing-code" aria-live="polite"></span>
+            <span id="collectorStatus" class="toolbar-status">待加载</span>
+          </div>
+          <section class="panel">
+            <div class="panel-head"><h2>采集设备</h2><span id="collectorDeviceCount"></span></div>
+            <div class="table-wrap"><table class="collector-device-table">
+              <thead><tr><th>设备</th><th>账户</th><th>版本</th><th>状态</th><th>最后在线</th><th>操作</th></tr></thead>
+              <tbody id="collectorDevicesTable"></tbody>
+            </table></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>最新盘中期权成交（临时事实）</h2><span id="collectorFillCount"></span></div>
+            <div class="table-wrap"><table class="collector-device-table">
+              <thead><tr><th>交易日</th><th>时间</th><th>交易所</th><th>合约</th><th>买卖</th><th>开平</th><th>手数</th><th>成交价</th><th>状态</th></tr></thead>
+              <tbody id="collectorFillsTable"></tbody>
+            </table></div>
           </section>
         </section>
 
@@ -1625,7 +1651,8 @@
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
     <script src="/static/spot_ledger.js?v=spot-ledger-source-labels-20260826"></script>
-    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
+    <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&cache=20260815-order-lifecycle-fidelity-performance-v10&collector=20260903a"></script>
+    <script src="/static/trading_collector.js?v=20260902a"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

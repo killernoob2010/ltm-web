@@ -1,0 +1,7 @@
+.collector-page { display: flex; flex-direction: column; gap: 16px; }
+.collector-account-picker { display: inline-flex; align-items: center; gap: 6px; }
+.collector-account-picker select { min-width: 160px; }
+.collector-pairing-code { color: #0f766e; font-weight: 600; }
+.collector-device-table { width: 100%; border-collapse: collapse; }
+.collector-device-table th, .collector-device-table td { padding: 9px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; white-space: nowrap; }
+.collector-device-table th { color: #475569; font-size: 12px; background: #f8fafc; }
