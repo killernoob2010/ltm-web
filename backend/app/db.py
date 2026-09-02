@@ -67,6 +67,7 @@ MODULES = [
     ("订单融资管理", "order_finance_capital", "融资资金监控"),
     ("订单融资管理", "order_lifecycle_progress", "订单全流程管理"),
     ("后台管理", "user_management", "用户管理"),
+    ("后台管理", "trading_collector", "期权成交采集设备"),
     ("后台管理", "data_management", "数据管理"),
 ]
 

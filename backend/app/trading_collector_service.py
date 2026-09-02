@@ -230,13 +230,20 @@ def get_device_by_token(token: str) -> Dict[str, Any]:
 
 def heartbeat_device(token: str, client_version: Optional[str] = None) -> Dict[str, Any]:
     device = get_device_by_token(token)
+    return heartbeat_device_id(device["id"], client_version)
+
+
+def heartbeat_device_id(device_id: int, client_version: Optional[str] = None) -> Dict[str, Any]:
     with db.connect() as conn:
+        device = db._exec(conn.cursor(), "SELECT id, account_id, status FROM trading_collector_devices WHERE id = ?", (device_id,)).fetchone()
+        if not device or device["status"] != "active":
+            raise CollectorServiceError("device_revoked", "设备已暂停或撤销", 401)
         db._exec(
             conn.cursor(),
             "UPDATE trading_collector_devices SET last_seen_at = ?, client_version = COALESCE(?, client_version), last_error = NULL WHERE id = ? AND status = 'active'",
-            (_now(), str(client_version or "")[:40] or None, device["id"]),
+            (_now(), str(client_version or "")[:40] or None, device_id),
         )
-    return {"device_id": device["id"], "account_id": device["account_id"], "status": "active", "last_seen_at": _now()}
+    return {"device_id": device_id, "account_id": device["account_id"], "status": "active", "last_seen_at": _now()}
 
 
 def revoke_device(device_id: int, actor_id: int) -> Dict[str, Any]:
