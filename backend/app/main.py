@@ -75,6 +75,7 @@ from . import (
     platts_index,
     spot_ledger,
     trading_management,
+    trading_collector,
     trading_valuation,
 )
 
@@ -154,6 +155,7 @@ app.include_router(option_research.router, prefix="/api")
 app.include_router(option_backtest.router, prefix="/api")
 app.include_router(platts_index.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
+app.include_router(trading_collector.router, prefix="/api")
 
 
 class LoginRequest(BaseModel):
