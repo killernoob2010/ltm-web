@@ -48,9 +48,9 @@ def _unprotect_windows(value: str) -> str:
     source = ctypes.create_string_buffer(encrypted)
     source_blob = _DataBlob(len(encrypted), ctypes.cast(source, ctypes.POINTER(ctypes.c_byte)))
     result_blob = _DataBlob()
-    description = ctypes.POINTER(wintypes.LPWSTR)()
+    description = wintypes.LPWSTR()
     crypt32.CryptUnprotectData.argtypes = [
-        ctypes.POINTER(_DataBlob), ctypes.POINTER(ctypes.POINTER(wintypes.LPWSTR)), ctypes.POINTER(_DataBlob),
+        ctypes.POINTER(_DataBlob), ctypes.POINTER(wintypes.LPWSTR), ctypes.POINTER(_DataBlob),
         wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(_DataBlob),
     ]
     crypt32.CryptUnprotectData.restype = wintypes.BOOL
@@ -62,6 +62,8 @@ def _unprotect_windows(value: str) -> str:
         return ctypes.string_at(result_blob.pbData, result_blob.cbData).decode("utf-8")
     finally:
         kernel32.LocalFree(result_blob.pbData)
+        if description:
+            kernel32.LocalFree(description)
 
 
 def protect_token(value: str) -> str:
