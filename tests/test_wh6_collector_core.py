@@ -87,6 +87,7 @@ def _account(*, stable_id="902711111", binding_mode="strong"):
 def test_option_classifier_accepts_iron_ore_option_and_rejects_future():
     assert is_option_contract("i2607-C-750")
     assert normalize_contract("i2607-C-750") == "i2607-c-750"
+    assert normalize_contract("i2607C750") == "i2607-c-750"
     assert is_option_contract("i2607-p-750")
     assert not is_option_contract("i2607")
     assert not is_option_contract("stock-600000")

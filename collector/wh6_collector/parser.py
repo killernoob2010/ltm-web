@@ -48,7 +48,16 @@ def _parse_decimal(value: str) -> Optional[str]:
 
 
 def normalize_contract(contract: str) -> str:
-    return re.sub(r"[_]+", "-", str(contract or "").strip()).lower()
+    text = re.sub(r"[_]+", "-", str(contract or "").strip()).lower()
+    match = OPTION_RE.match(text)
+    if match:
+        return "%s%s-%s-%s" % (
+            match.group("underlying"),
+            match.group("expiry"),
+            match.group("kind").lower(),
+            match.group("strike"),
+        )
+    return text
 
 
 def is_option_contract(contract: str) -> bool:
