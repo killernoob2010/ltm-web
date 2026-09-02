@@ -137,3 +137,12 @@ def test_query_is_read_only_and_filters_account_contract_status(tmp_path, monkey
     service.ingest_observations(activated["token"], [payload(account_id=account_id)])
     assert service.query_intraday_fills(account_id, contract="i2607-c-750")["total"] == 1
     assert service.query_intraday_fills(account_id, contract="i2607-p-750")["total"] == 0
+
+
+def test_malformed_observation_is_quarantined_without_crashing(tmp_path, monkeypatch):
+    account_id = use_temp_db(tmp_path, monkeypatch)
+    activated = activate(account_id)
+    result = service.ingest_observations(activated["token"], ["not-an-observation", {"price": "NaN"}])
+    assert result.quarantined == 2
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM trading_collector_issues").fetchone()["c"] == 2

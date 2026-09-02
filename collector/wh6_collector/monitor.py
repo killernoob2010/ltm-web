@@ -37,7 +37,11 @@ def scan_source(
         return ScanBatch([], [ParseIssue("path_unavailable", str(exc), str(path))], checkpoint or {})
     file_hash = hashlib.sha256(data).hexdigest()
     next_account = account or confirm_weak_binding(source.account_clue or "宏源期货账户待确认", str(path))
-    fills, issues = parse_match_records(path, account=next_account, source_file=source)
+    try:
+        fills, issues = parse_match_records(path, account=next_account, source_file=source)
+    except (OSError, ValueError, IndexError) as exc:
+        issue = ParseIssue("unknown_format", str(exc), str(path), file_sha256=file_hash, severity="error")
+        return ScanBatch([], [issue], checkpoint or {})
     previous_hash = str((checkpoint or {}).get("file_sha256") or "")
     previous_size = int((checkpoint or {}).get("size") or -1)
     previous_count = int((checkpoint or {}).get("record_count") or 0)
@@ -45,15 +49,16 @@ def scan_source(
         fills = [fill for fill in fills if fill.source_record_index >= previous_count]
     elif previous_hash and previous_hash != file_hash:
         issues.append(ParseIssue("file_replaced", "文件已轮换或重新生成，已从文件头重新核对事件身份", str(path), file_sha256=file_hash))
+    declared_count = int.from_bytes(data[8:12], "little") if len(data) >= 12 else 0
     checkpoint_value: Dict[str, object] = {
         "file_sha256": file_hash,
         "size": stat.st_size,
         "modified_ns": stat.st_mtime_ns,
-        "record_count": len(fills) if previous_hash == file_hash and previous_size == stat.st_size else max((fill.source_record_index for fill in fills), default=-1) + 1,
+        "record_count": declared_count,
     }
     # The checkpoint must represent the scanned file, not just option rows.
     if previous_hash != file_hash or previous_size != stat.st_size:
-        checkpoint_value["record_count"] = int.from_bytes(data[8:12], "little") if len(data) >= 12 else 0
+        checkpoint_value["record_count"] = declared_count
     return ScanBatch(fills, issues, checkpoint_value)
 
 

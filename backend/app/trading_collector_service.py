@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
@@ -118,11 +119,10 @@ def _safe_source_path(value: Any) -> str:
     text = str(value or "").replace("\\", "/").strip()
     if not text:
         return ""
-    parts = [part for part in text.split("/") if part]
-    for marker in ("Record", "record"):
-        if marker in parts:
-            text = "/".join(parts[parts.index(marker) :])
-            break
+    parts = [part for part in text.split("/") if part and part not in {".", ".."}]
+    marker_index = next((index for index, part in enumerate(parts) if part.lower() == "record"), None)
+    if marker_index is not None:
+        text = "/".join(parts[marker_index:])
     else:
         text = "/".join(parts[-3:])
     return text[:500]
@@ -138,6 +138,8 @@ def _account(account_id: int) -> Dict[str, Any]:
 
 def issue_pairing_code(account_id: int, actor_id: int, ttl_seconds: int = 900) -> Dict[str, Any]:
     account = _account(account_id)
+    if account.get("account_code") != "hongyuan_futures":
+        raise CollectorServiceError("unsupported_account", "第一版采集器只允许绑定宏源期货账户", 400)
     if ttl_seconds < 60 or ttl_seconds > 3600:
         raise CollectorServiceError("invalid_ttl", "设备连接码有效期必须在 1 至 60 分钟之间")
     code = "WH6-" + secrets.token_urlsafe(10)
@@ -175,6 +177,13 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
         if not expires_at or expires_at <= datetime.now(timezone.utc):
             raise CollectorServiceError("pairing_code_expired", "设备连接码已过期", 401)
         token = secrets.token_urlsafe(32)
+        consumed = db._exec(
+            cur,
+            "UPDATE trading_collector_pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL",
+            (_now(), row["id"]),
+        )
+        if consumed.rowcount != 1:
+            raise CollectorServiceError("pairing_code_invalid", "设备连接码无效或已使用", 401)
         db._exec(
             cur,
             """
@@ -185,11 +194,6 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
             (row["account_id"], device_name, str(client_version or "")[:40], fingerprint, _hash(token), _now(), _now()),
         )
         device_id = db.last_insert_id(conn)
-        db._exec(
-            cur,
-            "UPDATE trading_collector_pairing_codes SET used_at = ? WHERE id = ? AND used_at IS NULL",
-            (_now(), row["id"]),
-        )
         if not device_id:
             device = db._exec(
                 cur,
@@ -286,6 +290,8 @@ def _validate_observation(raw: Dict[str, Any]) -> Dict[str, Any]:
         raise CollectorServiceError("invalid_observation", "成交记录缺少必需字段：" + ", ".join(sorted(missing)))
     data = {key: raw.get(key) for key in ALLOWED_OBSERVATION_FIELDS if key in raw}
     data["source_event_key"] = str(data["source_event_key"]).strip()[:240]
+    if not data["source_event_key"]:
+        raise CollectorServiceError("invalid_observation", "成交记录身份不能为空")
     data["trade_date"] = str(data["trade_date"]).strip()[:10]
     data["trade_time"] = str(data.get("trade_time") or "").strip()[:32]
     data["trade_timestamp"] = str(data.get("trade_timestamp") or "").strip()[:64]
@@ -302,6 +308,12 @@ def _validate_observation(raw: Dict[str, Any]) -> Dict[str, Any]:
     if data["quantity"] <= 0:
         raise CollectorServiceError("invalid_observation", "成交手数必须大于 0")
     data["price"] = str(data["price"]).strip()[:40]
+    try:
+        parsed_price = Decimal(data["price"])
+        if not data["price"] or not parsed_price.is_finite() or parsed_price < 0:
+            raise InvalidOperation
+    except (InvalidOperation, ValueError):
+        raise CollectorServiceError("invalid_observation", "成交价格必须是非负数字")
     if data["asset_type"] != "option" or not OPTION_RE.match(data["contract"]):
         raise CollectorServiceError("unsupported_asset", "第一版只接收明确识别的期权成交")
     if data["side"] not in {"买", "卖", "buy", "sell"} or data["open_close"] not in {"开", "平", "开仓", "平仓", "open", "close"}:
@@ -309,9 +321,15 @@ def _validate_observation(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not SHA256_RE.match(str(data["source_record_sha256"])):
         raise CollectorServiceError("invalid_observation", "原始记录哈希格式不正确")
     data["source_path"] = _safe_source_path(data.get("source_path"))
-    data["source_record_index"] = int(data.get("source_record_index") or 0)
+    try:
+        data["source_record_index"] = int(data.get("source_record_index") or 0)
+    except (TypeError, ValueError):
+        raise CollectorServiceError("invalid_observation", "原始记录序号格式不正确")
+    if data["source_record_index"] < 0:
+        raise CollectorServiceError("invalid_observation", "原始记录序号不能为负数")
     data["data_status"] = "provisional"
-    data["verification_status"] = str(data.get("verification_status") or "pending")[:40]
+    # Clients cannot promote intraday evidence to a settlement-confirmed fact.
+    data["verification_status"] = "pending"
     data["observed_at"] = str(data.get("observed_at") or _now())[:64]
     return data
 
@@ -342,14 +360,15 @@ def ingest_observations(device_token: str, observations: Sequence[Dict[str, Any]
     with db.connect() as conn:
         cur = conn.cursor()
         for raw in observations:
+            raw_map = dict(raw) if isinstance(raw, dict) else {}
             try:
-                data = _validate_observation(dict(raw))
+                data = _validate_observation(raw_map)
             except CollectorServiceError as exc:
                 quarantined += 1
                 db._exec(
                     cur,
                     "INSERT INTO trading_collector_issues (device_id, account_id, issue_code, source_event_key, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-                    (device["id"], account_id, exc.code, str(raw.get("source_event_key") or "")[:240], exc.message, json.dumps(dict(raw), ensure_ascii=False, default=str)[:8000]),
+                    (device["id"], account_id, exc.code, str(raw_map.get("source_event_key") or "")[:240], exc.message, json.dumps(raw_map, ensure_ascii=False, default=str)[:8000]),
                 )
                 continue
             payload_json = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
