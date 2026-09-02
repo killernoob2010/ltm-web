@@ -137,11 +137,15 @@
 - Create: `collector/WH6成交采集器.spec`
 - Create: `collector/installer/README.md`
 - Create: `collector/installer/WH6成交采集器.iss`
+- Create: `collector/installer/build_windows.ps1`
+- Create: `collector/installer/build_windows.cmd`
+- Create: `collector/wh6_collector/setup_ui.py`
 - Create: `docs/superpowers/plans/2026-09-02-wh6-windows-acceptance-runbook.md`
 - Modify: `README.md` (setup/structure section only)
 
 **Interfaces:**
 - `python -m wh6_collector.cli --configure` supports manual source selection, pairing activation, and local status; `--once` performs one read-only scan/upload cycle; `--service` polls every 10 seconds.
+- A packaged executable started without arguments opens the first-run setup dialog when no config exists; after setup it remains in the 10-second service loop.
 - A selected file or `Record` directory can be configured; a directory scans every supported `match.dat` below it. The launcher stores configuration under `%LOCALAPPDATA%\\WH6成交采集器`, uses HTTPS Staging URL supplied at build/config time, and refuses Production URLs in the test build.
 - Windows protects the device token with current-user DPAPI; the non-Windows development fallback is only for local tests.
 - The spec and installer README define the future Windows x64 self-contained `Setup.exe` build, auto-start behavior, clean migration, uninstall preservation, and the requirement to run real-cache acceptance in the Windows 11 VM before calling the package compatible.
@@ -150,6 +154,13 @@
 - [x] **Step 2: Run focused CLI tests and confirm failures.
 - [x] **Step 3: Implement the thin CLI around Tasks 1–2 and add the PyInstaller spec/installer manifest without embedding secrets; keep Windows-only build commands documented rather than pretending Mac can produce the EXE.
 - [x] **Step 4: Run CLI tests, `python -m compileall collector backend/app`, and inspect the package manifest for secret/path leaks. Commit `feat: add windows collector launcher packaging manifest`.
+
+#### Task 6 follow-up: one-click Windows build and first-run UX
+
+- [x] **Step 1: Write failing installer-contract and first-run dispatch tests.**
+- [x] **Step 2: Add `build_windows.cmd`/`build_windows.ps1` to prepare Python 3.11, PyInstaller, and Inno Setup 6, then emit a SHA-256-checked `WH6成交采集器-Setup.exe`.
+- [x] **Step 3: Add the lazy Tk first-run wizard, include Tk hidden imports in the PyInstaller spec, and make the no-argument installed executable enter setup or the service loop.
+- [x] **Step 4: Run the focused installer/collector tests, compile checks, and diff safety check; keep actual Windows build and natural-fill timing as the next acceptance gate.
 
 ### Task 7: End-to-end local verification and Staging readiness gate
 
@@ -164,7 +175,7 @@
 - [ ] **Step 4: If Staging credentials and deployment access are available, apply only the new migration to `LTM WEB STAGING`, run a test query and browser-visible read path, and record evidence; otherwise mark the migration as not applied and leave Production untouched.
 - [x] **Step 5: Perform a final diff/security review for read-only WH6 access, token/key leakage, account spoofing, duplicate handling, and full-path/account masking; then summarize whether Windows `Setup.exe` has been built or remains the next Windows-only gate.
 
-**Current gate:** Step 4 remains open because this Mac worktree has no Staging deployment credentials or Supabase CLI. A real WH6 cache mounted from the Windows 11 VM has now passed local read-only replay (156 match files, 2,353 option fills); Windows package build, account confirmation, and 10-second natural-fill acceptance remain open. The checked-in migration, Windows build manifest, and acceptance runbook are ready for the Windows/Staging validation pass; Production remains untouched.
+**Current gate:** Step 4 remains open because this Mac worktree has no Staging deployment credentials or Supabase CLI. A real WH6 cache mounted from the Windows 11 VM has now passed local read-only replay (156 match files, 2,353 option fills); the one-click Windows build entry is checked in, while the actual package build, account confirmation, and 10-second natural-fill acceptance remain open. The checked-in migration, Windows build scripts, and acceptance runbook are ready for the Windows/Staging validation pass; Production remains untouched.
 
 ---
 

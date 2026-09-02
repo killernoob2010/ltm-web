@@ -134,3 +134,36 @@ def test_service_loop_waits_for_next_poll_until_stop_event(tmp_path, monkeypatch
 
     cli.run_service(config, StopAfterFirstWait())
     assert calls == [config]
+
+
+def test_no_arguments_launch_first_run_setup_when_config_is_missing(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    calls = []
+    monkeypatch.setattr(cli, "run_first_setup", lambda path: calls.append(path) or 7)
+
+    assert cli.main(["--config", str(config_path)]) == 7
+    assert calls == [config_path]
+
+
+def test_no_arguments_start_service_when_config_already_exists(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    sentinel = object()
+    monkeypatch.setattr(cli.CollectorConfig, "load", lambda path: sentinel)
+    calls = []
+    monkeypatch.setattr(cli, "run_service", lambda config: calls.append(config))
+
+    assert cli.main(["--config", str(config_path)]) == 0
+    assert calls == [sentinel]
+
+
+def test_successful_first_run_setup_enters_service_without_second_launch(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    sentinel = object()
+    calls = []
+    monkeypatch.setattr(cli, "run_first_setup", lambda path: 0)
+    monkeypatch.setattr(cli.CollectorConfig, "load", lambda path: sentinel)
+    monkeypatch.setattr(cli, "run_service", lambda config: calls.append(config))
+
+    assert cli.main(["--config", str(config_path)]) == 0
+    assert calls == [sentinel]

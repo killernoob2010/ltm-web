@@ -10,11 +10,17 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[],
-    hiddenimports=["requests"],
+    hiddenimports=[
+        "requests",
+        "tkinter",
+        "tkinter.filedialog",
+        "tkinter.messagebox",
+        "tkinter.simpledialog",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter"],
+    excludes=[],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

@@ -2,16 +2,40 @@
 
 这里保留安装包构建约定，不放入二进制、账户令牌或任何 Supabase 密钥。最终交付物为 Windows x64 自包含的 `WH6成交采集器-Setup.exe`；本机 Mac 环境没有 Windows 构建工具，因此必须在 Windows 11 虚拟机或 Windows CI 上构建并验收。
 
-## 构建顺序
+## 一键构建
 
-1. 在干净 Windows x64 构建机安装 Python 3.11，并执行 `python -m pip install -r collector/requirements-windows.txt`。
-2. 在 `collector` 目录执行 `pyinstaller WH6成交采集器.spec`，得到不依赖系统 Python 的 `dist/WH6成交采集器/WH6成交采集器.exe`。
-3. 使用免费 Inno Setup 6 执行本目录的 `WH6成交采集器.iss`（或使用 NSIS 按同等规则）将该目录封装为单文件 `WH6成交采集器-Setup.exe`。安装器只写程序目录和开始菜单/开机启动项；配置、队列和设备令牌位于 `%LOCALAPPDATA%\\WH6成交采集器`，不写 WH6 `Record` 目录。
-4. 构建时只允许使用 `https://ltm-web-staging.onrender.com` 或本地测试地址；安装包中不得出现 Production URL、数据库密码、`service_role`、完整账户号或静态设备令牌。
+在 Windows x64 电脑上把项目目录复制完整，然后直接双击项目根目录的：
+
+```text
+生成WH6安装包.cmd
+```
+
+它会转到同一目录下的构建脚本；也可以直接双击：
+
+```text
+collector\\installer\\build_windows.cmd
+```
+
+脚本会自动完成以下动作：
+
+1. 查找 Python 3.11；如果电脑安装了 `winget`，缺少时可选择自动安装；
+2. 创建项目内的临时构建虚拟环境并安装锁定版本的 PyInstaller；
+3. 清理旧的构建目录，生成不依赖系统 Python 的 `WH6成交采集器.exe`；
+4. 查找免费 Inno Setup 6 编译器，缺少时可选择用 `winget` 安装；
+5. 生成 `collector\\releases\\WH6成交采集器-Setup.exe`，并写出同名 `.sha256` 校验文件；
+6. 扫描构建来源，拒绝出现 Production 地址、数据库密码、`service_role` 或 `DATABASE_URL`。
+
+依赖已经安装过的电脑无需再次确认，下一次双击即可重新生成。脚本不会把令牌、账户号或数据库凭据写入安装包；构建日志只在当前窗口显示。安装后的配置、队列和设备令牌位于 `%LOCALAPPDATA%\\WH6成交采集器`，不写 WH6 `Record` 目录。
+
+如果公司电脑禁用了 `winget`，请先手工安装 Python 3.11 x64 和 Inno Setup 6，再双击脚本即可。也可以设置 `WH6_ISCC_PATH` 指向 `ISCC.exe`。构建失败时窗口会停留并显示需要处理的动作，不会生成半成品安装包。
+
+构建时只允许使用 `https://ltm-web-staging.onrender.com` 或本地测试地址；安装包中不得出现 Production URL、数据库密码、`service_role`、完整账户号或静态设备令牌。
 
 ## 安装与迁移验收
 
-- 双击 Setup 后不要求用户安装 Python；登录 Windows 后自动启动托盘程序。
+- 双击 Setup 后不要求用户安装 Python；安装完成会启动程序，登录 Windows 后自动运行。
+- 第一次启动会弹出设置向导：优先使用自动发现的唯一 `Record` 目录；发现多个或没有候选时，使用者可以通过文件夹选择框手动选择。
+- 向导会显示脱敏账户信息并要求使用者确认，然后粘贴 Web 测试版生成的一次性连接码；未确认或绑定失败时不会读取并上传新成交。
 - 首次设置优先自动发现 WH6，失败时允许选择 WH6 根目录或 `Record` 目录；程序以 `*match.dat` 作为成交来源，必要时只读同名 `*order.dat` 补齐方向/开平字段，不把订单记录上传，也不改写任何 WH6 文件。
 - 通过 Web 管理页生成 15 分钟一次性连接码，在托盘程序输入后才绑定设备；Windows 版本用当前用户 DPAPI 保护设备令牌后再保存到本机应用数据目录，并可从 Web 管理页撤销。
 - 新电脑不复制旧电脑的本地 SQLite 或令牌；重新安装、选择路径、输入新连接码即可。服务端按账户和成交身份去重。
