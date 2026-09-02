@@ -32,4 +32,4 @@
 - 未知格式、缺少必需字段、冲突记录进入异常，不进入标准成交。
 - `trading_trade_facts`、结算单和 Production 没有任何改动。
 
-当前 Mac 工作区没有 Windows 构建工具和真实 WH6 缓存，因此本手册中的安装包和 10 秒真实成交项仍是 Windows 验收门，不能用本地 API 测试替代。
+当前工作区已经完成真实 WH6 缓存的本地只读回放，但没有 Windows 构建工具和 Staging 凭据；因此本手册中的安装包、账户确认、Staging 入库和 10 秒真实成交项仍是 Windows/Staging 验收门，不能用本地 API 测试替代。

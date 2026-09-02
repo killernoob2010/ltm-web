@@ -164,7 +164,7 @@
 - [ ] **Step 4: If Staging credentials and deployment access are available, apply only the new migration to `LTM WEB STAGING`, run a test query and browser-visible read path, and record evidence; otherwise mark the migration as not applied and leave Production untouched.
 - [x] **Step 5: Perform a final diff/security review for read-only WH6 access, token/key leakage, account spoofing, duplicate handling, and full-path/account masking; then summarize whether Windows `Setup.exe` has been built or remains the next Windows-only gate.
 
-**Current gate:** Step 4 remains open because this Mac worktree has no Staging deployment credentials or Supabase CLI, and no real Windows WH6 cache sample is available. The checked-in migration, Windows build manifest, and acceptance runbook are ready for the Windows/Staging validation pass; Production remains untouched.
+**Current gate:** Step 4 remains open because this Mac worktree has no Staging deployment credentials or Supabase CLI. A real WH6 cache mounted from the Windows 11 VM has now passed local read-only replay (156 match files, 2,353 option fills); Windows package build, account confirmation, and 10-second natural-fill acceptance remain open. The checked-in migration, Windows build manifest, and acceptance runbook are ready for the Windows/Staging validation pass; Production remains untouched.
 
 ---
 
