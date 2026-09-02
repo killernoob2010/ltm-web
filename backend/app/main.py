@@ -69,6 +69,7 @@ from . import (
     order_lifecycle,
     order_finance_snapshot_sync,
     trading_management,
+    trading_collector,
     trading_valuation,
 )
 
@@ -136,6 +137,7 @@ app.include_router(order_finance.router, prefix="/api")
 app.include_router(order_lifecycle.router, prefix="/api")
 app.include_router(order_finance_snapshot_sync.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
+app.include_router(trading_collector.router, prefix="/api")
 
 
 class LoginRequest(BaseModel):

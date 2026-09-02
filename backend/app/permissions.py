@@ -22,6 +22,7 @@ RESOURCE_MODULES = {
     "trading.export": "trading_export",
     "trading.imports": "trading_positions",
     "trading.config": "trading_positions",
+    "trading.collector": "trading_collector",
     "sh_junneng.trades": "sh_junneng",
     "mid_event.monitor": "mid_event_monitor",
     "users": "user_management",
@@ -38,7 +39,7 @@ GUEST_PERMISSIONS = {
 VIEW_ACTIONS = {"view", "detail"}
 EDIT_ACTIONS = {"create", "edit"}
 SENSITIVE_ACTIONS = {"delete", "import", "export", "manage"}
-ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status"}
+ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status", "trading.collector"}
 
 DEPARTMENTS = ("贸易处", "期货组", "财企处", "资金处", "管理部门", "公司领导")
 USER_ROLES = ("用户", "领导", "管理员")
