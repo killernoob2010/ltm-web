@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(SPECPATH)
 
 a = Analysis(
-    [str(ROOT / "wh6_collector" / "cli.py")],
-    pathex=[str(ROOT.parent)],
+    [str(ROOT / "launcher.py")],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=[],
     hiddenimports=["requests"],

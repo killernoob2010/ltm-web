@@ -77,7 +77,7 @@ def _parse_timestamp(value: str, trading_date: str) -> Tuple[str, str]:
             try:
                 parsed = datetime.strptime(candidate, fmt)
                 if fmt.startswith("%H"):
-                    parsed = datetime.strptime(trading_date + " " + candidate, "%Y-%m-%d %H:%M:%S")
+                    parsed = datetime.strptime(trading_date + " " + candidate, "%Y-%m-%d " + fmt)
                 break
             except ValueError:
                 continue
@@ -132,7 +132,8 @@ def _layout_for_bytes(data: bytes) -> Optional[MatchLayout]:
         return None
     candidates = []
     for size in (268, 269):
-        if body_size >= size and body_size % size == 0:
+        complete_count = body_size // size
+        if body_size >= size and (body_size % size == 0 or (declared > complete_count and complete_count > 0)):
             candidates.append(size)
     if not candidates:
         return None
@@ -172,7 +173,7 @@ def parse_match_records(
     available_count = max(0, (len(data) - 16) // layout.record_size)
     complete_count = min(declared_count, available_count)
     issues: List[ParseIssue] = []
-    if available_count < declared_count:
+    if available_count < declared_count or (len(data) - 16) % layout.record_size:
         issues.append(_record_issue("truncated_file", "文件尾部尚未完整写入，已暂不读取缺失记录", path, None, file_hash))
     trading_date = _filename_trading_date(path, source_file.trading_date)
     provisional: List[Tuple[Dict[str, object], bytes, int]] = []

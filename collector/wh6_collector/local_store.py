@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -82,8 +82,15 @@ class LocalOutbox:
         if limit <= 0:
             return []
         now = _now()
+        stale_before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # A process can terminate after claiming but before the HTTP
+            # acknowledgement.  Make those rows retryable on the next scan.
+            connection.execute(
+                "UPDATE outbox SET status='pending', available_at=?, last_error=COALESCE(last_error, 'claim expired'), updated_at=? WHERE status='claimed' AND updated_at < ?",
+                (now, now, stale_before),
+            )
             rows = connection.execute(
                 """
                 SELECT event_key, payload_json, attempts

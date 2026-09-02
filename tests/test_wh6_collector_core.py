@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "collector"))
 
-from wh6_collector.account import account_fingerprint, confirm_weak_binding
+from wh6_collector.account import account_fingerprint, compare_binding, confirm_weak_binding, probe_source_account
 from wh6_collector.formats import MATCH_V1, MATCH_V2_PADDED, detect_layout
 from wh6_collector.models import AccountIdentity, SourceFile
 from wh6_collector.parser import (
@@ -118,6 +118,15 @@ def test_parser_filters_non_options_and_decodes_both_supported_layouts(tmp_path)
     assert not issues_v2
 
 
+def test_random_non_option_contracts_never_enter_fill_list(tmp_path):
+    contracts = ["i2607", "rb2610", "IF2609", "stock-600000", "p", "i2607-c"]
+    for index, contract in enumerate(contracts):
+        path = tmp_path / ("20260902match-%s.dat" % index)
+        _write_match(path, [_record(contract=contract, match_id="NON-%s" % index)], size=268)
+        fills, _ = parse_match_records(path, account=_account(), source_file=_source(path))
+        assert fills == []
+
+
 def test_parser_quarantines_unknown_and_truncated_files_without_writing(tmp_path):
     unknown = tmp_path / "unknown.dat"
     unknown.write_bytes(b"not a supported cache")
@@ -131,6 +140,15 @@ def test_parser_quarantines_unknown_and_truncated_files_without_writing(tmp_path
     assert len(fills) == 1
     assert any(issue.code == "truncated_file" for issue in issues)
     assert truncated.read_bytes() == before
+
+    tail = tmp_path / "20260902match-tail.dat"
+    tail.write_bytes(bytes(bytearray(16)) + _record() + b"partial-tail")
+    tail_data = bytearray(tail.read_bytes())
+    struct.pack_into("<I", tail_data, 8, 2)
+    tail.write_bytes(bytes(tail_data))
+    fills, issues = parse_match_records(tail, account=_account(), source_file=_source(tail))
+    assert len(fills) == 1
+    assert any(issue.code == "truncated_file" for issue in issues)
 
 
 def test_parser_quarantines_missing_required_direction_fields(tmp_path):
@@ -155,6 +173,21 @@ def test_account_binding_distinguishes_strong_and_weak_identity():
     assert weak.confirmed is False
 
 
+def test_source_account_probe_only_trusts_explicit_broker_metadata(tmp_path):
+    path = tmp_path / "Record" / "20260902match.dat"
+    path.parent.mkdir()
+    path.write_bytes(b"")
+    (path.parent / "account.ini").write_text("broker=\u5b8f\u6e90\u671f\u8d27\naccount=902711111\n", encoding="utf-8")
+    observed = probe_source_account(path)
+    assert observed.fingerprint == account_fingerprint("\u5b8f\u6e90\u671f\u8d27\u8d26\u6237", "902711111")
+    assert compare_binding(_account(), observed) == "match"
+
+    (path.parent / "account.ini").write_text("broker=\u5b8f\u6e90\u671f\u8d27\naccount=902711112\n", encoding="utf-8")
+    assert compare_binding(_account(), probe_source_account(path)) == "mismatch"
+    (path.parent / "account.ini").unlink()
+    assert probe_source_account(path).requires_manual_confirmation is True
+
+
 def test_trading_day_maps_night_session_to_previous_exchange_date():
     assert business_trading_day(datetime(2026, 9, 2, 21, 5, 3)) == "2026-09-02"
     assert business_trading_day(datetime(2026, 9, 3, 1, 5, 3)) == "2026-09-02"
@@ -167,6 +200,15 @@ def test_parser_uses_exchange_trading_day_for_after_midnight_fill(tmp_path):
     fills, issues = parse_match_records(path, account=_account(), source_file=_source(path))
     assert not issues
     assert fills[0].trade_date == "2026-09-02"
+
+
+def test_parser_accepts_fractional_trade_time(tmp_path):
+    path = tmp_path / "20260902match.dat"
+    _write_match(path, [_record(timestamp="01:05:03.125")], size=268)
+    fills, issues = parse_match_records(path, account=_account(), source_file=_source(path))
+    assert not issues
+    assert fills[0].trade_date == "2026-09-01"
+    assert fills[0].trade_time == "01:05:03"
 
 
 def test_reference_sessions_are_business_documented_intervals():

@@ -32,7 +32,7 @@ class HeartbeatIn(BaseModel):
 
 
 class IngestIn(BaseModel):
-    observations: List[Dict[str, Any]] = Field(default_factory=list, max_items=500)
+    observations: List[Dict[str, Any]] = Field(default_factory=list, max_length=500)
 
 
 def _service_error(exc: service.CollectorServiceError) -> HTTPException:
@@ -123,13 +123,16 @@ def get_fills(
     user=Depends(trading_collector_current_user),
 ):
     require_permission(user, "trading.options", "view")
-    target_account = account_id
-    if target_account is None:
-        with db.connect() as conn:
-            row = db._exec(conn.cursor(), "SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures' AND is_active = 1").fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="宏源期货账户不存在")
-        target_account = row["id"]
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), "SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures' AND is_active = 1").fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="宏源期货账户不存在")
+    default_account = row["id"]
+    if account_id not in (None, default_account):
+        if not is_admin(user):
+            raise HTTPException(status_code=403, detail="无权读取其他交易账户的盘中成交")
+        raise HTTPException(status_code=400, detail="第一版采集器只提供宏源期货账户的盘中成交")
+    target_account = account_id or default_account
     try:
         return service.query_intraday_fills(target_account, start=start, end=end, contract=contract, status=status, limit=limit)
     except service.CollectorServiceError as exc:
