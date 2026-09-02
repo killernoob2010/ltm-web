@@ -1,0 +1,3 @@
+# Versions are pinned for the Windows build; no Supabase admin key is included.
+requests==2.32.3
+pyinstaller==6.11.1
