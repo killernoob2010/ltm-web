@@ -298,6 +298,16 @@ def _validate_observation(raw: Dict[str, Any]) -> Dict[str, Any]:
     data["exchange"] = str(data["exchange"]).strip()[:40]
     data["contract"] = str(data["contract"]).strip().lower()[:80]
     data["raw_contract"] = str(data["raw_contract"]).strip()[:80]
+    data["parser_version"] = str(data["parser_version"]).strip()[:80]
+    try:
+        datetime.strptime(data["trade_date"], "%Y-%m-%d")
+        datetime.strptime(data["trade_time"], "%H:%M:%S")
+    except ValueError:
+        raise CollectorServiceError("invalid_observation", "成交日期或时间格式无法验证")
+    if not data["trade_timestamp"] or _parse_datetime(data["trade_timestamp"]) is None:
+        raise CollectorServiceError("invalid_observation", "成交时间戳格式无法验证")
+    if not data["exchange"] or not data["raw_contract"] or not data["parser_version"]:
+        raise CollectorServiceError("invalid_observation", "成交记录的交易所、原始合约或解析器版本不能为空")
     data["asset_type"] = str(data["asset_type"]).strip().lower()
     data["side"] = str(data["side"]).strip()[:8]
     data["open_close"] = str(data["open_close"]).strip()[:8]
