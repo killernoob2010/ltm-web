@@ -29,9 +29,22 @@ class MatchLayout:
     trade_id: tuple[int, int] = (236, 252)
 
 
+@dataclass(frozen=True)
+class OrderLayout:
+    """Versioned companion order layout used only to enrich match records."""
+
+    name: str
+    parser_version: str
+    record_size: int
+
+
 MATCH_V1 = MatchLayout("match-v1", "wh6-match-v1", 268)
 MATCH_V2_PADDED = MatchLayout("match-v2-padded", "wh6-match-v2-padded", 269)
 SUPPORTED_MATCH_LAYOUTS: Sequence[MatchLayout] = (MATCH_V1, MATCH_V2_PADDED)
+
+ORDER_V1 = OrderLayout("order-v1", "wh6-order-v1", 231)
+ORDER_V2_PADDED = OrderLayout("order-v2-padded", "wh6-order-v2-padded", 232)
+SUPPORTED_ORDER_LAYOUTS: Sequence[OrderLayout] = (ORDER_V1, ORDER_V2_PADDED)
 
 
 def detect_layout(header: bytes, record_size: int) -> Optional[MatchLayout]:
@@ -39,6 +52,14 @@ def detect_layout(header: bytes, record_size: int) -> Optional[MatchLayout]:
     if len(header) < 16 or record_size <= 0:
         return None
     for layout in SUPPORTED_MATCH_LAYOUTS:
+        if layout.record_size == record_size:
+            return layout
+    return None
+
+
+def detect_order_layout(record_size: int) -> Optional[OrderLayout]:
+    """Select only a registered companion order layout."""
+    for layout in SUPPORTED_ORDER_LAYOUTS:
         if layout.record_size == record_size:
             return layout
     return None

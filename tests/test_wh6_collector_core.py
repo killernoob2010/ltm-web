@@ -37,8 +37,10 @@ def _record(
     quantity=2,
     price="12.5",
     match_id="M-001",
+    reference="ORDER-001",
     side="buy",
     open_close="0",
+    exchange="DCE",
     size=268,
 ):
     record = bytearray(size)
@@ -46,13 +48,31 @@ def _record(
     record[32:64] = _shifted(contract, 32)
     struct.pack_into("<I", record, 120, quantity)
     record[124:140] = _shifted(price, 16)
-    record[140:172] = _shifted("ORDER-001", 32)
+    record[140:172] = _shifted(reference, 32)
     record[172:176] = _shifted(side, 4)
     record[176:180] = _shifted(open_close, 4)
-    record[180:204] = _shifted("DCE", 24)
+    record[180:204] = _shifted(exchange, 24)
     record[204:220] = b"0.80\0" + b"\0" * 11
     record[220:236] = _shifted("0", 16)
     record[236:252] = _shifted(match_id, 16)
+    return bytes(record)
+
+
+def _order_record(
+    *,
+    contract="i2607-C-750",
+    reference="ORDER-001",
+    code="101",
+    quantity=2,
+    price="12.5",
+    size=231,
+):
+    record = bytearray(size)
+    record[32:64] = _shifted(contract, 32)
+    record[120:123] = code.encode("ascii")
+    struct.pack_into("<I", record, 131, quantity)
+    record[147:163] = _shifted(price, 16)
+    record[163:195] = _shifted(reference, 32)
     return bytes(record)
 
 
@@ -117,6 +137,53 @@ def test_parser_filters_non_options_and_decodes_both_supported_layouts(tmp_path)
     assert len(fills_v2) == 1
     assert fills_v2[0].parser_version == "wh6-match-v2-padded"
     assert not issues_v2
+
+
+def test_parser_enriches_match_from_companion_order_without_uploading_orders(tmp_path):
+    match_path = tmp_path / "20260902match.dat"
+    _write_match(
+        match_path,
+        [
+            _record(
+                reference="ORDER-001",
+                side="",
+                open_close="",
+                exchange="",
+            )
+        ],
+        size=MATCH_V1.record_size,
+    )
+    _write_match(
+        tmp_path / "20260902order.dat",
+        [_order_record(reference="ORDER-001", code="101")],
+        size=231,
+    )
+
+    fills, issues = parse_match_records(match_path, account=_account(), source_file=_source(match_path))
+
+    assert not issues
+    assert len(fills) == 1
+    assert fills[0].side == "买"
+    assert fills[0].open_close == "开"
+    assert fills[0].exchange == "DCE"
+
+    match_v2_path = tmp_path / "20260902match-v2.dat"
+    _write_match(
+        match_v2_path,
+        [_record(reference="ORDER-V2", side="", open_close="", exchange="", size=269)],
+        size=269,
+    )
+    _write_match(
+        tmp_path / "20260902order-v2.dat",
+        [_order_record(reference="ORDER-V2", code="301", size=232)],
+        size=232,
+    )
+    fills_v2, issues_v2 = parse_match_records(match_v2_path, account=_account(), source_file=_source(match_v2_path))
+
+    assert not issues_v2
+    assert len(fills_v2) == 1
+    assert fills_v2[0].side == "卖"
+    assert fills_v2[0].open_close == "开"
 
 
 def test_random_non_option_contracts_never_enter_fill_list(tmp_path):
