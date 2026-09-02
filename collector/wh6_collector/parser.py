@@ -194,8 +194,14 @@ def parse_match_records(
         close_profit = _parse_decimal(_decode_shifted(record[slice(*layout.close_profit)]))
         if not is_option_contract(contract) or not quantity:
             continue
-        if not exchange or side not in {"买", "卖", "buy", "sell", "1", "3"} or open_close not in {"开", "平", "开仓", "平仓", "0", "1"}:
-            issues.append(_record_issue("missing_required_field", "期权成交缺少可验证的买卖或开平字段", path, index, file_hash))
+        if (
+            not trade_time
+            or not price
+            or not exchange
+            or side not in {"买", "卖", "buy", "sell", "1", "3"}
+            or open_close not in {"开", "平", "开仓", "平仓", "0", "1"}
+        ):
+            issues.append(_record_issue("missing_required_field", "期权成交缺少可验证的时间、价格、买卖、开平或交易所字段", path, index, file_hash))
             continue
         side = {"buy": "买", "sell": "卖", "1": "买", "3": "卖"}.get(side, side)
         open_close = {"0": "开", "1": "平", "开仓": "开", "平仓": "平"}.get(open_close, open_close)
