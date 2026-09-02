@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from .formats import MatchLayout, detect_layout
+from .formats import MatchLayout, detect_layout, detect_order_layout
 from .models import AccountIdentity, FillRecord, ParseIssue, SourceFile
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -26,6 +26,71 @@ OPTION_RE = re.compile(
     re.IGNORECASE,
 )
 DATE_RE = re.compile(r"(?P<date>\d{8})(?:[^/]*)match(?:[-_][^/]*)?\.dat$", re.IGNORECASE)
+
+# WH6 match records do not carry direction/open-close/exchange in the builds
+# observed so far.  These values are enriched from the paired order record;
+# the map only fills a known exchange and never guesses for an unknown product.
+EXCHANGE_BY_UNDERLYING = {
+    "i": "DCE",
+    "j": "DCE",
+    "jm": "DCE",
+    "m": "DCE",
+    "y": "DCE",
+    "a": "DCE",
+    "b": "DCE",
+    "c": "DCE",
+    "cs": "DCE",
+    "l": "DCE",
+    "v": "DCE",
+    "pp": "DCE",
+    "eg": "DCE",
+    "eb": "DCE",
+    "pg": "DCE",
+    "rr": "DCE",
+    "rb": "SHFE",
+    "hc": "SHFE",
+    "ru": "SHFE",
+    "bu": "SHFE",
+    "fu": "SHFE",
+    "sp": "SHFE",
+    "ss": "SHFE",
+    "cu": "SHFE",
+    "al": "SHFE",
+    "zn": "SHFE",
+    "pb": "SHFE",
+    "ni": "SHFE",
+    "sn": "SHFE",
+    "au": "SHFE",
+    "ag": "SHFE",
+    "sc": "INE",
+    "nr": "INE",
+    "lu": "INE",
+    "bc": "INE",
+    "if": "CFFEX",
+    "ih": "CFFEX",
+    "ic": "CFFEX",
+    "im": "CFFEX",
+    "io": "CFFEX",
+    "mo": "CFFEX",
+    "ec": "CFFEX",
+    "ta": "CZCE",
+    "ma": "CZCE",
+    "sr": "CZCE",
+    "cf": "CZCE",
+    "oi": "CZCE",
+    "rm": "CZCE",
+    "fg": "CZCE",
+    "sa": "CZCE",
+    "pf": "CZCE",
+    "cy": "CZCE",
+    "ap": "CZCE",
+    "cj": "CZCE",
+    "ur": "CZCE",
+    "px": "CZCE",
+    "sh": "CZCE",
+    "sm": "CZCE",
+    "sf": "CZCE",
+}
 
 
 def _decode_shifted(raw: bytes) -> str:
@@ -132,6 +197,66 @@ def _record_issue(code: str, message: str, path: Path, index: Optional[int], fil
     return ParseIssue(code=code, message=message, path=str(path), record_index=index, file_sha256=file_hash)
 
 
+def _companion_order_path(match_path: Path) -> Optional[Path]:
+    name = match_path.name
+    marker = name.lower().find("match")
+    if marker < 0:
+        return None
+    candidate = match_path.with_name(name[:marker] + "order" + name[marker + len("match") :])
+    return candidate if candidate.is_file() else None
+
+
+def _order_layout_for_bytes(data: bytes):
+    if len(data) < 16:
+        return None
+    declared = struct.unpack_from("<I", data, 8)[0]
+    body_size = len(data) - 16
+    for size in (231, 232):
+        complete_count = body_size // size
+        if body_size >= size and (body_size % size == 0 or (declared > complete_count and complete_count > 0)):
+            return detect_order_layout(size)
+    return None
+
+
+def _load_order_enrichment(match_path: Path) -> Tuple[Dict[str, Dict[str, object]], Optional[ParseIssue]]:
+    """Read a paired order cache only to enrich already-recorded fills."""
+    order_path = _companion_order_path(match_path)
+    if order_path is None:
+        return {}, None
+    try:
+        data = order_path.read_bytes()
+    except OSError as exc:
+        return {}, ParseIssue(code="order_read_error", message="无法读取配套 order 成交关联文件: %s" % exc, path=str(order_path))
+    file_hash = hashlib.sha256(data).hexdigest()
+    layout = _order_layout_for_bytes(data)
+    if layout is None:
+        return {}, _record_issue("unknown_order_format", "配套 order 文件格式未验证，成交方向暂不猜测", order_path, None, file_hash)
+    declared_count = struct.unpack_from("<I", data, 8)[0]
+    available_count = max(0, (len(data) - 16) // layout.record_size)
+    complete_count = min(declared_count, available_count)
+    issue = None
+    if available_count < declared_count or (len(data) - 16) % layout.record_size:
+        issue = _record_issue("truncated_order_file", "配套 order 文件尾部尚未完整写入", order_path, None, file_hash)
+    index: Dict[str, Dict[str, object]] = {}
+    for record_index in range(complete_count):
+        start = 16 + record_index * layout.record_size
+        record = data[start : start + layout.record_size]
+        reference = _decode_shifted(record[163:195])
+        if not reference:
+            continue
+        code = record[120:123].decode("ascii", errors="replace").strip(" \x00")
+        side = {"1": "买", "3": "卖"}.get(code[:1])
+        open_close = {"0": "开", "1": "平"}.get(code[1:2])
+        index[reference] = {
+            "contract": _decode_shifted(record[32:64]),
+            "price": _parse_decimal(_decode_shifted(record[147:163])),
+            "side": side,
+            "open_close": open_close,
+            "parser_version": layout.parser_version,
+        }
+    return index, issue
+
+
 def _layout_for_bytes(data: bytes) -> Optional[MatchLayout]:
     if len(data) < 16:
         return None
@@ -178,10 +303,13 @@ def parse_match_records(
     layout = _layout_for_bytes(data)
     if layout is None:
         raise ValueError("未知或无法验证的 WH6 成交缓存格式")
+    order_index, order_issue = _load_order_enrichment(path)
     declared_count = struct.unpack_from("<I", data, 8)[0]
     available_count = max(0, (len(data) - 16) // layout.record_size)
     complete_count = min(declared_count, available_count)
     issues: List[ParseIssue] = []
+    if order_issue is not None:
+        issues.append(order_issue)
     if available_count < declared_count or (len(data) - 16) % layout.record_size:
         issues.append(_record_issue("truncated_file", "文件尾部尚未完整写入，已暂不读取缺失记录", path, None, file_hash))
     trading_date = _filename_trading_date(path, source_file.trading_date)
@@ -197,12 +325,22 @@ def parse_match_records(
         side = _decode_shifted(record[slice(*layout.side)])
         open_close = _decode_shifted(record[slice(*layout.open_close)])
         exchange = _decode_shifted(record[slice(*layout.exchange)]).upper()
-        order_id = _decode_shifted(record[slice(*layout.order_id)]) or None
+        reference = _decode_shifted(record[slice(*layout.order_id)])
+        order_id = reference or None
         trade_id = _decode_shifted(record[slice(*layout.trade_id)]) or None
         fee = _parse_decimal(_decode_ascii(record[slice(*layout.fee)]))
         close_profit = _parse_decimal(_decode_shifted(record[slice(*layout.close_profit)]))
+        order_values = order_index.get(reference, {})
+        if order_values:
+            side = side or str(order_values.get("side") or "")
+            open_close = open_close or str(order_values.get("open_close") or "")
+            price = price or order_values.get("price")
+            contract = contract or str(order_values.get("contract") or "")
         if not is_option_contract(contract) or not quantity:
             continue
+        if not exchange:
+            parts = _option_parts(contract)
+            exchange = EXCHANGE_BY_UNDERLYING.get(str(parts.get("underlying") or "").lower(), "")
         if (
             not trade_time
             or not price

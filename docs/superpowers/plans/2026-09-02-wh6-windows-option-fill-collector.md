@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Scope is only completed option fills; do not parse orders, positions, funds, P&L, quotes, or submit any trading action.
+- Scope is only completed option fills; do not import orders, positions, funds, P&L, quotes, or submit any trading action. A paired `order.dat` may be read-only enrichment for an existing `match.dat` fill, never as an independent business source.
 - Iron-ore options are the first real acceptance sample; parser must reject unsupported/ambiguous records instead of guessing.
 - First run backfills all reliably identifiable historical fills in the bound cache, then polls for new records; complete records target the 10-second Staging path.
 - The bound identity is the confirmed Macro Futures account, not a path. Account change, missing identity, unknown format, unreadable path, or conflicting source pauses new reads/uploads.
@@ -36,7 +36,7 @@
 
 **Interfaces:**
 - `FillRecord`, `AccountIdentity`, `SourceFile`, `ParseIssue`, and `CollectorStatus` are immutable dataclasses containing only normalized, JSON-safe values.
-- `parse_match_records(path: Path, *, account: AccountIdentity, source_file: SourceFile) -> tuple[list[FillRecord], list[ParseIssue]]` reads only match/fill files and never writes to `path`.
+- `parse_match_records(path: Path, *, account: AccountIdentity, source_file: SourceFile) -> tuple[list[FillRecord], list[ParseIssue]]` reads the match/fill file and, when present, its paired order file only for enrichment; it never writes to either source.
 - `detect_layout(header: bytes, record_size: int) -> MatchLayout | None` returns a named supported layout or `None`; no fixed-size fallback is allowed.
 - `is_option_contract(contract: str) -> bool` and `normalize_contract(contract: str) -> str` accept the WH6 option forms used by iron ore (`i2607-C-750`, `i2607-p-750`) and reject future/stock-like values.
 - `account_fingerprint(account_label: str, stable_id: str | None) -> str | None` returns a SHA-256 fingerprint only for a stable identifier; `confirm_weak_binding(...)` marks a source as manual-confirmation-required when no stable ID exists.
@@ -44,7 +44,7 @@
 
 - [x] **Step 1: Write failing tests** for option-only filtering, the supported 268-byte match layout plus an explicitly versioned 269-byte padded layout fixture, truncated/unknown files, strong versus weak account identity, night-session trading-day mapping, and the four supplied reference sessions.
 - [x] **Step 2: Run `pytest -q tests/test_wh6_collector_core.py`** and confirm the new imports/functions fail before implementation.
-- [x] **Step 3: Implement the dataclasses, conservative layout registry, shifted-text/number decoder, option classifier, account fingerprint helper, and time utilities. Keep parser I/O read-only and return quarantine issues for missing fields.
+- [x] **Step 3: Implement the dataclasses, conservative layout registry, shifted-text/number decoder, option classifier, account fingerprint helper, time utilities, and read-only order enrichment for WH6 builds that keep direction/open-close in `order.dat`. Return quarantine issues for missing fields.
 - [x] **Step 4: Re-run the focused tests, then add a property-style test that random non-option records never enter the fill list.
 - [x] **Step 5: Commit `feat: add wh6 option fill parsing core`.
 
