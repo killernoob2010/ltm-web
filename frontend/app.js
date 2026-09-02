@@ -132,6 +132,8 @@ function applyUiPermissions() {
   setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
   ["#orderLifecycleWpsImportBtn", "#orderLifecycleEmailImportBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleSensitive("order_lifecycle_progress")));
+  setHidden("#collectorPairingBtn", guest || !canModuleSensitive("trading_collector"));
+  setHidden("#collectorAccountId", guest || !canModuleSensitive("trading_collector"));
 }
 
 const infoSummaryPage = document.querySelector("#infoSummaryPage");
@@ -139,6 +141,7 @@ const midEventPage = document.querySelector("#midEventPage");
 const shJunnengPage = document.querySelector("#shJunnengPage");
 const riskAlertPage = document.querySelector("#riskAlertPage");
 const userManagementPage = document.querySelector("#userManagementPage");
+const tradingCollectorPage = document.querySelector("#tradingCollectorPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
@@ -521,7 +524,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, tradingCollectorPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -588,6 +591,11 @@ async function activateModule(code, subName, subView = "") {
   if (code === "user_management") {
     showOnly(userManagementPage);
     await loadUserManagement();
+    return;
+  }
+  if (code === "trading_collector") {
+    showOnly(tradingCollectorPage);
+    await window.TradingCollector.activate({ canManage: canModuleSensitive("trading_collector") });
     return;
   }
   if (code === "order_finance_progress") {
