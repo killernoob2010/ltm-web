@@ -197,6 +197,7 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
                 (_hash(token),),
             ).fetchone()
             device_id = device["id"] if device else None
+        account = db._exec(cur, "SELECT display_name, masked_name FROM trading_accounts WHERE id = ?", (row["account_id"],)).fetchone()
     return {
         "device_id": device_id,
         "account_id": row["account_id"],
@@ -204,6 +205,7 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
         "client_version": str(client_version or "")[:40],
         "status": "active",
         "token": token,
+        "account_label": (account["masked_name"] or account["display_name"]) if account else "宏源期货账户",
     }
 
 
