@@ -44,6 +44,36 @@ TRADING_MANAGEMENT_TABLES = (
     "trading_fact_source_differences",
 )
 
+LEGACY_PUBLIC_TABLES = (
+    "users",
+    "user_sessions",
+    "module_permissions",
+    "operation_logs",
+    "operation_log_archives",
+    "operation_log_archive_users",
+    "order_finance_progress",
+    "sh_junneng_trades",
+    "sh_junneng_positions",
+    "sh_junneng_close_trades",
+    "strategy_groups",
+    "strategy_positions",
+    "alert_settings",
+    "alert_history",
+    "calculated_data",
+    "daily_prices",
+    "trading_days",
+    "dv_week_keys",
+    "dv_data_points",
+    "dv_import_batches",
+    "dv_change_log",
+    "dv_integration_batches",
+    "dv_integrated_points",
+)
+
+LEGACY_PUBLIC_TABLE_SEQUENCE_TABLES = tuple(
+    table for table in LEGACY_PUBLIC_TABLES if table != "trading_days"
+)
+
 MODULES = [
     ("贸易台账管理", "spot_ledger", "现货业务台账管理"),
     ("台账管理", "sh_junneng", "上海钧能台账"),
@@ -254,12 +284,33 @@ def _executemany(cur, sql, seq):
     cur.executemany(sql, seq)
 
 
-def _secure_postgres_tables(cur, tables) -> None:
+def _secure_postgres_tables(cur, tables, *, sequence_tables=None) -> None:
     for table in tables:
         cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
     cur.execute(f"REVOKE ALL ON TABLE {', '.join(tables)} FROM anon, authenticated")
-    sequences = ", ".join(f"{table}_id_seq" for table in tables)
-    cur.execute(f"REVOKE ALL ON SEQUENCE {sequences} FROM anon, authenticated")
+    sequence_tables = tables if sequence_tables is None else sequence_tables
+    if sequence_tables:
+        sequences = ", ".join(f"{table}_id_seq" for table in sequence_tables)
+        cur.execute(f"REVOKE ALL ON SEQUENCE {sequences} FROM anon, authenticated")
+
+
+def _secure_postgres_default_privileges(cur) -> None:
+    cur.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public "
+        "REVOKE ALL ON TABLES FROM anon, authenticated"
+    )
+    cur.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public "
+        "REVOKE ALL ON SEQUENCES FROM anon, authenticated"
+    )
+    cur.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated"
+    )
+    cur.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE postgres "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated"
+    )
 
 
 def _last_insert_id(cur, sql, params) -> int:
@@ -1132,6 +1183,13 @@ def init_db() -> None:
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
         migrate_platts_index_schema(conn)
+        if _is_pg():
+            _secure_postgres_tables(
+                cur,
+                LEGACY_PUBLIC_TABLES,
+                sequence_tables=LEGACY_PUBLIC_TABLE_SEQUENCE_TABLES,
+            )
+            _secure_postgres_default_privileges(cur)
 
         ensure_admin_user(cur, "管理员")
         ensure_admin_user(cur, "admin")
