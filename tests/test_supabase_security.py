@@ -97,3 +97,21 @@ def test_security_helper_allows_legacy_tables_without_identity_sequences():
         "REVOKE ALL ON SEQUENCE users_id_seq FROM anon, authenticated"
         in statements
     )
+
+
+def test_closing_review_agent_tables_are_explicitly_protected():
+    cur = RecordingCursor()
+
+    db._secure_postgres_tables(cur, db.CLOSING_REVIEW_AGENT_TABLES)
+
+    statements = [" ".join(statement.split()) for statement, _ in cur.statements]
+    for table in db.CLOSING_REVIEW_AGENT_TABLES:
+        assert f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" in statements
+    assert (
+        "REVOKE ALL ON TABLE closing_review_conversations, closing_review_messages, closing_review_tasks FROM anon, authenticated"
+        in statements
+    )
+    assert (
+        "REVOKE ALL ON SEQUENCE closing_review_conversations_id_seq, closing_review_messages_id_seq, closing_review_tasks_id_seq FROM anon, authenticated"
+        in statements
+    )
