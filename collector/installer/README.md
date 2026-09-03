@@ -20,7 +20,7 @@ collector\\installer\\build_windows.cmd
 
 1. 查找 Python 3.11；如果电脑安装了 `winget`，缺少时可选择自动安装；
 2. 创建项目内的临时构建虚拟环境并安装锁定版本的 PyInstaller；
-3. 清理旧的构建目录，生成不依赖系统 Python 的 `WH6成交采集器.exe`；
+3. 清理旧的构建目录，生成不依赖系统 Python 的单文件 `WH6成交采集器.exe`；
 4. 查找免费 Inno Setup 6 编译器，缺少时可选择用 `winget` 安装；
 5. 生成 `collector\\releases\\WH6成交采集器-Setup.exe`，并写出同名 `.sha256` 校验文件；
 6. 扫描构建来源，拒绝出现 Production 地址、数据库密码、`service_role` 或 `DATABASE_URL`。

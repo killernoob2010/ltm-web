@@ -51,3 +51,11 @@ def test_installer_launches_first_run_setup_and_persists_user_data_outside_progr
     assert "def run_first_setup" in (ROOT / "collector" / "wh6_collector" / "setup_ui.py").read_text(encoding="utf-8")
     assert "{userstartup}" in iss
     assert "%LOCALAPPDATA%" in (INSTALLER / "README.md").read_text(encoding="utf-8")
+
+
+def test_onefile_pyinstaller_output_is_the_file_consumed_by_inno_setup():
+    script = (INSTALLER / "build_windows.ps1").read_text(encoding="utf-8")
+    iss = (INSTALLER / "WH6成交采集器.iss").read_text(encoding="utf-8")
+
+    assert 'dist\\WH6成交采集器.exe' in script
+    assert 'Source: "{#BuildDir}\\WH6成交采集器.exe"' in iss
