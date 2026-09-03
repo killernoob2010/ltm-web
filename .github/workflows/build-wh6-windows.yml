@@ -2,6 +2,9 @@ name: Build WH6 Windows installer
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/wh6-option-fill-collector-brd-20260902
 
 jobs:
   build:
