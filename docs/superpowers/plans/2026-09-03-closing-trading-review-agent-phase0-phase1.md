@@ -1,5 +1,7 @@
 # 收盘交易复盘 Agent Phase 0 + Phase 1 Implementation Plan
 
+> **历史状态（2026-09-03）：** 本计划对应的确定性只读底座已实现并部署到 Staging。后续网页 Agent、DeepSeek、会话、权限和自动结果不得继续从本计划扩展，应以 `docs/superpowers/specs/2026-09-03-closing-trading-review-agent-staging-requirements.md` 及其配套实施计划为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在既有交易管理事实层上交付一个只读、无模型的宏源账户铁矿石期权指定交易日复盘服务和 FastAPI 合同。
