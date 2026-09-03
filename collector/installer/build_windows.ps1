@@ -149,7 +149,7 @@ try {
     } finally {
         Pop-Location
     }
-    $bundleExe = Join-Path $collectorDir "dist\WH6成交采集器\WH6成交采集器.exe"
+    $bundleExe = Join-Path $collectorDir "dist\WH6成交采集器.exe"
     if (-not (Test-Path -LiteralPath $bundleExe)) {
         throw "PyInstaller 未生成预期文件：$bundleExe"
     }
