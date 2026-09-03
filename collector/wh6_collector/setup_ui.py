@@ -147,7 +147,8 @@ def run_first_setup(config_path: Path) -> int:
         config.save(config_path)
         messagebox.showinfo(
             "设置完成",
-            "设备已绑定。采集器将先回补已识别的历史期权成交，之后每 10 秒检查一次新成交。\n\n"
+            "设备已绑定。采集器将全量采集已成交的期货/期权记录和完整持仓快照；实时成交每 2 秒检查，持仓内容每 5 秒检查。\n"
+            "第一阶段 Web 页面只显示期权当日成交量和当前期权持仓，历史回补在低优先级队列中进行。\n\n"
             "本程序只读缓存，不执行任何交易操作。",
             parent=root,
         )

@@ -26,7 +26,7 @@ from .setup_ui import run_first_setup
 from .uploader import StagingUploader
 
 
-CLIENT_VERSION = "0.1.0"
+CLIENT_VERSION = "0.2.0"
 DEFAULT_STAGING_URL = "https://ltm-web-staging.onrender.com"
 REALTIME_SCAN_SECONDS = 2
 POSITION_SCAN_SECONDS = 5
@@ -107,6 +107,8 @@ def run_once(
     config: CollectorConfig,
     *,
     upload: Optional[Callable[..., Dict[str, Any]]] = None,
+    scan_positions: bool = True,
+    scan_history: bool = True,
 ) -> Dict[str, Any]:
     ensure_staging_url(config.staging_url)
     outbox = LocalOutbox(Path(config.data_dir) / "collector.sqlite3")
@@ -136,7 +138,12 @@ def run_once(
             return sender(config.device_token, fills, position_snapshots)
         return sender(config.device_token, fills)
 
-    def drain_pending(state: str, issue_count: int = 0, message: str = "") -> Dict[str, Any]:
+    def drain_pending(
+        state: str,
+        issue_count: int = 0,
+        message: str = "",
+        position_scan_requested: bool = False,
+    ) -> Dict[str, Any]:
         # A large historical backlog must never occupy the realtime upload slot.
         claimed = outbox.claim(500, priority="realtime")
         if not claimed:
@@ -148,6 +155,7 @@ def run_once(
                 "accepted": 0,
                 "positions_accepted": 0,
                 "issues": issue_count,
+                "position_scan_requested": position_scan_requested,
             }
             if message:
                 result["message"] = message
@@ -167,6 +175,7 @@ def run_once(
                 "accepted": 0,
                 "positions_accepted": 0,
                 "issues": issue_count,
+                "position_scan_requested": position_scan_requested,
             }
             return result
         outbox.ack(event_keys)
@@ -180,6 +189,7 @@ def run_once(
             "duplicates": int(upload_result.get("duplicates", 0)),
             "conflicts": int(upload_result.get("conflicts", 0)),
             "issues": issue_count,
+            "position_scan_requested": position_scan_requested,
         }
         if message:
             result["message"] = message
@@ -207,15 +217,21 @@ def run_once(
 
     issue_count = 0
     paused_state = "normal"
+    realtime_fill_queued = False
     today = business_trading_day(datetime.now().astimezone())
     for source in sources:
-        checkpoint = outbox.load_checkpoint(str(source.path), kind=source.kind)
-        batch = scan_source(source, checkpoint, account=config.account)
         source_date = str(source.trading_date or "").replace("-", "")
         is_realtime = source.kind == "position" or source_date == today.replace("-", "")
+        if source.kind == "position" and not scan_positions:
+            continue
+        if source.kind == "match" and not is_realtime and not scan_history:
+            continue
+        checkpoint = outbox.load_checkpoint(str(source.path), kind=source.kind)
+        batch = scan_source(source, checkpoint, account=config.account)
         priority = "realtime" if is_realtime else "history"
         for fill in batch.fills:
-            outbox.put(fill, priority=priority)
+            if outbox.put(fill, priority=priority) and priority == "realtime":
+                realtime_fill_queued = True
         if batch.position_snapshot is not None:
             outbox.put_position(batch.position_snapshot, priority="realtime")
         for issue in batch.issues:
@@ -226,7 +242,11 @@ def run_once(
             paused_state = "format_unknown"
         elif paused_state == "normal" and any(issue.code == "path_unavailable" for issue in batch.issues):
             paused_state = "path_unavailable"
-    return drain_pending(paused_state, issue_count=issue_count)
+    return drain_pending(
+        paused_state,
+        issue_count=issue_count,
+        position_scan_requested=realtime_fill_queued,
+    )
 
 
 def run_service(config: CollectorConfig, stop_event=None) -> None:
@@ -237,12 +257,29 @@ def run_service(config: CollectorConfig, stop_event=None) -> None:
     stops the process rather than silently doing one extra scan and exiting.
     """
     interval = max(REALTIME_SCAN_SECONDS, int(config.poll_seconds))
+    next_position_scan_at = time.monotonic()
+    next_history_scan_at = next_position_scan_at
     while True:
-        run_once(config)
+        now = time.monotonic()
+        scan_positions = now >= next_position_scan_at
+        scan_history = now >= next_history_scan_at
+        result = run_once(config, scan_positions=scan_positions, scan_history=scan_history)
+        now = time.monotonic()
+        if result.get("position_scan_requested"):
+            next_position_scan_at = now
+        elif scan_positions:
+            next_position_scan_at = now + POSITION_SCAN_SECONDS
+        if scan_history:
+            next_history_scan_at = now + HISTORY_SCAN_SECONDS
+        wait_seconds = min(
+            interval,
+            max(0.0, next_position_scan_at - now),
+            max(0.0, next_history_scan_at - now),
+        )
         if stop_event is None:
-            time.sleep(interval)
+            time.sleep(wait_seconds)
             continue
-        if stop_event.wait(interval):
+        if stop_event.wait(wait_seconds):
             return
 
 

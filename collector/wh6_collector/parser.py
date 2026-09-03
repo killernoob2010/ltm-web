@@ -688,7 +688,7 @@ def _parse_position_binary(
     declared = struct.unpack_from("<I", data, layout.declared_count_offset)[0]
     body = data[layout.header_size:]
     expected_size = declared * layout.record_size
-    if len(body) < expected_size or len(body) % layout.record_size:
+    if len(body) != expected_size:
         return None, [_position_issue("truncated_position_snapshot", "持仓快照尾部尚未完整写入", path, None, file_hash, severity="error")]
     complete = bool(struct.unpack_from("<I", data, layout.complete_offset)[0])
     if not complete:

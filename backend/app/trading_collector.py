@@ -33,6 +33,7 @@ class HeartbeatIn(BaseModel):
 
 class IngestIn(BaseModel):
     observations: List[Dict[str, Any]] = Field(default_factory=list, max_length=500)
+    position_snapshots: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 def _service_error(exc: service.CollectorServiceError) -> HTTPException:
@@ -107,7 +108,11 @@ def ingest(payload: IngestIn, device=Depends(device_auth), x_collector_token: Op
     if not x_collector_token:
         raise HTTPException(status_code=401, detail={"code": "device_token_required", "message": "缺少采集器设备令牌"})
     try:
-        return service.ingest_observations(x_collector_token, payload.observations).to_dict()
+        return service.ingest_observations(
+            x_collector_token,
+            payload.observations,
+            payload.position_snapshots,
+        ).to_dict()
     except service.CollectorServiceError as exc:
         raise _service_error(exc) from exc
 
@@ -134,6 +139,63 @@ def get_fills(
         raise HTTPException(status_code=400, detail="第一版采集器只提供宏源期货账户的盘中成交")
     target_account = account_id or default_account
     try:
-        return service.query_intraday_fills(target_account, start=start, end=end, contract=contract, status=status, limit=limit)
+        return service.query_intraday_fills(
+            target_account,
+            start=start,
+            end=end,
+            contract=contract,
+            status=status,
+            limit=limit,
+            asset_type="option",
+        )
+    except service.CollectorServiceError as exc:
+        raise _service_error(exc) from exc
+
+
+def _hongyuan_account_id() -> int:
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            "SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures' AND is_active = 1",
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="宏源期货账户不存在")
+    return int(row["id"])
+
+
+def _read_target_account(account_id: Optional[int], user: dict) -> int:
+    default_account = _hongyuan_account_id()
+    if account_id not in (None, default_account):
+        if not is_admin(user):
+            raise HTTPException(status_code=403, detail="无权读取其他交易账户的盘中数据")
+        raise HTTPException(status_code=400, detail="第一版采集器只提供宏源期货账户的盘中数据")
+    return account_id or default_account
+
+
+@router.get("/option-volume")
+def get_option_volume(
+    account_id: Optional[int] = Query(default=None, gt=0),
+    trade_date: str = Query(default="", max_length=10),
+    contract: str = Query(default="", max_length=80),
+    limit: int = Query(default=500, ge=1, le=500),
+    user=Depends(trading_collector_current_user),
+):
+    require_permission(user, "trading.options", "view")
+    target_account = _read_target_account(account_id, user)
+    try:
+        return service.query_option_volume(target_account, trade_date=trade_date, contract=contract, limit=limit)
+    except service.CollectorServiceError as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get("/positions/current")
+def get_current_option_positions(
+    account_id: Optional[int] = Query(default=None, gt=0),
+    user=Depends(trading_collector_current_user),
+):
+    require_permission(user, "trading.options", "view")
+    target_account = _read_target_account(account_id, user)
+    try:
+        return service.query_current_option_positions(target_account)
     except service.CollectorServiceError as exc:
         raise _service_error(exc) from exc

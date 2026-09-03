@@ -5,3 +5,9 @@
 .collector-device-table { width: 100%; border-collapse: collapse; }
 .collector-device-table th, .collector-device-table td { padding: 9px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; white-space: nowrap; }
 .collector-device-table th { color: #475569; font-size: 12px; background: #f8fafc; }
+.collector-summary-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.collector-summary-group { display: flex; flex-wrap: wrap; gap: 8px; color: #475569; }
+.collector-summary-group strong { width: 100%; color: #1e293b; }
+.collector-summary-group span { border-radius: 999px; background: #f1f5f9; padding: 4px 9px; font-size: 13px; }
+.collector-data-status { margin: 0; color: #475569; }
+.collector-data-status.is-warning { color: #b45309; font-weight: 600; }

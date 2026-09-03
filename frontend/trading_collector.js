@@ -48,14 +48,54 @@
     </tr>`).join("");
   }
 
+  function renderOptionVolume(data) {
+    const total = Number(data.total_quantity || 0);
+    $("#collectorOptionVolumeTotal").textContent = `${total} 手`;
+    const groups = [
+      ["按合约", data.by_contract],
+      ["按买卖", data.by_side],
+      ["按开平", data.by_open_close],
+      ["按 Call/Put", data.by_option_kind],
+    ];
+    $("#collectorOptionVolumeSummary").innerHTML = groups.map(([title, values]) => {
+      const entries = Object.entries(values || {});
+      return `<div class="collector-summary-group"><strong>${esc(title)}</strong>${entries.length
+        ? entries.map(([key, value]) => `<span>${esc(key)}：${esc(value)} 手</span>`).join("")
+        : `<span>暂无</span>`}</div>`;
+    }).join("");
+  }
+
+  function renderCurrentPositions(data) {
+    const items = (data.items || []).filter((item) => item.asset_type === "option");
+    $("#collectorPositionCount").textContent = `共 ${items.length} 条`;
+    const statusMessages = {
+      expired: "持仓数据可能已过期",
+      multi_device_conflict: "多设备持仓不一致",
+      unavailable: "当前没有可验证的完整持仓快照",
+    };
+    const statusNode = $("#collectorPositionStatus");
+    const message = data.message || statusMessages[data.source_status] || `快照状态：${data.source_status || "正常"}`;
+    statusNode.textContent = `${message}${data.snapshot_timestamp ? `｜快照：${data.snapshot_timestamp}` : ""}`;
+    statusNode.className = `collector-data-status ${data.is_expired || data.source_status === "multi_device_conflict" ? "is-warning" : ""}`;
+    $("#collectorPositionsTable").innerHTML = items.map((item) => `<tr>
+      <td>${esc(item.contract)}</td><td>${esc(item.direction)}</td><td>${esc(item.quantity)}</td>
+      <td>${esc(item.today_quantity ?? "—")}</td><td>${esc(item.yesterday_quantity ?? "—")}</td>
+      <td>${esc(item.average_price ?? "—")}</td><td>${esc(item.exchange)}</td>
+    </tr>`).join("");
+  }
+
   async function loadData() {
     if (!state.accountId) return;
-    const [devices, fills] = await Promise.all([
+    const [devices, fills, optionVolume, currentPositions] = await Promise.all([
       api(`/api/trading-collector/admin/devices?account_id=${encodeURIComponent(state.accountId)}`),
       api(`/api/trading-collector/fills?account_id=${encodeURIComponent(state.accountId)}&limit=100`),
+      api(`/api/trading-collector/option-volume?account_id=${encodeURIComponent(state.accountId)}`),
+      api(`/api/trading-collector/positions/current?account_id=${encodeURIComponent(state.accountId)}`),
     ]);
     renderDevices(devices.items || []);
     renderFills(fills.items || []);
+    renderOptionVolume(optionVolume);
+    renderCurrentPositions(currentPositions);
     setStatus(`已更新｜${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
   }
 

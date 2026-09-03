@@ -2,7 +2,7 @@
 ; Build the PyInstaller executable first; this script never embeds credentials.
 
 #define MyAppName "WH6成交采集器"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "LTM WEB"
 #define MyAppExeName "WH6成交采集器.exe"
 #define BuildDir "..\\dist"

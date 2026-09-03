@@ -428,4 +428,3 @@ Expected: all affected tests pass. Any unrelated baseline failure is listed by t
 - Sections 19–22 are respected by stopping at Staging readiness when real Windows/Staging evidence is unavailable and by keeping Production outside the branch.
 
 Placeholder scan: no step depends on an unnamed function, an unbounded “handle edge cases” instruction, or a Production action. Type consistency: `PositionSnapshot`/`PositionRow`, `ingest_observations(..., position_snapshots=())`, `query_option_volume`, `query_current_option_positions`, and `DualChannelScheduler` are defined before their consuming tasks.
-

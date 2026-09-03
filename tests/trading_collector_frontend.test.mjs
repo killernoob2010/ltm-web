@@ -25,3 +25,15 @@ test("collector page only permits pairing and revocation administration", () => 
   assert.match(collectorJs, /duplicate_observation|重复观察/);
   assert.match(css, /collector-device-table/);
 });
+
+test("collector page renders option volume and current position states", () => {
+  assert.match(html, /collectorOptionVolume/);
+  assert.match(html, /collectorCurrentPositions/);
+  assert.match(collectorJs, new RegExp("/api/trading-collector/option-volume"));
+  assert.match(collectorJs, new RegExp("/api/trading-collector/positions/current"));
+  assert.match(collectorJs, /renderOptionVolume/);
+  assert.match(collectorJs, /renderCurrentPositions/);
+  assert.match(collectorJs, /持仓数据可能已过期/);
+  assert.match(collectorJs, /多设备持仓不一致/);
+  assert.doesNotMatch(collectorJs, /token_hash|service_role|DATABASE_URL|C:\\\\Users/);
+});

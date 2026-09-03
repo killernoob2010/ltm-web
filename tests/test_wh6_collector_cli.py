@@ -126,7 +126,11 @@ def test_service_loop_waits_for_next_poll_until_stop_event(tmp_path, monkeypatch
         data_dir=str(tmp_path),
     )
     calls = []
-    monkeypatch.setattr(cli, "run_once", lambda value: calls.append(value) or {"state": "path_unavailable"})
+    monkeypatch.setattr(
+        cli,
+        "run_once",
+        lambda value, **kwargs: calls.append(value) or {"state": "path_unavailable"},
+    )
 
     class StopAfterFirstWait:
         def wait(self, seconds):
@@ -135,6 +139,95 @@ def test_service_loop_waits_for_next_poll_until_stop_event(tmp_path, monkeypatch
 
     cli.run_service(config, StopAfterFirstWait())
     assert calls == [config]
+
+
+def test_service_loop_checks_positions_every_five_seconds(tmp_path, monkeypatch):
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path="C:/WH6/Record/20260902match.dat",
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path),
+    )
+    clock = [0.0]
+    calls = []
+    waits = []
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        cli,
+        "run_once",
+        lambda value, *, scan_positions=True, scan_history=True: calls.append((scan_positions, scan_history)) or {"state": "path_unavailable"},
+    )
+
+    class StopAfterFourPolls:
+        def wait(self, seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+            return len(waits) >= 4
+
+    cli.run_service(config, StopAfterFourPolls())
+    assert calls == [(True, True), (False, False), (False, False), (True, False)]
+    assert waits == [2, 2, 1, 2]
+
+
+def test_service_loop_scans_history_every_ten_seconds(tmp_path, monkeypatch):
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path="C:/WH6/Record/20260902match.dat",
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path),
+    )
+    clock = [0.0]
+    calls = []
+    waits = []
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+
+    def fake_run_once(value, *, scan_positions=True, scan_history=True):
+        calls.append((scan_positions, scan_history))
+        return {"state": "normal"}
+
+    monkeypatch.setattr(cli, "run_once", fake_run_once)
+
+    class StopAfterSevenPolls:
+        def wait(self, seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+            return len(waits) >= 7
+
+    cli.run_service(config, StopAfterSevenPolls())
+    assert [scan_history for _, scan_history in calls] == [True, False, False, False, False, False, True]
+    assert waits == [2, 2, 1, 2, 2, 1, 2]
+
+
+def test_service_loop_rechecks_positions_after_new_realtime_fill(tmp_path, monkeypatch):
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path="C:/WH6/Record/20260902match.dat",
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path),
+    )
+    clock = [0.0]
+    calls = []
+    waits = []
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+
+    def fake_run_once(value, *, scan_positions=True, scan_history=True):
+        calls.append(scan_positions)
+        return {"state": "normal", "position_scan_requested": len(calls) == 1}
+
+    monkeypatch.setattr(cli, "run_once", fake_run_once)
+
+    class StopAfterRetry:
+        def wait(self, seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+            return len(waits) >= 2
+
+    cli.run_service(config, StopAfterRetry())
+    assert calls == [True, True]
+    assert waits == [0, 2]
 
 
 def test_once_uploads_full_asset_fills_and_position_snapshot_with_priority_payload(tmp_path):

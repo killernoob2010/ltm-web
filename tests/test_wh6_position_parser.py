@@ -200,6 +200,14 @@ def test_position_parser_rejects_unknown_truncated_and_incomplete_snapshots(tmp_
     assert snapshot is None
     assert any(issue.code == "truncated_position_snapshot" for issue in issues)
 
+    overfilled = tmp_path / "20260903-overfilled-position.bin"
+    write_position_binary(overfilled, rows=[_position_row()])
+    raw = overfilled.read_bytes()
+    overfilled.write_bytes(raw + raw[32:])
+    snapshot, issues = parse_position_snapshot(overfilled, account=_account(), source_file=_position_source(overfilled))
+    assert snapshot is None
+    assert any(issue.code == "truncated_position_snapshot" for issue in issues)
+
     incomplete = tmp_path / "20260903position.dat"
     write_position_json(incomplete, rows=[], complete=False)
     snapshot, issues = parse_position_snapshot(incomplete, account=_account(), source_file=_position_source(incomplete))

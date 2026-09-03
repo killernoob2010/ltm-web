@@ -436,7 +436,7 @@ def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str
                 db._exec(
                     cur,
                     "INSERT INTO trading_collector_issues (device_id, account_id, issue_code, source_event_key, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-                    (device["id"], account_id, exc.code, str(raw_map.get("source_event_key") or "")[:240], exc.message, json.dumps(raw_map, ensure_ascii=False, default=str)[:8000]),
+                    (device["id"], account_id, exc.code, str(raw_map.get("source_event_key") or "")[:240], exc.message, _safe_issue_payload(raw_map)),
                 )
                 continue
             payload_json = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)

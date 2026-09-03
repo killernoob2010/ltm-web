@@ -142,7 +142,15 @@ def test_query_is_read_only_and_filters_account_contract_status(tmp_path, monkey
 def test_malformed_observation_is_quarantined_without_crashing(tmp_path, monkeypatch):
     account_id = use_temp_db(tmp_path, monkeypatch)
     activated = activate(account_id)
-    result = service.ingest_observations(activated["token"], ["not-an-observation", {"price": "NaN"}])
+    result = service.ingest_observations(
+        activated["token"],
+        [
+            "not-an-observation",
+            {"price": "NaN", "source_path": r"C:\Users\Alice\WH6\Record\20260903match.dat"},
+        ],
+    )
     assert result.quarantined == 2
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) AS c FROM trading_collector_issues").fetchone()["c"] == 2
+        payloads = [row["payload_json"] for row in conn.execute("SELECT payload_json FROM trading_collector_issues").fetchall()]
+    assert all("C:\\Users\\Alice" not in payload for payload in payloads)

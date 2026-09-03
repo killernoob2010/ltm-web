@@ -65,3 +65,13 @@ def test_windows_bundle_includes_iana_timezone_database():
     requirements = (ROOT / "collector" / "requirements-windows.txt").read_text(encoding="utf-8")
 
     assert "tzdata==2026.3" in requirements
+
+
+def test_v2_installer_contract_mentions_full_assets_and_position_snapshot_gates():
+    readme = (INSTALLER / "README.md").read_text(encoding="utf-8")
+    cli = (ROOT / "collector" / "wh6_collector" / "cli.py").read_text(encoding="utf-8")
+    assert "期货和期权" in readme
+    assert "position.dat" in readme
+    assert "完整持仓快照" in readme
+    assert "10 秒" in readme
+    assert "每 5 秒" in cli

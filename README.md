@@ -20,6 +20,7 @@
 - 收盘交易复盘 Agent Phase 1（Staging 已部署）：提供固定宏源账户铁矿石期权指定日期的只读摘要接口，按真实月份、Call/Put、买卖方向和行权价区间动态分组，分别返回不扣手续费的真实平仓盈亏与日结算口径持仓浮盈浮亏；日结单优先，只有月结单时明确降级为部分完成。当前仅完成确定性计算底座，尚未形成合格的网页 Agent 测试版；后续统一对话、DeepSeek、推荐问题、自动日常结果、会话隔离和试点权限以 `docs/superpowers/specs/2026-09-03-closing-trading-review-agent-staging-requirements.md` 为准。
 - 贸易台账管理（Staging 已接真实源）：新增“现货业务台账管理”，覆盖说明书定义的 51 个 A:AY 字段、系统同步/人工字段、待补录、同步异常、组合筛选、敏感权限编辑、战略套保全开全平录入、服务端分页和全量 Excel 导出。列表、待补录和同步异常默认每页 20 条，可切换 20/50/100 条并只查询当前页；列表只返回表格摘要，打开单条详情时才读取该记录的完整 51 字段。Render Staging 已通过个人服务账号认证连接正式服务端 JSON 只读接口，并把 7 个销售组内的生效现货销售合同明细同步到独立 Supabase Staging；本地仍使用明确标注的 fixture 验收，不连接真实源。
 - WH6 期权成交采集器（Staging 开发版）：以已绑定宏源账户的 `match.dat` 为成交来源，必要时只读配套 `order.dat` 补齐方向/开平，本地 SQLite 断网排队，服务端设备绑定与多设备去重；Windows 一键构建入口为 `collector/installer/build_windows.cmd`，实际 `Setup.exe` 仍须在 Windows x64 上双击构建并按 `docs/superpowers/plans/2026-09-02-wh6-windows-acceptance-runbook.md` 验收，当前 Mac 工作区不宣称已生成安装包。
+- WH6 成交与持仓采集器 V2（Staging 开发版）：全量只读采集已成交的期货/期权记录和完整持仓快照，实时队列优先于历史回补，本地 SQLite 断网/重启保留，服务端设备绑定、成交去重和持仓快照冲突标记；第一阶段页面、统计和 Agent 只显示期权当日成交量与当前期权持仓。Windows 一键构建入口为 `collector/installer/build_windows.cmd`，实际 `Setup.exe` 仍须在 Windows x64 上双击构建并按 `docs/superpowers/plans/2026-09-03-wh6-intraday-fills-positions-collector-acceptance-runbook.md` 验收，当前 Mac 工作区不宣称已完成 Windows/WH6/Staging 验收或生成安装包。
 - 铁矿石期现：历史 Excel 作为存量底库，新增 EBC 现货指标与新浪 I0 收盘价 API 增量同步；按版本化业务规则计算并保存精简结果与完整明细。期现数据管理提供只读分页查询，期现数据展示提供独立最优仓单、港口页签和按品种/年份绘制的日度基差图表。
 
 ## 本地运行
