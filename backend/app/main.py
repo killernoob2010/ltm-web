@@ -63,6 +63,7 @@ from .spot_ledger_sync import start_spot_ledger_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
+    closing_trading_review,
     iron_ore_weekly_report,
     iron_ore_basis,
     iron_ore_basis_snapshot_sync,
@@ -150,6 +151,7 @@ app.include_router(spot_ledger.router, prefix="/api")
 app.include_router(order_finance_snapshot_sync.router, prefix="/api")
 app.include_router(platts_index.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
+app.include_router(closing_trading_review.router, prefix="/api")
 app.include_router(trading_collector.router, prefix="/api")
 app.include_router(trading_collector_replication.router)
 
