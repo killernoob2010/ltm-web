@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "collector"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from test_wh6_collector_core import _account, _record, _write_match
+from test_wh6_position_parser import _position_row, write_position_json
 from wh6_collector.cli import (
     CollectorConfig,
     default_data_dir,
@@ -129,11 +130,38 @@ def test_service_loop_waits_for_next_poll_until_stop_event(tmp_path, monkeypatch
 
     class StopAfterFirstWait:
         def wait(self, seconds):
-            assert seconds == 10
+            assert seconds == 2
             return True
 
     cli.run_service(config, StopAfterFirstWait())
     assert calls == [config]
+
+
+def test_once_uploads_full_asset_fills_and_position_snapshot_with_priority_payload(tmp_path):
+    source_root = tmp_path / "Record"
+    source_root.mkdir()
+    _write_match(source_root / "20260903match.dat", [_record(contract="i2607", match_id="FUT-001")], size=268)
+    write_position_json(source_root / "20260903position.dat", rows=[_position_row("i2607-C-750")])
+    uploaded = []
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path=str(source_root),
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path / "data"),
+        allow_weak_source=True,
+    )
+
+    def upload(token, fills, position_snapshots):
+        uploaded.append((token, list(fills), list(position_snapshots)))
+        return {"accepted": len(fills), "position_accepted": len(position_snapshots)}
+
+    result = run_once(config, upload=upload)
+    assert result["state"] == "normal"
+    assert result["accepted"] == 1
+    assert result["positions_accepted"] == 1
+    assert uploaded[0][1][0]["asset_type"] == "future"
+    assert uploaded[0][2][0]["rows"][0]["asset_type"] == "option"
 
 
 def test_no_arguments_launch_first_run_setup_when_config_is_missing(tmp_path, monkeypatch):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -91,6 +91,56 @@ class FillRecord:
 
     def to_payload(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class PositionRow:
+    """One row from a complete, read-only WH6 position snapshot."""
+
+    contract: str
+    raw_contract: str
+    asset_type: str
+    exchange: str
+    direction: str
+    quantity: int
+    today_quantity: Optional[int] = None
+    yesterday_quantity: Optional[int] = None
+    average_price: Optional[str] = None
+    hedge_flag: Optional[str] = None
+    option_kind: Optional[str] = None
+    underlying: Optional[str] = None
+    expiry_month: Optional[str] = None
+    strike: Optional[str] = None
+    source_record_index: int = 0
+    source_record_sha256: str = ""
+
+    def to_payload(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PositionSnapshot:
+    """A complete account snapshot; rows are never additive across devices."""
+
+    source_snapshot_key: str
+    account_fingerprint: Optional[str]
+    trade_date: str
+    snapshot_time: str
+    snapshot_timestamp: str
+    rows: Tuple[PositionRow, ...]
+    complete: bool
+    source_path: str = ""
+    source_snapshot_sha256: str = ""
+    parser_version: str = ""
+    data_status: str = "provisional"
+    verification_status: str = "pending"
+    source_version: Optional[str] = None
+    observed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["rows"] = [row.to_payload() for row in self.rows]
+        return payload
 
 
 @dataclass(frozen=True)

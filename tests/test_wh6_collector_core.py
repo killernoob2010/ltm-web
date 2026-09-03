@@ -15,6 +15,7 @@ from wh6_collector.formats import MATCH_V1, MATCH_V2_PADDED, detect_layout
 from wh6_collector.models import AccountIdentity, SourceFile
 from wh6_collector.parser import (
     business_trading_day,
+    classify_contract,
     is_option_contract,
     normalize_contract,
     parse_match_records,
@@ -123,8 +124,8 @@ def test_parser_filters_non_options_and_decodes_both_supported_layouts(tmp_path)
     )
     _write_match(second, [_record(match_id="M-002", size=MATCH_V2_PADDED.record_size)], size=MATCH_V2_PADDED.record_size)
 
-    fills, issues = parse_match_records(first, account=_account(), source_file=_source(first))
-    fills_v2, issues_v2 = parse_match_records(second, account=_account(), source_file=_source(second))
+    fills, issues = parse_match_records(first, account=_account(), source_file=_source(first), asset_types=("option",))
+    fills_v2, issues_v2 = parse_match_records(second, account=_account(), source_file=_source(second), asset_types=("option",))
 
     assert len(fills) == 1
     assert not issues
@@ -133,7 +134,7 @@ def test_parser_filters_non_options_and_decodes_both_supported_layouts(tmp_path)
     assert fills[0].quantity == 2
     assert fills[0].side == "买"
     assert fills[0].open_close == "开"
-    assert fills[0].source_event_key == "tradeid:m-001"
+    assert fills[0].source_event_key == "tradeid:2026-09-02:dce:m-001"
     assert len(fills_v2) == 1
     assert fills_v2[0].parser_version == "wh6-match-v2-padded"
     assert not issues_v2
@@ -191,7 +192,7 @@ def test_random_non_option_contracts_never_enter_fill_list(tmp_path):
     for index, contract in enumerate(contracts):
         path = tmp_path / ("20260902match-%s.dat" % index)
         _write_match(path, [_record(contract=contract, match_id="NON-%s" % index)], size=268)
-        fills, _ = parse_match_records(path, account=_account(), source_file=_source(path))
+        fills, _ = parse_match_records(path, account=_account(), source_file=_source(path), asset_types=("option",))
         assert fills == []
 
 

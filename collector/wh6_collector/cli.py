@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
+import inspect
 import json
 import os
 from pathlib import Path
@@ -19,12 +21,16 @@ from .discovery import discover_wh6_sources, validate_sources
 from .local_store import LocalOutbox
 from .models import AccountIdentity
 from .monitor import scan_source
+from .parser import business_trading_day
 from .setup_ui import run_first_setup
 from .uploader import StagingUploader
 
 
 CLIENT_VERSION = "0.1.0"
 DEFAULT_STAGING_URL = "https://ltm-web-staging.onrender.com"
+REALTIME_SCAN_SECONDS = 2
+POSITION_SCAN_SECONDS = 5
+HISTORY_SCAN_SECONDS = 10
 
 
 def default_data_dir() -> Path:
@@ -54,7 +60,7 @@ class CollectorConfig:
     account: AccountIdentity
     device_token: str
     data_dir: str
-    poll_seconds: int = 10
+    poll_seconds: int = REALTIME_SCAN_SECONDS
     client_version: str = CLIENT_VERSION
     allow_weak_source: bool = False
     source_account_fingerprint: Optional[str] = None
@@ -71,7 +77,7 @@ class CollectorConfig:
             "account": account_payload,
             "device_token": protect_token(self.device_token),
             "data_dir": self.data_dir,
-            "poll_seconds": max(10, int(self.poll_seconds)),
+            "poll_seconds": max(REALTIME_SCAN_SECONDS, int(self.poll_seconds)),
             "client_version": self.client_version,
             "allow_weak_source": bool(self.allow_weak_source),
             "source_account_fingerprint": self.source_account_fingerprint,
@@ -90,7 +96,7 @@ class CollectorConfig:
             account=account,
             device_token=unprotect_token(payload["device_token"]),
             data_dir=payload["data_dir"],
-            poll_seconds=max(10, int(payload.get("poll_seconds", 10))),
+            poll_seconds=max(REALTIME_SCAN_SECONDS, int(payload.get("poll_seconds", REALTIME_SCAN_SECONDS))),
             client_version=payload.get("client_version", CLIENT_VERSION),
             allow_weak_source=bool(payload.get("allow_weak_source", False)),
             source_account_fingerprint=payload.get("source_account_fingerprint"),
@@ -100,25 +106,58 @@ class CollectorConfig:
 def run_once(
     config: CollectorConfig,
     *,
-    upload: Optional[Callable[[str, Sequence[Dict[str, Any]]], Dict[str, Any]]] = None,
+    upload: Optional[Callable[..., Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     ensure_staging_url(config.staging_url)
     outbox = LocalOutbox(Path(config.data_dir) / "collector.sqlite3")
     if config.account.account_code != "hongyuan_futures" or not config.account.confirmed or config.account.requires_manual_confirmation:
-        return {"state": "account_pending", "queued": outbox.status()["pending"], "accepted": 0}
+        return {
+            "state": "account_pending",
+            "queued": outbox.status()["pending"],
+            "accepted": 0,
+            "positions_accepted": 0,
+        }
+
+    def send_payload(sender, fills, position_snapshots):
+        if hasattr(sender, "send"):
+            return sender.send(config.device_token, fills, position_snapshots)
+        try:
+            parameters = inspect.signature(sender).parameters.values()
+            positional = [
+                parameter
+                for parameter in parameters
+                if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            accepts_varargs = any(parameter.kind == parameter.VAR_POSITIONAL for parameter in parameters)
+        except (TypeError, ValueError):
+            positional = []
+            accepts_varargs = True
+        if accepts_varargs or len(positional) >= 3:
+            return sender(config.device_token, fills, position_snapshots)
+        return sender(config.device_token, fills)
 
     def drain_pending(state: str, issue_count: int = 0, message: str = "") -> Dict[str, Any]:
-        claimed = outbox.claim(500)
+        # A large historical backlog must never occupy the realtime upload slot.
+        claimed = outbox.claim(500, priority="realtime")
         if not claimed:
-            result = {"state": state, "queued": outbox.status()["pending"], "accepted": 0, "issues": issue_count}
+            claimed = outbox.claim(500, priority="history")
+        if not claimed:
+            result = {
+                "state": state,
+                "queued": outbox.status()["pending"],
+                "accepted": 0,
+                "positions_accepted": 0,
+                "issues": issue_count,
+            }
             if message:
                 result["message"] = message
             return result
         sender = upload or StagingUploader(config.staging_url, config.device_token)
         event_keys = [str(item["event_key"]) for item in claimed]
-        payloads = [json.loads(str(item["payload_json"])) for item in claimed]
+        fill_payloads = [json.loads(str(item["payload_json"])) for item in claimed if item.get("item_type", "fill") == "fill"]
+        position_payloads = [json.loads(str(item["payload_json"])) for item in claimed if item.get("item_type") == "position_snapshot"]
         try:
-            upload_result = sender(config.device_token, payloads)
+            upload_result = send_payload(sender, fill_payloads, position_payloads)
         except Exception as exc:
             outbox.release(event_keys, str(exc))
             result = {
@@ -126,6 +165,7 @@ def run_once(
                 "message": str(exc),
                 "queued": outbox.status()["pending"],
                 "accepted": 0,
+                "positions_accepted": 0,
                 "issues": issue_count,
             }
             return result
@@ -134,6 +174,9 @@ def run_once(
             "state": state,
             "queued": outbox.status()["pending"],
             "accepted": int(upload_result.get("accepted", 0)),
+            "positions_accepted": int(upload_result.get("positions_accepted", upload_result.get("position_accepted", 0))),
+            "position_duplicates": int(upload_result.get("position_duplicates", 0)),
+            "position_conflicts": int(upload_result.get("position_conflicts", 0)),
             "duplicates": int(upload_result.get("duplicates", 0)),
             "conflicts": int(upload_result.get("conflicts", 0)),
             "issues": issue_count,
@@ -164,14 +207,20 @@ def run_once(
 
     issue_count = 0
     paused_state = "normal"
+    today = business_trading_day(datetime.now().astimezone())
     for source in sources:
-        checkpoint = outbox.load_checkpoint(str(source.path))
+        checkpoint = outbox.load_checkpoint(str(source.path), kind=source.kind)
         batch = scan_source(source, checkpoint, account=config.account)
+        source_date = str(source.trading_date or "").replace("-", "")
+        is_realtime = source.kind == "position" or source_date == today.replace("-", "")
+        priority = "realtime" if is_realtime else "history"
         for fill in batch.fills:
-            outbox.put(fill)
+            outbox.put(fill, priority=priority)
+        if batch.position_snapshot is not None:
+            outbox.put_position(batch.position_snapshot, priority="realtime")
         for issue in batch.issues:
             outbox.add_issue(issue)
-        outbox.save_checkpoint(str(source.path), batch.checkpoint)
+        outbox.save_checkpoint(str(source.path), batch.checkpoint, kind=batch.source_kind)
         issue_count += len(batch.issues)
         if any(issue.code == "unknown_format" for issue in batch.issues):
             paused_state = "format_unknown"
@@ -187,7 +236,7 @@ def run_service(config: CollectorConfig, stop_event=None) -> None:
     packaged executable has no event, so it must remain alive until Windows
     stops the process rather than silently doing one extra scan and exiting.
     """
-    interval = max(10, int(config.poll_seconds))
+    interval = max(REALTIME_SCAN_SECONDS, int(config.poll_seconds))
     while True:
         run_once(config)
         if stop_event is None:
@@ -219,17 +268,17 @@ def activate_remote_device(staging_url: str, pairing_code: str, device_name: str
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="WH6 期权成交只读采集器")
+    parser = argparse.ArgumentParser(description="WH6 期货与期权成交、持仓只读采集器")
     parser.add_argument("--config", type=Path, default=default_data_dir() / "config.json")
-    parser.add_argument("--configure", action="store_true", help="保存手动选择的 WH6 成交文件路径")
-    parser.add_argument("--source", type=Path, help="WH6 match.dat 或包含它的 Record 目录")
+    parser.add_argument("--configure", action="store_true", help="保存手动选择的 WH6 成交与持仓缓存路径")
+    parser.add_argument("--source", type=Path, help="WH6 match.dat/position.dat 或包含它们的 Record 目录")
     parser.add_argument("--staging-url", default=DEFAULT_STAGING_URL)
     parser.add_argument("--pairing-code", default="", help="Web 管理页生成的一次性设备连接码")
     parser.add_argument("--device-name", default="Windows WH6 采集器")
     parser.add_argument("--fingerprint", default="", help="本机设备指纹；不填写时使用本机机器标识摘要")
     parser.add_argument("--confirm-weak-source", action="store_true", help="明确确认无法读取稳定账户标识的来源")
     parser.add_argument("--once", action="store_true", help="执行一次只读扫描和上传")
-    parser.add_argument("--service", action="store_true", help="每 10 秒持续扫描")
+    parser.add_argument("--service", action="store_true", help="每 2 秒检查实时成交，持仓内容每 5 秒变化检查")
     return parser
 
 

@@ -13,13 +13,25 @@ class StagingUploader:
         self.device_token = device_token
         self.timeout_seconds = timeout_seconds
 
-    def __call__(self, _token: str, items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    def send(
+        self,
+        _token: str,
+        fills: Sequence[Dict[str, Any]],
+        position_snapshots: Sequence[Dict[str, Any]] = (),
+    ) -> Dict[str, Any]:
         response = requests.post(
             self.base_url + "/api/trading-collector/device/ingest",
-            json={"observations": list(items)},
+            json={
+                "observations": list(fills),
+                "position_snapshots": list(position_snapshots),
+            },
             headers={"X-Collector-Token": self.device_token},
             timeout=self.timeout_seconds,
         )
         if response.status_code >= 400:
             raise RuntimeError("Staging 上传失败（HTTP %s）" % response.status_code)
         return response.json()
+
+    def __call__(self, token: str, items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        """Compatibility adapter for callers that only have fill rows."""
+        return self.send(token, items, ())

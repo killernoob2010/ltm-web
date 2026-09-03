@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from .models import FillRecord, ParseIssue
+from .models import FillRecord, ParseIssue, PositionSnapshot
 
 
 def _now() -> str:
@@ -35,6 +35,8 @@ class LocalOutbox:
                 CREATE TABLE IF NOT EXISTS outbox (
                     event_key TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL,
+                    item_type TEXT NOT NULL DEFAULT 'fill',
+                    priority TEXT NOT NULL DEFAULT 'history',
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempts INTEGER NOT NULL DEFAULT 0,
                     available_at TEXT NOT NULL,
@@ -43,7 +45,7 @@ class LocalOutbox:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_outbox_claim
-                    ON outbox(status, available_at, created_at);
+                    ON outbox(status, priority, available_at, created_at);
                 CREATE TABLE IF NOT EXISTS file_checkpoints (
                     source_path TEXT PRIMARY KEY,
                     checkpoint_json TEXT NOT NULL,
@@ -61,26 +63,54 @@ class LocalOutbox:
                 );
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(outbox)").fetchall()}
+            if "item_type" not in columns:
+                connection.execute("ALTER TABLE outbox ADD COLUMN item_type TEXT NOT NULL DEFAULT 'fill'")
+            if "priority" not in columns:
+                connection.execute("ALTER TABLE outbox ADD COLUMN priority TEXT NOT NULL DEFAULT 'history'")
 
-    def put(self, fill: FillRecord) -> bool:
+    def put(self, fill: FillRecord, *, priority: str = "history") -> bool:
+        if priority not in {"realtime", "history"}:
+            raise ValueError("未知队列优先级")
         now = _now()
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO outbox
-                    (event_key, payload_json, status, attempts, available_at, created_at, updated_at)
-                VALUES (?, ?, 'pending', 0, ?, ?, ?)
+                    (event_key, payload_json, item_type, priority, status, attempts, available_at, created_at, updated_at)
+                VALUES (?, ?, 'fill', ?, 'pending', 0, ?, ?, ?)
                 """,
-                (fill.source_event_key, json.dumps(fill.to_payload(), ensure_ascii=False), now, now, now),
+                (fill.source_event_key, json.dumps(fill.to_payload(), ensure_ascii=False), priority, now, now, now),
             )
             return cursor.rowcount == 1
 
-    def put_many(self, fills: Iterable[FillRecord]) -> int:
-        return sum(1 for fill in fills if self.put(fill))
+    def put_many(self, fills: Iterable[FillRecord], *, priority: str = "history") -> int:
+        return sum(1 for fill in fills if self.put(fill, priority=priority))
 
-    def claim(self, limit: int = 100) -> List[Dict[str, object]]:
+    def put_position(self, snapshot: PositionSnapshot, *, priority: str = "realtime") -> bool:
+        if priority not in {"realtime", "history"}:
+            raise ValueError("未知队列优先级")
+        now = _now()
+        event_key = "position:%s:%s" % (snapshot.source_snapshot_key, snapshot.source_snapshot_sha256)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO outbox
+                    (event_key, payload_json, item_type, priority, status, attempts, available_at, created_at, updated_at)
+                VALUES (?, ?, 'position_snapshot', ?, 'pending', 0, ?, ?, ?)
+                """,
+                (event_key, json.dumps(snapshot.to_payload(), ensure_ascii=False), priority, now, now, now),
+            )
+            return cursor.rowcount == 1
+
+    def put_many_positions(self, snapshots: Iterable[PositionSnapshot], *, priority: str = "realtime") -> int:
+        return sum(1 for snapshot in snapshots if self.put_position(snapshot, priority=priority))
+
+    def claim(self, limit: int = 100, *, priority: Optional[str] = None) -> List[Dict[str, object]]:
         if limit <= 0:
             return []
+        if priority is not None and priority not in {"realtime", "history"}:
+            raise ValueError("未知队列优先级")
         now = _now()
         stale_before = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         with self._connect() as connection:
@@ -91,15 +121,21 @@ class LocalOutbox:
                 "UPDATE outbox SET status='pending', available_at=?, last_error=COALESCE(last_error, 'claim expired'), updated_at=? WHERE status='claimed' AND updated_at < ?",
                 (now, now, stale_before),
             )
+            where_priority = " AND priority = ?" if priority is not None else ""
+            query_args = [now]
+            if priority is not None:
+                query_args.append(priority)
+            query_args.append(int(limit))
             rows = connection.execute(
                 """
-                SELECT event_key, payload_json, attempts
+                SELECT event_key, payload_json, item_type, priority, attempts
                 FROM outbox
                 WHERE status = 'pending' AND available_at <= ?
-                ORDER BY created_at, event_key
+                """ + where_priority + """
+                ORDER BY CASE WHEN priority = 'realtime' THEN 0 ELSE 1 END, created_at, event_key
                 LIMIT ?
                 """,
-                (now, int(limit)),
+                tuple(query_args),
             ).fetchall()
             keys = [row["event_key"] for row in rows]
             if keys:
@@ -130,18 +166,23 @@ class LocalOutbox:
                 (_now(), str(error)[:500], _now(), *event_keys),
             )
 
-    def save_checkpoint(self, source_path: str, checkpoint: Dict[str, object]) -> None:
+    def _checkpoint_key(self, source_path: str, kind: str) -> str:
+        return source_path if kind == "match" else "%s:%s" % (kind, source_path)
+
+    def save_checkpoint(self, source_path: str, checkpoint: Dict[str, object], *, kind: str = "match") -> None:
         now = _now()
+        key = self._checkpoint_key(source_path, kind)
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO file_checkpoints(source_path, checkpoint_json, updated_at) VALUES (?, ?, ?)",
-                (source_path, json.dumps(checkpoint, ensure_ascii=False, sort_keys=True), now),
+                (key, json.dumps(checkpoint, ensure_ascii=False, sort_keys=True), now),
             )
 
-    def load_checkpoint(self, source_path: str) -> Optional[Dict[str, object]]:
+    def load_checkpoint(self, source_path: str, *, kind: str = "match") -> Optional[Dict[str, object]]:
+        key = self._checkpoint_key(source_path, kind)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT checkpoint_json FROM file_checkpoints WHERE source_path = ?", (source_path,)
+                "SELECT checkpoint_json FROM file_checkpoints WHERE source_path = ?", (key,)
             ).fetchone()
         return json.loads(row["checkpoint_json"]) if row else None
 

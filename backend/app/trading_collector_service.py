@@ -1,4 +1,4 @@
-"""Deterministic server-side services for WH6 provisional option fills."""
+"""Deterministic server-side services for WH6 provisional fills and positions."""
 
 from __future__ import annotations
 
@@ -9,15 +9,16 @@ import hashlib
 import json
 import re
 import secrets
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from . import db
 
 
 OPTION_RE = re.compile(
-    r"^[a-z]{1,8}\d{3,6}-[cp]-\d+(?:\.\d+)?$",
+    r"^(?P<underlying>[a-z]{1,8})(?P<expiry>\d{3,6})-(?P<kind>[cp])-(?P<strike>\d+(?:\.\d+)?)$",
     re.IGNORECASE,
 )
+FUTURE_RE = re.compile(r"^[a-z]{1,8}\d{3,6}$", re.IGNORECASE)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 ALLOWED_OBSERVATION_FIELDS = {
     "source_event_key",
@@ -67,6 +68,30 @@ REQUIRED_OBSERVATION_FIELDS = {
     "source_record_sha256",
     "parser_version",
 }
+ALLOWED_POSITION_FIELDS = {
+    "source_snapshot_key",
+    "trade_date",
+    "snapshot_time",
+    "snapshot_timestamp",
+    "complete",
+    "rows",
+    "source_snapshot_sha256",
+    "parser_version",
+    "source_path",
+    "source_version",
+    "data_status",
+    "verification_status",
+    "observed_at",
+}
+REQUIRED_POSITION_FIELDS = {
+    "source_snapshot_key",
+    "trade_date",
+    "snapshot_timestamp",
+    "complete",
+    "rows",
+    "source_snapshot_sha256",
+    "parser_version",
+}
 
 
 class CollectorServiceError(ValueError):
@@ -84,6 +109,27 @@ class IngestResult:
     conflicts: int = 0
     quarantined: int = 0
     observations: int = 0
+    position_accepted: int = 0
+    position_duplicates: int = 0
+    position_conflicts: int = 0
+    position_quarantined: int = 0
+    position_observations: int = 0
+
+    @property
+    def positions_accepted(self) -> int:
+        return self.position_accepted
+
+    @property
+    def positions_duplicates(self) -> int:
+        return self.position_duplicates
+
+    @property
+    def positions_conflicts(self) -> int:
+        return self.position_conflicts
+
+    @property
+    def positions_quarantined(self) -> int:
+        return self.position_quarantined
 
     def to_dict(self) -> Dict[str, int]:
         return {
@@ -92,6 +138,12 @@ class IngestResult:
             "conflicts": self.conflicts,
             "quarantined": self.quarantined,
             "observations": self.observations,
+            "position_accepted": self.position_accepted,
+            "positions_accepted": self.position_accepted,
+            "position_duplicates": self.position_duplicates,
+            "position_conflicts": self.position_conflicts,
+            "position_quarantined": self.position_quarantined,
+            "position_observations": self.position_observations,
         }
 
 
@@ -324,8 +376,14 @@ def _validate_observation(raw: Dict[str, Any]) -> Dict[str, Any]:
             raise InvalidOperation
     except (InvalidOperation, ValueError):
         raise CollectorServiceError("invalid_observation", "成交价格必须是非负数字")
-    if data["asset_type"] != "option" or not OPTION_RE.match(data["contract"]):
-        raise CollectorServiceError("unsupported_asset", "第一版只接收明确识别的期权成交")
+    if data["asset_type"] == "option":
+        supported_contract = bool(OPTION_RE.match(data["contract"]))
+    elif data["asset_type"] == "future":
+        supported_contract = bool(FUTURE_RE.match(data["contract"]))
+    else:
+        supported_contract = False
+    if not supported_contract:
+        raise CollectorServiceError("unsupported_asset", "只接收明确识别的期货或期权成交")
     if data["side"] not in {"买", "卖", "buy", "sell"} or data["open_close"] not in {"开", "平", "开仓", "平仓", "open", "close"}:
         raise CollectorServiceError("invalid_observation", "买卖和开平字段无法验证")
     if not SHA256_RE.match(str(data["source_record_sha256"])):
@@ -361,7 +419,7 @@ def _observation_hash(data: Dict[str, Any]) -> str:
     return _hash_json({key: value for key, value in data.items() if key not in {"observed_at"}})
 
 
-def ingest_observations(device_token: str, observations: Sequence[Dict[str, Any]]) -> IngestResult:
+def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str, Any]]) -> IngestResult:
     if len(observations) > 500:
         raise CollectorServiceError("batch_too_large", "单次最多上传 500 条成交")
     device = get_device_by_token(device_token)
@@ -449,6 +507,303 @@ def ingest_observations(device_token: str, observations: Sequence[Dict[str, Any]
     return IngestResult(accepted, duplicates, conflicts, quarantined, observation_count)
 
 
+def _validate_position_number(value: Any, *, allow_empty: bool = True) -> Optional[float]:
+    if value is None and allow_empty:
+        return None
+    if isinstance(value, bool):
+        raise CollectorServiceError("invalid_position_snapshot", "持仓数量不能是布尔值")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise CollectorServiceError("invalid_position_snapshot", "持仓数量必须是非负数字")
+    if not number.is_finite() or number < 0:
+        raise CollectorServiceError("invalid_position_snapshot", "持仓数量必须是非负数字")
+    return float(number)
+
+
+def _validate_position_snapshot(raw: Dict[str, Any]) -> Dict[str, Any]:
+    missing = [field for field in REQUIRED_POSITION_FIELDS if raw.get(field) in (None, "")]
+    if missing:
+        raise CollectorServiceError("invalid_position_snapshot", "持仓快照缺少必需字段：" + ", ".join(sorted(missing)))
+    data = {key: raw.get(key) for key in ALLOWED_POSITION_FIELDS if key in raw}
+    data["source_snapshot_key"] = str(data["source_snapshot_key"]).strip()[:240]
+    data["trade_date"] = str(data["trade_date"]).strip()[:10]
+    data["snapshot_time"] = str(data.get("snapshot_time") or "").strip()[:32]
+    data["snapshot_timestamp"] = str(data["snapshot_timestamp"]).strip()[:64]
+    data["parser_version"] = str(data["parser_version"]).strip()[:80]
+    if not data["source_snapshot_key"] or not data["parser_version"]:
+        raise CollectorServiceError("invalid_position_snapshot", "持仓快照身份和解析器版本不能为空")
+    try:
+        datetime.strptime(data["trade_date"], "%Y-%m-%d")
+    except ValueError:
+        raise CollectorServiceError("invalid_position_snapshot", "持仓交易日格式无法验证")
+    snapshot_dt = _parse_datetime(data["snapshot_timestamp"])
+    if snapshot_dt is None:
+        raise CollectorServiceError("invalid_position_snapshot", "持仓快照时间戳格式无法验证")
+    if not data["snapshot_time"]:
+        data["snapshot_time"] = snapshot_dt.astimezone(timezone.utc).strftime("%H:%M:%S")
+    if data.get("complete") is not True:
+        raise CollectorServiceError("incomplete_position_snapshot", "持仓快照没有完整结束标记")
+    if not SHA256_RE.match(str(data["source_snapshot_sha256"])):
+        raise CollectorServiceError("invalid_position_snapshot", "持仓快照哈希格式不正确")
+    rows = data.get("rows")
+    if not isinstance(rows, list) or len(rows) > 10000:
+        raise CollectorServiceError("invalid_position_snapshot", "持仓快照行列表无法验证")
+    normalized_rows: List[Dict[str, Any]] = []
+    row_keys = set()
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, Mapping):
+            raise CollectorServiceError("invalid_position_snapshot", "持仓快照行不是对象")
+        row = dict(raw_row)
+        contract = str(row.get("contract") or "").strip().lower()[:80]
+        raw_contract = str(row.get("raw_contract") or contract)[:80]
+        asset_type = str(row.get("asset_type") or "").strip().lower()
+        if asset_type == "option":
+            supported_contract = bool(OPTION_RE.match(contract))
+        elif asset_type == "future":
+            supported_contract = bool(FUTURE_RE.match(contract))
+        else:
+            supported_contract = False
+        direction = str(row.get("direction") or "").strip().lower()
+        direction = {
+            "多": "long",
+            "空": "short",
+            "long": "long",
+            "short": "short",
+            "1": "long",
+            "2": "short",
+        }.get(direction, "")
+        exchange = str(row.get("exchange") or "").strip().upper()[:40]
+        quantity = _validate_position_number(row.get("quantity"), allow_empty=False)
+        today_quantity = _validate_position_number(row.get("today_quantity"))
+        yesterday_quantity = _validate_position_number(row.get("yesterday_quantity"))
+        average_price = row.get("average_price")
+        if average_price not in (None, ""):
+            try:
+                parsed_average = Decimal(str(average_price))
+                if not parsed_average.is_finite() or parsed_average < 0:
+                    raise InvalidOperation
+                average_price = format(parsed_average, "f")
+            except (InvalidOperation, TypeError, ValueError):
+                raise CollectorServiceError("invalid_position_snapshot", "持仓均价必须是非负数字")
+        else:
+            average_price = None
+        try:
+            source_index = int(row.get("source_record_index") if row.get("source_record_index") is not None else index)
+        except (TypeError, ValueError):
+            raise CollectorServiceError("invalid_position_snapshot", "持仓原始行号格式不正确")
+        if source_index < 0 or not supported_contract or not direction or not exchange or quantity is None:
+            raise CollectorServiceError("invalid_position_snapshot", "持仓快照含有无法验证的合约、方向、数量或交易所字段")
+        option_match = OPTION_RE.match(contract)
+        option_parts = {
+            "option_kind": option_match.group("kind").lower(),
+            "underlying": option_match.group("underlying").lower(),
+            "expiry_month": option_match.group("expiry"),
+            "strike": option_match.group("strike"),
+        } if option_match else {
+            "option_kind": None,
+            "underlying": None,
+            "expiry_month": None,
+            "strike": None,
+        }
+        hedge_flag = str(row.get("hedge_flag") or "").strip()[:40] or None
+        row_key = (contract, direction, hedge_flag or "")
+        if row_key in row_keys:
+            raise CollectorServiceError("invalid_position_snapshot", "持仓快照存在重复的合约方向行")
+        row_keys.add(row_key)
+        canonical_row = {
+            "contract": contract,
+            "raw_contract": raw_contract,
+            "asset_type": asset_type,
+            "exchange": exchange,
+            "direction": direction,
+            "quantity": quantity,
+            "today_quantity": today_quantity,
+            "yesterday_quantity": yesterday_quantity,
+            "average_price": average_price,
+            "hedge_flag": hedge_flag,
+            "source_record_index": source_index,
+            **option_parts,
+        }
+        canonical_row["source_record_sha256"] = str(row.get("source_record_sha256") or _hash_json(canonical_row))
+        if not SHA256_RE.match(canonical_row["source_record_sha256"]):
+            raise CollectorServiceError("invalid_position_snapshot", "持仓原始行哈希格式不正确")
+        normalized_rows.append(canonical_row)
+    data["rows"] = normalized_rows
+    data["source_path"] = _safe_source_path(data.get("source_path"))
+    data["source_snapshot_sha256"] = str(data["source_snapshot_sha256"]).lower()
+    data["data_status"] = "provisional"
+    data["verification_status"] = "pending"
+    data["observed_at"] = str(data.get("observed_at") or _now())[:64]
+    return data
+
+
+def _position_canonical_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: data.get(key)
+        for key in (
+            "source_snapshot_key", "trade_date", "snapshot_time", "snapshot_timestamp", "complete",
+            "rows", "source_snapshot_sha256", "parser_version", "data_status", "verification_status",
+        )
+    }
+
+
+def _position_observation_hash(data: Dict[str, Any]) -> str:
+    return _hash_json(_position_canonical_fields(data))
+
+
+def _safe_issue_payload(raw_map: Dict[str, Any]) -> str:
+    payload = dict(raw_map)
+    if "source_path" in payload:
+        payload["source_path"] = _safe_source_path(payload.get("source_path"))
+    return json.dumps(payload, ensure_ascii=False, default=str)[:8000]
+
+
+def _insert_position_rows(cur, snapshot_id: int, account_id: int, rows: Sequence[Dict[str, Any]]) -> None:
+    for row in rows:
+        db._exec(
+            cur,
+            """
+            INSERT OR IGNORE INTO trading_intraday_position_rows
+                (snapshot_id, account_id, contract, raw_contract, asset_type, exchange, direction,
+                 quantity, today_quantity, yesterday_quantity, average_price, hedge_flag, option_kind,
+                 underlying, expiry_month, strike, source_record_index, source_record_sha256)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id, account_id, row["contract"], row["raw_contract"], row["asset_type"], row["exchange"],
+                row["direction"], row["quantity"], row.get("today_quantity"), row.get("yesterday_quantity"),
+                row.get("average_price"), row.get("hedge_flag"), row.get("option_kind"), row.get("underlying"),
+                row.get("expiry_month"), row.get("strike"), row.get("source_record_index", 0), row["source_record_sha256"],
+            ),
+        )
+
+
+def _ingest_position_snapshots(device: Dict[str, Any], position_snapshots: Sequence[Dict[str, Any]]) -> IngestResult:
+    account_id = int(device["account_id"])
+    position_accepted = position_duplicates = position_conflicts = position_quarantined = position_observation_count = 0
+    with db.connect() as conn:
+        cur = conn.cursor()
+        for raw in position_snapshots:
+            raw_map = dict(raw) if isinstance(raw, dict) else {}
+            try:
+                data = _validate_position_snapshot(raw_map)
+            except CollectorServiceError as exc:
+                position_quarantined += 1
+                db._exec(
+                    cur,
+                    "INSERT INTO trading_collector_issues (device_id, account_id, issue_code, source_event_key, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    (device["id"], account_id, exc.code, str(raw_map.get("source_snapshot_key") or "")[:240], exc.message, _safe_issue_payload(raw_map)),
+                )
+                continue
+            payload_json = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+            observation_hash = _position_observation_hash(data)
+            obs_cur = db._exec(
+                cur,
+                """
+                INSERT OR IGNORE INTO trading_intraday_position_observations
+                    (device_id, account_id, source_snapshot_key, snapshot_hash, payload_json, status, observed_at)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?)
+                """,
+                (device["id"], account_id, data["source_snapshot_key"], observation_hash, payload_json, data.get("observed_at")),
+            )
+            inserted_observation = obs_cur.rowcount == 1
+            observation_id = db.last_insert_id(conn) if inserted_observation else None
+            if inserted_observation:
+                position_observation_count += 1
+            canonical_hash = _hash_json(_position_canonical_fields(data))
+            existing = db._exec(
+                cur,
+                "SELECT * FROM trading_intraday_position_snapshots WHERE account_id = ? AND source_snapshot_key = ?",
+                (account_id, data["source_snapshot_key"]),
+            ).fetchone()
+            if not existing:
+                db._exec(
+                    cur,
+                    """
+                    INSERT OR IGNORE INTO trading_intraday_position_snapshots
+                        (account_id, source_snapshot_key, trade_date, snapshot_time, snapshot_timestamp, complete,
+                         source_snapshot_sha256, parser_version, data_status, verification_status, first_received_at,
+                         last_observed_at, canonical_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account_id, data["source_snapshot_key"], data["trade_date"], data["snapshot_time"],
+                        data["snapshot_timestamp"], 1, data["source_snapshot_sha256"], data["parser_version"],
+                        data["data_status"], data["verification_status"], _now(), _now(), canonical_hash,
+                    ),
+                )
+                existing = db._exec(
+                    cur,
+                    "SELECT * FROM trading_intraday_position_snapshots WHERE account_id = ? AND source_snapshot_key = ?",
+                    (account_id, data["source_snapshot_key"]),
+                ).fetchone()
+                if existing and existing["canonical_hash"] == canonical_hash:
+                    _insert_position_rows(cur, int(existing["id"]), account_id, data["rows"])
+                    position_accepted += 1
+                    continue
+            if existing and existing["canonical_hash"] == canonical_hash:
+                position_duplicates += 1
+                if observation_id:
+                    db._exec(cur, "UPDATE trading_intraday_position_observations SET status = 'duplicate_observation' WHERE id = ?", (observation_id,))
+                db._exec(
+                    cur,
+                    "UPDATE trading_intraday_position_snapshots SET conflict_status = 'none', conflict_detected_at = NULL, last_observed_at = ? WHERE id = ?",
+                    (_now(), existing["id"]),
+                )
+                continue
+            position_conflicts += 1
+            if observation_id:
+                db._exec(cur, "UPDATE trading_intraday_position_observations SET status = 'conflict' WHERE id = ?", (observation_id,))
+            conflict_at = existing["conflict_detected_at"] or _now()
+            db._exec(
+                cur,
+                "UPDATE trading_intraday_position_snapshots SET conflict_status = 'transient', conflict_detected_at = ?, last_observed_at = ? WHERE id = ?",
+                (conflict_at, _now(), existing["id"]),
+            )
+            db._exec(
+                cur,
+                "INSERT INTO trading_collector_issues (device_id, account_id, issue_code, source_event_key, message, payload_json) VALUES (?, ?, 'position_conflict', ?, ?, ?)",
+                (device["id"], account_id, data["source_snapshot_key"], "同一持仓快照编号的内容不一致，保留首次完整快照", payload_json),
+            )
+        db._exec(cur, "UPDATE trading_collector_devices SET last_seen_at = ? WHERE id = ? AND status = 'active'", (_now(), device["id"]))
+    return IngestResult(
+        position_accepted=position_accepted,
+        position_duplicates=position_duplicates,
+        position_conflicts=position_conflicts,
+        position_quarantined=position_quarantined,
+        position_observations=position_observation_count,
+    )
+
+
+def ingest_observations(
+    device_token: str,
+    observations: Sequence[Dict[str, Any]],
+    position_snapshots: Sequence[Dict[str, Any]] = (),
+) -> IngestResult:
+    observations = list(observations or ())
+    position_snapshots = list(position_snapshots or ())
+    if len(observations) > 500:
+        raise CollectorServiceError("batch_too_large", "单次最多上传 500 条成交")
+    if len(position_snapshots) > 100:
+        raise CollectorServiceError("batch_too_large", "单次最多上传 100 份持仓快照")
+    device = get_device_by_token(device_token)
+    fill_result = _ingest_fill_observations(device_token, observations) if observations else IngestResult()
+    position_result = _ingest_position_snapshots(device, position_snapshots) if position_snapshots else IngestResult()
+    return IngestResult(
+        accepted=fill_result.accepted,
+        duplicates=fill_result.duplicates,
+        conflicts=fill_result.conflicts,
+        quarantined=fill_result.quarantined,
+        observations=fill_result.observations,
+        position_accepted=position_result.position_accepted,
+        position_duplicates=position_result.position_duplicates,
+        position_conflicts=position_result.position_conflicts,
+        position_quarantined=position_result.position_quarantined,
+        position_observations=position_result.position_observations,
+    )
+
+
 def query_intraday_fills(
     account_id: int,
     *,
@@ -457,6 +812,7 @@ def query_intraday_fills(
     contract: str = "",
     status: str = "accepted",
     limit: int = 500,
+    asset_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     _account(account_id)
     limit = max(1, min(int(limit), 500))
@@ -471,6 +827,9 @@ def query_intraday_fills(
     if contract:
         sql += " AND contract = ?"
         params.append(contract.strip().lower()[:80])
+    if asset_type:
+        sql += " AND asset_type = ?"
+        params.append(asset_type.strip().lower()[:20])
     if status:
         sql += " AND data_status = ?"
         params.append("provisional" if status == "accepted" else status)
@@ -480,3 +839,101 @@ def query_intraday_fills(
         rows = db._exec(conn.cursor(), sql, tuple(params)).fetchall()
     items = [dict(row) for row in rows]
     return {"items": items, "total": len(items), "account_id": account_id, "data_status": "provisional"}
+
+
+def _sum_by(items: Sequence[Dict[str, Any]], key: str) -> Dict[str, int]:
+    result: Dict[str, int] = {}
+    for item in items:
+        value = str(item.get(key) or "未标明")
+        result[value] = result.get(value, 0) + int(item.get("quantity") or 0)
+    return result
+
+
+def query_option_volume(
+    account_id: int,
+    *,
+    trade_date: str = "",
+    contract: str = "",
+    limit: int = 500,
+) -> Dict[str, Any]:
+    if not trade_date:
+        trade_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).date().isoformat()
+    data = query_intraday_fills(
+        account_id,
+        start=trade_date,
+        end=trade_date,
+        contract=contract,
+        status="accepted",
+        limit=limit,
+        asset_type="option",
+    )
+    items = data["items"]
+    return {
+        "account_id": account_id,
+        "trade_date": trade_date,
+        "total_quantity": sum(int(item.get("quantity") or 0) for item in items),
+        "by_contract": _sum_by(items, "contract"),
+        "by_side": _sum_by(items, "side"),
+        "by_open_close": _sum_by(items, "open_close"),
+        "by_option_kind": _sum_by(items, "option_kind"),
+        "items": items,
+        "data_status": "provisional",
+    }
+
+
+def query_current_option_positions(account_id: int, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    _account(account_id)
+    with db.connect() as conn:
+        snapshot = db._exec(
+            conn.cursor(),
+            """
+            SELECT * FROM trading_intraday_position_snapshots
+            WHERE account_id = ? AND complete = 1
+            ORDER BY snapshot_timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            (account_id,),
+        ).fetchone()
+        if not snapshot:
+            return {
+                "account_id": account_id,
+                "items": [],
+                "snapshot_timestamp": None,
+                "source_status": "unavailable",
+                "is_expired": True,
+                "message": "当前没有可验证的完整持仓快照",
+                "data_status": "provisional",
+            }
+        rows = db._exec(
+            conn.cursor(),
+            "SELECT * FROM trading_intraday_position_rows WHERE snapshot_id = ? AND account_id = ? AND asset_type = 'option' ORDER BY contract, direction, id",
+            (snapshot["id"], account_id),
+        ).fetchall()
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    snapshot_dt = _parse_datetime(snapshot["snapshot_timestamp"])
+    age_seconds = max(0, int((current - snapshot_dt).total_seconds())) if snapshot_dt else 10**9
+    is_expired = age_seconds > 30
+    conflict_age_seconds = 0
+    conflict_dt = _parse_datetime(snapshot["conflict_detected_at"]) if snapshot["conflict_detected_at"] else None
+    if conflict_dt:
+        conflict_age_seconds = max(0, int((current - conflict_dt).total_seconds()))
+    has_conflict = str(snapshot["conflict_status"] or "none") != "none"
+    source_status = "multi_device_conflict" if has_conflict else "expired" if is_expired else "ok"
+    message = "多设备持仓不一致" if has_conflict else "持仓数据可能已过期" if is_expired else ""
+    items = [dict(row) for row in rows]
+    return {
+        "account_id": account_id,
+        "items": items,
+        "snapshot_timestamp": snapshot["snapshot_timestamp"],
+        "trade_date": snapshot["trade_date"],
+        "source_status": source_status,
+        "conflict_status": "persistent" if has_conflict and conflict_age_seconds >= 30 else "transient" if has_conflict else "none",
+        "conflict_age_seconds": conflict_age_seconds,
+        "age_seconds": age_seconds,
+        "is_expired": is_expired,
+        "message": message,
+        "data_status": "provisional",
+        "verification_status": "pending",
+    }

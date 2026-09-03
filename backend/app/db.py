@@ -79,6 +79,9 @@ TRADING_COLLECTOR_TABLES = (
     "trading_collector_devices",
     "trading_intraday_fill_observations",
     "trading_intraday_fills",
+    "trading_intraday_position_observations",
+    "trading_intraday_position_snapshots",
+    "trading_intraday_position_rows",
     "trading_collector_issues",
 )
 
@@ -2526,6 +2529,59 @@ def migrate_trading_collector_schema(conn) -> None:
                 canonical_hash TEXT NOT NULL,
                 UNIQUE(account_id, source_event_key)
             );
+            CREATE TABLE IF NOT EXISTS trading_intraday_position_observations (
+                id SERIAL PRIMARY KEY,
+                device_id INTEGER NOT NULL REFERENCES trading_collector_devices(id),
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                source_snapshot_key TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'accepted',
+                observed_at TEXT,
+                received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(device_id, source_snapshot_key, snapshot_hash)
+            );
+            CREATE TABLE IF NOT EXISTS trading_intraday_position_snapshots (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                source_snapshot_key TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                snapshot_time TEXT NOT NULL DEFAULT '',
+                snapshot_timestamp TEXT NOT NULL,
+                complete BOOLEAN NOT NULL DEFAULT TRUE,
+                source_snapshot_sha256 TEXT NOT NULL,
+                parser_version TEXT NOT NULL,
+                data_status TEXT NOT NULL DEFAULT 'provisional',
+                verification_status TEXT NOT NULL DEFAULT 'pending',
+                conflict_status TEXT NOT NULL DEFAULT 'none',
+                conflict_detected_at TEXT,
+                first_received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                canonical_hash TEXT NOT NULL,
+                UNIQUE(account_id, source_snapshot_key)
+            );
+            CREATE TABLE IF NOT EXISTS trading_intraday_position_rows (
+                id SERIAL PRIMARY KEY,
+                snapshot_id INTEGER NOT NULL REFERENCES trading_intraday_position_snapshots(id),
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                contract TEXT NOT NULL,
+                raw_contract TEXT NOT NULL DEFAULT '',
+                asset_type TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                quantity DOUBLE PRECISION NOT NULL,
+                today_quantity DOUBLE PRECISION,
+                yesterday_quantity DOUBLE PRECISION,
+                average_price TEXT,
+                hedge_flag TEXT,
+                option_kind TEXT,
+                underlying TEXT,
+                expiry_month TEXT,
+                strike TEXT,
+                source_record_index INTEGER NOT NULL DEFAULT 0,
+                source_record_sha256 TEXT NOT NULL,
+                UNIQUE(snapshot_id, contract, direction, hedge_flag)
+            );
             CREATE TABLE IF NOT EXISTS trading_collector_issues (
                 id SERIAL PRIMARY KEY,
                 device_id INTEGER REFERENCES trading_collector_devices(id),
@@ -2544,6 +2600,12 @@ def migrate_trading_collector_schema(conn) -> None:
                 ON trading_intraday_fill_observations(account_id, received_at);
             CREATE INDEX IF NOT EXISTS idx_intraday_fills_query
                 ON trading_intraday_fills(account_id, trade_date, trade_time, contract);
+            CREATE INDEX IF NOT EXISTS idx_intraday_position_observations_account
+                ON trading_intraday_position_observations(account_id, received_at);
+            CREATE INDEX IF NOT EXISTS idx_intraday_position_snapshots_query
+                ON trading_intraday_position_snapshots(account_id, trade_date, snapshot_timestamp);
+            CREATE INDEX IF NOT EXISTS idx_intraday_position_rows_query
+                ON trading_intraday_position_rows(account_id, asset_type, contract);
             CREATE INDEX IF NOT EXISTS idx_collector_issues_account
                 ON trading_collector_issues(account_id, created_at);
             """
@@ -2623,6 +2685,59 @@ def migrate_trading_collector_schema(conn) -> None:
             canonical_hash TEXT NOT NULL,
             UNIQUE(account_id, source_event_key)
         );
+        CREATE TABLE IF NOT EXISTS trading_intraday_position_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL REFERENCES trading_collector_devices(id),
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            source_snapshot_key TEXT NOT NULL,
+            snapshot_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'accepted',
+            observed_at TEXT,
+            received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(device_id, source_snapshot_key, snapshot_hash)
+        );
+        CREATE TABLE IF NOT EXISTS trading_intraday_position_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            source_snapshot_key TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            snapshot_time TEXT NOT NULL DEFAULT '',
+            snapshot_timestamp TEXT NOT NULL,
+            complete INTEGER NOT NULL DEFAULT 1,
+            source_snapshot_sha256 TEXT NOT NULL,
+            parser_version TEXT NOT NULL,
+            data_status TEXT NOT NULL DEFAULT 'provisional',
+            verification_status TEXT NOT NULL DEFAULT 'pending',
+            conflict_status TEXT NOT NULL DEFAULT 'none',
+            conflict_detected_at TEXT,
+            first_received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            canonical_hash TEXT NOT NULL,
+            UNIQUE(account_id, source_snapshot_key)
+        );
+        CREATE TABLE IF NOT EXISTS trading_intraday_position_rows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL REFERENCES trading_intraday_position_snapshots(id),
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            contract TEXT NOT NULL,
+            raw_contract TEXT NOT NULL DEFAULT '',
+            asset_type TEXT NOT NULL,
+            exchange TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            today_quantity REAL,
+            yesterday_quantity REAL,
+            average_price TEXT,
+            hedge_flag TEXT,
+            option_kind TEXT,
+            underlying TEXT,
+            expiry_month TEXT,
+            strike TEXT,
+            source_record_index INTEGER NOT NULL DEFAULT 0,
+            source_record_sha256 TEXT NOT NULL,
+            UNIQUE(snapshot_id, contract, direction, hedge_flag)
+        );
         CREATE TABLE IF NOT EXISTS trading_collector_issues (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id INTEGER REFERENCES trading_collector_devices(id),
@@ -2641,6 +2756,12 @@ def migrate_trading_collector_schema(conn) -> None:
             ON trading_intraday_fill_observations(account_id, received_at);
         CREATE INDEX IF NOT EXISTS idx_intraday_fills_query
             ON trading_intraday_fills(account_id, trade_date, trade_time, contract);
+        CREATE INDEX IF NOT EXISTS idx_intraday_position_observations_account
+            ON trading_intraday_position_observations(account_id, received_at);
+        CREATE INDEX IF NOT EXISTS idx_intraday_position_snapshots_query
+            ON trading_intraday_position_snapshots(account_id, trade_date, snapshot_timestamp);
+        CREATE INDEX IF NOT EXISTS idx_intraday_position_rows_query
+            ON trading_intraday_position_rows(account_id, asset_type, contract);
         CREATE INDEX IF NOT EXISTS idx_collector_issues_account
             ON trading_collector_issues(account_id, created_at);
         """

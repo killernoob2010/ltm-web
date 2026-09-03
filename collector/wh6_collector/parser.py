@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
+import json
 import re
 import struct
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from .formats import MatchLayout, detect_layout, detect_order_layout
-from .models import AccountIdentity, FillRecord, ParseIssue, SourceFile
+from .formats import (
+    MatchLayout,
+    PositionLayout,
+    detect_layout,
+    detect_order_layout,
+    detect_position_layout,
+)
+from .models import AccountIdentity, FillRecord, ParseIssue, PositionRow, PositionSnapshot, SourceFile
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 REFERENCE_SESSIONS = (
@@ -25,7 +32,9 @@ OPTION_RE = re.compile(
     r"^(?P<underlying>[a-z]{1,8})(?P<expiry>\d{3,6})[-_]?(?P<kind>[cp])[-_]?(?P<strike>\d+(?:\.\d+)?)$",
     re.IGNORECASE,
 )
+FUTURE_RE = re.compile(r"^[a-z]{1,8}\d{3,6}$", re.IGNORECASE)
 DATE_RE = re.compile(r"(?P<date>\d{8})(?:[^/]*)match(?:[-_][^/]*)?\.dat$", re.IGNORECASE)
+ANY_DATE_RE = re.compile(r"(?P<date>\d{8})")
 
 # WH6 match records do not carry direction/open-close/exchange in the builds
 # observed so far.  These values are enriched from the paired order record;
@@ -125,8 +134,17 @@ def normalize_contract(contract: str) -> str:
     return text
 
 
+def classify_contract(contract: str) -> Optional[str]:
+    normalized = normalize_contract(contract)
+    if OPTION_RE.match(normalized):
+        return "option"
+    if FUTURE_RE.match(normalized):
+        return "future"
+    return None
+
+
 def is_option_contract(contract: str) -> bool:
-    return bool(OPTION_RE.match(normalize_contract(contract).replace("-", "-")))
+    return classify_contract(contract) == "option"
 
 
 def _option_parts(contract: str) -> Dict[str, str]:
@@ -191,6 +209,15 @@ def _filename_trading_date(path: Path, fallback: Optional[str]) -> str:
     if fallback:
         return fallback
     raise ValueError("成交缓存文件名缺少交易日")
+
+
+def _source_trading_date(path: Path, source_file: SourceFile) -> str:
+    if source_file.trading_date:
+        return source_file.trading_date
+    match = ANY_DATE_RE.search(path.name)
+    if match:
+        return datetime.strptime(match.group("date"), "%Y%m%d").date().isoformat()
+    return ""
 
 
 def _record_issue(code: str, message: str, path: Path, index: Optional[int], file_hash: str) -> ParseIssue:
@@ -293,6 +320,7 @@ def parse_match_records(
     *,
     account: AccountIdentity,
     source_file: SourceFile,
+    asset_types: Optional[Sequence[str]] = None,
 ) -> Tuple[List[FillRecord], List[ParseIssue]]:
     """Read complete match records.  The selected WH6 file is never changed."""
     path = Path(path)
@@ -304,6 +332,10 @@ def parse_match_records(
     if layout is None:
         raise ValueError("未知或无法验证的 WH6 成交缓存格式")
     order_index, order_issue = _load_order_enrichment(path)
+    allowed_asset_types = set(asset_types or ("future", "option"))
+    unknown_asset_types = allowed_asset_types - {"future", "option"}
+    if unknown_asset_types:
+        raise ValueError("不支持的成交资产类型过滤: %s" % ",".join(sorted(unknown_asset_types)))
     declared_count = struct.unpack_from("<I", data, 8)[0]
     available_count = max(0, (len(data) - 16) // layout.record_size)
     complete_count = min(declared_count, available_count)
@@ -336,11 +368,16 @@ def parse_match_records(
             open_close = open_close or str(order_values.get("open_close") or "")
             price = price or order_values.get("price")
             contract = contract or str(order_values.get("contract") or "")
-        if not is_option_contract(contract) or not quantity:
+        asset_type = classify_contract(contract)
+        if asset_type not in allowed_asset_types or not quantity:
             continue
         if not exchange:
             parts = _option_parts(contract)
-            exchange = EXCHANGE_BY_UNDERLYING.get(str(parts.get("underlying") or "").lower(), "")
+            underlying = str(parts.get("underlying") or "")
+            if not underlying:
+                future_match = FUTURE_RE.match(normalize_contract(contract))
+                underlying = future_match.group(0).rstrip("0123456789") if future_match else ""
+            exchange = EXCHANGE_BY_UNDERLYING.get(underlying.lower(), "")
         if (
             not trade_time
             or not price
@@ -348,11 +385,11 @@ def parse_match_records(
             or side not in {"买", "卖", "buy", "sell", "1", "3"}
             or open_close not in {"开", "平", "开仓", "平仓", "0", "1"}
         ):
-            issues.append(_record_issue("missing_required_field", "期权成交缺少可验证的时间、价格、买卖、开平或交易所字段", path, index, file_hash))
+            issues.append(_record_issue("missing_required_field", "成交缺少可验证的时间、价格、买卖、开平或交易所字段", path, index, file_hash))
             continue
         side = {"buy": "买", "sell": "卖", "1": "买", "3": "卖"}.get(side, side)
         open_close = {"0": "开", "1": "平", "开仓": "开", "平仓": "平"}.get(open_close, open_close)
-        parts = _option_parts(contract)
+        parts = _option_parts(contract) if asset_type == "option" else {}
         provisional.append(
             (
                 {
@@ -363,6 +400,7 @@ def parse_match_records(
                     "side": side,
                     "open_close": open_close,
                     "exchange": exchange,
+                    "asset_type": asset_type,
                     "quantity": quantity,
                     "price": price,
                     "fee": fee,
@@ -382,7 +420,14 @@ def parse_match_records(
         occurrence = signature_counts.get(signature, 0)
         signature_counts[signature] = occurrence + 1
         trade_id = values.get("trade_id") or ""
-        source_event_key = "tradeid:" + str(trade_id).strip().lower() if trade_id else "signature:" + signature + ":" + str(occurrence)
+        if trade_id:
+            source_event_key = "tradeid:%s:%s:%s" % (
+                str(values["trade_date"]),
+                str(values["exchange"]).strip().lower(),
+                str(trade_id).strip().lower(),
+            )
+        else:
+            source_event_key = "signature:" + signature + ":" + str(occurrence)
         trade_time = str(values["trade_time"] or "")
         timestamp = (str(values["trade_date"]) + "T" + trade_time + "+08:00") if trade_time else str(values["trade_date"])
         fills.append(
@@ -395,7 +440,7 @@ def parse_match_records(
                 exchange=str(values["exchange"]),
                 contract=str(values["contract"]),
                 raw_contract=str(values["raw_contract"]),
-                asset_type="option",
+                asset_type=str(values["asset_type"]),
                 side=str(values["side"]),
                 open_close=str(values["open_close"]),
                 quantity=int(values["quantity"]),
@@ -417,3 +462,291 @@ def parse_match_records(
             )
         )
     return fills, issues
+
+
+def _position_issue(code: str, message: str, path: Path, index: Optional[int], file_hash: str, *, severity="warning") -> ParseIssue:
+    return ParseIssue(code=code, message=message, path=str(path), record_index=index, file_sha256=file_hash, severity=severity)
+
+
+def _parse_position_timestamp(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=SHANGHAI)
+    return parsed.astimezone(SHANGHAI)
+
+
+def _nonnegative_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _canonical_position_row(
+    raw: Mapping[str, Any],
+    *,
+    index: int,
+    path: Path,
+    file_hash: str,
+) -> Tuple[Optional[PositionRow], Optional[ParseIssue]]:
+    raw_contract = str(raw.get("raw_contract") or raw.get("contract") or "").strip()
+    contract = normalize_contract(str(raw.get("contract") or raw_contract))
+    asset_type = classify_contract(contract)
+    direction_value = str(raw.get("direction") or raw.get("side") or "").strip().lower()
+    direction = {
+        "多": "long",
+        "空": "short",
+        "long": "long",
+        "short": "short",
+        "buy": "long",
+        "sell": "short",
+        "1": "long",
+        "2": "short",
+    }.get(direction_value)
+    quantity = _nonnegative_int(raw.get("quantity"))
+    today_quantity = _nonnegative_int(raw.get("today_quantity")) if raw.get("today_quantity") is not None else None
+    yesterday_quantity = _nonnegative_int(raw.get("yesterday_quantity")) if raw.get("yesterday_quantity") is not None else None
+    if raw.get("today_quantity") is not None and today_quantity is None:
+        quantity = None
+    if raw.get("yesterday_quantity") is not None and yesterday_quantity is None:
+        quantity = None
+    exchange = str(raw.get("exchange") or "").strip().upper()
+    if not exchange:
+        parts = _option_parts(contract)
+        underlying = str(parts.get("underlying") or "")
+        if not underlying:
+            future_match = FUTURE_RE.match(contract)
+            underlying = future_match.group(0).rstrip("0123456789") if future_match else ""
+        exchange = EXCHANGE_BY_UNDERLYING.get(underlying.lower(), "")
+    average_price = _parse_decimal(str(raw.get("average_price") or "")) if raw.get("average_price") is not None else None
+    if asset_type is None or not direction or quantity is None or not exchange:
+        return None, _position_issue(
+            "invalid_position_row",
+            "持仓快照含有无法验证的合约、方向、数量或交易所字段，整份快照不入队",
+            path,
+            index,
+            file_hash,
+            severity="error",
+        )
+    parts = _option_parts(contract) if asset_type == "option" else {}
+    row_payload = dict(raw)
+    row_payload.update(
+        {
+            "contract": contract,
+            "raw_contract": raw_contract,
+            "asset_type": asset_type,
+            "exchange": exchange,
+            "direction": direction,
+            "quantity": quantity,
+            "today_quantity": today_quantity,
+            "yesterday_quantity": yesterday_quantity,
+            "average_price": average_price,
+            **parts,
+        }
+    )
+    return (
+        PositionRow(
+            contract=contract,
+            raw_contract=raw_contract,
+            asset_type=asset_type,
+            exchange=exchange,
+            direction=direction,
+            quantity=quantity,
+            today_quantity=today_quantity,
+            yesterday_quantity=yesterday_quantity,
+            average_price=average_price,
+            hedge_flag=str(raw.get("hedge_flag") or "").strip() or None,
+            option_kind=parts.get("option_kind"),
+            underlying=parts.get("underlying"),
+            expiry_month=parts.get("expiry_month"),
+            strike=parts.get("strike"),
+            source_record_index=index,
+            source_record_sha256=hashlib.sha256(
+                json.dumps(row_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        ),
+        None,
+    )
+
+
+def _position_snapshot_from_rows(
+    *,
+    path: Path,
+    source_file: SourceFile,
+    account: AccountIdentity,
+    file_hash: str,
+    parser_version: str,
+    snapshot_value: Any,
+    trade_date: str,
+    raw_rows: Sequence[Any],
+    complete: bool,
+    source_snapshot_key: Optional[str] = None,
+) -> Tuple[Optional[PositionSnapshot], List[ParseIssue]]:
+    issues: List[ParseIssue] = []
+    if not complete:
+        issues.append(_position_issue("incomplete_position_snapshot", "持仓缓存未写入完整结束标记，暂停本次快照", path, None, file_hash, severity="error"))
+        return None, issues
+    parsed_time = _parse_position_timestamp(snapshot_value)
+    if parsed_time is None:
+        issues.append(_position_issue("missing_snapshot_time", "持仓快照缺少可验证的快照时间", path, None, file_hash, severity="error"))
+        return None, issues
+    if not isinstance(raw_rows, (list, tuple)):
+        issues.append(_position_issue("invalid_position_rows", "持仓快照 rows 不是列表，整份快照不入队", path, None, file_hash, severity="error"))
+        return None, issues
+    rows: List[PositionRow] = []
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, Mapping):
+            issues.append(_position_issue("invalid_position_row", "持仓快照行不是对象，整份快照不入队", path, index, file_hash, severity="error"))
+            continue
+        row, issue = _canonical_position_row(raw, index=index, path=path, file_hash=file_hash)
+        if issue:
+            issues.append(issue)
+        elif row:
+            rows.append(row)
+    if issues:
+        return None, issues
+    timestamp = parsed_time.isoformat()
+    key = str(source_snapshot_key or "").strip() or "snapshot:" + timestamp
+    return (
+        PositionSnapshot(
+            source_snapshot_key=key,
+            account_fingerprint=account.fingerprint,
+            trade_date=trade_date,
+            snapshot_time=parsed_time.strftime("%H:%M:%S"),
+            snapshot_timestamp=timestamp,
+            rows=tuple(rows),
+            complete=True,
+            source_path=str(path),
+            source_snapshot_sha256=file_hash,
+            parser_version=parser_version,
+            source_version=source_file.validation_reason or None,
+        ),
+        issues,
+    )
+
+
+def _parse_position_json(
+    data: bytes,
+    *,
+    path: Path,
+    source_file: SourceFile,
+    account: AccountIdentity,
+    file_hash: str,
+) -> Tuple[Optional[PositionSnapshot], List[ParseIssue]]:
+    try:
+        envelope = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("WH6 持仓 JSON 缓存无法解析") from exc
+    if not isinstance(envelope, Mapping) or envelope.get("format") != "wh6-position-v1":
+        raise ValueError("未知或无法验证的 WH6 持仓缓存格式")
+    raw_rows = envelope.get("rows")
+    if not isinstance(raw_rows, list):
+        return None, [_position_issue("invalid_position_rows", "持仓快照 rows 不是列表，整份快照不入队", path, None, file_hash, severity="error")]
+    declared = envelope.get("declared_count")
+    if declared is not None and declared != len(raw_rows):
+        return None, [_position_issue("truncated_position_snapshot", "持仓快照声明数量与实际行数不一致", path, None, file_hash, severity="error")]
+    snapshot_time = envelope.get("snapshot_at") or envelope.get("snapshot_timestamp")
+    trade_date = str(envelope.get("trade_date") or _source_trading_date(path, source_file) or "")
+    parsed = _parse_position_timestamp(snapshot_time)
+    if not trade_date and parsed:
+        trade_date = business_trading_day(parsed)
+    if not trade_date:
+        return None, [_position_issue("missing_trade_date", "持仓快照缺少可验证的交易日", path, None, file_hash, severity="error")]
+    return _position_snapshot_from_rows(
+        path=path,
+        source_file=source_file,
+        account=account,
+        file_hash=file_hash,
+        parser_version="wh6-position-json-v1",
+        snapshot_value=snapshot_time,
+        trade_date=trade_date,
+        raw_rows=raw_rows,
+        complete=envelope.get("complete") is True,
+        source_snapshot_key=envelope.get("source_snapshot_key"),
+    )
+
+
+def _parse_position_binary(
+    data: bytes,
+    *,
+    layout: PositionLayout,
+    path: Path,
+    source_file: SourceFile,
+    account: AccountIdentity,
+    file_hash: str,
+) -> Tuple[Optional[PositionSnapshot], List[ParseIssue]]:
+    declared = struct.unpack_from("<I", data, layout.declared_count_offset)[0]
+    body = data[layout.header_size:]
+    expected_size = declared * layout.record_size
+    if len(body) < expected_size or len(body) % layout.record_size:
+        return None, [_position_issue("truncated_position_snapshot", "持仓快照尾部尚未完整写入", path, None, file_hash, severity="error")]
+    complete = bool(struct.unpack_from("<I", data, layout.complete_offset)[0])
+    if not complete:
+        return None, [_position_issue("incomplete_position_snapshot", "持仓缓存未写入完整结束标记，暂停本次快照", path, None, file_hash, severity="error")]
+    epoch_ms = struct.unpack_from("<q", data, layout.snapshot_epoch_ms_offset)[0]
+    snapshot_time = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).astimezone(SHANGHAI).isoformat()
+    raw_rows: List[Dict[str, Any]] = []
+    for index in range(declared):
+        start = layout.header_size + index * layout.record_size
+        record = data[start:start + layout.record_size]
+        raw_rows.append(
+            {
+                "contract": _decode_shifted(record[slice(*layout.contract)]),
+                "direction": _decode_shifted(record[slice(*layout.direction)]),
+                "quantity": struct.unpack_from("<I", record, layout.quantity_offset)[0],
+                "today_quantity": struct.unpack_from("<I", record, layout.today_quantity_offset)[0],
+                "yesterday_quantity": struct.unpack_from("<I", record, layout.yesterday_quantity_offset)[0],
+                "average_price": _decode_shifted(record[slice(*layout.average_price)]),
+                "exchange": _decode_shifted(record[slice(*layout.exchange)]),
+                "hedge_flag": _decode_shifted(record[slice(*layout.hedge_flag)]),
+            }
+        )
+    trade_date = _source_trading_date(path, source_file) or business_trading_day(datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc))
+    return _position_snapshot_from_rows(
+        path=path,
+        source_file=source_file,
+        account=account,
+        file_hash=file_hash,
+        parser_version=layout.parser_version,
+        snapshot_value=snapshot_time,
+        trade_date=trade_date,
+        raw_rows=raw_rows,
+        complete=True,
+    )
+
+
+def parse_position_snapshot(
+    path: Path,
+    *,
+    account: AccountIdentity,
+    source_file: SourceFile,
+) -> Tuple[Optional[PositionSnapshot], List[ParseIssue]]:
+    """Parse one complete, explicitly registered WH6 position cache."""
+    path = Path(path)
+    if source_file.kind != "position":
+        raise ValueError("仅支持 WH6 position 持仓缓存")
+    data = path.read_bytes()
+    file_hash = hashlib.sha256(data).hexdigest()
+    layout = detect_position_layout(data)
+    if layout is None:
+        raise ValueError("未知或无法验证的 WH6 持仓缓存格式")
+    if layout.format == "json":
+        return _parse_position_json(data, path=path, source_file=source_file, account=account, file_hash=file_hash)
+    return _parse_position_binary(
+        data,
+        layout=layout,
+        path=path,
+        source_file=source_file,
+        account=account,
+        file_hash=file_hash,
+    )
