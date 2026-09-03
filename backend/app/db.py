@@ -82,6 +82,12 @@ TRADING_COLLECTOR_TABLES = (
     "trading_collector_issues",
 )
 
+CLOSING_REVIEW_AGENT_TABLES = (
+    "closing_review_conversations",
+    "closing_review_messages",
+    "closing_review_tasks",
+)
+
 MODULES = [
     ("贸易台账管理", "spot_ledger", "现货业务台账管理"),
     ("台账管理", "sh_junneng", "上海钧能台账"),
@@ -93,6 +99,7 @@ MODULES = [
     ("交易管理", "trading_sh_junneng", "上海钧能台账"),
     ("交易管理", "trading_options", "期权台账"),
     ("交易管理", "trading_export", "汇总与导出"),
+    ("智能助手", "closing_review_agent", "Agent 对话"),
     ("信息预警管理", "info_summary", "实时信息汇总"),
     ("信息预警管理", "platts_index_monitor", "普氏指数监控"),
     ("信息预警管理", "risk_alert", "风险预警"),
@@ -1192,6 +1199,7 @@ def init_db() -> None:
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
         migrate_trading_collector_schema(conn)
+        migrate_closing_review_agent_schema(conn)
         migrate_platts_index_schema(conn)
         if _is_pg():
             _secure_postgres_tables(
@@ -1199,6 +1207,7 @@ def init_db() -> None:
                 LEGACY_PUBLIC_TABLES,
                 sequence_tables=LEGACY_PUBLIC_TABLE_SEQUENCE_TABLES,
             )
+            _secure_postgres_tables(cur, CLOSING_REVIEW_AGENT_TABLES)
             _secure_postgres_default_privileges(cur)
 
         ensure_admin_user(cur, "管理员")
@@ -1208,6 +1217,149 @@ def init_db() -> None:
         sync_order_lifecycle_permissions(cur)
         sync_spot_ledger_permissions(cur)
         conn.commit()
+
+
+def migrate_closing_review_agent_schema(conn) -> None:
+    """Create the isolated Agent conversation, message, and task tables."""
+    cur = conn.cursor()
+    if _is_pg():
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS closing_review_conversations (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                channel TEXT NOT NULL DEFAULT 'web',
+                kind TEXT NOT NULL DEFAULT 'conversation',
+                title TEXT NOT NULL DEFAULT '新对话',
+                system_key TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                last_message_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, channel, system_key)
+            );
+            CREATE TABLE IF NOT EXISTS closing_review_tasks (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                conversation_id INTEGER NOT NULL REFERENCES closing_review_conversations(id),
+                user_message_id INTEGER,
+                client_request_id TEXT NOT NULL,
+                task_kind TEXT NOT NULL,
+                task_profile TEXT,
+                target_date TEXT,
+                state TEXT NOT NULL,
+                validated_intent TEXT,
+                result_projection TEXT,
+                model_provider TEXT,
+                model_name TEXT,
+                prompt_version TEXT,
+                model_usage TEXT,
+                model_finish_reason TEXT,
+                model_duration_seconds DOUBLE PRECISION,
+                workflow_version TEXT,
+                calculation_version TEXT,
+                rule_version TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                error_category TEXT,
+                source_signature TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, client_request_id)
+            );
+            CREATE TABLE IF NOT EXISTS closing_review_messages (
+                id SERIAL PRIMARY KEY,
+                conversation_id INTEGER NOT NULL REFERENCES closing_review_conversations(id),
+                task_id INTEGER,
+                role TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                content TEXT,
+                structured_payload TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                supersedes_message_id INTEGER REFERENCES closing_review_messages(id),
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                redacted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_closing_review_conversations_owner_last_message
+                ON closing_review_conversations(user_id, last_message_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_closing_review_messages_conversation_id
+                ON closing_review_messages(conversation_id, id);
+            CREATE INDEX IF NOT EXISTS idx_closing_review_tasks_user_date
+                ON closing_review_tasks(user_id, target_date, id);
+            CREATE INDEX IF NOT EXISTS idx_closing_review_tasks_source_signature
+                ON closing_review_tasks(source_signature, target_date, user_id);
+            """
+        )
+        _secure_postgres_tables(cur, CLOSING_REVIEW_AGENT_TABLES)
+        return
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS closing_review_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            channel TEXT NOT NULL DEFAULT 'web',
+            kind TEXT NOT NULL DEFAULT 'conversation',
+            title TEXT NOT NULL DEFAULT '新对话',
+            system_key TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            last_message_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, channel, system_key)
+        );
+        CREATE TABLE IF NOT EXISTS closing_review_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            conversation_id INTEGER NOT NULL REFERENCES closing_review_conversations(id),
+            user_message_id INTEGER,
+            client_request_id TEXT NOT NULL,
+            task_kind TEXT NOT NULL,
+            task_profile TEXT,
+            target_date TEXT,
+            state TEXT NOT NULL,
+            validated_intent TEXT,
+            result_projection TEXT,
+            model_provider TEXT,
+            model_name TEXT,
+            prompt_version TEXT,
+            model_usage TEXT,
+            model_finish_reason TEXT,
+            model_duration_seconds REAL,
+            workflow_version TEXT,
+            calculation_version TEXT,
+            rule_version TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            error_category TEXT,
+            source_signature TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, client_request_id)
+        );
+        CREATE TABLE IF NOT EXISTS closing_review_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL REFERENCES closing_review_conversations(id),
+            task_id INTEGER,
+            role TEXT NOT NULL,
+            message_type TEXT NOT NULL,
+            content TEXT,
+            structured_payload TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            supersedes_message_id INTEGER REFERENCES closing_review_messages(id),
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            redacted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_closing_review_conversations_owner_last_message
+            ON closing_review_conversations(user_id, last_message_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_closing_review_messages_conversation_id
+            ON closing_review_messages(conversation_id, id);
+        CREATE INDEX IF NOT EXISTS idx_closing_review_tasks_user_date
+            ON closing_review_tasks(user_id, target_date, id);
+        CREATE INDEX IF NOT EXISTS idx_closing_review_tasks_source_signature
+            ON closing_review_tasks(source_signature, target_date, user_id);
+        """
+    )
 
 
 def migrate_platts_index_schema(conn) -> None:

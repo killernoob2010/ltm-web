@@ -25,6 +25,7 @@ RESOURCE_MODULES = {
     "trading.imports": "trading_positions",
     "trading.config": "trading_positions",
     "trading.collector": "trading_collector",
+    "closing_review.agent": "closing_review_agent",
     "sh_junneng.trades": "sh_junneng",
     "mid_event.monitor": "mid_event_monitor",
     "platts_index.data": "platts_index_monitor",
@@ -72,6 +73,8 @@ ACTIVE_BUSINESS_MODULES = {
     "trading_options",
     "trading_export",
 }
+PILOT_MODULES = {"closing_review_agent"}
+PERMISSION_MANAGED_MODULES = ACTIVE_BUSINESS_MODULES | PILOT_MODULES
 INFO_WARNING_MODULES = {
     "info_summary",
     "platts_index_monitor",

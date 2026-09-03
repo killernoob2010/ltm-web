@@ -156,6 +156,38 @@ def test_trading_management_uses_existing_permission_levels():
     assert {admin[code] for code in trading_modules} == {"sensitive"}
 
 
+def test_agent_module_defaults_to_admin_only():
+    admin = permissions.default_permission_levels("管理部门", "管理员")
+    leader = permissions.default_permission_levels("管理部门", "领导")
+    futures_user = permissions.default_permission_levels("期货组", "用户")
+
+    assert admin["closing_review_agent"] == "sensitive"
+    assert leader["closing_review_agent"] == "none"
+    assert futures_user["closing_review_agent"] == "none"
+
+
+def test_agent_resource_maps_to_pilot_module():
+    assert permissions.RESOURCE_MODULES["closing_review.agent"] == "closing_review_agent"
+    assert "closing_review_agent" in permissions.PERMISSION_MANAGED_MODULES
+    assert "closing_review_agent" not in permissions.ACTIVE_BUSINESS_MODULES
+
+
+def test_permission_management_lists_agent_pilot_module(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    admin = admin_user()
+
+    result = get_managed_user_permissions(admin["id"], user=admin)
+
+    assert "closing_review_agent" in {
+        item["module_code"] for item in result["permissions"]
+    }
+    assert any(
+        item["code"] == "closing_review_agent"
+        for group in main.modules(user=admin)
+        for item in group["items"]
+    )
+
+
 def test_retired_ledger_modules_are_hidden_and_receive_no_default_permissions():
     retired = {"sh_junneng", "steel_export", "subsidiary_hedging", "option_trading"}
     admin_modules = main.modules(user={"id": 1, "role": "管理员"})
@@ -452,7 +484,7 @@ def test_create_user_uses_username_temporary_password_and_permission_snapshot(tm
     assert listed["permission_summary"]["enabled"] > 0
     assert listed["permission_summary"]["sensitive"] == 0
     configurable = main.get_user_permissions(result["id"], user=admin_user())["permissions"]
-    assert {item["module_code"] for item in configurable} == permissions.ACTIVE_BUSINESS_MODULES
+    assert {item["module_code"] for item in configurable} == permissions.PERMISSION_MANAGED_MODULES
 
 
 def test_change_password_keeps_current_session_and_revokes_other_sessions(tmp_path, monkeypatch):

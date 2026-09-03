@@ -32,6 +32,7 @@ from . import db
 from .permissions import (
     ACTIVE_BUSINESS_MODULES,
     DEPARTMENTS,
+    PERMISSION_MANAGED_MODULES,
     RETIRED_MODULE_CODES,
     USER_ROLES,
     default_permission_levels,
@@ -3284,9 +3285,9 @@ def preview_user(payload: UserPreviewIn, user=Depends(current_user)):
         "temporary_password": password_policy["temporary_password"],
         "password_rule": password_policy["password_rule"],
         "username_available": duplicate is None,
-        "default_permissions": {code: level for code, level in default_levels.items() if code in ACTIVE_BUSINESS_MODULES},
-        "final_permissions": {code: level for code, level in final_levels.items() if code in ACTIVE_BUSINESS_MODULES},
-        "changes": [item for item in changes if item["module_code"] in ACTIVE_BUSINESS_MODULES],
+        "default_permissions": {code: level for code, level in default_levels.items() if code in PERMISSION_MANAGED_MODULES},
+        "final_permissions": {code: level for code, level in final_levels.items() if code in PERMISSION_MANAGED_MODULES},
+        "changes": [item for item in changes if item["module_code"] in PERMISSION_MANAGED_MODULES],
     }
 
 
@@ -3557,7 +3558,7 @@ def get_user_permissions(user_id: int, user=Depends(current_user)):
         "permissions": [
             {"module_code": row["module_code"], "level": _permission_level(dict(row))}
             for row in rows
-            if row["module_code"] in ACTIVE_BUSINESS_MODULES
+            if row["module_code"] in PERMISSION_MANAGED_MODULES
         ]
     }
 
