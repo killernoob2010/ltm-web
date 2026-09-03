@@ -23,6 +23,9 @@ def test_one_click_builder_prepares_dependencies_and_emits_setup_exe():
     assert "-NoPause" in wrapper
     assert '.Extension -in @(".py", ".ps1", ".cmd", ".iss", ".spec", ".txt")' in script
     assert "collector\\installer\\build_windows.cmd" in root_wrapper
+    assert 'set "BUILDER=%~dp0collector\\installer\\build_windows.cmd"' in root_wrapper
+    assert 'if not exist "%BUILDER%"' in root_wrapper
+    assert "未找到 WH6 构建脚本" in root_wrapper
     assert "build_windows.ps1" in wrapper
 
 
