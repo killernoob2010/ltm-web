@@ -59,3 +59,9 @@ def test_onefile_pyinstaller_output_is_the_file_consumed_by_inno_setup():
 
     assert 'dist\\WH6成交采集器.exe' in script
     assert 'Source: "{#BuildDir}\\WH6成交采集器.exe"' in iss
+
+
+def test_windows_bundle_includes_iana_timezone_database():
+    requirements = (ROOT / "collector" / "requirements-windows.txt").read_text(encoding="utf-8")
+
+    assert "tzdata==2026.3" in requirements
