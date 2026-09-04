@@ -86,6 +86,15 @@ const pageTitle = document.querySelector("#pageTitle");
 const pageSubtitle = document.querySelector("#pageSubtitle");
 const globalTopbar = document.querySelector("#globalTopbar");
 const passwordChangeNotice = document.querySelector("#passwordChangeNotice");
+const changePasswordBtn = document.querySelector("#changePasswordBtn");
+const passwordNoticeAction = document.querySelector("#passwordNoticeAction");
+const changePasswordDialog = document.querySelector("#changePasswordDialog");
+const changePasswordForm = document.querySelector("#changePasswordForm");
+const currentPassword = document.querySelector("#currentPassword");
+const newPassword = document.querySelector("#newPassword");
+const confirmNewPassword = document.querySelector("#confirmNewPassword");
+const changePasswordError = document.querySelector("#changePasswordError");
+const cancelChangePasswordBtn = document.querySelector("#cancelChangePasswordBtn");
 
 function isGuest() {
   return state.user?.role === "guest" || state.user?.is_guest;
