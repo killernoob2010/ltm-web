@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/trading_collector.css?v=20260902a" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
+    <link rel="stylesheet" href="/static/closing_review_agent.css?v=closing-review-agent-v1" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -443,6 +444,45 @@
               <tbody id="collectorFillsTable"></tbody>
             </table></div>
           </section>
+        </section>
+
+        <section id="closingReviewAgentPage" class="page hidden closing-review-agent-page">
+          <div class="closing-review-agent-header">
+            <div>
+              <h1>期权收盘复盘 Agent</h1>
+              <p id="closingReviewScopeNote">宏源账户 · 铁矿石期权 · 仅收盘复盘事实查询</p>
+            </div>
+            <span id="closingReviewStatus" class="closing-review-agent-status" role="status" aria-live="polite"></span>
+          </div>
+
+          <div class="closing-review-agent-layout">
+            <aside class="closing-review-agent-panel closing-review-agent-history-panel" aria-label="对话历史">
+              <div class="closing-review-agent-panel-header">
+                <h2>对话历史</h2>
+                <button id="closingReviewNewBtn" class="secondary closing-review-agent-new" type="button">新建对话</button>
+              </div>
+              <div id="closingReviewHistory" class="closing-review-agent-history"></div>
+              <p class="closing-review-agent-retention">对话内容按保留策略管理；自动收盘复盘结果保留数据状态、来源与证据提示。</p>
+            </aside>
+
+            <section class="closing-review-agent-main" aria-label="收盘复盘对话">
+              <div id="closingReviewMessages" class="closing-review-agent-messages" aria-live="polite"></div>
+
+              <section class="closing-review-agent-panel closing-review-agent-suggestion-panel" aria-labelledby="closingReviewSuggestionsTitle">
+                <div class="closing-review-agent-panel-header">
+                  <h2 id="closingReviewSuggestionsTitle">推荐问题</h2>
+                  <span class="closing-review-agent-status">只查询确定性复盘事实</span>
+                </div>
+                <div id="closingReviewSuggestions" class="closing-review-agent-suggestions"></div>
+              </section>
+
+              <form id="closingReviewComposer" class="closing-review-agent-composer">
+                <textarea id="closingReviewInput" maxlength="1000" aria-label="输入收盘复盘问题" placeholder="例如：2026-08-31 的铁矿石期权真实平仓盈亏是多少？"></textarea>
+                <button id="closingReviewSendBtn" type="submit">查询</button>
+                <p class="closing-review-agent-composer-note">Agent 只支持固定范围的收盘复盘查询，不提供交易动作或交易建议。⌘/Ctrl + Enter 发送。</p>
+              </form>
+            </section>
+          </div>
         </section>
 
         <section id="tradingManagementPage" class="page hidden tm-page">
@@ -1651,6 +1691,7 @@
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
     <script src="/static/spot_ledger.js?v=spot-ledger-source-labels-20260826"></script>
+    <script src="/static/closing_review_agent.js?v=closing-review-agent-v1"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&collector=20260903a&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
     <script src="/static/trading_collector.js?v=20260902a"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
