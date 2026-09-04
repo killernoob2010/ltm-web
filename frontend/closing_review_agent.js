@@ -121,7 +121,10 @@
       addText(messages, "p", "closing-review-agent-empty", "这段对话还没有消息。可从下方推荐问题开始。");
       return;
     }
-    items.forEach((message) => {
+    const supersededIds = new Set(
+      items.map((message) => Number(message.supersedes_message_id)).filter((id) => Number.isFinite(id) && id > 0),
+    );
+    items.forEach((message, index) => {
       const article = document.createElement("article");
       article.className = `closing-review-agent-message ${message.role === "user" ? "is-user" : "is-agent"}${message.message_type === "automatic_result" ? " is-automatic" : ""}`;
       const header = document.createElement("div");
@@ -130,6 +133,9 @@
       addText(header, "time", "closing-review-agent-message-time", timestampSeconds(message.created_at));
       article.appendChild(header);
       addText(article, "p", "closing-review-agent-message-content", message.content || "该消息内容已按保留策略清理。");
+      if (supersededIds.has(Number(message.id))) {
+        addText(article, "span", "closing-review-agent-status-chip", "已被更新");
+      }
       const payload = message.structured_payload;
       const projection = payload && typeof payload === "object" ? payload : null;
       if (projection && projection.status) {
@@ -137,6 +143,20 @@
       }
       const evidence = evidenceBlock(projection);
       if (evidence) article.appendChild(evidence);
+      if (message.role !== "user" && message.message_type === "error") {
+        const previousQuestion = [...items.slice(0, index)].reverse().find((item) => item.role === "user");
+        if (previousQuestion && previousQuestion.content) {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "secondary closing-review-agent-retry";
+          retry.textContent = "重试原问题";
+          retry.addEventListener("click", () => {
+            input.value = previousQuestion.content;
+            submitMessage();
+          });
+          article.appendChild(retry);
+        }
+      }
       messages.appendChild(article);
     });
     messages.scrollTop = messages.scrollHeight;

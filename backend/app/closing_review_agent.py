@@ -74,6 +74,10 @@ _ACTION_WORDS = (
     "下单",
     "撤单",
     "改单",
+    "执行平仓",
+    "帮我平仓",
+    "自动平仓",
+    "close position",
     "平仓建议",
     "行权",
     "资金划转",
@@ -226,6 +230,11 @@ def require_agent_and_option_permissions(user: dict) -> None:
 
     require_permission(user, "closing_review.agent", "view")
     require_permission(user, "trading.options", "view")
+
+
+def _contains_forbidden_action(text: str) -> bool:
+    lowered = text.casefold()
+    return any(word.casefold() in lowered for word in _ACTION_WORDS)
 
 
 def _normalize_date(value: Any) -> Optional[str]:
@@ -673,6 +682,7 @@ def _public_message(row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
         "message_type": row.get("message_type"),
         "content": row.get("content"),
         "structured_payload": _json_value(row.get("structured_payload")),
+        "supersedes_message_id": row.get("supersedes_message_id"),
         "status": row.get("status"),
         "created_at": _seconds(row.get("created_at")),
         "redacted_at": _seconds(row.get("redacted_at")),
@@ -828,6 +838,12 @@ def process_message(user: dict, conversation_id: int, payload: MessageIn) -> Mes
     context = store.build_context(int(user["id"]), int(conversation_id))
     provider: Optional[ClosingReviewModelProvider] = None
     error_category: Optional[str] = None
+    if intent is None and _contains_forbidden_action(question):
+        intent = IntentResolution(
+            task_profile="unsupported",
+            reference_mode="none",
+            needs_clarification=False,
+        )
     if intent is None:
         provider = build_closing_review_provider()
         try:

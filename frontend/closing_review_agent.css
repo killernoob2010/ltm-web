@@ -80,6 +80,7 @@
 .closing-review-agent-status-chip.status-complete { color: var(--cra-green); background: #e9f7ef; }
 .closing-review-agent-status-chip.status-data_anomaly { color: #b42318; background: #fff0ef; }
 .closing-review-agent-status-chip.status-waiting_for_data { color: var(--cra-amber); background: #fff5dc; }
+.closing-review-agent-retry { min-height: 29px; margin-top: 10px; padding: 0 9px; font-size: 11px; }
 
 .closing-review-agent-evidence { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(148, 163, 184, .28); color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-evidence-list { margin: 0; padding-left: 16px; }
