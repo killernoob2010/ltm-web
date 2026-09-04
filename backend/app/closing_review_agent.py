@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 import re
 import threading
 from typing import Any, Literal, Optional
@@ -225,9 +226,24 @@ _due_check_lock = threading.Lock()
 _due_check_last_date: Optional[date] = None
 
 
+def is_enabled() -> bool:
+    return os.getenv("CLOSING_REVIEW_AGENT_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def require_enabled() -> None:
+    if not is_enabled():
+        raise HTTPException(status_code=404, detail="收盘交易复盘 Agent 未启用")
+
+
 def require_agent_and_option_permissions(user: dict) -> None:
     """Check both gates before constructing a provider or reading review data."""
 
+    require_enabled()
     require_permission(user, "closing_review.agent", "view")
     require_permission(user, "trading.options", "view")
 
@@ -962,6 +978,7 @@ def replay_agent_result(
 ):
     from . import closing_review_scheduler as scheduler
 
+    require_enabled()
     if not scheduler._enabled("CLOSING_REVIEW_AGENT_REPLAY_ENABLED"):
         raise HTTPException(status_code=404, detail="历史回放未启用")
     if user.get("role") not in {"管理员", "admin"}:

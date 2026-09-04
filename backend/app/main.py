@@ -1530,7 +1530,12 @@ def me(user=Depends(current_user)):
 
 @app.get("/api/auth/modules")
 def modules(user=Depends(current_user)):
-    module_rows = [row for row in db.MODULES if row[1] not in RETIRED_MODULE_CODES]
+    module_rows = [
+        row
+        for row in db.MODULES
+        if row[1] not in RETIRED_MODULE_CODES
+        and (row[1] != "closing_review_agent" or closing_review_agent.is_enabled())
+    ]
     if user["role"] == "管理员":
         visible = {
             code: {"can_view": True, "can_edit": True, "can_sensitive": True}

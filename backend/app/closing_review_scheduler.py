@@ -330,7 +330,7 @@ def _scheduler_loop(interval_seconds: int) -> None:
 
 def start_closing_review_scheduler(interval_seconds: int = 60) -> bool:
     global _scheduler_started
-    if not _enabled("CLOSING_REVIEW_AGENT_AUTO_ENABLED"):
+    if not agent.is_enabled() or not _enabled("CLOSING_REVIEW_AGENT_AUTO_ENABLED"):
         return False
     with _scheduler_lock:
         if _scheduler_started:

@@ -174,6 +174,7 @@ def test_agent_resource_maps_to_pilot_module():
 
 def test_permission_management_lists_agent_pilot_module(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "true")
     admin = admin_user()
 
     result = get_managed_user_permissions(admin["id"], user=admin)
@@ -186,6 +187,19 @@ def test_permission_management_lists_agent_pilot_module(tmp_path, monkeypatch):
         for group in main.modules(user=admin)
         for item in group["items"]
     )
+
+
+def test_disabled_agent_module_is_hidden_from_navigation(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "false")
+
+    visible_codes = {
+        item["code"]
+        for group in main.modules(user=admin_user())
+        for item in group["items"]
+    }
+
+    assert "closing_review_agent" not in visible_codes
 
 
 def test_retired_ledger_modules_are_hidden_and_receive_no_default_permissions():
