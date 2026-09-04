@@ -22,6 +22,7 @@ SHANGHAI = timezone(timedelta(hours=8))
 
 def _use_temp_db(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "true")
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "closing-review-scheduler.db")
     db.init_db()
@@ -288,3 +289,22 @@ def test_replay_api_returns_404_when_disabled_and_403_for_non_admin(tmp_path, mo
 
     assert disabled.status_code == 404
     assert forbidden.status_code == 403
+
+
+def test_master_switch_prevents_scheduler_start(monkeypatch):
+    starts = []
+
+    class FakeThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            starts.append(True)
+
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "false")
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_AUTO_ENABLED", "true")
+    monkeypatch.setattr(scheduler, "_scheduler_started", False)
+    monkeypatch.setattr(scheduler.threading, "Thread", FakeThread)
+
+    assert scheduler.start_closing_review_scheduler() is False
+    assert starts == []

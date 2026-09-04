@@ -1539,6 +1539,7 @@ def modules(user=Depends(current_user)):
         row
         for row in db.MODULES
         if row[1] not in RETIRED_MODULE_CODES
+        and (row[1] != "closing_review_agent" or closing_review_agent.is_enabled())
     ]
     if user["role"] == "管理员":
         visible = {

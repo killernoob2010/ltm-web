@@ -98,6 +98,7 @@ def _intent(profile, date_expression="20260831", reference_mode="explicit_date")
 
 def _use_temp_db(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "true")
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "closing-review-agent-api.db")
     db.init_db()
@@ -313,6 +314,21 @@ def test_message_permission_runs_before_model_and_data(tmp_path, monkeypatch):
         )
 
     assert response.status_code == 403
+
+
+def test_master_switch_returns_404_before_agent_data_access(tmp_path, monkeypatch):
+    _use_temp_db(tmp_path, monkeypatch)
+    user = _authorized_user("DisabledAgent")
+    token = _token(user["id"])
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "false")
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/closing-review-agent/conversations",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 404
 
 
 def test_agent_api_rejects_cross_user_conversation_and_invalid_message(tmp_path, monkeypatch):
