@@ -1096,8 +1096,8 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             )
         return rows, total_count, max(1, total_pages)
 
-    def _fetch_report_sales_type_labels(self) -> dict[str, str]:
-        """Read the confirmed report's complete ``业务类别`` labels by detail ID."""
+    def _fetch_report_enrichment(self) -> dict[str, dict[str, str]]:
+        """Read confirmed report fields by sales-contract detail ID."""
         page_size = min(max(self.page_size, 20), 500)
         report_date = _now().date()
         first_body = build_candidate_request_body(report_date, page_no=1, page_size=page_size)
@@ -1142,20 +1142,36 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 "正式源销售合同报表记录数与总数不一致",
                 stage="official_sales_type_report_count",
             )
-        labels: dict[str, str] = {}
+        labels: dict[str, dict[str, str]] = {}
         for row in rows:
             detail_id = str(row.get("销售合同商品明细id") or "").strip()
-            label = str(row.get("业务类别") or "").strip()
-            if not detail_id or not label:
+            if not detail_id:
                 continue
+            current = {
+                "business_category": str(row.get("业务类别") or "").strip(),
+                "sales_business": str(row.get("需求业务员") or "").strip(),
+            }
             previous = labels.get(detail_id)
-            if previous and previous != label:
-                raise SalesContractSourceError(
-                    "parse_error",
-                    "正式源销售合同报表同一明细返回多个业务类别",
-                    stage="official_sales_type_report_duplicate",
-                )
-            labels[detail_id] = label
+            if previous:
+                for field_name, field_label in (
+                    ("business_category", "业务类别"),
+                    ("sales_business", "需求业务员"),
+                ):
+                    if (
+                        previous[field_name]
+                        and current[field_name]
+                        and previous[field_name] != current[field_name]
+                    ):
+                        raise SalesContractSourceError(
+                            "parse_error",
+                            f"正式源销售合同报表同一明细返回多个{field_label}",
+                            stage="official_sales_type_report_duplicate",
+                        )
+                current = {
+                    field_name: current[field_name] or previous[field_name]
+                    for field_name in ("business_category", "sales_business")
+                }
+            labels[detail_id] = current
         return labels
 
     def _get_data_dict(self, url: str, *, stage: str, **kwargs: Any) -> dict[str, Any]:
@@ -1286,10 +1302,10 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         settlements = self._fetch_settlements()
         normalized_records: list[dict[str, Any]] = []
         scan_errors: list[dict[str, str]] = list(contract_scope.errors)
-        report_sales_type_labels: dict[str, str] = {}
+        report_enrichment: dict[str, dict[str, str]] = {}
         if self.enrich_sales_type_labels:
             try:
-                report_sales_type_labels = self._fetch_report_sales_type_labels()
+                report_enrichment = self._fetch_report_enrichment()
             except SalesContractSourceError as exc:
                 scan_errors.append({"type": _safe_error_type(exc.stage)})
         source_detail_count = 0
@@ -1449,13 +1465,23 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 purchase_line_id = str(line.get("upContractMxId") or "").strip()
                 purchase_line = purchase_lines.get(purchase_line_id, {})
                 price_mode, _ = self._dictionary_label(dictionaries["price_mode"], line.get("priceMode"))
-                business_category = report_sales_type_labels.get(detail_id) or self._business_category_value(demand)
+                report_fields = report_enrichment.get(detail_id, {})
+                business_category = report_fields.get("business_category") or self._business_category_value(demand)
+                sales_business = report_fields.get("sales_business") or ""
                 if self.enrich_sales_type_labels and re.fullmatch(r"[A-Z]{1,3}\d{2,}", str(business_category or ""), flags=re.IGNORECASE):
                     record_errors.append(
                         {
                             "type": "missing_source_sales_type_label",
                             "field": "D",
                             "message": "源系统未返回完整业务类别原文",
+                        }
+                    )
+                if self.enrich_sales_type_labels and not sales_business:
+                    record_errors.append(
+                        {
+                            "type": "missing_source_demand_salesperson",
+                            "field": "AF",
+                            "message": "源系统未返回需求业务员",
                         }
                     )
                 standard = {
@@ -1491,7 +1517,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     else line.get("price"),
                     "demander": detail.get("coustomName"),
                     "contract_number": detail.get("contractCode"),
-                    "sales_business": detail.get("workManName"),
+                    "sales_business": sales_business,
                     "sales_execution": detail.get("createBy"),
                 }
                 record = normalize_sales_contract_record(standard)
@@ -1510,7 +1536,12 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             "missing_resource_match_count": missing_match_count,
         }
         if self.enrich_sales_type_labels:
-            diagnostics["source_sales_type_label_count"] = len(report_sales_type_labels)
+            diagnostics["source_sales_type_label_count"] = sum(
+                1 for fields in report_enrichment.values() if fields.get("business_category")
+            )
+            diagnostics["source_sales_business_label_count"] = sum(
+                1 for fields in report_enrichment.values() if fields.get("sales_business")
+            )
         return validate_full_scan(
             FullScanResult(
                 records=normalized_records,

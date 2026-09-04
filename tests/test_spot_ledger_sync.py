@@ -414,7 +414,13 @@ def test_official_contract_scope_starts_from_locally_filtered_demands():
     assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.calls)
 
 
-def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
+@pytest.mark.parametrize(
+    ("report_sales_business", "expected_missing_sales_business"),
+    [("需求业务员A", False), ("", True)],
+)
+def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
+    report_sales_business, expected_missing_sales_business
+):
     from app import spot_ledger_sync as sync
 
     class Response:
@@ -444,6 +450,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
                                         {
                                             "销售合同商品明细id": "sale-line-1",
                                             "业务类别": "贸易-港口现货-市场加价-B07",
+                                            "需求业务员": report_sales_business,
                                         }
                                     ],
                                     "count": 1,
@@ -544,7 +551,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
                             "status": "70",
                             "signingDate": "2026-08-20",
                             "workCompName": "操作抬头A",
-                            "workManName": "销售业务员",
+                            "workManName": "合同经办人A",
                             "createBy": "001_销售执行员",
                             "coustomName": "客户A",
                             "dischargePortName": "曹妃甸港",
@@ -643,6 +650,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
         "ambiguous_resource_match_count": 0,
         "missing_resource_match_count": 0,
         "source_sales_type_label_count": 1,
+        "source_sales_business_label_count": 0 if expected_missing_sales_business else 1,
     }
     assert len(scan.records) == 1
     record = scan.records[0]
@@ -658,11 +666,51 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations():
     assert record["U"] == "2026-08-20"
     assert record["AD"] == "XS-1"
     assert record["K"] == "海运一号"
+    assert record["AF"] == ("" if expected_missing_sales_business else "需求业务员A")
+    assert any(
+        error.get("type") == "missing_source_demand_salesperson"
+        for error in record["sync_errors"]
+    ) is expected_missing_sales_business
     assert record["source_closed_state"] == "已结案"
     assert not any(error.get("type") == "group_mismatch" for error in record["sync_errors"])
     demand_calls = [call for call in source.http.calls if "/tradeing/demand/list" in call[1]]
     assert [call[2]["params"]["pageNum"] for call in demand_calls] == [1, 2]
     assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.http.calls)
+
+
+def test_official_report_enrichment_rejects_conflicting_demand_salespeople(monkeypatch):
+    from app.spot_ledger_sync import OfficialJsonSalesContractSource, SalesContractSourceError
+
+    source = OfficialJsonSalesContractSource(auth_provider=lambda: {}, page_size=20)
+    payload = {
+        "code": 200,
+        "result": {
+            "dataList": {
+                "TJJLYSHZ": {
+                    "list": [
+                        {
+                            "销售合同商品明细id": "sale-line-1",
+                            "业务类别": "贸易-港口现货-市场加价-B07",
+                            "需求业务员": "需求业务员A",
+                        },
+                        {
+                            "销售合同商品明细id": "sale-line-1",
+                            "业务类别": "贸易-港口现货-市场加价-B07",
+                            "需求业务员": "需求业务员B",
+                        },
+                    ],
+                    "count": 2,
+                    "total": 1,
+                }
+            }
+        },
+    }
+    monkeypatch.setattr(source, "_request_json", lambda *_args, **_kwargs: payload)
+
+    with pytest.raises(SalesContractSourceError) as error:
+        source._fetch_report_enrichment()
+
+    assert error.value.stage == "official_sales_type_report_duplicate"
 
 
 def test_official_json_source_marks_duplicate_goods_match_as_ambiguous():

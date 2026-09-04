@@ -17,6 +17,14 @@ def test_field_contract_contains_exactly_a_to_ay():
     assert all(item["source_rule"] and item["control"] for item in FIELD_DEFINITIONS)
 
 
+def test_sales_business_field_source_is_demand_salesperson():
+    from app.spot_ledger import FIELD_DEFINITIONS
+
+    field = next(item for item in FIELD_DEFINITIONS if item["code"] == "AF")
+    assert field["name"] == "销售业务"
+    assert field["source_rule"] == "需求业务员"
+
+
 def test_contract_mapping_uses_signed_date_and_settlement_after_close():
     from app.spot_ledger import normalize_sales_contract_record, record_to_public
 
