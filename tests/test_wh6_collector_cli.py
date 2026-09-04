@@ -1,7 +1,7 @@
 """CLI safety and offline queue behavior."""
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import sys
 
@@ -23,6 +23,7 @@ import wh6_collector.cli as cli
 from wh6_collector.local_store import LocalOutbox
 from wh6_collector.monitor import scan_source
 from wh6_collector.discovery import validate_source
+from wh6_collector.uploader import UploadError
 
 
 def test_cli_refuses_production_url_and_uses_local_app_data(monkeypatch, tmp_path):
@@ -67,10 +68,17 @@ def test_once_backfills_every_match_file_under_selected_record_directory(tmp_pat
         allow_weak_source=True,
     )
 
-    result = run_once(
-        config,
-        upload=lambda token, items: uploaded.extend(items) or {"accepted": len(items)},
-    )
+    def upload(token, items):
+        uploaded.extend(items)
+        return {
+            "accepted": len(items),
+            "fill_results": [
+                {"event_key": item["source_event_key"], "status": "accepted"}
+                for item in items
+            ],
+        }
+
+    result = run_once(config, upload=upload)
     assert result["state"] == "normal"
     assert result["accepted"] == 2
     assert {item["trade_id"] for item in uploaded} == {"M-001", "M-002"}
@@ -99,7 +107,8 @@ def test_once_pauses_before_upload_when_bound_source_account_changes(tmp_path):
     uploaded = []
     changed = run_once(config, upload=lambda token, items: uploaded.extend(items) or {"accepted": len(items)})
     assert changed["state"] == "account_changed"
-    assert len(uploaded) == 1
+    assert uploaded == []
+    assert changed["queued"] == 1
 
 
 def test_config_round_trip_does_not_store_plain_account_id(tmp_path):
@@ -249,7 +258,14 @@ def test_once_uploads_full_asset_fills_and_position_snapshot_with_priority_paylo
 
     def upload(token, fills, position_snapshots):
         uploaded.append((token, list(fills), list(position_snapshots)))
-        return {"accepted": len(fills), "position_accepted": len(position_snapshots)}
+        return {
+            "accepted": len(fills),
+            "fill_results": [
+                {"event_key": item["source_event_key"], "status": "accepted"}
+                for item in fills
+            ],
+            "position_accepted": len(position_snapshots),
+        }
 
     result = run_once(config, upload=upload)
     assert result["state"] == "normal"
@@ -290,3 +306,83 @@ def test_successful_first_run_setup_enters_service_without_second_launch(tmp_pat
 
     assert cli.main(["--config", str(config_path)]) == 0
     assert calls == [sentinel]
+
+
+def test_once_sends_history_in_batches_of_one_hundred(tmp_path):
+    source_root = tmp_path / "Record"
+    source_root.mkdir()
+    _write_match(
+        source_root / "20260901match.dat",
+        [_record(timestamp="2026-09-01 09:31:02", match_id=f"H-{index:03d}") for index in range(101)],
+        size=268,
+    )
+    uploaded = []
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path=str(source_root),
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path / "data"),
+        allow_weak_source=True,
+    )
+
+    def upload(token, items):
+        uploaded.append(list(items))
+        return {
+            "accepted": len(items),
+            "fill_results": [
+                {"event_key": item["source_event_key"], "status": "accepted"}
+                for item in items
+            ],
+        }
+
+    first = run_once(config, upload=upload)
+    assert first["accepted"] == 100
+    assert len(uploaded[0]) == 100
+    assert first["queued"] == 1
+
+
+def test_once_pauses_upload_after_device_authorization_failure(tmp_path, monkeypatch):
+    source_root = tmp_path / "Record"
+    source_root.mkdir()
+    today = datetime.now().astimezone().strftime("%Y%m%d")
+    _write_match(
+        source_root / f"{today}match.dat",
+        [_record(timestamp=f"{today[:4]}-{today[4:6]}-{today[6:]} 09:31:02")],
+        size=268,
+    )
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path=str(source_root),
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path / "data"),
+        allow_weak_source=True,
+    )
+
+    class UnauthorizedUploader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_collection_policy(self):
+            return {
+                "schema_version": 1,
+                "policy_revision": "rev-1",
+                "minimum_client_version": "0.2.1",
+                "capabilities": [],
+                "closed_ranges": [],
+                "generated_at": "2026-09-04T00:00:00+00:00",
+            }
+
+        def send(self, token, fills, positions):
+            raise UploadError("unauthorized", 401)
+
+    monkeypatch.setattr(cli, "StagingUploader", UnauthorizedUploader)
+    result = run_once(config)
+    assert result["state"] == "device_authorization_required"
+    assert result["queued"] == 1
+    store = LocalOutbox(Path(config.data_dir) / "collector.sqlite3")
+    with store._connect() as connection:
+        row = connection.execute("SELECT status, available_at FROM outbox").fetchone()
+    assert row["status"] == "pending"
+    assert datetime.fromisoformat(row["available_at"]) > datetime.now(timezone.utc)

@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .models import FillRecord, ParseIssue, PositionSnapshot
+from .policy import CollectionPolicy
 
 
 def _now() -> str:
@@ -16,9 +17,12 @@ def _now() -> str:
 
 
 class LocalOutbox:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, *, policy=None):
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        from .migrations import migrate_local_store
+
+        self.migration_result = migrate_local_store(self.db_path, policy=policy)
         self._init_schema()
 
     def _connect(self):
@@ -60,6 +64,12 @@ class LocalOutbox:
                     file_sha256 TEXT,
                     severity TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS collection_policy (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    payload_json TEXT NOT NULL,
+                    policy_revision TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL
                 );
                 """
             )
@@ -156,15 +166,165 @@ class LocalOutbox:
                 (_now(), *event_keys),
             )
 
-    def release(self, event_keys: Sequence[str], error: str) -> None:
+    def _release(self, event_keys: Sequence[str], error: str, *, retryable: bool) -> None:
         if not event_keys:
             return
-        placeholders = ",".join("?" for _ in event_keys)
+        now = datetime.now(timezone.utc)
+        now_text = now.isoformat()
+        with self._connect() as connection:
+            placeholders = ",".join("?" for _ in event_keys)
+            rows = connection.execute(
+                f"SELECT event_key, attempts FROM outbox WHERE event_key IN ({placeholders})",
+                tuple(event_keys),
+            ).fetchall()
+            for row in rows:
+                attempts = int(row["attempts"] or 0)
+                delay = 300 if not retryable else min(300, 5 * (2 ** min(max(attempts - 1, 0), 6)))
+                available_at = (now + timedelta(seconds=delay)).isoformat()
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET status='pending', available_at=?, last_error=?, updated_at=?
+                    WHERE event_key=?
+                    """,
+                    (available_at, str(error)[:500], now_text, row["event_key"]),
+                )
+
+    def release(self, event_keys: Sequence[str], error: str, *, retryable: bool = True) -> None:
+        self._release(event_keys, error, retryable=retryable)
+
+    def ack_results(
+        self,
+        results: Sequence[Mapping[str, str]],
+        *,
+        expected_event_keys: Optional[Sequence[str]] = None,
+    ) -> Dict[str, int]:
+        """Apply only terminal per-item receipts and retry unresolved rows safely."""
+        expected = {str(key) for key in expected_event_keys} if expected_event_keys is not None else None
+        seen = set()
+        invalid_keys = set()
+        actions: Dict[str, str] = {}
+        counts = {"acked": 0, "covered_by_monthly": 0, "conflict": 0, "quarantined": 0, "invalid": 0}
+        status_map = {
+            "accepted": "acked",
+            "duplicate": "acked",
+            "settlement_covered": "covered_by_monthly",
+            "conflict": "conflict",
+            "quarantined": "quarantined",
+        }
+        for result in results or ():
+            if not isinstance(result, Mapping):
+                counts["invalid"] += 1
+                continue
+            key = str(result.get("event_key") or "").strip()
+            status = str(result.get("status") or "").strip().lower()
+            if not key or (expected is not None and key not in expected) or key in seen:
+                counts["invalid"] += 1
+                if key:
+                    invalid_keys.add(key)
+                continue
+            seen.add(key)
+            action = status_map.get(status)
+            if action is None:
+                counts["invalid"] += 1
+                invalid_keys.add(key)
+                continue
+            actions[key] = action
+
+        unresolved = set(invalid_keys)
+        if expected is not None:
+            missing = expected - seen
+            unresolved.update(missing)
+            counts["invalid"] += len(missing)
+        # A duplicate or malformed receipt for a key invalidates that key's
+        # otherwise valid receipt; do not accidentally acknowledge it.
+        actions = {key: action for key, action in actions.items() if key not in unresolved}
+        now = _now()
+        with self._connect() as connection:
+            for key, action in actions.items():
+                connection.execute(
+                    "UPDATE outbox SET status=?, updated_at=? WHERE event_key=?",
+                    (action, now, key),
+                )
+                counts[action] += 1
+        if unresolved:
+            self._release(sorted(unresolved), "invalid_server_receipt", retryable=True)
+        return counts
+
+    def save_collection_policy(self, policy, *, fetched_at: Optional[str] = None) -> CollectionPolicy:
+        validated = policy if isinstance(policy, CollectionPolicy) else CollectionPolicy.from_payload(policy)
+        timestamp = fetched_at or _now()
         with self._connect() as connection:
             connection.execute(
-                f"UPDATE outbox SET status='pending', available_at=?, last_error=?, updated_at=? WHERE event_key IN ({placeholders})",
-                (_now(), str(error)[:500], _now(), *event_keys),
+                """
+                INSERT OR REPLACE INTO collection_policy
+                    (id, payload_json, policy_revision, fetched_at)
+                VALUES (1, ?, ?, ?)
+                """,
+                (
+                    json.dumps(validated.to_payload(), ensure_ascii=False, sort_keys=True),
+                    validated.policy_revision,
+                    timestamp,
+                ),
             )
+        return validated
+
+    def load_collection_policy(self, *, max_age_seconds: int = 300, now: Optional[datetime] = None) -> Optional[CollectionPolicy]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json, fetched_at FROM collection_policy WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            fetched_at = datetime.fromisoformat(str(row["fetched_at"]).replace("Z", "+00:00"))
+            current = now or datetime.now(timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            age = max(0.0, (current - fetched_at).total_seconds())
+            if age > max(0, int(max_age_seconds)):
+                return None
+            payload = json.loads(str(row["payload_json"]))
+            return CollectionPolicy.from_payload(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def apply_collection_policy(self, policy) -> int:
+        validated = policy if isinstance(policy, CollectionPolicy) else CollectionPolicy.from_payload(policy)
+        now = _now()
+        changed = 0
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_key, payload_json, status
+                FROM outbox
+                WHERE item_type = 'fill'
+                  AND status IN ('pending', 'claimed', 'covered_by_monthly')
+                """
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["payload_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                trade_date = str(payload.get("trade_date") or "") if isinstance(payload, dict) else ""
+                covered = validated.covers(trade_date)
+                status = str(row["status"])
+                if covered and status in {"pending", "claimed"}:
+                    connection.execute(
+                        "UPDATE outbox SET status='covered_by_monthly', available_at=?, updated_at=? WHERE event_key=?",
+                        (now, now, row["event_key"]),
+                    )
+                    changed += 1
+                elif not covered and status == "covered_by_monthly":
+                    connection.execute(
+                        "UPDATE outbox SET status='pending', available_at=?, updated_at=? WHERE event_key=?",
+                        (now, now, row["event_key"]),
+                    )
+                    changed += 1
+        return changed
 
     def _checkpoint_key(self, source_path: str, kind: str) -> str:
         return source_path if kind == "match" else "%s:%s" % (kind, source_path)

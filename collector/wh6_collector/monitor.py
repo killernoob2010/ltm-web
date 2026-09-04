@@ -12,6 +12,7 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 from .account import confirm_weak_binding
 from .models import AccountIdentity, FillRecord, ParseIssue, PositionSnapshot, SourceFile
 from .parser import parse_match_records, parse_position_snapshot
+from .version import PARSER_GENERATION
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,8 @@ def scan_source(
         issue = ParseIssue("unknown_format", str(exc), str(path), file_sha256=file_hash, severity="error")
         return ScanBatch([], [issue], checkpoint or {})
     previous_count = int((checkpoint or {}).get("record_count") or 0)
-    if previous_hash == file_hash and previous_size == stat.st_size:
+    previous_generation = int((checkpoint or {}).get("parser_generation") or 0)
+    if previous_hash == file_hash and previous_size == stat.st_size and previous_generation >= PARSER_GENERATION:
         fills = [fill for fill in fills if fill.source_record_index >= previous_count]
     elif previous_hash and previous_hash != file_hash:
         issues.append(ParseIssue("file_replaced", "文件已轮换或重新生成，已从文件头重新核对事件身份", str(path), file_sha256=file_hash))
@@ -117,6 +119,7 @@ def scan_source(
         "size": stat.st_size,
         "modified_ns": stat.st_mtime_ns,
         "record_count": declared_count,
+        "parser_generation": PARSER_GENERATION,
     }
     # The checkpoint must represent the scanned file, not just option rows.
     if previous_hash != file_hash or previous_size != stat.st_size:

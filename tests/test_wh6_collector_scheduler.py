@@ -4,6 +4,8 @@ from pathlib import Path
 import json
 import sys
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "collector"))
 sys.path.insert(0, str(Path(__file__).parent))
@@ -14,7 +16,7 @@ from wh6_collector.local_store import LocalOutbox
 from wh6_collector.models import PositionSnapshot
 from wh6_collector.monitor import DualChannelScheduler, scan_source
 from wh6_collector.parser import parse_match_records, parse_position_snapshot
-from wh6_collector.uploader import StagingUploader
+from wh6_collector.uploader import StagingUploader, UploadError
 
 
 def test_realtime_claim_preempts_history_backlog(tmp_path):
@@ -121,3 +123,17 @@ def test_staging_uploader_sends_fills_and_position_snapshots_together(monkeypatc
         "observations": [{"source_event_key": "fill-1"}],
         "position_snapshots": [{"source_snapshot_key": "snapshot-1"}],
     }
+    assert calls[0][1]["timeout"] == (5, 30)
+
+
+def test_staging_uploader_preserves_authentication_status_for_pause(monkeypatch):
+    class Response:
+        status_code = 401
+
+    import wh6_collector.uploader as uploader_module
+
+    monkeypatch.setattr(uploader_module.requests, "post", lambda *args, **kwargs: Response())
+    uploader = StagingUploader("https://ltm-web-staging.onrender.com", "device-token")
+    with pytest.raises(UploadError) as error:
+        uploader.send("device-token", [{"source_event_key": "fill-1"}])
+    assert error.value.status_code == 401

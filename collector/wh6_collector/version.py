@@ -1,0 +1,7 @@
+"""Single runtime version source for the WH6 V2.1 bundle."""
+
+CLIENT_VERSION = "0.2.1"
+LOCAL_SCHEMA_VERSION = 3
+PARSER_GENERATION = 2
+UPLOAD_BATCH_SIZE = 100
+POLICY_SCHEMA_VERSION = 1

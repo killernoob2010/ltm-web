@@ -11,3 +11,6 @@
 .collector-summary-group span { border-radius: 999px; background: #f1f5f9; padding: 4px 9px; font-size: 13px; }
 .collector-data-status { margin: 0; color: #475569; }
 .collector-data-status.is-warning { color: #b45309; font-weight: 600; }
+.collector-pagination { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 12px; color: #475569; font-size: 13px; }
+.collector-pagination label { display: inline-flex; align-items: center; gap: 5px; }
+.collector-pagination select { min-width: 62px; }

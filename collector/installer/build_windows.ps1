@@ -8,10 +8,24 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $collectorDir = [IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
-$releaseDir = Join-Path $collectorDir "releases"
+$versionFile = Join-Path $collectorDir "wh6_collector\version.py"
+$versionMatch = Select-String -LiteralPath $versionFile -Pattern '^\s*CLIENT_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1
+if (-not $versionMatch) {
+    throw "无法从版本源读取 CLIENT_VERSION：$versionFile"
+}
+$version = $versionMatch.Matches[0].Groups[1].Value
+# Current repository artifact path: collector\releases\0.2.1
+$releaseDir = Join-Path $collectorDir ("releases\" + $version)
+$releaseRelativeDir = "..\releases\0.2.1"
+if ($version -ne "0.2.1") {
+    $releaseRelativeDir = "..\releases\$version"
+}
 $venvDir = Join-Path $collectorDir ".build-venv"
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
-$setupName = "WH6成交采集器-Setup.exe"
+$setupName = "WH6成交采集器-0.2.1-Setup.exe"
+if ($version -ne "0.2.1") {
+    $setupName = "WH6成交采集器-{0}-Setup.exe" -f $version
+}
 $setupPath = Join-Path $releaseDir $setupName
 
 function Stop-Build([string]$Message) {
@@ -176,7 +190,12 @@ try {
     Write-Host "[5/6] 封装 $setupName" -ForegroundColor Cyan
     Push-Location $scriptDir
     try {
-        Invoke-Native $iscc @((Join-Path $scriptDir "WH6成交采集器.iss"))
+        Invoke-Native $iscc @(
+            "/DMyAppVersion=$version",
+            "/DMyAppReleaseDir=$releaseRelativeDir",
+            "/DMyAppOutputBaseFilename=WH6成交采集器-$version-Setup",
+            (Join-Path $scriptDir "WH6成交采集器.iss")
+        )
     } finally {
         Pop-Location
     }
@@ -206,6 +225,7 @@ try {
     }
     $hash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $releaseDir "$setupName.sha256") -Value "$hash *$setupName" -Encoding ASCII
+    Copy-Item -LiteralPath (Join-Path $scriptDir "README.md") -Destination (Join-Path $releaseDir "README-$version.txt") -Force
 
     Write-Host "`n构建完成。" -ForegroundColor Green
     Write-Host "安装包：$setupPath"

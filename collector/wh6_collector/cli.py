@@ -19,14 +19,13 @@ from .account import compare_binding, probe_source_account, strong_binding
 from .credential_store import protect_token, unprotect_token
 from .discovery import discover_wh6_sources, validate_sources
 from .local_store import LocalOutbox
-from .models import AccountIdentity
+from .models import AccountIdentity, ParseIssue
 from .monitor import scan_source
 from .parser import business_trading_day
+from .policy import CollectionPolicy
 from .setup_ui import run_first_setup
 from .uploader import StagingUploader
-
-
-CLIENT_VERSION = "0.2.0"
+from .version import CLIENT_VERSION, UPLOAD_BATCH_SIZE
 DEFAULT_STAGING_URL = "https://ltm-web-staging.onrender.com"
 REALTIME_SCAN_SECONDS = 2
 POSITION_SCAN_SECONDS = 5
@@ -78,7 +77,7 @@ class CollectorConfig:
             "device_token": protect_token(self.device_token),
             "data_dir": self.data_dir,
             "poll_seconds": max(REALTIME_SCAN_SECONDS, int(self.poll_seconds)),
-            "client_version": self.client_version,
+            "client_version": CLIENT_VERSION,
             "allow_weak_source": bool(self.allow_weak_source),
             "source_account_fingerprint": self.source_account_fingerprint,
         }
@@ -97,7 +96,7 @@ class CollectorConfig:
             device_token=unprotect_token(payload["device_token"]),
             data_dir=payload["data_dir"],
             poll_seconds=max(REALTIME_SCAN_SECONDS, int(payload.get("poll_seconds", REALTIME_SCAN_SECONDS))),
-            client_version=payload.get("client_version", CLIENT_VERSION),
+            client_version=CLIENT_VERSION,
             allow_weak_source=bool(payload.get("allow_weak_source", False)),
             source_account_fingerprint=payload.get("source_account_fingerprint"),
         )
@@ -107,6 +106,7 @@ def run_once(
     config: CollectorConfig,
     *,
     upload: Optional[Callable[..., Dict[str, Any]]] = None,
+    policy_fetch: Optional[Callable[[], Dict[str, Any]]] = None,
     scan_positions: bool = True,
     scan_history: bool = True,
 ) -> Dict[str, Any]:
@@ -119,6 +119,23 @@ def run_once(
             "accepted": 0,
             "positions_accepted": 0,
         }
+
+    default_sender = StagingUploader(config.staging_url, config.device_token) if upload is None else None
+    policy_required = upload is None or policy_fetch is not None
+    policy: Optional[CollectionPolicy] = None
+    policy_error = ""
+    if policy_required:
+        policy = outbox.load_collection_policy()
+        if policy is None:
+            fetcher = policy_fetch or default_sender.get_collection_policy
+            try:
+                policy = CollectionPolicy.from_payload(fetcher())
+                outbox.save_collection_policy(policy)
+            except Exception as exc:
+                policy_error = str(exc)
+        if policy is not None:
+            outbox.apply_collection_policy(policy)
+    history_policy_paused = policy_required and policy is None
 
     def send_payload(sender, fills, position_snapshots):
         if hasattr(sender, "send"):
@@ -143,11 +160,12 @@ def run_once(
         issue_count: int = 0,
         message: str = "",
         position_scan_requested: bool = False,
+        allow_history: bool = True,
     ) -> Dict[str, Any]:
         # A large historical backlog must never occupy the realtime upload slot.
-        claimed = outbox.claim(500, priority="realtime")
-        if not claimed:
-            claimed = outbox.claim(500, priority="history")
+        claimed = outbox.claim(UPLOAD_BATCH_SIZE, priority="realtime")
+        if not claimed and allow_history:
+            claimed = outbox.claim(UPLOAD_BATCH_SIZE, priority="history")
         if not claimed:
             result = {
                 "state": state,
@@ -160,16 +178,17 @@ def run_once(
             if message:
                 result["message"] = message
             return result
-        sender = upload or StagingUploader(config.staging_url, config.device_token)
+        sender = upload or default_sender or StagingUploader(config.staging_url, config.device_token)
         event_keys = [str(item["event_key"]) for item in claimed]
         fill_payloads = [json.loads(str(item["payload_json"])) for item in claimed if item.get("item_type", "fill") == "fill"]
         position_payloads = [json.loads(str(item["payload_json"])) for item in claimed if item.get("item_type") == "position_snapshot"]
         try:
             upload_result = send_payload(sender, fill_payloads, position_payloads)
         except Exception as exc:
-            outbox.release(event_keys, str(exc))
+            authorization_required = getattr(exc, "status_code", None) in {401, 403}
+            outbox.release(event_keys, str(exc), retryable=not authorization_required)
             result = {
-                "state": "offline_queue" if state == "normal" else state,
+                "state": "device_authorization_required" if authorization_required else ("offline_queue" if state == "normal" else state),
                 "message": str(exc),
                 "queued": outbox.status()["pending"],
                 "accepted": 0,
@@ -178,7 +197,56 @@ def run_once(
                 "position_scan_requested": position_scan_requested,
             }
             return result
-        outbox.ack(event_keys)
+        fill_receipts = upload_result.get("fill_results") if isinstance(upload_result, dict) else None
+        receipt_counts = {"acked": 0, "covered_by_monthly": 0, "conflict": 0, "quarantined": 0, "invalid": 0}
+        if fill_payloads:
+            if isinstance(fill_receipts, (list, tuple)):
+                receipt_counts = outbox.ack_results(
+                    fill_receipts,
+                    expected_event_keys=[str(item["event_key"]) for item in claimed if item.get("item_type", "fill") == "fill"],
+                )
+                if receipt_counts["invalid"]:
+                    outbox.add_issue(
+                        ParseIssue(
+                            "invalid_server_receipt",
+                            "Staging 返回的成交回执缺失、重复或状态无效，未确认项目已退回重试",
+                            str(outbox.db_path),
+                            severity="error",
+                        )
+                    )
+            else:
+                outbox.add_issue(
+                    ParseIssue(
+                        "invalid_server_receipt",
+                        "Staging 上传成功但未返回逐条成交回执，待确认项目已退回重试",
+                        str(outbox.db_path),
+                        severity="error",
+                    )
+                )
+                outbox.release(
+                    [str(item["event_key"]) for item in claimed if item.get("item_type", "fill") == "fill"],
+                    "invalid_server_receipt",
+                )
+                receipt_counts["invalid"] = len(fill_payloads)
+        position_keys = [str(item["event_key"]) for item in claimed if item.get("item_type") == "position_snapshot"]
+        if position_keys:
+            position_terminal_count = sum(
+                int(upload_result.get(field, 0) or 0)
+                for field in ("positions_accepted", "position_duplicates", "position_conflicts", "position_quarantined")
+            ) if isinstance(upload_result, dict) else 0
+            if position_terminal_count == len(position_keys):
+                outbox.ack(position_keys)
+            else:
+                outbox.add_issue(
+                    ParseIssue(
+                        "invalid_server_receipt",
+                        "Staging 上传成功但未返回完整持仓回执，待确认项目已退回重试",
+                        str(outbox.db_path),
+                        severity="error",
+                    )
+                )
+                outbox.release(position_keys, "invalid_server_receipt")
+                receipt_counts["invalid"] += len(position_keys)
         result = {
             "state": state,
             "queued": outbox.status()["pending"],
@@ -188,6 +256,7 @@ def run_once(
             "position_conflicts": int(upload_result.get("position_conflicts", 0)),
             "duplicates": int(upload_result.get("duplicates", 0)),
             "conflicts": int(upload_result.get("conflicts", 0)),
+            "receipt_invalid": int(receipt_counts["invalid"]),
             "issues": issue_count,
             "position_scan_requested": position_scan_requested,
         }
@@ -217,6 +286,7 @@ def run_once(
 
     issue_count = 0
     paused_state = "normal"
+    unknown_history_paused = False
     realtime_fill_queued = False
     today = business_trading_day(datetime.now().astimezone())
     for source in sources:
@@ -226,6 +296,17 @@ def run_once(
             continue
         if source.kind == "match" and not is_realtime and not scan_history:
             continue
+        if source.kind == "match" and not is_realtime and policy_required:
+            if history_policy_paused or policy is None:
+                continue
+            if not source_date:
+                unknown_history_paused = True
+                continue
+            source_date_iso = source_date
+            if len(source_date) == 8 and source_date.isdigit():
+                source_date_iso = "%s-%s-%s" % (source_date[:4], source_date[4:6], source_date[6:])
+            if policy.covers(source_date_iso):
+                continue
         checkpoint = outbox.load_checkpoint(str(source.path), kind=source.kind)
         batch = scan_source(source, checkpoint, account=config.account)
         priority = "realtime" if is_realtime else "history"
@@ -242,10 +323,16 @@ def run_once(
             paused_state = "format_unknown"
         elif paused_state == "normal" and any(issue.code == "path_unavailable" for issue in batch.issues):
             paused_state = "path_unavailable"
+    if history_policy_paused or unknown_history_paused:
+        paused_state = "policy_unavailable_history_paused"
+        if not policy_error:
+            policy_error = "历史采集策略不可用或无法确定历史文件日期，已暂停历史扫描"
     return drain_pending(
         paused_state,
         issue_count=issue_count,
         position_scan_requested=realtime_fill_queued,
+        message=policy_error,
+        allow_history=not (history_policy_paused or unknown_history_paused),
     )
 
 
@@ -358,7 +445,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             if args.pairing_code:
                 fingerprint = args.fingerprint or "local-device"
-                activated = activate_remote_device(config.staging_url, args.pairing_code, args.device_name, fingerprint, config.client_version)
+                activated = activate_remote_device(config.staging_url, args.pairing_code, args.device_name, fingerprint, CLIENT_VERSION)
                 config.device_token = activated["token"]
                 config.account = AccountIdentity(
                     account_code="hongyuan_futures",
@@ -381,7 +468,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(result, ensure_ascii=False))
         if args.service:
             run_service(config)
-        return 0 if result["state"] in {"normal", "offline_queue", "account_pending", "path_unavailable", "format_unknown"} else 1
+        return 0 if result["state"] in {
+            "normal",
+            "offline_queue",
+            "account_pending",
+            "path_unavailable",
+            "format_unknown",
+            "policy_unavailable_history_paused",
+        } else 1
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"state": "configuration_error", "message": str(exc)}, ensure_ascii=False))
         return 2

@@ -1403,6 +1403,9 @@ def confirm_settlement_import(
             monthly_finalization = collector_reconciliation.finalize_lower_priority_monthly_trades(
                 cur, preview_batch_id
             )
+        reconciliation_summary = collector_reconciliation.reconcile_intraday_fills_for_batch(
+            cur, preview_batch_id, actor
+        )
         conn.commit()
     return {
         "batch_id": preview_batch_id,
@@ -1412,6 +1415,7 @@ def confirm_settlement_import(
         "differences": differences,
         "transaction_numbers_backfilled": transaction_numbers_backfilled,
         "monthly_finalization": monthly_finalization,
+        "reconciliation": reconciliation_summary.to_dict(),
     }
 
 

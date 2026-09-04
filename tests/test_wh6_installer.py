@@ -17,7 +17,7 @@ def test_one_click_builder_prepares_dependencies_and_emits_setup_exe():
     assert "requirements-windows.txt" in script
     assert "WH6成交采集器.spec" in script
     assert "WH6成交采集器.iss" in script
-    assert "WH6成交采集器-Setup.exe" in script
+    assert "WH6成交采集器-0.2.1-Setup.exe" in script
     assert "Get-FileHash" in script
     assert "Invoke-Native" in script
     assert "-NoPause" in wrapper
@@ -36,7 +36,7 @@ def test_builder_is_staging_only_and_does_not_embed_credentials():
         assert "service_role" not in content
         assert "DATABASE_URL" not in content
         if name.endswith(".iss"):
-            assert "OutputBaseFilename={#MyAppName}-Setup" in content
+            assert "OutputBaseFilename={#MyAppOutputBaseFilename}" in content
 
     script = (INSTALLER / "build_windows.ps1").read_text(encoding="utf-8")
     assert '"ltm-web-gt13.onrender.com"' in script
@@ -75,3 +75,29 @@ def test_v2_installer_contract_mentions_full_assets_and_position_snapshot_gates(
     assert "完整持仓快照" in readme
     assert "10 秒" in readme
     assert "每 5 秒" in cli
+
+
+def test_installer_is_versioned_and_closes_only_collector():
+    iss = (INSTALLER / "WH6成交采集器.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.2.1"' in iss
+    assert "CloseApplications=force" in iss
+    assert "RestartApplications=no" in iss
+    assert "CloseApplicationsFilter=WH6成交采集器.exe" in iss
+    assert "AppMutex=" not in iss
+    assert "WH6.exe" not in iss
+
+
+def test_release_name_contains_version_and_target_needs_no_python():
+    script = (INSTALLER / "build_windows.ps1").read_text(encoding="utf-8")
+    readme = (INSTALLER / "README.md").read_text(encoding="utf-8")
+    assert "WH6成交采集器-0.2.1-Setup.exe" in script
+    assert "collector\\releases\\0.2.1" in script
+    assert "目标电脑无需安装 Python" in readme
+
+
+def test_launcher_uses_collector_only_single_instance_mutex():
+    launcher = (ROOT / "collector" / "launcher.py").read_text(encoding="utf-8")
+    assert "Local\\LTM-WH6-Collector-B7C23B59" in launcher
+    assert "CreateMutexW" in launcher
+    assert "GetLastError" in launcher
+    assert "WH6.exe" not in launcher

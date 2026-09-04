@@ -37,3 +37,12 @@ test("collector page renders option volume and current position states", () => {
   assert.match(collectorJs, /多设备持仓不一致/);
   assert.doesNotMatch(collectorJs, /token_hash|service_role|DATABASE_URL|C:\\\\Users/);
 });
+
+test("collector fills use 20 50 100 server pagination", () => {
+  assert.match(collectorJs, /fillPageSize:\s*20/);
+  assert.match(collectorJs, /\[20,\s*50,\s*100\]/);
+  assert.match(collectorJs, /page=\$\{state\.fillPage\}/);
+  assert.match(collectorJs, /page_size=\$\{state\.fillPageSize\}/);
+  assert.doesNotMatch(collectorJs, /limit=100/);
+  assert.match(html, /id="collectorFillPagination"/);
+});

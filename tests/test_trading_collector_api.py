@@ -184,3 +184,31 @@ def test_device_collection_policy_is_bound_to_device_account_and_requires_token(
 
     unauthenticated = client.get("/api/trading-collector/device/collection-policy")
     assert unauthenticated.status_code == 401
+
+
+def test_fill_api_exposes_server_pagination_contract(client):
+    pairing = client.post(
+        "/api/trading-collector/admin/pairing-codes",
+        json={"account_id": account_id()},
+        headers=auth_headers(),
+    ).json()
+    client.post(
+        "/api/trading-collector/device/activate",
+        json={
+            "pairing_code": pairing["code"],
+            "device_name": "分页电脑",
+            "client_version": "0.2.1",
+            "fingerprint": "fp-page",
+        },
+    )
+    response = client.get(
+        "/api/trading-collector/fills?page=1&page_size=50",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["page"] == 1
+    assert body["page_size"] == 50
+    assert body["total_items"] == 0
+    assert body["total_pages"] == 0

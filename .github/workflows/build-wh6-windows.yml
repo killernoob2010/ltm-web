@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - codex/wh6-option-fill-collector-brd-20260902
+      - codex/wh6-settlement-governed-upload-repair-20260904
 
 jobs:
   build:
@@ -33,9 +33,10 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WH6成交采集器-windows-x64
+          name: WH6成交采集器-0.2.1-windows-x64
           path: |
-            collector/releases/WH6成交采集器-Setup.exe
-            collector/releases/WH6成交采集器-Setup.exe.sha256
+            collector/releases/0.2.1/WH6成交采集器-0.2.1-Setup.exe
+            collector/releases/0.2.1/WH6成交采集器-0.2.1-Setup.exe.sha256
+            collector/releases/0.2.1/README-0.2.1.txt
           if-no-files-found: error
           retention-days: 7

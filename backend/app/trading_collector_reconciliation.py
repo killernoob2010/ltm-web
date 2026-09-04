@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import calendar
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Mapping, Optional
@@ -43,7 +45,7 @@ EXCHANGE_ALIASES = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def normalize_exchange(value: str) -> str:
@@ -283,3 +285,549 @@ def finalize_lower_priority_monthly_trades(cur, batch_id: int) -> dict[str, int]
         )
         audited += 1
     return {"retired": retired, "audited": audited}
+
+
+MATCH_STATUSES = {
+    "unmatched",
+    "ambiguous",
+    "matched_daily",
+    "corrected_daily",
+    "matched_monthly",
+    "corrected_monthly",
+    "monthly_unmatched",
+}
+STATEMENT_OWNED_FIELDS = (
+    "exchange",
+    "contract",
+    "asset_type",
+    "side",
+    "open_close",
+    "quantity",
+    "price",
+    "turnover",
+    "fee",
+    "hedge_flag",
+    "premium_cashflow",
+    "close_profit",
+)
+WH6_ONLY_FIELDS = (
+    "trade_date",
+    "trade_time",
+    "trade_timestamp",
+    "raw_contract",
+    "trade_id",
+    "order_id",
+    "option_kind",
+    "underlying",
+    "expiry_month",
+    "strike",
+    "source_record_sha256",
+    "source_path",
+    "source_record_index",
+    "parser_version",
+)
+NUMERIC_FIELDS = {
+    "quantity",
+    "price",
+    "turnover",
+    "fee",
+    "premium_cashflow",
+    "close_profit",
+}
+
+
+@dataclass(frozen=True)
+class MatchDecision:
+    status: str
+    settlement: Optional[Dict[str, Any]] = None
+    identity_id: Optional[int] = None
+    batch_id: Optional[int] = None
+    authority_type: str = "wh6"
+    source_priority: int = 0
+    candidate_count: int = 0
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in MATCH_STATUSES:
+            raise ValueError("未知的 WH6 协调状态")
+
+
+@dataclass(frozen=True)
+class ResolvedFill:
+    fields: Dict[str, Any]
+    field_sources: Dict[str, Optional[str]]
+    differences: Dict[str, Dict[str, Any]]
+    authority_type: str
+
+    @property
+    def resolved_fields(self) -> Dict[str, Any]:
+        return self.fields
+
+
+@dataclass
+class ReconciliationSummary:
+    scanned: int = 0
+    matched_daily: int = 0
+    corrected_daily: int = 0
+    matched_monthly: int = 0
+    corrected_monthly: int = 0
+    unmatched: int = 0
+    ambiguous: int = 0
+    monthly_unmatched: int = 0
+    covered: int = 0
+    conflicts: int = 0
+    changed: int = 0
+    unchanged: int = 0
+
+    @property
+    def corrected(self) -> int:
+        return self.corrected_daily + self.corrected_monthly
+
+    @property
+    def matched(self) -> int:
+        return self.matched_daily + self.matched_monthly
+
+    def add(self, status: str, *, covered: bool, changed: bool) -> None:
+        self.scanned += 1
+        if status == "matched_daily":
+            self.matched_daily += 1
+        elif status == "corrected_daily":
+            self.corrected_daily += 1
+        elif status == "matched_monthly":
+            self.matched_monthly += 1
+        elif status == "corrected_monthly":
+            self.corrected_monthly += 1
+        elif status == "unmatched":
+            self.unmatched += 1
+        elif status == "ambiguous":
+            self.ambiguous += 1
+        elif status == "monthly_unmatched":
+            self.monthly_unmatched += 1
+        if covered:
+            self.covered += 1
+        if status in {"ambiguous", "monthly_unmatched"}:
+            self.conflicts += 1
+        if changed:
+            self.changed += 1
+        else:
+            self.unchanged += 1
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "scanned": self.scanned,
+            "matched": self.matched,
+            "corrected": self.corrected,
+            "matched_daily": self.matched_daily,
+            "corrected_daily": self.corrected_daily,
+            "matched_monthly": self.matched_monthly,
+            "corrected_monthly": self.corrected_monthly,
+            "unmatched": self.unmatched,
+            "ambiguous": self.ambiguous,
+            "monthly_unmatched": self.monthly_unmatched,
+            "covered": self.covered,
+            "conflicts": self.conflicts,
+            "changed": self.changed,
+            "unchanged": self.unchanged,
+        }
+
+
+def _row_value(row: Mapping[str, Any], key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _row_dict(row: Mapping[str, Any]) -> Dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    keys = row.keys() if hasattr(row, "keys") else ()
+    return {key: row[key] for key in keys}
+
+
+def _normalize_side(value: object) -> str:
+    return {
+        "buy": "买",
+        "sell": "卖",
+        "买入": "买",
+        "卖出": "卖",
+    }.get(str(value or "").strip().lower(), str(value or "").strip())
+
+
+def _normalize_open_close(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "open": "开",
+        "开仓": "开",
+        "close": "平",
+        "平仓": "平",
+    }.get(text, text)
+
+
+def _normalize_contract(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _decimal(value: object) -> Optional[Decimal]:
+    if value in (None, ""):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _present(value: object) -> bool:
+    return value is not None and (not isinstance(value, str) or bool(value.strip()))
+
+
+def _values_equal(field: str, left: object, right: object) -> bool:
+    if not _present(left) and not _present(right):
+        return True
+    if field in NUMERIC_FIELDS:
+        left_number = _decimal(left)
+        right_number = _decimal(right)
+        if left_number is not None and right_number is not None:
+            return left_number == right_number
+    if field == "exchange":
+        return normalize_exchange(str(left or "")) == normalize_exchange(str(right or ""))
+    if field == "contract":
+        return _normalize_contract(left) == _normalize_contract(right)
+    if field == "side":
+        return _normalize_side(left) == _normalize_side(right)
+    if field == "open_close":
+        return _normalize_open_close(left) == _normalize_open_close(right)
+    return str(left or "").strip() == str(right or "").strip()
+
+
+def _same_settlement_identity(fill: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+    comparisons = (
+        ("contract", _normalize_contract),
+        ("side", _normalize_side),
+        ("open_close", _normalize_open_close),
+    )
+    for field, normalizer in comparisons:
+        if normalizer(_row_value(fill, field)) != normalizer(_row_value(row, field)):
+            return False
+    for field in ("quantity", "price"):
+        left = _decimal(_row_value(fill, field))
+        right = _decimal(_row_value(row, field))
+        if left is None or right is None or left != right:
+            return False
+    return True
+
+
+def _settlement_rows_for_date(cur, account_id: int, trade_date: str) -> List[Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT tf.*, fi.account_id AS identity_account_id,
+               b.statement_type, b.source_priority, b.status AS batch_status,
+               b.range_start, b.range_end
+        FROM trading_trade_facts tf
+        JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+        JOIN trading_import_batches b ON b.id = tf.batch_id
+        WHERE fi.account_id = ? AND b.account_id = ? AND b.status = 'active'
+          AND b.statement_type IN ('daily', 'monthly') AND tf.is_current = 1
+          AND tf.trade_date = ?
+        ORDER BY tf.id DESC
+        """,
+        (account_id, account_id, trade_date),
+    ).fetchall()
+    return [_row_dict(row) for row in rows]
+
+
+def _settlement_versions(cur, identity_id: int) -> List[Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT tf.*, b.statement_type, b.source_priority, b.status AS batch_status,
+               b.range_start, b.range_end
+        FROM trading_trade_facts tf
+        JOIN trading_import_batches b ON b.id = tf.batch_id
+        WHERE tf.identity_id = ? AND b.status = 'active'
+          AND b.statement_type IN ('daily', 'monthly')
+        ORDER BY b.source_priority DESC, b.id DESC, tf.id DESC
+        """,
+        (identity_id,),
+    ).fetchall()
+    return [_row_dict(row) for row in rows]
+
+
+def _source_type(row: Mapping[str, Any]) -> str:
+    statement_type = str(_row_value(row, "statement_type") or "").strip().lower()
+    return statement_type if statement_type in {"daily", "monthly"} else "wh6"
+
+
+def _closed_range_for_date(cur, account_id: int, trade_date: str) -> Optional[Dict[str, object]]:
+    for item in get_active_monthly_ranges(cur, account_id):
+        if str(item["range_start"]) <= trade_date <= str(item["range_end"]):
+            return item
+    return None
+
+
+def _merged_settlement(versions: Sequence[Mapping[str, Any]]) -> tuple[Dict[str, Any], str, int, int]:
+    if not versions:
+        raise ValueError("缺少结算事实版本")
+    by_source: Dict[str, Mapping[str, Any]] = {}
+    for row in versions:
+        source = _source_type(row)
+        by_source.setdefault(source, row)
+    ordered_sources = [source for source in ("monthly", "daily") if source in by_source]
+    authority_type = ordered_sources[0] if ordered_sources else "wh6"
+    authority = dict(by_source[authority_type]) if authority_type != "wh6" else {}
+    fallbacks = [
+        (source, dict(by_source[source]))
+        for source in ordered_sources
+        if source != authority_type
+    ]
+    authority["_fallback_sources"] = fallbacks
+    authority["_authority_type"] = authority_type
+    authority_batch_id = int(_row_value(by_source[authority_type], "batch_id"))
+    source_priority = int(_row_value(by_source[authority_type], "source_priority") or 0)
+    identity_id = int(_row_value(by_source[authority_type], "identity_id"))
+    return authority, authority_type, source_priority, identity_id
+
+
+def match_intraday_fill(cur, fill: Mapping[str, object]) -> MatchDecision:
+    """Find one active settlement identity without guessing across candidates."""
+    account_id = int(_row_value(fill, "account_id") or 0)
+    normalized_date = _normalize_date(_row_value(fill, "trade_date"))
+    if not account_id or not normalized_date:
+        return MatchDecision("unmatched", reason="invalid_fill_identity")
+    trade_date = normalized_date.isoformat()
+    normalized_exchange = normalize_exchange(str(_row_value(fill, "exchange") or ""))
+    normalized_id = normalize_transaction_no(_row_value(fill, "trade_id"))
+    rows = [
+        row
+        for row in _settlement_rows_for_date(cur, account_id, trade_date)
+        if normalize_exchange(str(_row_value(row, "exchange") or "")) == normalized_exchange
+    ]
+    if normalized_id:
+        rows = [
+            row
+            for row in rows
+            if normalize_transaction_no(
+                _row_value(row, "normalized_transaction_no")
+                or _row_value(row, "transaction_no")
+            ) == normalized_id
+        ]
+    else:
+        rows = [row for row in rows if _same_settlement_identity(fill, row)]
+    identity_rows: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        identity_id = int(_row_value(row, "identity_id"))
+        identity_rows.setdefault(identity_id, row)
+    if len(identity_rows) != 1:
+        closed = _closed_range_for_date(cur, account_id, trade_date)
+        status = "monthly_unmatched" if not identity_rows and closed else "ambiguous" if len(identity_rows) > 1 else "unmatched"
+        return MatchDecision(status, candidate_count=len(identity_rows), reason="no_unique_settlement_candidate")
+
+    identity_id, anchor = next(iter(identity_rows.items()))
+    versions = _settlement_versions(cur, identity_id)
+    settlement, authority_type, source_priority, _ = _merged_settlement(versions)
+    closed = _closed_range_for_date(cur, account_id, trade_date)
+    if closed and authority_type != "monthly":
+        return MatchDecision(
+            "monthly_unmatched",
+            candidate_count=1,
+            reason="monthly_closed_without_monthly_identity",
+        )
+    resolved = resolve_fill_fields(fill, settlement, authority_type)
+    corrected = bool(resolved.differences)
+    if authority_type == "monthly":
+        status = "corrected_monthly" if corrected else "matched_monthly"
+    else:
+        status = "corrected_daily" if corrected else "matched_daily"
+    return MatchDecision(
+        status,
+        settlement=settlement,
+        identity_id=identity_id,
+        batch_id=int(_row_value(anchor, "batch_id")),
+        authority_type=authority_type,
+        source_priority=source_priority,
+        candidate_count=1,
+    )
+
+
+def resolve_fill_fields(
+    wh6: Mapping[str, object],
+    settlement: Optional[Mapping[str, object]],
+    authority_type: str,
+) -> ResolvedFill:
+    """Project one displayable fill while preserving every source's evidence."""
+    authority_type = authority_type if authority_type in {"monthly", "daily"} else "wh6"
+    source_records: List[tuple[str, Mapping[str, object]]] = []
+    if settlement and authority_type != "wh6":
+        source_records.append((authority_type, settlement))
+        fallbacks = _row_value(settlement, "_fallback_sources", ())
+        for source, record in fallbacks or ():
+            if source in {"monthly", "daily"} and source != authority_type:
+                source_records.append((source, record))
+    source_records.append(("wh6", wh6))
+
+    fields: Dict[str, Any] = {}
+    field_sources: Dict[str, Optional[str]] = {}
+    differences: Dict[str, Dict[str, Any]] = {}
+    for field in STATEMENT_OWNED_FIELDS + WH6_ONLY_FIELDS:
+        resolved_value = None
+        resolved_source: Optional[str] = None
+        records = source_records if field in STATEMENT_OWNED_FIELDS else [("wh6", wh6)]
+        for source, record in records:
+            candidate = _row_value(record, field)
+            if _present(candidate):
+                resolved_value = candidate
+                resolved_source = source
+                break
+        fields[field] = resolved_value
+        field_sources[field] = resolved_source
+        wh6_value = _row_value(wh6, field)
+        if resolved_source != "wh6" and not _values_equal(field, wh6_value, resolved_value):
+            differences[field] = {
+                "wh6": wh6_value,
+                "resolved": resolved_value,
+                "source": resolved_source,
+            }
+    return ResolvedFill(fields, field_sources, differences, authority_type)
+
+
+def _json_dumps(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _persist_resolution(cur, fill: Mapping[str, Any], decision: MatchDecision) -> tuple[bool, bool]:
+    settlement = decision.settlement
+    resolved = resolve_fill_fields(fill, settlement, decision.authority_type)
+    account_id = int(_row_value(fill, "account_id"))
+    trade_date = _normalize_date(_row_value(fill, "trade_date"))
+    closed = bool(trade_date and _closed_range_for_date(cur, account_id, trade_date.isoformat()))
+    is_monthly_status = decision.status in {"matched_monthly", "corrected_monthly"}
+    is_conflict = decision.status in {"ambiguous", "monthly_unmatched"} and closed
+    data_status = "settlement_conflict" if is_conflict else "settlement_covered" if is_monthly_status and closed else "provisional"
+    effective_source = decision.authority_type if settlement else "wh6"
+    identity_id = decision.identity_id
+    batch_id = decision.batch_id
+    source_priority = int(decision.source_priority or 0)
+    resolved_json = _json_dumps(resolved.fields)
+    source_json = _json_dumps(resolved.field_sources)
+    differences_json = _json_dumps(resolved.differences)
+    current = db._exec(
+        cur,
+        """
+        SELECT authority_type, source_priority, result_status,
+               resolved_fields_json, field_sources_json, differences_json
+        FROM trading_intraday_fill_reconciliations
+        WHERE intraday_fill_id = ? AND is_current = 1
+        """,
+        (_row_value(fill, "id"),),
+    ).fetchone()
+    unchanged = bool(
+        current
+        and str(_row_value(current, "authority_type")) == effective_source
+        and int(_row_value(current, "source_priority") or 0) == source_priority
+        and str(_row_value(current, "result_status")) == decision.status
+        and str(_row_value(current, "resolved_fields_json")) == resolved_json
+        and str(_row_value(current, "field_sources_json")) == source_json
+        and str(_row_value(current, "differences_json")) == differences_json
+    )
+    if not unchanged:
+        db._exec(
+            cur,
+            """
+            UPDATE trading_intraday_fill_reconciliations
+            SET is_current = 0
+            WHERE intraday_fill_id = ? AND is_current = 1
+            """,
+            (_row_value(fill, "id"),),
+        )
+        db._exec(
+            cur,
+            """
+            INSERT INTO trading_intraday_fill_reconciliations
+                (intraday_fill_id, account_id, settlement_identity_id,
+                 settlement_batch_id, authority_type, source_priority,
+                 result_status, resolved_fields_json, field_sources_json,
+                 differences_json, is_current)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                _row_value(fill, "id"), account_id, identity_id, batch_id,
+                effective_source, source_priority, decision.status,
+                resolved_json, source_json, differences_json,
+            ),
+        )
+    db._exec(
+        cur,
+        """
+        UPDATE trading_intraday_fills
+        SET reconciliation_status = ?, settlement_identity_id = ?,
+            settlement_batch_id = ?, effective_source = ?,
+            reconciled_at = ?, data_status = ?
+        WHERE id = ? AND account_id = ?
+        """,
+        (
+            decision.status, identity_id, batch_id, effective_source, _now(),
+            data_status, _row_value(fill, "id"), account_id,
+        ),
+    )
+    return (not unchanged, data_status == "settlement_covered")
+
+
+def _reconcile_rows(cur, rows: Sequence[Mapping[str, Any]], actor: str) -> ReconciliationSummary:
+    del actor
+    summary = ReconciliationSummary()
+    for fill in rows:
+        decision = match_intraday_fill(cur, fill)
+        changed, covered = _persist_resolution(cur, fill, decision)
+        summary.add(decision.status, covered=covered, changed=changed)
+    return summary
+
+
+def reconcile_intraday_fills_for_batch(
+    cur, batch_id: int, actor: str
+) -> ReconciliationSummary:
+    batch = db._exec(
+        cur,
+        """
+        SELECT id, account_id, range_start, range_end, status
+        FROM trading_import_batches WHERE id = ?
+        """,
+        (batch_id,),
+    ).fetchone()
+    if not batch or str(_row_value(batch, "status")) != "active":
+        raise ValueError("只有已生效结算批次可以协调 WH6 成交")
+    start = _normalize_date(_row_value(batch, "range_start"))
+    end = _normalize_date(_row_value(batch, "range_end"))
+    if not start or not end:
+        return ReconciliationSummary()
+    rows = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_intraday_fills
+        WHERE account_id = ? AND trade_date >= ? AND trade_date <= ?
+        ORDER BY trade_date DESC, trade_time DESC, id DESC
+        """,
+        (int(_row_value(batch, "account_id")), start.isoformat(), end.isoformat()),
+    ).fetchall()
+    return _reconcile_rows(cur, rows, actor)
+
+
+def reconcile_intraday_range(
+    cur, account_id: int, start: str, end: str, actor: str
+) -> ReconciliationSummary:
+    start_date = _normalize_date(start) if start else None
+    end_date = _normalize_date(end) if end else None
+    if (start and not start_date) or (end and not end_date):
+        raise ValueError("协调日期范围无法验证")
+    sql = "SELECT * FROM trading_intraday_fills WHERE account_id = ?"
+    params: List[object] = [account_id]
+    if start_date:
+        sql += " AND trade_date >= ?"
+        params.append(start_date.isoformat())
+    if end_date:
+        sql += " AND trade_date <= ?"
+        params.append(end_date.isoformat())
+    sql += " ORDER BY trade_date DESC, trade_time DESC, id DESC"
+    rows = db._exec(cur, sql, tuple(params)).fetchall()
+    return _reconcile_rows(cur, rows, actor)

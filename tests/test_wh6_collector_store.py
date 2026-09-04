@@ -1,5 +1,6 @@
 """Local discovery, checkpoint and outbox tests."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import struct
@@ -89,6 +90,11 @@ def test_outbox_is_durable_idempotent_and_atomic(tmp_path):
 
     outbox.release([fill.source_event_key], "network down")
     assert outbox.status()["pending"] == 1
+    with outbox._connect() as connection:
+        connection.execute(
+            "UPDATE outbox SET available_at = ? WHERE event_key = ?",
+            (datetime.now(timezone.utc).isoformat(), fill.source_event_key),
+        )
     claimed_again = outbox.claim(1)
     outbox.ack([claimed_again[0]["event_key"]])
     assert outbox.status()["pending"] == 0
@@ -160,3 +166,59 @@ def test_scan_unknown_format_becomes_quarantined_issue_instead_of_crashing(tmp_p
     assert batch.fills == []
     assert batch.issues[0].code == "unknown_format"
     assert batch.issues[0].severity == "error"
+
+
+def _seed_outbox_rows(store, keys, *, attempts=0):
+    with store._connect() as connection:
+        for key in keys:
+            connection.execute(
+                """
+                INSERT INTO outbox
+                    (event_key, payload_json, item_type, priority, status, attempts,
+                     available_at, created_at, updated_at)
+                VALUES (?, ?, 'fill', 'history', 'pending', ?, '2000-01-01T00:00:00+00:00',
+                        '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00')
+                """,
+                (key, json.dumps({"source_event_key": key, "trade_date": "2026-09-04"}), attempts),
+            )
+
+
+def test_outbox_ack_results_maps_each_terminal_receipt(tmp_path):
+    store = LocalOutbox(tmp_path / "collector.sqlite3")
+    _seed_outbox_rows(store, ["a", "b", "c"])
+    result = store.ack_results(
+        [
+            {"event_key": "a", "status": "accepted"},
+            {"event_key": "b", "status": "conflict"},
+            {"event_key": "c", "status": "quarantined"},
+        ],
+        expected_event_keys=["a", "b", "c"],
+    )
+    assert result == {"acked": 1, "covered_by_monthly": 0, "conflict": 1, "quarantined": 1, "invalid": 0}
+    with store._connect() as connection:
+        rows = connection.execute("SELECT event_key, status FROM outbox ORDER BY event_key").fetchall()
+    assert {row["event_key"]: row["status"] for row in rows} == {
+        "a": "acked",
+        "b": "conflict",
+        "c": "quarantined",
+    }
+
+
+def test_outbox_releases_missing_receipt_with_bounded_retry_delay(tmp_path):
+    store = LocalOutbox(tmp_path / "collector.sqlite3")
+    _seed_outbox_rows(store, ["a", "b"], attempts=20)
+    claimed = store.claim(2)
+    assert {row["event_key"] for row in claimed} == {"a", "b"}
+    result = store.ack_results(
+        [{"event_key": "a", "status": "accepted"}],
+        expected_event_keys=["a", "b"],
+    )
+    assert result["invalid"] == 1
+    with store._connect() as connection:
+        row = connection.execute(
+            "SELECT status, available_at, attempts FROM outbox WHERE event_key = 'b'"
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 21
+    available = datetime.fromisoformat(row["available_at"])
+    assert (available - datetime.now(timezone.utc)).total_seconds() >= 295

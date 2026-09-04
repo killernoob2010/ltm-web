@@ -110,6 +110,7 @@ class IngestResult:
     conflicts: int = 0
     quarantined: int = 0
     observations: int = 0
+    fill_results: tuple[Dict[str, str], ...] = ()
     position_accepted: int = 0
     position_duplicates: int = 0
     position_conflicts: int = 0
@@ -132,13 +133,14 @@ class IngestResult:
     def positions_quarantined(self) -> int:
         return self.position_quarantined
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "accepted": self.accepted,
             "duplicates": self.duplicates,
             "conflicts": self.conflicts,
             "quarantined": self.quarantined,
             "observations": self.observations,
+            "fill_results": list(self.fill_results),
             "position_accepted": self.position_accepted,
             "positions_accepted": self.position_accepted,
             "position_duplicates": self.position_duplicates,
@@ -427,20 +429,35 @@ def _observation_hash(data: Dict[str, Any]) -> str:
     return _hash_json({key: value for key, value in data.items() if key not in {"observed_at"}})
 
 
+def _result_event_key(raw_map: Mapping[str, Any], index: int) -> str:
+    supplied = str(raw_map.get("source_event_key") or "").strip()[:240]
+    return supplied or "request:%d:%s" % (index, secrets.token_urlsafe(6))
+
+
+def _date_is_closed(cur, account_id: int, trade_date: str) -> bool:
+    return any(
+        str(item["range_start"]) <= trade_date <= str(item["range_end"])
+        for item in reconciliation.get_active_monthly_ranges(cur, account_id)
+    )
+
+
 def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str, Any]]) -> IngestResult:
     if len(observations) > 500:
         raise CollectorServiceError("batch_too_large", "单次最多上传 500 条成交")
     device = get_device_by_token(device_token)
     account_id = int(device["account_id"])
     accepted = duplicates = conflicts = quarantined = observation_count = 0
+    fill_results: List[Dict[str, str]] = []
     with db.connect() as conn:
         cur = conn.cursor()
-        for raw in observations:
+        for index, raw in enumerate(observations):
             raw_map = dict(raw) if isinstance(raw, dict) else {}
+            result_event_key = _result_event_key(raw_map, index)
             try:
                 data = _validate_observation(raw_map)
             except CollectorServiceError as exc:
                 quarantined += 1
+                fill_results.append({"event_key": result_event_key, "status": "quarantined"})
                 db._exec(
                     cur,
                     "INSERT INTO trading_collector_issues (device_id, account_id, issue_code, source_event_key, message, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
@@ -462,6 +479,15 @@ def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str
             observation_id = db.last_insert_id(conn) if inserted_observation else None
             if inserted_observation:
                 observation_count += 1
+            if _date_is_closed(cur, account_id, data["trade_date"]):
+                if observation_id:
+                    db._exec(
+                        cur,
+                        "UPDATE trading_intraday_fill_observations SET status = 'settlement_covered' WHERE id = ?",
+                        (observation_id,),
+                    )
+                fill_results.append({"event_key": data["source_event_key"], "status": "settlement_covered"})
+                continue
             canonical_hash = _hash_json(_canonical_fields(data))
             existing = db._exec(
                 cur,
@@ -497,13 +523,16 @@ def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str
                 ).fetchone()
                 if existing and existing["canonical_hash"] == canonical_hash:
                     accepted += 1
+                    fill_results.append({"event_key": data["source_event_key"], "status": "accepted"})
                     continue
             if existing and existing["canonical_hash"] == canonical_hash:
                 duplicates += 1
+                fill_results.append({"event_key": data["source_event_key"], "status": "duplicate"})
                 if observation_id:
                     db._exec(cur, "UPDATE trading_intraday_fill_observations SET status = 'duplicate_observation' WHERE id = ?", (observation_id,))
                 continue
             conflicts += 1
+            fill_results.append({"event_key": data["source_event_key"], "status": "conflict"})
             if observation_id:
                 db._exec(cur, "UPDATE trading_intraday_fill_observations SET status = 'conflict' WHERE id = ?", (observation_id,))
             db._exec(
@@ -512,7 +541,14 @@ def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str
                 (device["id"], account_id, data["source_event_key"], "同一成交编号的关键字段不一致，保留首次标准事实", payload_json),
             )
         db._exec(cur, "UPDATE trading_collector_devices SET last_seen_at = ? WHERE id = ? AND status = 'active'", (_now(), device["id"]))
-    return IngestResult(accepted, duplicates, conflicts, quarantined, observation_count)
+    return IngestResult(
+        accepted=accepted,
+        duplicates=duplicates,
+        conflicts=conflicts,
+        quarantined=quarantined,
+        observations=observation_count,
+        fill_results=tuple(fill_results),
+    )
 
 
 def _validate_position_number(value: Any, *, allow_empty: bool = True) -> Optional[float]:
@@ -804,6 +840,7 @@ def ingest_observations(
         conflicts=fill_result.conflicts,
         quarantined=fill_result.quarantined,
         observations=fill_result.observations,
+        fill_results=fill_result.fill_results,
         position_accepted=position_result.position_accepted,
         position_duplicates=position_result.position_duplicates,
         position_conflicts=position_result.position_conflicts,
@@ -812,41 +849,106 @@ def ingest_observations(
     )
 
 
+def _effective_fill_items(cur, rows: Sequence[Any]) -> List[Dict[str, Any]]:
+    items = [dict(row) for row in rows]
+    if not items:
+        return items
+    ids = [item["id"] for item in items]
+    placeholders = ", ".join("?" for _ in ids)
+    audit_rows = db._exec(
+        cur,
+        """
+        SELECT intraday_fill_id, resolved_fields_json
+        FROM trading_intraday_fill_reconciliations
+        WHERE is_current = 1 AND intraday_fill_id IN (""" + placeholders + ")",
+        tuple(ids),
+    ).fetchall()
+    resolved_by_id: Dict[int, Dict[str, Any]] = {}
+    allowed = set(reconciliation.STATEMENT_OWNED_FIELDS + reconciliation.WH6_ONLY_FIELDS)
+    for row in audit_rows:
+        try:
+            resolved = json.loads(row["resolved_fields_json"] or "{}")
+        except (TypeError, ValueError):
+            resolved = {}
+        if isinstance(resolved, dict):
+            resolved_by_id[int(row["intraday_fill_id"])] = {
+                key: value for key, value in resolved.items() if key in allowed
+            }
+    for item in items:
+        item.update(resolved_by_id.get(int(item["id"]), {}))
+    return items
+
+
 def query_intraday_fills(
     account_id: int,
     *,
     start: str = "",
     end: str = "",
     contract: str = "",
-    status: str = "accepted",
-    limit: int = 500,
+    status: str = "active",
+    page: int = 1,
+    page_size: int = 20,
     asset_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     _account(account_id)
-    limit = max(1, min(int(limit), 500))
-    sql = "SELECT * FROM trading_intraday_fills WHERE account_id = ?"
+    try:
+        page = int(page)
+        page_size = int(page_size)
+    except (TypeError, ValueError):
+        raise CollectorServiceError("invalid_page", "成交明细页码格式不正确")
+    if page < 1:
+        raise CollectorServiceError("invalid_page", "成交明细页码必须从 1 开始")
+    if page_size not in {20, 50, 100}:
+        raise CollectorServiceError("invalid_page_size", "每页仅支持 20、50 或 100 条成交")
+    where = ["account_id = ?"]
     params: List[Any] = [account_id]
     if start:
-        sql += " AND trade_date >= ?"
+        where.append("trade_date >= ?")
         params.append(start[:10])
     if end:
-        sql += " AND trade_date <= ?"
+        where.append("trade_date <= ?")
         params.append(end[:10])
     if contract:
-        sql += " AND contract = ?"
+        where.append("contract = ?")
         params.append(contract.strip().lower()[:80])
     if asset_type:
-        sql += " AND asset_type = ?"
+        where.append("asset_type = ?")
         params.append(asset_type.strip().lower()[:20])
-    if status:
-        sql += " AND data_status = ?"
-        params.append("provisional" if status == "accepted" else status)
-    sql += " ORDER BY trade_date DESC, trade_time DESC, id DESC LIMIT ?"
-    params.append(limit)
+    if status in {"active", ""}:
+        where.append("data_status IN ('provisional', 'settlement_conflict')")
+    elif status in {"accepted", "provisional"}:
+        where.append("data_status = 'provisional'")
+    elif status in {"settlement_covered", "settlement_conflict"}:
+        where.append("data_status = ?")
+        params.append(status)
+    else:
+        raise CollectorServiceError("invalid_status", "成交明细状态无法识别")
+    predicate = " AND ".join(where)
     with db.connect() as conn:
-        rows = db._exec(conn.cursor(), sql, tuple(params)).fetchall()
-    items = [dict(row) for row in rows]
-    return {"items": items, "total": len(items), "account_id": account_id, "data_status": "provisional"}
+        cur = conn.cursor()
+        total_row = db._exec(
+            cur, "SELECT COUNT(*) AS total_items FROM trading_intraday_fills WHERE " + predicate, tuple(params)
+        ).fetchone()
+        total_items = int(total_row["total_items"] or 0)
+        offset = (page - 1) * page_size
+        rows = db._exec(
+            cur,
+            "SELECT * FROM trading_intraday_fills WHERE " + predicate
+            + " ORDER BY trade_date DESC, trade_time DESC, id DESC LIMIT ? OFFSET ?",
+            tuple(params + [page_size, offset]),
+        ).fetchall()
+        items = _effective_fill_items(cur, rows)
+    total_pages = (total_items + page_size - 1) // page_size if total_items else 0
+    return {
+        "items": items,
+        "total": total_items,
+        "total_items": total_items,
+        "total_pages": total_pages,
+        "page": page,
+        "page_size": page_size,
+        "account_id": account_id,
+        "data_status": status or "active",
+    }
 
 
 def _sum_by(items: Sequence[Dict[str, Any]], key: str) -> Dict[str, int]:
@@ -862,20 +964,29 @@ def query_option_volume(
     *,
     trade_date: str = "",
     contract: str = "",
-    limit: int = 500,
 ) -> Dict[str, Any]:
+    _account(account_id)
     if not trade_date:
         trade_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).date().isoformat()
-    data = query_intraday_fills(
-        account_id,
-        start=trade_date,
-        end=trade_date,
-        contract=contract,
-        status="accepted",
-        limit=limit,
-        asset_type="option",
-    )
-    items = data["items"]
+    where = [
+        "account_id = ?",
+        "trade_date = ?",
+        "asset_type = 'option'",
+        "data_status NOT IN ('settlement_covered', 'settlement_conflict')",
+    ]
+    params: List[Any] = [account_id, trade_date]
+    if contract:
+        where.append("contract = ?")
+        params.append(contract.strip().lower()[:80])
+    with db.connect() as conn:
+        cur = conn.cursor()
+        rows = db._exec(
+            cur,
+            "SELECT * FROM trading_intraday_fills WHERE " + " AND ".join(where)
+            + " ORDER BY trade_date DESC, trade_time DESC, id DESC",
+            tuple(params),
+        ).fetchall()
+        items = _effective_fill_items(cur, rows)
     return {
         "account_id": account_id,
         "trade_date": trade_date,

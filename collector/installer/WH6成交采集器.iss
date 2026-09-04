@@ -2,7 +2,15 @@
 ; Build the PyInstaller executable first; this script never embeds credentials.
 
 #define MyAppName "WH6成交采集器"
-#define MyAppVersion "0.2.0"
+#ifndef MyAppVersion
+#define MyAppVersion "0.2.1"
+#endif
+#ifndef MyAppReleaseDir
+#define MyAppReleaseDir "..\\releases\\0.2.1"
+#endif
+#ifndef MyAppOutputBaseFilename
+#define MyAppOutputBaseFilename "WH6成交采集器-0.2.1-Setup"
+#endif
 #define MyAppPublisher "LTM WEB"
 #define MyAppExeName "WH6成交采集器.exe"
 #define BuildDir "..\\dist"
@@ -14,14 +22,17 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
-OutputDir=..\releases
-OutputBaseFilename={#MyAppName}-Setup
+OutputDir={#MyAppReleaseDir}
+OutputBaseFilename={#MyAppOutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Uninstallable=yes
+CloseApplications=force
+RestartApplications=no
+CloseApplicationsFilter=WH6成交采集器.exe
 ; Application data and device token live in %LOCALAPPDATA%\WH6成交采集器,
 ; outside this program directory, so uninstall does not remove local queue data.
 

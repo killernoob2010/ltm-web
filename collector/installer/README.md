@@ -1,6 +1,6 @@
 # WH6 成交与持仓采集器 Windows 安装包
 
-这里保留安装包构建约定，不放入二进制、账户令牌或任何 Supabase 密钥。最终交付物为 Windows x64 自包含的 `WH6成交采集器-Setup.exe`；本机 Mac 环境没有 Windows 构建工具，因此必须在 Windows 11 虚拟机或 Windows CI 上构建并验收。
+这里保留安装包构建约定，不放入二进制、账户令牌或任何 Supabase 密钥。最终交付物为 Windows x64 自包含的 `collector\\releases\\0.2.1\\WH6成交采集器-0.2.1-Setup.exe`；本机 Mac 环境没有 Windows 构建工具，因此必须在 Windows 11 虚拟机或 Windows CI 上构建并验收。
 
 ## 一键构建
 
@@ -22,7 +22,7 @@ collector\\installer\\build_windows.cmd
 2. 创建项目内的临时构建虚拟环境并安装锁定版本的 PyInstaller；
 3. 清理旧的构建目录，生成不依赖系统 Python 的单文件 `WH6成交采集器.exe`；
 4. 查找免费 Inno Setup 6 编译器，缺少时可选择用 `winget` 安装；
-5. 生成 `collector\\releases\\WH6成交采集器-Setup.exe`，并写出同名 `.sha256` 校验文件；
+5. 生成 `collector\\releases\\0.2.1\\WH6成交采集器-0.2.1-Setup.exe`、同名 `.sha256` 校验文件和安装说明；
 6. 扫描构建来源，拒绝出现 Production 地址、数据库密码、`service_role` 或 `DATABASE_URL`。
 
 依赖已经安装过的电脑无需再次确认，下一次双击即可重新生成。脚本不会把令牌、账户号或数据库凭据写入安装包；构建日志只在当前窗口显示。安装后的配置、队列和设备令牌位于 `%LOCALAPPDATA%\\WH6成交采集器`，不写 WH6 `Record` 目录。
@@ -33,7 +33,8 @@ collector\\installer\\build_windows.cmd
 
 ## 安装与迁移验收
 
-- 双击 Setup 后不要求用户安装 Python；安装完成会启动程序，登录 Windows 后自动运行。
+- 双击 Setup 后目标电脑无需安装 Python；安装完成会启动程序，登录 Windows 后自动运行。
+- 0.2.1 使用同一安装目录原位覆盖升级；安装程序只关闭 `WH6成交采集器.exe`，不关闭或操作 `WH6.exe`，并保留 `%LOCALAPPDATA%\\WH6成交采集器` 下的配置、队列和设备令牌。
 - 第一次启动会弹出设置向导：优先使用自动发现的唯一 `Record` 目录；发现多个或没有候选时，使用者可以通过文件夹选择框手动选择。
 - 向导会显示脱敏账户信息并要求使用者确认，然后粘贴 Web 测试版生成的一次性连接码；未确认或绑定失败时不会读取并上传新成交。
 - 首次设置优先自动发现 WH6，失败时允许选择 WH6 根目录或 `Record` 目录；程序以注册过的 `*match.dat` 和 `*position.dat`/等价版本化持仓缓存作为期货和期权来源，必要时只读同名 `*order.dat` 补齐成交方向/开平字段，不把委托记录上传，也不改写任何 WH6 文件。

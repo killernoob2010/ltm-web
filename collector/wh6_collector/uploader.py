@@ -7,8 +7,14 @@ from typing import Any, Dict, Sequence
 import requests
 
 
+class UploadError(RuntimeError):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class StagingUploader:
-    def __init__(self, base_url: str, device_token: str, *, timeout_seconds: int = 8):
+    def __init__(self, base_url: str, device_token: str, *, timeout_seconds=(5, 30)):
         self.base_url = base_url.rstrip("/")
         self.device_token = device_token
         self.timeout_seconds = timeout_seconds
@@ -29,8 +35,24 @@ class StagingUploader:
             timeout=self.timeout_seconds,
         )
         if response.status_code >= 400:
-            raise RuntimeError("Staging 上传失败（HTTP %s）" % response.status_code)
+            raise UploadError("Staging 上传失败（HTTP %s）" % response.status_code, response.status_code)
         return response.json()
+
+    def get_collection_policy(self) -> Dict[str, Any]:
+        response = requests.get(
+            self.base_url + "/api/trading-collector/device/collection-policy",
+            headers={"X-Collector-Token": self.device_token},
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code >= 400:
+            raise UploadError(
+                "Staging 采集策略获取失败（HTTP %s）" % response.status_code,
+                response.status_code,
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Staging 采集策略响应格式无效")
+        return payload
 
     def __call__(self, token: str, items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         """Compatibility adapter for callers that only have fill rows."""

@@ -1,9 +1,17 @@
 /* WH6 collector administration and provisional-fill read-only view. */
 (function () {
-  const state = { initialized: false, canManage: false, accountId: "" };
+  const state = { initialized: false, canManage: false, accountId: "", fillPage: 1, fillPageSize: 20 };
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
-  const statusLabel = (value) => ({ active: "正常", revoked: "已撤销", paused: "已暂停", provisional: "临时事实", duplicate_observation: "重复观察" }[value] || value || "—");
+  const statusLabel = (value) => ({
+    active: "正常",
+    revoked: "已撤销",
+    paused: "已暂停",
+    provisional: "临时事实",
+    settlement_covered: "月结已覆盖",
+    settlement_conflict: "月结待核对",
+    duplicate_observation: "重复观察",
+  }[value] || value || "—");
 
   function setStatus(message) {
     const node = $("#collectorStatus");
@@ -38,14 +46,43 @@
     }));
   }
 
-  function renderFills(items) {
+  function renderFillPagination(data) {
+    const node = $("#collectorFillPagination");
+    if (!node) return;
+    const totalItems = Number(data.total_items || 0);
+    const totalPages = Number(data.total_pages || 0);
+    const page = totalPages ? Number(data.page || 1) : 1;
+    node.innerHTML = `<span>共 ${esc(totalItems)} 条</span>
+      <label>每页 <select id="collectorFillPageSize" aria-label="成交每页条数">${[20, 50, 100].map((size) => `<option value="${size}"${size === state.fillPageSize ? " selected" : ""}>${size}</option>`).join("")}</select> 条</label>
+      <button type="button" class="secondary" id="collectorFillPrev"${page <= 1 ? " disabled" : ""}>上一页</button>
+      <span>第 ${esc(page)} / ${esc(totalPages)} 页</span>
+      <button type="button" class="secondary" id="collectorFillNext"${!totalPages || page >= totalPages ? " disabled" : ""}>下一页</button>`;
+    $("#collectorFillPageSize").addEventListener("change", (event) => {
+      state.fillPageSize = Number(event.target.value);
+      state.fillPage = 1;
+      loadFills().catch((error) => setStatus(`加载失败：${error.message}`));
+    });
+    $("#collectorFillPrev").addEventListener("click", () => {
+      if (state.fillPage <= 1) return;
+      state.fillPage -= 1;
+      loadFills().catch((error) => setStatus(`加载失败：${error.message}`));
+    });
+    $("#collectorFillNext").addEventListener("click", () => {
+      if (!totalPages || state.fillPage >= totalPages) return;
+      state.fillPage += 1;
+      loadFills().catch((error) => setStatus(`加载失败：${error.message}`));
+    });
+  }
+
+  function renderFills(items, data) {
     const body = $("#collectorFillsTable");
-    $("#collectorFillCount").textContent = `共 ${items.length} 条`;
+    $("#collectorFillCount").textContent = `共 ${Number(data.total_items || 0)} 条`;
     body.innerHTML = items.map((item) => `<tr>
       <td>${esc(item.trade_date)}</td><td>${esc(item.trade_time || "—")}</td><td>${esc(item.exchange)}</td>
       <td>${esc(item.contract)}</td><td>${esc(item.side)}</td><td>${esc(item.open_close)}</td>
       <td>${esc(item.quantity)}</td><td>${esc(item.price)}</td><td>${esc(statusLabel(item.data_status))}</td>
     </tr>`).join("");
+    renderFillPagination(data);
   }
 
   function renderOptionVolume(data) {
@@ -84,18 +121,27 @@
     </tr>`).join("");
   }
 
-  async function loadData() {
+  async function loadFills() {
     if (!state.accountId) return;
-    const [devices, fills, optionVolume, currentPositions] = await Promise.all([
+    const fills = await api(`/api/trading-collector/fills?account_id=${encodeURIComponent(state.accountId)}&page=${state.fillPage}&page_size=${state.fillPageSize}`);
+    renderFills(fills.items || [], fills);
+  }
+
+  async function loadSummaryData() {
+    if (!state.accountId) return;
+    const [devices, optionVolume, currentPositions] = await Promise.all([
       api(`/api/trading-collector/admin/devices?account_id=${encodeURIComponent(state.accountId)}`),
-      api(`/api/trading-collector/fills?account_id=${encodeURIComponent(state.accountId)}&limit=100`),
       api(`/api/trading-collector/option-volume?account_id=${encodeURIComponent(state.accountId)}`),
       api(`/api/trading-collector/positions/current?account_id=${encodeURIComponent(state.accountId)}`),
     ]);
     renderDevices(devices.items || []);
-    renderFills(fills.items || []);
     renderOptionVolume(optionVolume);
     renderCurrentPositions(currentPositions);
+  }
+
+  async function loadData() {
+    if (!state.accountId) return;
+    await Promise.all([loadFills(), loadSummaryData()]);
     setStatus(`已更新｜${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
   }
 

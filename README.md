@@ -20,7 +20,7 @@
 - 收盘交易复盘 Agent Phase 1（Staging 已部署）：提供固定宏源账户铁矿石期权指定日期的只读摘要接口，按真实月份、Call/Put、买卖方向和行权价区间动态分组，分别返回不扣手续费的真实平仓盈亏与日结算口径持仓浮盈浮亏；日结单优先，只有月结单时明确降级为部分完成。当前仅完成确定性计算底座，尚未形成合格的网页 Agent 测试版；后续统一对话、DeepSeek、推荐问题、自动日常结果、会话隔离和试点权限以 `docs/superpowers/specs/2026-09-03-closing-trading-review-agent-staging-requirements.md` 为准。
 - 贸易台账管理（Staging 已接真实源）：新增“现货业务台账管理”，覆盖说明书定义的 51 个 A:AY 字段、系统同步/人工字段、待补录、同步异常、组合筛选、敏感权限编辑、战略套保全开全平录入、服务端分页和全量 Excel 导出。列表、待补录和同步异常默认每页 20 条，可切换 20/50/100 条并只查询当前页；列表只返回表格摘要，打开单条详情时才读取该记录的完整 51 字段。Render Staging 已通过个人服务账号认证连接正式服务端 JSON 只读接口，并把 7 个销售组内的生效现货销售合同明细同步到独立 Supabase Staging；本地仍使用明确标注的 fixture 验收，不连接真实源。
 - WH6 期权成交采集器（Staging 开发版）：以已绑定宏源账户的 `match.dat` 为成交来源，必要时只读配套 `order.dat` 补齐方向/开平，本地 SQLite 断网排队，服务端设备绑定与多设备去重；Windows 一键构建入口为 `collector/installer/build_windows.cmd`，实际 `Setup.exe` 仍须在 Windows x64 上双击构建并按 `docs/superpowers/plans/2026-09-02-wh6-windows-acceptance-runbook.md` 验收，当前 Mac 工作区不宣称已生成安装包。
-- WH6 成交与持仓采集器 V2（Staging 开发版）：全量只读采集已成交的期货/期权记录和完整持仓快照，实时队列优先于历史回补，本地 SQLite 断网/重启保留，服务端设备绑定、成交去重和持仓快照冲突标记；第一阶段页面、统计和 Agent 只显示期权当日成交量与当前期权持仓。Windows 一键构建入口为 `collector/installer/build_windows.cmd`，实际 `Setup.exe` 仍须在 Windows x64 上双击构建并按 `docs/superpowers/plans/2026-09-03-wh6-intraday-fills-positions-collector-acceptance-runbook.md` 验收，当前 Mac 工作区不宣称已完成 Windows/WH6/Staging 验收或生成安装包。
+- WH6 成交与持仓采集器 V2.1（Staging 开发版）：在 V2 全量只读采集、实时优先、本地断网/重启保留和服务端设备去重基础上，按当前账户有效完整月结单下发明确历史关闭区间；日结/月结按字段优先级协调并保留追加审计，上传按 100 条分批逐条确认，成交明细支持真正的 20/50/100 服务端分页。客户端版本源固定为 `0.2.1`，首次启动会迁移本地 SQLite 并保留备份；策略不可用时只继续当前交易日采集，历史暂停。跨期组合的真实 WH6 原始编码尚未取得，解析状态保持 `unknown_format`，不凭猜测拆腿或生成夹具。Windows 一键构建入口为 `collector/installer/build_windows.cmd`，实际 `Setup.exe`、真实 WH6 和 LTM WEB Staging 仍须按 `docs/superpowers/plans/2026-09-03-wh6-intraday-fills-positions-collector-acceptance-runbook.md` 验收，当前 Mac 工作区不宣称已完成 Windows/WH6/Staging 验收或生成安装包。
 - 铁矿石期现：历史 Excel 作为存量底库，新增 EBC 现货指标与新浪 I0 收盘价 API 增量同步；按版本化业务规则计算并保存精简结果与完整明细。期现数据管理提供只读分页查询，期现数据展示提供独立最优仓单、港口页签和按品种/年份绘制的日度基差图表。
 
 ## 本地运行
@@ -48,6 +48,20 @@ http://127.0.0.1:8000
 
 ```text
 http://127.0.0.1:8001
+```
+
+WH6 V2.1 的本地回归使用临时 SQLite，不连接云端数据库；完整命令、Staging 备份/迁移和 Windows 实机证据边界见验收运行手册。协调脚本默认 dry-run，只有在已确认目标环境、备份和数量后才允许显式 `--apply`，本计划不执行 Production：
+
+```bash
+env -u DATABASE_URL python3 -m pytest -q \
+  tests/test_trading_collector_reconciliation.py \
+  tests/test_wh6_collector_migrations.py \
+  tests/test_wh6_collector_policy.py \
+  tests/test_wh6_collector_store.py \
+  tests/test_wh6_collector_scheduler.py \
+  tests/test_wh6_collector_cli.py \
+  tests/test_reconcile_wh6_intraday_script.py
+node --test tests/trading_collector_frontend.test.mjs
 ```
 
 现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、源系统销售类型原文、跨组标识、待补录和同步异常。销售类型 D 优先取正式源报表“业务类别”完整原文并按销售合同商品明细 ID 回接，不做本地代码转换；只有源报表没有完整原文时才保留代码并标记同步异常。落地货关系只依据完整原文中的“落地”或明确的 B09 系列，不能把 B05/B07 裸代码当成落地货，因为源字典中同一基础代码存在多个业务类别。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；服务在同步时段内启动时只执行最近一个已到小时，不补跑当天此前所有小时，数据库已有同一时段记录时跳过，19:00 后启动不补跑；不提供实时同步或手动立即同步。Staging 当前使用 `SPOT_LEDGER_SOURCE_MODE=official_json` 并启用销售类型原文回接；本地默认不启用。

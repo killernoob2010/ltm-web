@@ -131,8 +131,9 @@ def get_fills(
     start: str = Query(default="", max_length=10),
     end: str = Query(default="", max_length=10),
     contract: str = Query(default="", max_length=80),
-    status: str = Query(default="accepted", max_length=40),
-    limit: int = Query(default=500, ge=1, le=500),
+    status: str = Query(default="active", max_length=40),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     user=Depends(trading_collector_current_user),
 ):
     require_permission(user, "trading.options", "view")
@@ -153,7 +154,8 @@ def get_fills(
             end=end,
             contract=contract,
             status=status,
-            limit=limit,
+            page=page,
+            page_size=page_size,
             asset_type="option",
         )
     except service.CollectorServiceError as exc:
@@ -185,13 +187,12 @@ def get_option_volume(
     account_id: Optional[int] = Query(default=None, gt=0),
     trade_date: str = Query(default="", max_length=10),
     contract: str = Query(default="", max_length=80),
-    limit: int = Query(default=500, ge=1, le=500),
     user=Depends(trading_collector_current_user),
 ):
     require_permission(user, "trading.options", "view")
     target_account = _read_target_account(account_id, user)
     try:
-        return service.query_option_volume(target_account, trade_date=trade_date, contract=contract, limit=limit)
+        return service.query_option_volume(target_account, trade_date=trade_date, contract=contract)
     except service.CollectorServiceError as exc:
         raise _service_error(exc) from exc
 

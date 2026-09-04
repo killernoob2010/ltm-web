@@ -1,6 +1,6 @@
-# WH6 盘中成交与持仓采集器 V2 验收运行手册
+# WH6 盘中成交与持仓采集器 V2.1 验收运行手册
 
-状态：代码与本地 SQLite/API/页面测试已完成；Windows 11、真实 WH6 自然事件和 LTM WEB STAGING 读回尚未完成。本手册不把本机回放或 HTTP 模拟写成实机验收。
+状态：V2.1 代码与本地 SQLite/API/页面测试正在候选分支完成；Windows 11、真实 WH6 自然事件和 LTM WEB STAGING 读回尚未完成。本手册不把本机回放、合成数据或 HTTP 模拟写成实机验收。跨期组合的真实原始编码尚未取得，相关解析保持 `unknown_format` 开放门，不凭猜测补写 grammar 或夹具。
 
 ## 1. 范围与安全边界
 
@@ -8,6 +8,9 @@
 - 采集器只能读取已成交的 `match.dat` 和经过显式版本、声明数量、完整结束标记校验的持仓缓存；必要时只读配套 `order.dat` 补齐成交字段。
 - 不执行下单、撤单、改单、平仓、行权、转账，不控制 WH6 界面或进程，不注入、不读内存、不抓包、不模拟交易协议。
 - 第一阶段只验收期权当日成交量和当前期权持仓；期货可以验证已经入库，但不得出现在第一阶段页面、统计或 Agent 结果中。
+- 月结关闭区间只取当前环境、当前账户、`active` 且覆盖完整自然月的月结批次；日结可以纠错但不能关闭月份，缺月不能用最大日期跨越。
+- 月结、日结和 WH6 按字段级优先级协调，原始观察、结算来源和差异审计均保留；客户端上传最多 100 条并要求逐条终态回执，401/403 暂停上传而不丢队列。
+- 客户端版本为 `0.2.1`，本地 schema 为 3；策略刷新失败时当前交易日仍可采集，历史扫描暂停。成交明细必须由服务端返回 20/50/100 分页结果，期权成交量不能从当前页相加。
 
 ## 2. 本地证据（已完成）
 
@@ -25,11 +28,15 @@ python3 -m pytest -q \
   tests/test_trading_collector_service.py \
   tests/test_trading_collector_positions_service.py \
   tests/test_trading_collector_api.py \
-  tests/test_trading_collector_positions_api.py
+  tests/test_trading_collector_positions_api.py \
+  tests/test_trading_collector_reconciliation.py \
+  tests/test_wh6_collector_migrations.py \
+  tests/test_wh6_collector_policy.py \
+  tests/test_reconcile_wh6_intraday_script.py
 node --test tests/trading_collector_frontend.test.mjs
 ```
 
-记录每次执行的日期、通过数、失败数、完整命令和环境。测试通过只证明代码路径和受控样本，不证明 Windows WH6 版本、自然成交时延或 Staging 页面读回。
+记录每次执行的日期、通过数、失败数、完整命令和环境。测试通过只证明代码路径和受控样本，不证明 Windows WH6 版本、自然成交时延、真实 spread 解析或 Staging 页面读回。协调命令在本地可用 SQLite 做 dry-run/apply 安全测试；真实 Staging apply 必须先完成备份和环境核对。
 
 ## 3. Windows 11 实机阶段
 
@@ -52,13 +59,16 @@ node --test tests/trading_collector_frontend.test.mjs
 
 ## 4. Staging 变更与回滚
 
-在将本分支部署到 Staging 前，先确认数据库连接确实是 `LTM WEB STAGING`，备份/迁移计划由 Staging 管理员执行。迁移只创建：
+在将本分支部署到 Staging 前，先确认数据库连接确实是 `LTM WEB STAGING`，备份/迁移计划由 Staging 管理员执行。本轮迁移新增或补齐：
 
+- `trading_intraday_fill_reconciliations` 及其当前状态/结算身份索引；
+- `trading_trade_facts.transaction_no`、`normalized_transaction_no`；
+- `trading_intraday_fills` 的协调状态、结算身份、批次、有效来源和协调时间；
 - `trading_intraday_position_observations`
 - `trading_intraday_position_snapshots`
 - `trading_intraday_position_rows`
 
-既有 `trading_trade_facts`、结算表、订单融资表和 Production 数据不变。回滚优先停用 Staging 采集器、保留观察与快照用于审计，再回退应用分支；不得为回滚删除采集证据或修改结算事实。
+既有结算来源行、订单融资表和 Production 数据不变；迁移只允许在 Staging 执行。回滚优先停用 Staging 采集器、保留观察与快照用于审计，再回退应用分支；不得为回滚删除采集证据或修改结算事实。
 
 部署后至少回读：设备绑定、设备上传返回、期权成交量、当前期权持仓、过期/冲突状态和页面版本身份。API 200、健康检查、静态文件存在或本地测试不能替代这些业务回读。
 
@@ -66,6 +76,7 @@ node --test tests/trading_collector_frontend.test.mjs
 
 - 尚未在 Windows 11 构建并签收安装包。
 - 尚未连接真实 WH6 缓存进行版本/字段阶段 0 验证。
+- 尚未取得可验证的真实跨期组合原始记录；`future_spread` 的自然 Windows 验收门保持开放，不能用假编码代替。
 - 尚未用自然成交证明 10 秒目标。
 - 尚未完成两台 Windows 设备的快照观察、冲突和断网/重启实测。
 - 尚未部署或回读 LTM WEB STAGING；没有 Staging 版本身份和数据证据前，不更新正式版本记录，也不触碰 Production。

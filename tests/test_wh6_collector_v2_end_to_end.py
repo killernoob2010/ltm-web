@@ -1,6 +1,6 @@
 """V2 local-to-service vertical slice; no Windows or Staging claim is implied."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import sys
@@ -123,6 +123,11 @@ def test_v2_local_outbox_to_service_keeps_realtime_first_and_snapshot_non_additi
     outbox.release([retry_claim[0]["event_key"]], "offline")
     del outbox
     reopened = LocalOutbox(tmp_path / "pc-a" / "collector.sqlite3")
+    with reopened._connect() as connection:
+        connection.execute(
+            "UPDATE outbox SET available_at = ? WHERE event_key = ?",
+            (datetime.now(timezone.utc).isoformat(), retry.source_event_key),
+        )
     assert reopened.claim(1, priority="realtime")[0]["event_key"] == retry.source_event_key
 
     volume = service.query_option_volume(account_id, trade_date="2026-09-03")
