@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量化交易管理系统 Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=server-pagination-20260825" />
+    <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=server-pagination-20260825&workspace-layout=20260904a" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260722c" />
     <link rel="stylesheet" href="/static/trading_collector.css?v=20260902a" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
@@ -58,9 +58,11 @@
             <button id="logoutBtn" class="secondary">退出</button>
           </div>
         </header>
-        <div id="passwordChangeNotice" class="password-change-notice hidden">
-          当前仍在使用临时密码，建议尽快修改。
-          <button id="passwordNoticeAction" type="button">立即修改</button>
+        <div id="workspaceNoticeRegion" class="workspace-notice-region">
+          <div id="passwordChangeNotice" class="password-change-notice hidden" aria-live="polite">
+            当前仍在使用临时密码，建议尽快修改。
+            <button id="passwordNoticeAction" type="button">立即修改</button>
+          </div>
         </div>
 
         <section id="infoSummaryPage" class="page">

@@ -134,6 +134,10 @@ textarea {
   color: var(--danger);
 }
 
+#changePasswordError:empty {
+  display: none;
+}
+
 .login-status {
   display: flex;
   align-items: center;
@@ -161,14 +165,18 @@ textarea {
 
 .app-shell {
   height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .sidebar {
   background: var(--sidebar);
   color: #fff;
   padding: 18px 14px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .brand {
@@ -286,9 +294,24 @@ textarea {
 
 .workspace {
   overflow: hidden;
+  min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+#globalTopbar {
+  grid-row: 1;
+}
+
+.workspace-notice-region {
+  grid-row: 2;
+  min-width: 0;
+}
+
+.workspace > .page {
+  grid-row: 3;
+  min-height: 0;
 }
 
 .topbar {
@@ -1618,6 +1641,7 @@ dialog::backdrop {
     height: auto;
     min-height: 100vh;
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
   }
 
   .sidebar {
