@@ -9,11 +9,13 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 import json
 import re
+import threading
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, UUID4, model_validator
 
+from . import closing_review_calendar
 from . import closing_review_agent_store as store
 from . import closing_trading_review
 from .closing_review_model_gateway import (
@@ -133,6 +135,12 @@ class ConversationIn(BaseModel):
         return self
 
 
+class ReplayIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trading_date: str = Field(min_length=8, max_length=10)
+
+
 class MessageIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -209,6 +217,8 @@ SUGGESTIONS = [
     },
 ]
 _SUGGESTION_MAP = {item["id"]: item for item in SUGGESTIONS}
+_due_check_lock = threading.Lock()
+_due_check_last_date: Optional[date] = None
 
 
 def require_agent_and_option_permissions(user: dict) -> None:
@@ -236,10 +246,7 @@ def _normalize_date(value: Any) -> Optional[str]:
 
 
 def _previous_weekday(reference: date) -> date:
-    candidate = reference - timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate -= timedelta(days=1)
-    return candidate
+    return closing_review_calendar.resolve_previous_trading_day(reference)
 
 
 def _today_from(value: Optional[datetime]) -> date:
@@ -318,6 +325,29 @@ def resolve_task_request(
             anchor=anchor,
             controlled_status="needs_clarification",
             clarification_question="请明确要查询的交易日期（YYYY-MM-DD）。",
+        )
+    try:
+        if not closing_review_calendar.is_trading_day(
+            datetime.strptime(normalized, "%Y%m%d").date()
+        ):
+            return TaskRequest(
+                task_profile=intent.task_profile,
+                reference_mode=intent.reference_mode,
+                date_expression=expression or None,
+                anchor=anchor,
+                controlled_status="non_trading_day",
+                trading_date=normalized,
+                controlled_message=f"{_display_date(normalized)} 不是实际交易日，未替换为其他日期。",
+            )
+    except closing_review_calendar.CalendarUnavailable:
+        return TaskRequest(
+            task_profile=intent.task_profile,
+            reference_mode=intent.reference_mode,
+            date_expression=expression or None,
+            anchor=anchor,
+            controlled_status="calendar_unavailable",
+            trading_date=normalized,
+            controlled_message="当前版本的交易日历不覆盖该日期，未猜测或替换日期。",
         )
     return TaskRequest(
         task_profile=intent.task_profile,
@@ -435,6 +465,31 @@ def project_task_result(
     return AnswerProjection(**base)
 
 
+def build_automatic_result(report: OptionDailyReviewResponse) -> AnswerProjection:
+    """Project the full deterministic report for the automatic daily result."""
+
+    return AnswerProjection(
+        task_profile="automatic_daily_review",
+        status=report.status,
+        trading_date=report.trading_date,
+        account_name=report.account_name,
+        instrument=report.instrument,
+        valuation_basis=report.valuation_basis,
+        valuation_note=report.valuation_note,
+        call_net=report.call_net,
+        put_net=report.put_net,
+        position_groups=list(report.position_groups),
+        realized_close_pnl=report.realized_close_pnl,
+        unrealized_pnl=report.unrealized_pnl,
+        pnl_attribution=list(report.pnl_attribution),
+        metadata=report.metadata,
+        evidence_refs=list(report.metadata.evidence_refs),
+        warnings=list(report.warnings),
+        calculation_version=report.metadata.calculation_version,
+        rule_version=report.metadata.rule_version,
+    )
+
+
 def _iter_numeric_facts(value: Any, path: str = ""):
     if isinstance(value, NumericFact):
         yield path, value
@@ -506,14 +561,18 @@ def _display_net(label: str, value: Optional[NetPositionFact]) -> str:
     return f"{label}：{value.direction_label} { _display_number(value.lots) } 手"
 
 
-def render_answer(projection: AnswerProjection) -> str:
+def render_answer(projection: AnswerProjection, *, updated: bool = False) -> str:
     if projection.clarification_question:
         return projection.clarification_question
     if projection.controlled_message:
         return projection.controlled_message
     status_label = STATUS_LABELS.get(projection.status, projection.status)
     lines = [f"数据状态：{status_label}", f"实际交易日：{_display_date(projection.trading_date)}"]
-    if projection.task_profile in {"option_position_query", "option_previous_trading_day_position"}:
+    if projection.task_profile in {
+        "option_position_query",
+        "option_previous_trading_day_position",
+        "automatic_daily_review",
+    }:
         lines.extend(
             [
                 _display_net("Call", projection.call_net),
@@ -524,6 +583,10 @@ def render_answer(projection: AnswerProjection) -> str:
                 ) or "无可确认分组"),
             ]
         )
+        if projection.task_profile == "automatic_daily_review":
+            lines.append(f"真实平仓盈亏：{_display_number(projection.realized_close_pnl)}")
+            lines.append(f"持仓浮盈浮亏：{_display_number(projection.unrealized_pnl)}")
+            lines.append(f"估值口径：{projection.valuation_note or '未确定'}")
     elif projection.task_profile == "option_realized_pnl_query":
         lines.append(f"真实平仓盈亏：{_display_number(projection.realized_close_pnl)}")
     elif projection.task_profile == "option_unrealized_pnl_query":
@@ -559,6 +622,8 @@ def render_answer(projection: AnswerProjection) -> str:
             lines.append("当前锚点没有可解释的数值结果。")
     if projection.warnings and projection.task_profile not in {"review_data_status_query"}:
         lines.append("说明：" + "；".join(projection.warnings))
+    if updated:
+        lines.append("结果已更新：本次自动结果基于最新数据来源。")
     return "\n".join(lines)
 
 
@@ -677,6 +742,28 @@ def _existing_task_response(
 def _provider_metadata(provider: Any) -> dict[str, Any]:
     metadata = getattr(provider, "last_metadata", {})
     return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _maybe_run_due_reviews(now: Optional[datetime] = None) -> None:
+    """Wake the deterministic scheduler once per local calendar day on page open."""
+
+    from . import closing_review_scheduler as scheduler
+
+    if not scheduler._enabled("CLOSING_REVIEW_AGENT_AUTO_ENABLED"):
+        return
+    current = now or datetime.now(timezone.utc)
+    local_date = _today_from(current)
+    global _due_check_last_date
+    with _due_check_lock:
+        if _due_check_last_date == local_date:
+            return
+        _due_check_last_date = local_date
+    try:
+        scheduler.run_due_reviews(current)
+    except Exception:
+        # A wake check must never make the Agent page unavailable. The scheduler
+        # records controlled failures on its own when it can reach the store.
+        return
 
 
 def _finish_task(
@@ -809,6 +896,7 @@ def list_agent_conversations(
     user: dict = Depends(trading_management_current_user),
 ):
     require_agent_and_option_permissions(user)
+    _maybe_run_due_reviews()
     return {"items": [_public_conversation(item) for item in store.list_conversations(int(user["id"]), before_id, limit)]}
 
 
@@ -849,6 +937,27 @@ def list_agent_suggestions(user: dict = Depends(trading_management_current_user)
             for item in SUGGESTIONS
         ]
     }
+
+
+@router.post("/admin/replay")
+def replay_agent_result(
+    payload: ReplayIn,
+    user: dict = Depends(trading_management_current_user),
+):
+    from . import closing_review_scheduler as scheduler
+
+    if not scheduler._enabled("CLOSING_REVIEW_AGENT_REPLAY_ENABLED"):
+        raise HTTPException(status_code=404, detail="历史回放未启用")
+    if user.get("role") not in {"管理员", "admin"}:
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+    normalized = _normalize_date(payload.trading_date)
+    if normalized is None:
+        raise HTTPException(status_code=422, detail="交易日期必须是YYYYMMDD或YYYY-MM-DD")
+    result = scheduler.run_historical_replay(
+        user,
+        datetime.strptime(normalized, "%Y%m%d").date(),
+    )
+    return result.model_dump(mode="json")
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=MessageResponse)
