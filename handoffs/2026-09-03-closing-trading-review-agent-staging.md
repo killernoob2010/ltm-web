@@ -1,7 +1,7 @@
 # 收盘交易复盘 Agent V1 Staging 开发交接
 
 - 日期：2026-09-03
-- 状态：正式需求和实施计划已完成；功能开发尚未开始
+- 状态：Agent V1 本地实现与回归已完成；Staging 变更前门禁待补齐
 - 目标：交付合格的 Agent Staging，等待用户后续扩大真实页面验收
 
 ## 权威文件
@@ -14,12 +14,13 @@
 
 ## 当前事实
 
-- 本交接形成时工作树分支：`codex/closing-review-agent-requirements`。
-- 参考基线：`4eca33c`，当时与 `origin/staging` 一致；接手时必须重新核对。
+- 当前工作树为隔离的 detached worktree，HEAD 为 `0430bc4`；`origin/staging` 仍为 `4eca33c`，本地 Agent 实现领先 8 个提交，尚未推送。
+- 本地回归已通过：Python `833 passed`，Node 前端 `157 passed`，目标后端编译、前端语法和 diff 检查均通过。
 - Phase 1 确定性底座已在 Staging：`backend/app/closing_trading_review.py`。
 - 已有只读 API：`GET /api/closing-trading-review/options/daily-summary`。
-- 当前定向基线：`tests/test_closing_trading_review.py` 为 11 passed。
-- 尚无统一 Agent 页面、会话表、推荐问题、自动结果、DeepSeek Provider 或 Agent 专属权限。
+- Agent V1 已增加会话/消息/任务数据边界、DeepSeek 受限意图网关、八类任务编排、自动日常结果、Staging 回放入口、统一 Agent 页面、试点权限和安全回归。
+- 通过 Supabase 只读核对确认目标项目为 `LTM WEB STAGING` 且健康；三张新 Agent 表目前尚不存在，未误触发迁移。
+- 本机当前没有 Staging `DATABASE_URL`；能找到的项目 `.env` 属于 Production，已明确不使用。
 - Production 未授权，真实交易操作始终禁止。
 
 ## 已冻结业务结论
@@ -39,6 +40,8 @@
 - 真实 DeepSeek 验收依赖有效的 Staging API Key；无 Key 时不得用 Fake 冒充完成。
 - 当前未授权子 Agent；使用一个主开发模型。
 
-## 唯一下一步
+## 当前阻塞与下一步
 
-接手模型重新核对 Git、Staging、数据库和 DeepSeek 配置后，从配套实施计划 Task 1 开始，按测试先行完成到 Staging；全部开发检查通过但用户尚未亲自扩大测试时，最终状态写“Agent V1 Staging 已交付，等待用户扩大真实页面验收”。
+Staging 变更前必须先按 `docs/backup_restore.md` 运行一次 `scripts/backup_database.py --mode all`。当前缺少可用于 `pg_dump` 的 Staging 连接凭据，因此不能安全地备份，也不能推送会触发数据库初始化的部署。需要在受保护环境提供 Staging `DATABASE_URL`（不发送到聊天、不写仓库），或在已具备该变量的 Staging 运维环境执行备份并交回备份位置/校验结果。之后再继续推送、配置仅 Staging 的 Secret、真实页面验收和 2026 年 6—8 月月结单导入。
+
+完成全部开发检查但用户尚未亲自扩大测试时，最终状态写“Agent V1 Staging 已交付，等待用户扩大真实页面验收”。
