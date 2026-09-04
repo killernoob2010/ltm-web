@@ -1,6 +1,7 @@
 """CLI safety and offline queue behavior."""
 
 from pathlib import Path
+from datetime import datetime
 import json
 import sys
 
@@ -233,8 +234,9 @@ def test_service_loop_rechecks_positions_after_new_realtime_fill(tmp_path, monke
 def test_once_uploads_full_asset_fills_and_position_snapshot_with_priority_payload(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
-    _write_match(source_root / "20260903match.dat", [_record(contract="i2607", match_id="FUT-001")], size=268)
-    write_position_json(source_root / "20260903position.dat", rows=[_position_row("i2607-C-750")])
+    today = datetime.now().astimezone().strftime("%Y%m%d")
+    _write_match(source_root / (today + "match.dat"), [_record(contract="i2607", match_id="FUT-001")], size=268)
+    write_position_json(source_root / (today + "position.dat"), rows=[_position_row("i2607-C-750")])
     uploaded = []
     config = CollectorConfig(
         staging_url="http://127.0.0.1:8000",
