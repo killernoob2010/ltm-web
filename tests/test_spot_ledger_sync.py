@@ -1908,6 +1908,12 @@ def test_confirmed_candidate_request_body_matches_observed_contract():
     }
 
 
+def test_candidate_report_uses_the_reachable_tds_api_gateway():
+    from app.spot_ledger_sync import CANDIDATE_SOURCE_URL
+
+    assert CANDIDATE_SOURCE_URL == "https://tds-api.ejianlong.com/jmreport/show"
+
+
 def test_profiled_source_paginates_confirmed_json_request_without_guessing_response_shape():
     from app.spot_ledger_sync import CANDIDATE_SOURCE_URL, ProfiledSalesContractSource, build_candidate_request_body
 

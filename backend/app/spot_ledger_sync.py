@@ -49,7 +49,7 @@ from .spot_ledger import (
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 SPOT_LEDGER_SYNC_TIMES = tuple(day_time(hour, 0) for hour in range(9, 19))
-CANDIDATE_SOURCE_URL = "https://tds-report.ejianlong.com/jmreport/show"
+CANDIDATE_SOURCE_URL = "https://tds-api.ejianlong.com/jmreport/show"
 CANDIDATE_REPORT_ID = "1055351755192311808"
 JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
 JIANLONG_TDS_API_BASE_URL = "https://tds-api.ejianlong.com"
