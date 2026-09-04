@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 from pydantic import BaseModel
 
 from . import db
+from . import trading_collector_reconciliation as collector_reconciliation
 from .permissions import require_permission
 from .trading_settlement import parse_settlement_statement
 from .trading_overview import (
@@ -1165,7 +1166,9 @@ def confirm_settlement_import(
                     row["exchange"], row["contract"], row["asset_type"], row["side"],
                     row["open_close_raw"], row["open_close"], row["quantity"], row["price"],
                     row["turnover"], row["fee"], row["hedge_flag"],
-                    row["premium_cashflow"], is_current,
+                    row["premium_cashflow"], row.get("transaction_no"),
+                    collector_reconciliation.normalize_transaction_no(row.get("transaction_no")),
+                    is_current,
                 )
             )
         if trade_values:
@@ -1175,9 +1178,9 @@ def confirm_settlement_import(
                 INSERT INTO trading_trade_facts
                     (identity_id, batch_id, source_row_id, trade_date, trade_time, exchange,
                      contract, asset_type, side, open_close_raw, open_close, quantity, price,
-                     turnover, fee, hedge_flag, premium_cashflow, is_current,
-                     verification_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
+                     turnover, fee, hedge_flag, premium_cashflow, transaction_no,
+                     normalized_transaction_no, is_current, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
                 """,
                 trade_values,
             )
@@ -1392,6 +1395,14 @@ def confirm_settlement_import(
             """,
             (actor, preview_batch_id),
         )
+        transaction_numbers_backfilled = collector_reconciliation.backfill_settlement_transaction_numbers(
+            cur, account_id=batch["account_id"]
+        )
+        monthly_finalization = {"retired": 0, "audited": 0}
+        if batch["statement_type"] == "monthly":
+            monthly_finalization = collector_reconciliation.finalize_lower_priority_monthly_trades(
+                cur, preview_batch_id
+            )
         conn.commit()
     return {
         "batch_id": preview_batch_id,
@@ -1399,6 +1410,8 @@ def confirm_settlement_import(
         "counts": statement["counts"],
         "monthly_replacements": replacements if batch["statement_type"] == "monthly" else 0,
         "differences": differences,
+        "transaction_numbers_backfilled": transaction_numbers_backfilled,
+        "monthly_finalization": monthly_finalization,
     }
 
 

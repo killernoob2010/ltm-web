@@ -154,3 +154,132 @@ def get_device_collection_policy(device_id: int) -> dict[str, object]:
     if not row or row["status"] != "active":
         raise ValueError("设备已暂停或撤销")
     return build_collection_policy(int(row["account_id"]))
+
+
+def _raw_transaction_no(raw_json: object) -> str:
+    try:
+        payload = json.loads(str(raw_json or ""))
+    except (TypeError, ValueError):
+        return ""
+    if isinstance(payload, Mapping):
+        for key in ("transaction_no", "成交序号", "成交编号", "transaction number"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                return str(value).strip()
+        columns = payload.get("columns")
+        if isinstance(columns, list) and len(columns) > 15:
+            return str(columns[15] or "").strip()
+    return ""
+
+
+def backfill_settlement_transaction_numbers(cur, *, account_id: int | None = None) -> int:
+    """Backfill only empty settlement keys from retained source-row evidence."""
+    sql = """
+        SELECT tf.id, sr.raw_json
+        FROM trading_trade_facts tf
+        JOIN trading_source_rows sr ON sr.id = tf.source_row_id
+        JOIN trading_import_batches b ON b.id = tf.batch_id
+        WHERE (tf.normalized_transaction_no IS NULL OR tf.normalized_transaction_no = '')
+    """
+    params: list[object] = []
+    if account_id is not None:
+        sql += " AND b.account_id = ?"
+        params.append(account_id)
+    rows = db._exec(cur, sql, tuple(params)).fetchall()
+    changed = 0
+    for row in rows:
+        transaction_no = _raw_transaction_no(row["raw_json"])
+        normalized = normalize_transaction_no(transaction_no)
+        if not normalized:
+            continue
+        db._exec(
+            cur,
+            """
+            UPDATE trading_trade_facts
+            SET transaction_no = ?, normalized_transaction_no = ?
+            WHERE id = ? AND (normalized_transaction_no IS NULL OR normalized_transaction_no = '')
+            """,
+            (transaction_no, normalized, row["id"]),
+        )
+        changed += 1
+    return changed
+
+
+def finalize_lower_priority_monthly_trades(cur, batch_id: int) -> dict[str, int]:
+    """Retire lower-priority current trades absent from a complete monthly set."""
+    batch = db._exec(
+        cur,
+        """
+        SELECT id, account_id, range_start, range_end, status, statement_type,
+               source_priority
+        FROM trading_import_batches WHERE id = ?
+        """,
+        (batch_id,),
+    ).fetchone()
+    if not batch or batch["statement_type"] != "monthly":
+        raise ValueError("只有月结批次可以收口低优先级成交")
+    normalized_range = _complete_month_range(batch["range_start"], batch["range_end"])
+    if not normalized_range:
+        # A monthly-labelled statement can still be useful for field-level
+        # replacement before the complete natural-month close is available.
+        return {"retired": 0, "audited": 0}
+    range_start, range_end, _month = normalized_range
+    monthly_identities = {
+        int(row["identity_id"])
+        for row in db._exec(
+            cur,
+            "SELECT identity_id FROM trading_trade_facts WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchall()
+    }
+    candidates = db._exec(
+        cur,
+        """
+        SELECT tf.id, tf.identity_id, tf.batch_id, tf.trade_date,
+               b.source_priority
+        FROM trading_trade_facts tf
+        JOIN trading_import_batches b ON b.id = tf.batch_id
+        WHERE b.account_id = ? AND b.status = 'active'
+          AND b.id <> ? AND tf.is_current = 1
+          AND b.source_priority < ?
+        ORDER BY tf.id
+        """,
+        (batch["account_id"], batch_id, int(batch["source_priority"] or 200)),
+    ).fetchall()
+    retired = audited = 0
+    for row in candidates:
+        trade_date = _normalize_date(row["trade_date"])
+        if not trade_date or not (range_start <= trade_date.isoformat() <= range_end):
+            continue
+        if int(row["identity_id"]) in monthly_identities:
+            continue
+        updated = db._exec(
+            cur,
+            "UPDATE trading_trade_facts SET is_current = 0 WHERE id = ? AND is_current = 1",
+            (row["id"],),
+        )
+        if updated.rowcount != 1:
+            continue
+        retired += 1
+        db._exec(
+            cur,
+            """
+            INSERT INTO trading_fact_source_differences
+                (identity_id, fact_type, old_batch_id, new_batch_id, diff_json)
+            VALUES (?, 'trade', ?, ?, ?)
+            """,
+            (
+                row["identity_id"],
+                row["batch_id"],
+                batch_id,
+                json.dumps(
+                    {
+                        "change_type": "absent_from_monthly",
+                        "trade_date": row["trade_date"],
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        audited += 1
+    return {"retired": retired, "audited": audited}

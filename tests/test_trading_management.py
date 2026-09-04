@@ -176,6 +176,10 @@ def test_trading_statement_schema_versions_fact_sources(tmp_path, monkeypatch):
         "trading_position_snapshots",
     ):
         assert "is_current" in columns[table]
+    assert {
+        "transaction_no",
+        "normalized_transaction_no",
+    } <= columns["trading_trade_facts"]
 
 
 def test_option_event_close_projection_schema(tmp_path, monkeypatch):

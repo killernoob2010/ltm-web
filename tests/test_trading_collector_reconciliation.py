@@ -7,6 +7,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 
 from app import db
+from app import trading_management
+from test_trading_settlement import statement_fixture
 from app import trading_collector_reconciliation as reconciliation
 
 
@@ -148,3 +150,81 @@ def test_policy_preserves_month_gap_instead_of_using_max_date(tmp_path, monkeypa
         "2026-08",
     ]
     assert "settled_through" not in policy
+
+
+def test_monthly_confirmation_persists_normalized_transaction_number(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    content = statement_fixture().replace("|100001|TEST001|", "|000123|TEST001|")
+    preview = trading_management.preview_settlement_import(
+        account_id(), "daily.txt", content.encode("gb18030"), actor="tester"
+    )
+    result = trading_management.confirm_settlement_import(
+        preview["preview_batch_id"], actor="tester"
+    )
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT transaction_no, normalized_transaction_no "
+            "FROM trading_trade_facts WHERE batch_id = ?",
+            (result["batch_id"],),
+        ).fetchone()
+    assert row["transaction_no"] == "000123"
+    assert row["normalized_transaction_no"] == "123"
+
+
+def test_monthly_absence_retires_lower_priority_trade_without_deleting_history(
+    tmp_path, monkeypatch
+):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    daily_batch = insert_batch(account, "20260501", "20260531", "active", "daily")
+    monthly_batch = insert_batch(account, "20260501", "20260531", "preview", "monthly")
+
+    with db.connect() as conn:
+        source_id = db._last_insert_id(
+            conn.cursor(),
+            """
+            INSERT INTO trading_source_rows
+                (batch_id, source_type, source_file, source_sheet, source_row_no,
+                 raw_hash, raw_json)
+            VALUES (?, 'trade', 'daily.txt', '成交记录', 1, ?, ?)
+            """,
+            (daily_batch, "a" * 64, "{}"),
+        )
+        identity_id = db._last_insert_id(
+            conn.cursor(),
+            """
+            INSERT INTO trading_fact_identities (account_id, fact_type, stable_key)
+            VALUES (?, 'trade', 'daily-only')
+            """,
+            (account,),
+        )
+        db._exec(
+            conn.cursor(),
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, trade_time,
+                 exchange, contract, asset_type, side, open_close, quantity, price,
+                 is_current)
+            VALUES (?, ?, ?, '2026-05-10', '09:01:02', 'DCE', 'i2609', 'future',
+                    '买', '开仓', 1, 785, 1)
+            """,
+            (identity_id, daily_batch, source_id),
+        )
+        monthly_result = reconciliation.finalize_lower_priority_monthly_trades(
+            conn.cursor(), monthly_batch
+        )
+        conn.commit()
+        fact = conn.execute(
+            "SELECT is_current FROM trading_trade_facts WHERE identity_id = ?",
+            (identity_id,),
+        ).fetchone()
+        diff = conn.execute(
+            "SELECT diff_json FROM trading_fact_source_differences "
+            "WHERE identity_id = ? ORDER BY id DESC LIMIT 1",
+            (identity_id,),
+        ).fetchone()
+
+    assert monthly_result == {"retired": 1, "audited": 1}
+    assert fact["is_current"] == 0
+    assert __import__("json").loads(diff["diff_json"])["change_type"] == "absent_from_monthly"
