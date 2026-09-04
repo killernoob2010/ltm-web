@@ -141,3 +141,46 @@ def test_read_only_fill_query_requires_permission_and_hides_full_paths(client):
         headers={"Authorization": "Bearer " + guest.json()["token"]},
     )
     assert guest_response.status_code == 403
+
+
+def test_device_collection_policy_is_bound_to_device_account_and_requires_token(client):
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type,
+                 source_priority)
+            VALUES (?, '2026-08-01', '2026-08-31', 'active', 'monthly', 200)
+            """,
+            (account_id(),),
+        )
+    pairing = client.post(
+        "/api/trading-collector/admin/pairing-codes",
+        json={"account_id": account_id()},
+        headers=auth_headers(),
+    ).json()
+    token = client.post(
+        "/api/trading-collector/device/activate",
+        json={
+            "pairing_code": pairing["code"],
+            "device_name": "策略电脑",
+            "client_version": "0.2.0",
+            "fingerprint": "fp-policy",
+        },
+    ).json()["token"]
+
+    response = client.get(
+        "/api/trading-collector/device/collection-policy?account_id=999",
+        headers={"X-Collector-Token": token},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == 1
+    assert body["minimum_client_version"] == "0.2.1"
+    assert [(item["month"], item["source_batch_id"]) for item in body["closed_ranges"]] == [
+        ("2026-08", 1)
+    ]
+    assert "account_id" not in body
+
+    unauthenticated = client.get("/api/trading-collector/device/collection-policy")
+    assert unauthenticated.status_code == 401

@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 
 from app import db
+from app import trading_collector_reconciliation as reconciliation
 
 
 def use_temp_db(tmp_path, monkeypatch):
@@ -14,6 +15,30 @@ def use_temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "collector-reconciliation.db")
     db.init_db()
+
+
+def account_id():
+    with db.connect() as conn:
+        return conn.execute(
+            "SELECT id FROM trading_accounts WHERE account_code = 'hongyuan_futures'"
+        ).fetchone()["id"]
+
+
+def insert_batch(account, start, end, status, statement_type):
+    with db.connect() as conn:
+        cursor = conn.cursor()
+        db._exec(
+            cursor,
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type,
+                 source_priority)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (account, start, end, status, statement_type,
+             200 if statement_type == "monthly" else 100),
+        )
+        return db.last_insert_id(conn)
 
 
 def test_reconciliation_schema_is_forward_only_and_auditable(tmp_path, monkeypatch):
@@ -92,3 +117,34 @@ def test_existing_source_and_fact_rows_survive_repeated_initialization(tmp_path,
             (batch_id,),
         ).fetchone()
         assert (row["trade_date"], row["contract"]) == ("2026-09-04", "i2609")
+
+
+def test_only_active_complete_monthly_batches_close_collection(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    insert_batch(account, "20260601", "20260630", "active", "monthly")
+    insert_batch(account, "20260701", "20260731", "active", "daily")
+    insert_batch(account, "20260801", "20260831", "preview", "monthly")
+    insert_batch(account, "20260902", "20260930", "active", "monthly")
+
+    policy = reconciliation.build_collection_policy(account)
+
+    assert [
+        (item["range_start"], item["range_end"])
+        for item in policy["closed_ranges"]
+    ] == [("2026-06-01", "2026-06-30")]
+
+
+def test_policy_preserves_month_gap_instead_of_using_max_date(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    insert_batch(account, "20260601", "20260630", "active", "monthly")
+    insert_batch(account, "20260801", "20260831", "active", "monthly")
+
+    policy = reconciliation.build_collection_policy(account)
+
+    assert [item["month"] for item in policy["closed_ranges"]] == [
+        "2026-06",
+        "2026-08",
+    ]
+    assert "settled_through" not in policy

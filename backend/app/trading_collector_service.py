@@ -12,6 +12,7 @@ import secrets
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from . import db
+from . import trading_collector_reconciliation as reconciliation
 
 
 OPTION_RE = re.compile(
@@ -302,6 +303,13 @@ def heartbeat_device_id(device_id: int, client_version: Optional[str] = None) ->
             (_now(), str(client_version or "")[:40] or None, device_id),
         )
     return {"device_id": device_id, "account_id": device["account_id"], "status": "active", "last_seen_at": _now()}
+
+
+def get_device_collection_policy(device_id: int) -> Dict[str, Any]:
+    try:
+        return reconciliation.get_device_collection_policy(device_id)
+    except ValueError as exc:
+        raise CollectorServiceError("device_revoked", str(exc), 401) from exc
 
 
 def revoke_device(device_id: int, actor_id: int) -> Dict[str, Any]:

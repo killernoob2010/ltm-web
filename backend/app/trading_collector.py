@@ -103,6 +103,14 @@ def heartbeat_device(payload: HeartbeatIn, device=Depends(device_auth)):
         raise _service_error(exc) from exc
 
 
+@router.get("/device/collection-policy")
+def get_collection_policy(device=Depends(device_auth)):
+    try:
+        return service.get_device_collection_policy(device["id"])
+    except service.CollectorServiceError as exc:
+        raise _service_error(exc) from exc
+
+
 @router.post("/device/ingest")
 def ingest(payload: IngestIn, device=Depends(device_auth), x_collector_token: Optional[str] = Header(default=None, alias="X-Collector-Token")):
     if not x_collector_token:
