@@ -61,6 +61,7 @@ from .monitoring import get_monitoring_status, start_monitoring_loop
 from .order_finance_snapshot_sync import start_order_finance_sync_scheduler
 from .order_lifecycle_sync import start_order_lifecycle_sync_scheduler
 from .spot_ledger_sync import start_spot_ledger_sync_scheduler
+from .closing_review_scheduler import start_closing_review_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
@@ -1347,6 +1348,7 @@ def startup() -> None:
             start_order_finance_sync_scheduler()
             start_order_lifecycle_sync_scheduler()
             start_spot_ledger_sync_scheduler()
+            start_closing_review_scheduler()
         except Exception as exc:
             print(f"[startup] data synchronization startup skipped: {exc}")
 
