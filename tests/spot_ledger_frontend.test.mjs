@@ -62,6 +62,20 @@ test("spot ledger starts with four primary filters and discloses advanced filter
   assert.match(spotJs, /已启用 \$\{count\} 项高级条件/);
 });
 
+test("spot ledger keeps expanded filters, table scrolling and pagination reachable in the bounded workspace", () => {
+  const pageBlock = stylesCss.match(/\.spot-ledger-page\s*\{([\s\S]*?)\}/)?.[1] || "";
+  const panelBlock = stylesCss.match(/\.spot-ledger-filter-panel,\s*\.spot-ledger-list-panel\s*\{([\s\S]*?)\}/)?.[1] || "";
+  const toolbarBlock = stylesCss.match(/\.spot-ledger-toolbar\s*\{([\s\S]*?)\}/)?.[1] || "";
+  assert.match(pageBlock, /min-height:\s*0/);
+  assert.match(pageBlock, /overflow-y:\s*auto/);
+  assert.match(pageBlock, /overflow-x:\s*hidden/);
+  assert.match(toolbarBlock, /flex:\s*0\s+0\s+auto/);
+  assert.match(panelBlock, /flex:\s*0\s+0\s+auto/);
+  assert.match(panelBlock, /overflow:\s*visible/);
+  assert.match(stylesCss, /\.spot-ledger-table-wrap\s*\{[\s\S]*?overflow:\s*auto/);
+  assert.match(indexHtml, /id="spotLedgerPagination"[\s\S]*?<\/section>/);
+});
+
 test("spot ledger view switch reuses the data visualization tab component", () => {
   assert.match(indexHtml, /class="dv-tabs spot-ledger-tabs"[^>]*role="tablist"/);
   assert.match(indexHtml, /id="spotLedgerRecordsTab" class="dv-tab spot-ledger-tab active"/);

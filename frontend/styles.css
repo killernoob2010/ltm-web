@@ -4138,12 +4138,16 @@ button.order-vessel-detail-btn {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .spot-ledger-toolbar {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex: 0 0 auto;
 }
 
 .spot-ledger-toolbar-copy {
@@ -4154,7 +4158,8 @@ button.order-vessel-detail-btn {
 
 .spot-ledger-filter-panel,
 .spot-ledger-list-panel {
-  overflow: hidden;
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .spot-ledger-filter-form {

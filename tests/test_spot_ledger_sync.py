@@ -551,8 +551,8 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
                             "status": "70",
                             "signingDate": "2026-08-20",
                             "workCompName": "操作抬头A",
-                            "workManName": "合同经办人A",
-                            "createBy": "001_销售执行员",
+                            "workManName": "920109_销售执行经办人A",
+                            "createBy": "001_错误的合同创建人",
                             "coustomName": "客户A",
                             "dischargePortName": "曹妃甸港",
                             "syncTradersId": f"traders-{index}",
@@ -668,6 +668,8 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     assert record["AD"] == "XS-1"
     assert record["K"] == "海运一号"
     assert record["AF"] == "需求业务员A"
+    assert record["AG"] == "销售执行经办人A"
+    assert record["AG"] != "错误的合同创建人"
     assert not any(
         error.get("type") == "missing_source_demand_salesperson"
         for error in record["sync_errors"]

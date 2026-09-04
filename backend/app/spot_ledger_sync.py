@@ -1519,7 +1519,11 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     "demander": detail.get("coustomName"),
                     "contract_number": detail.get("contractCode"),
                     "sales_business": sales_business,
-                    "sales_execution": detail.get("createBy"),
+                    # `createBy` is the account that created the contract record.  It is
+                    # not the person executing the sales contract.  The contract detail's
+                    # `workManName` is the authoritative sales-execution person; keep the
+                    # numeric-prefix normalization in `normalize_sales_contract_record`.
+                    "sales_execution": detail.get("workManName"),
                 }
                 record = normalize_sales_contract_record(standard)
                 record["sync_errors"].extend(record_errors)
