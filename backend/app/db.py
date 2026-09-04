@@ -82,6 +82,7 @@ TRADING_COLLECTOR_TABLES = (
     "trading_intraday_position_observations",
     "trading_intraday_position_snapshots",
     "trading_intraday_position_rows",
+    "trading_intraday_fill_reconciliations",
     "trading_collector_issues",
 )
 
@@ -1814,7 +1815,11 @@ def _ensure_trading_statement_columns(conn, cur) -> None:
             ("statement_account_code_masked", "TEXT"),
             ("source_priority", "INTEGER NOT NULL DEFAULT 0"),
         ],
-        "trading_trade_facts": [("is_current", "INTEGER NOT NULL DEFAULT 1")],
+        "trading_trade_facts": [
+            ("is_current", "INTEGER NOT NULL DEFAULT 1"),
+            ("transaction_no", "TEXT"),
+            ("normalized_transaction_no", "TEXT"),
+        ],
         "trading_close_facts": [
             ("is_current", "INTEGER NOT NULL DEFAULT 1"),
             ("settlement_type", "TEXT NOT NULL DEFAULT 'trade_close'"),
@@ -1967,6 +1972,7 @@ def migrate_trading_management_schema(conn) -> None:
                 quantity DOUBLE PRECISION NOT NULL, price DOUBLE PRECISION NOT NULL,
                 turnover DOUBLE PRECISION, fee DOUBLE PRECISION,
                 hedge_flag TEXT, premium_cashflow DOUBLE PRECISION,
+                transaction_no TEXT, normalized_transaction_no TEXT,
                 is_current INTEGER NOT NULL DEFAULT 1,
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -2214,6 +2220,7 @@ def migrate_trading_management_schema(conn) -> None:
                 asset_type TEXT NOT NULL, side TEXT NOT NULL, open_close_raw TEXT,
                 open_close TEXT NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL,
                 turnover REAL, fee REAL, hedge_flag TEXT, premium_cashflow REAL,
+                transaction_no TEXT, normalized_transaction_no TEXT,
                 is_current INTEGER NOT NULL DEFAULT 1,
                 data_status TEXT NOT NULL DEFAULT 'file_imported',
                 verification_status TEXT NOT NULL DEFAULT 'pending_verification',
@@ -2527,7 +2534,27 @@ def migrate_trading_collector_schema(conn) -> None:
                 first_received_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 canonical_hash TEXT NOT NULL,
+                reconciliation_status TEXT NOT NULL DEFAULT 'unmatched',
+                settlement_identity_id INTEGER REFERENCES trading_fact_identities(id),
+                settlement_batch_id INTEGER REFERENCES trading_import_batches(id),
+                effective_source TEXT NOT NULL DEFAULT 'wh6',
+                reconciled_at TEXT,
                 UNIQUE(account_id, source_event_key)
+            );
+            CREATE TABLE IF NOT EXISTS trading_intraday_fill_reconciliations (
+                id SERIAL PRIMARY KEY,
+                intraday_fill_id INTEGER NOT NULL REFERENCES trading_intraday_fills(id),
+                account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                settlement_identity_id INTEGER REFERENCES trading_fact_identities(id),
+                settlement_batch_id INTEGER REFERENCES trading_import_batches(id),
+                authority_type TEXT NOT NULL,
+                source_priority INTEGER NOT NULL,
+                result_status TEXT NOT NULL,
+                resolved_fields_json TEXT NOT NULL,
+                field_sources_json TEXT NOT NULL,
+                differences_json TEXT NOT NULL,
+                is_current INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS trading_intraday_position_observations (
                 id SERIAL PRIMARY KEY,
@@ -2600,6 +2627,10 @@ def migrate_trading_collector_schema(conn) -> None:
                 ON trading_intraday_fill_observations(account_id, received_at);
             CREATE INDEX IF NOT EXISTS idx_intraday_fills_query
                 ON trading_intraday_fills(account_id, trade_date, trade_time, contract);
+            CREATE INDEX IF NOT EXISTS idx_intraday_fill_reconciliations_current
+                ON trading_intraday_fill_reconciliations(intraday_fill_id, is_current);
+            CREATE INDEX IF NOT EXISTS idx_intraday_fill_reconciliations_settlement
+                ON trading_intraday_fill_reconciliations(account_id, settlement_identity_id, is_current);
             CREATE INDEX IF NOT EXISTS idx_intraday_position_observations_account
                 ON trading_intraday_position_observations(account_id, received_at);
             CREATE INDEX IF NOT EXISTS idx_intraday_position_snapshots_query
@@ -2610,6 +2641,7 @@ def migrate_trading_collector_schema(conn) -> None:
                 ON trading_collector_issues(account_id, created_at);
             """
         )
+        _ensure_trading_collector_columns(conn, cur)
         _secure_postgres_tables(cur, TRADING_COLLECTOR_TABLES)
         return
 
@@ -2683,7 +2715,27 @@ def migrate_trading_collector_schema(conn) -> None:
             first_received_at TEXT DEFAULT CURRENT_TIMESTAMP,
             last_observed_at TEXT DEFAULT CURRENT_TIMESTAMP,
             canonical_hash TEXT NOT NULL,
+            reconciliation_status TEXT NOT NULL DEFAULT 'unmatched',
+            settlement_identity_id INTEGER REFERENCES trading_fact_identities(id),
+            settlement_batch_id INTEGER REFERENCES trading_import_batches(id),
+            effective_source TEXT NOT NULL DEFAULT 'wh6',
+            reconciled_at TEXT,
             UNIQUE(account_id, source_event_key)
+        );
+        CREATE TABLE IF NOT EXISTS trading_intraday_fill_reconciliations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intraday_fill_id INTEGER NOT NULL REFERENCES trading_intraday_fills(id),
+            account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            settlement_identity_id INTEGER REFERENCES trading_fact_identities(id),
+            settlement_batch_id INTEGER REFERENCES trading_import_batches(id),
+            authority_type TEXT NOT NULL,
+            source_priority INTEGER NOT NULL,
+            result_status TEXT NOT NULL,
+            resolved_fields_json TEXT NOT NULL,
+            field_sources_json TEXT NOT NULL,
+            differences_json TEXT NOT NULL,
+            is_current INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS trading_intraday_position_observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2756,6 +2808,10 @@ def migrate_trading_collector_schema(conn) -> None:
             ON trading_intraday_fill_observations(account_id, received_at);
         CREATE INDEX IF NOT EXISTS idx_intraday_fills_query
             ON trading_intraday_fills(account_id, trade_date, trade_time, contract);
+        CREATE INDEX IF NOT EXISTS idx_intraday_fill_reconciliations_current
+            ON trading_intraday_fill_reconciliations(intraday_fill_id, is_current);
+        CREATE INDEX IF NOT EXISTS idx_intraday_fill_reconciliations_settlement
+            ON trading_intraday_fill_reconciliations(account_id, settlement_identity_id, is_current);
         CREATE INDEX IF NOT EXISTS idx_intraday_position_observations_account
             ON trading_intraday_position_observations(account_id, received_at);
         CREATE INDEX IF NOT EXISTS idx_intraday_position_snapshots_query
@@ -2766,6 +2822,32 @@ def migrate_trading_collector_schema(conn) -> None:
             ON trading_collector_issues(account_id, created_at);
         """
     )
+    _ensure_trading_collector_columns(conn, cur)
+
+
+def _ensure_trading_collector_columns(conn, cur) -> None:
+    """Add reconciliation columns to existing collector databases without rebuilding them."""
+    columns = {
+        "trading_intraday_fills": [
+            ("reconciliation_status", "TEXT NOT NULL DEFAULT 'unmatched'"),
+            ("settlement_identity_id", "INTEGER"),
+            ("settlement_batch_id", "INTEGER"),
+            ("effective_source", "TEXT NOT NULL DEFAULT 'wh6'"),
+            ("reconciled_at", "TEXT"),
+        ],
+    }
+    if _is_pg():
+        for table, definitions in columns.items():
+            for name, definition in definitions:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {definition}")
+    else:
+        for table, definitions in columns.items():
+            existing = {
+                row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, definition in definitions:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def sync_trading_module_permissions(cur) -> None:
