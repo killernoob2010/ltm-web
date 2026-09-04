@@ -415,11 +415,11 @@ def test_official_contract_scope_starts_from_locally_filtered_demands():
 
 
 @pytest.mark.parametrize(
-    ("report_sales_business", "expected_missing_sales_business"),
-    [("需求业务员A", False), ("", True)],
+    "report_sales_business",
+    ["报表人员A", ""],
 )
 def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
-    report_sales_business, expected_missing_sales_business
+    report_sales_business,
 ):
     from app import spot_ledger_sync as sync
 
@@ -596,6 +596,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
                             "sourceType": "10",
                             "businessType": "B07" if index == "1" else "B05",
                             "businessTypeName": "贸易-港口现货-市场加价-B07" if index == "1" else "贸易-落地-B05",
+                            "workManName": "需求业务员A",
                             "quantityAttribution": "Q1" if index == "1" else "Q2",
                             "profitAttribution": "P1" if index == "1" else "P2",
                         },
@@ -650,7 +651,7 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
         "ambiguous_resource_match_count": 0,
         "missing_resource_match_count": 0,
         "source_sales_type_label_count": 1,
-        "source_sales_business_label_count": 0 if expected_missing_sales_business else 1,
+        "source_sales_business_label_count": 1,
     }
     assert len(scan.records) == 1
     record = scan.records[0]
@@ -666,11 +667,11 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     assert record["U"] == "2026-08-20"
     assert record["AD"] == "XS-1"
     assert record["K"] == "海运一号"
-    assert record["AF"] == ("" if expected_missing_sales_business else "需求业务员A")
-    assert any(
+    assert record["AF"] == "需求业务员A"
+    assert not any(
         error.get("type") == "missing_source_demand_salesperson"
         for error in record["sync_errors"]
-    ) is expected_missing_sales_business
+    )
     assert record["source_closed_state"] == "已结案"
     assert not any(error.get("type") == "group_mismatch" for error in record["sync_errors"])
     demand_calls = [call for call in source.http.calls if "/tradeing/demand/list" in call[1]]
@@ -1906,12 +1907,6 @@ def test_confirmed_candidate_request_body_matches_observed_contract():
             separators=(",", ":"),
         ),
     }
-
-
-def test_candidate_report_uses_the_reachable_tds_api_gateway():
-    from app.spot_ledger_sync import CANDIDATE_SOURCE_URL
-
-    assert CANDIDATE_SOURCE_URL == "https://tds-api.ejianlong.com/jmreport/show"
 
 
 def test_profiled_source_paginates_confirmed_json_request_without_guessing_response_shape():

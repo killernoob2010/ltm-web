@@ -49,7 +49,7 @@ from .spot_ledger import (
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 SPOT_LEDGER_SYNC_TIMES = tuple(day_time(hour, 0) for hour in range(9, 19))
-CANDIDATE_SOURCE_URL = "https://tds-api.ejianlong.com/jmreport/show"
+CANDIDATE_SOURCE_URL = "https://tds-report.ejianlong.com/jmreport/show"
 CANDIDATE_REPORT_ID = "1055351755192311808"
 JIANLONG_AUTH_BASE_URL = "https://server-auth.ejianlong.com"
 JIANLONG_TDS_API_BASE_URL = "https://tds-api.ejianlong.com"
@@ -1350,6 +1350,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                         "quantityAttribution",
                         "profitAttribution",
                         "businessType",
+                        "workManName",
                     )
                 ):
                     demand_detail_ids.add(demand_id)
@@ -1467,7 +1468,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 price_mode, _ = self._dictionary_label(dictionaries["price_mode"], line.get("priceMode"))
                 report_fields = report_enrichment.get(detail_id, {})
                 business_category = report_fields.get("business_category") or self._business_category_value(demand)
-                sales_business = report_fields.get("sales_business") or ""
+                sales_business = str(demand.get("workManName") or "").strip()
                 if self.enrich_sales_type_labels and re.fullmatch(r"[A-Z]{1,3}\d{2,}", str(business_category or ""), flags=re.IGNORECASE):
                     record_errors.append(
                         {
@@ -1540,7 +1541,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 1 for fields in report_enrichment.values() if fields.get("business_category")
             )
             diagnostics["source_sales_business_label_count"] = sum(
-                1 for fields in report_enrichment.values() if fields.get("sales_business")
+                1 for record in normalized_records if record.get("AF")
             )
         return validate_full_scan(
             FullScanResult(

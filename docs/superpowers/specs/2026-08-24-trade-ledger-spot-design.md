@@ -111,11 +111,11 @@
 
 同步核心只接收标准化 `SalesContractRecord` 字典。真实报表字段必须由已经验证的 profile 明确映射到标准字段；核心逻辑不按列序、模糊名称或网页 DOM 猜测字段。fixture 使用同一标准 contract，文件名和运行结果明确标为 `fixture`。
 
-profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它要求显式提供 request body、分页参数位置、记录路径、总数路径、页数路径、认证提供器和外部字段映射。2026-08-25 经用户授权在登录浏览器会话内做一次只读复核，确认报表路径为 `/jmreport/show`、报表 ID 为 `1055351755192311808`，请求体包含 `apiUrl`、`id` 和 JSON 字符串 `params`，其中使用 `pageNo`、`pageSize`、`periodDate`、`releaseDate`、现货、生效及 7 个销售组筛选。2026-09-04 Staging 验收确认原报表域名在运行网络中不可达，而同一路径可通过 `https://tds-api.ejianlong.com/jmreport/show` 的现有 API 网关访问，因此服务端统一使用该网关地址。记录路径为 `result.dataList.TJJLYSHZ.list`，`result.dataList.TJJLYSHZ.count` 为记录总数，`result.dataList.TJJLYSHZ.total` 为总页数。响应行以中文字段名返回，已按需求说明书 8.2 的来源口径映射销售合同商品明细 ID、组别、类型、公司、日期、商品、港口、模式、船名、数量、价格、供应商、人员、客户和合同号。适配器内置该脱敏 profile，不按网页列序推断，也不保存真实响应或业务明细。
+profile-driven HTTP adapter 只支持用户已确认的 POST 候选地址；它要求显式提供 request body、分页参数位置、记录路径、总数路径、页数路径、认证提供器和外部字段映射。2026-08-25 经用户授权在登录浏览器会话内做一次只读复核，确认报表路径为 `/jmreport/show`、报表 ID 为 `1055351755192311808`，请求体包含 `apiUrl`、`id` 和 JSON 字符串 `params`，其中使用 `pageNo`、`pageSize`、`periodDate`、`releaseDate`、现货、生效及 7 个销售组筛选。记录路径为 `result.dataList.TJJLYSHZ.list`，`result.dataList.TJJLYSHZ.count` 为记录总数，`result.dataList.TJJLYSHZ.total` 为总页数。响应行以中文字段名返回，已按需求说明书 8.2 的来源口径映射销售合同商品明细 ID、组别、类型、公司、日期、商品、港口、模式、船名、数量、价格、供应商、人员、客户和合同号。适配器内置该脱敏 profile，不按网页列序推断，也不保存真实响应或业务明细。2026-09-04 Staging 验收确认运行网络暂时无法连接该报表域名；已登录状态下把同一路径替换到 `tds-api.ejianlong.com` 会返回 404，因此不得把 API 主机误当成报表网关。
 
 同日进一步只读确认销售合同页面调用 `POST https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList`，响应为 JSON，请求使用 Bearer 令牌；统一认证登录页提交 RSA 加密密码到 `POST https://server-auth.ejianlong.com/login/pwd`，取得一次性 code 后通过 `GET /login?code=...` 换取 Bearer 令牌，未观察到独立 refresh token。个人账号作为授权主体已由用户确认；服务端只从 Secret 读取工号和密码并保存在进程内存，令牌过期或响应重定向到登录页时至多重新登录一次。不得提取或复用个人浏览器 Cookie，凭据、票据、令牌、认证响应和源业务响应均不得写入仓库、前端、导出或日志。
 
-完整 51 字段仍以 `POST https://tds-api.ejianlong.com/jmreport/show` 的已确认 JSON 报表 profile 作为候选聚合通路；正式销售合同 JSON API 负责范围、关系及其他已确认字段，报表按销售合同商品明细 ID 对 `业务类别` 和 `需求业务员` 做只读原文回接，不再由本地映射表或合同经办人改写销售类型、销售业务。Staging 验证先判断个人账号服务端登录能否成功，再判断同一内存会话和 Bearer 令牌能否读取候选报表；任一步失败均保留旧记录、不软隐藏，并在对应记录标记脱敏同步异常，不宣称真实自动同步完成。
+正式销售合同 JSON API 负责范围、关系及其他已确认字段；销售业务 AF 读取已匹配需求详情中的 `workManName`（需求业务员），不得读取合同详情中的同名经办人字段，也不得依赖候选报表。销售类型 D 的完整原文仍以 `POST https://tds-report.ejianlong.com/jmreport/show` 的已确认 JSON 报表 profile 按销售合同商品明细 ID 做只读回接，不再由本地映射表改写。Staging 验证先判断个人账号服务端登录能否成功，再判断同一内存会话和 Bearer 令牌能否读取候选报表；任一步失败均保留旧记录、不软隐藏，并在对应记录标记脱敏同步异常，不宣称销售类型原文回接完成。
 
 ### 4.2 全量扫描门禁
 
