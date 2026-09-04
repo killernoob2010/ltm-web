@@ -375,6 +375,45 @@ def claim_user_task(
     return dict(row), True
 
 
+def attach_task_user_message(
+    task_id: int,
+    user_id: int,
+    message_id: int,
+) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(
+            cur,
+            """
+            SELECT t.id
+            FROM closing_review_tasks t
+            JOIN closing_review_messages m
+              ON m.id = ? AND m.conversation_id = t.conversation_id
+            WHERE t.id = ? AND t.user_id = ? AND m.role = 'user'
+            """,
+            (message_id, task_id, user_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("task or user message not found")
+        db._exec(
+            cur,
+            """
+            UPDATE closing_review_tasks
+            SET user_message_id = ?
+            WHERE id = ? AND user_id = ? AND user_message_id IS NULL
+            """,
+            (message_id, task_id, user_id),
+        )
+        updated = db._exec(
+            cur,
+            "SELECT * FROM closing_review_tasks WHERE id = ? AND user_id = ?",
+            (task_id, user_id),
+        ).fetchone()
+    if not updated:
+        raise ValueError("task could not be linked to user message")
+    return dict(updated)
+
+
 def finish_task(
     task_id: int,
     *,
