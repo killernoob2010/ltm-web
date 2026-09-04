@@ -30,6 +30,8 @@ test("Agent workspace separates history, automatic results, suggestions and the 
   assert.match(agentJs, /ENDPOINT\}\/suggestions/);
   assert.match(agentJs, /\/messages/);
   assert.match(agentJs, /message_type/);
+  assert.match(agentJs, /重试原问题/);
+  assert.match(agentJs, /supersedes_message_id/);
 });
 
 test("Agent renders server content as text and does not create a client-side transcript", () => {
