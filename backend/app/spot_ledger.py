@@ -548,7 +548,7 @@ def initialize_schema(conn) -> None:
 
 
 def sync_spot_ledger_permissions(cur) -> None:
-    """Add missing module permissions without overwriting administrator choices."""
+    """Ensure trade staff keep sensitive access while preserving other choices."""
     users = db._exec(cur, "SELECT id, department, role FROM users").fetchall()
     for user in users:
         role = user["role"]
@@ -557,7 +557,9 @@ def sync_spot_ledger_permissions(cur) -> None:
             permission = (1, 1, 1)
         elif role == "领导":
             permission = (1, 0, 0)
-        elif department in {"贸易处", "管理部门"}:
+        elif department == "贸易处":
+            permission = (1, 1, 1)
+        elif department == "管理部门":
             permission = (1, 1, 0)
         else:
             continue
@@ -566,6 +568,12 @@ def sync_spot_ledger_permissions(cur) -> None:
             "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, ?, ?, ?)",
             (user["id"], SPOT_LEDGER_MODULE, *permission),
         )
+        if department == "贸易处" and role == "用户":
+            db._exec(
+                cur,
+                "UPDATE module_permissions SET can_view = ?, can_edit = ?, can_sensitive = ? WHERE user_id = ? AND module_code = ?",
+                (*permission, user["id"], SPOT_LEDGER_MODULE),
+            )
 
 
 def record_to_public(record: dict[str, Any]) -> dict[str, Any]:

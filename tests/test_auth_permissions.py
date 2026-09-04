@@ -366,6 +366,7 @@ def test_department_and_leader_default_permission_levels():
 
     assert trade["info_summary"] == "operate"
     assert trade["data_visualization_chart"] == "operate"
+    assert trade["spot_ledger"] == "sensitive"
     assert trade["order_finance_progress"] == "none"
     assert {
         futures[code]
@@ -377,6 +378,7 @@ def test_department_and_leader_default_permission_levels():
     assert management["sh_junneng"] == "none"
     assert management["user_management"] == "none"
     assert all(leader[code] == "view" for code in permissions.ACTIVE_BUSINESS_MODULES)
+    assert leader["spot_ledger"] == "view"
     assert leader["user_management"] == "none"
     assert leader["steel_export"] == "none"
 
@@ -467,8 +469,26 @@ def test_user_preview_generates_pinyin_and_department_defaults(tmp_path, monkeyp
     assert result["password_rule"] == "trade_or_futures_plain"
     assert result["username_available"] is True
     assert result["default_permissions"]["info_summary"] == "operate"
+    assert result["default_permissions"]["spot_ledger"] == "sensitive"
     assert result["default_permissions"]["order_finance_progress"] == "none"
     assert result["final_permissions"] == result["default_permissions"]
+
+
+def test_trade_spot_ledger_sensitive_permission_cannot_be_downgraded(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    result = main.preview_user(
+        main.UserPreviewIn(
+            name="张三",
+            username="zhangsan",
+            department="贸易处",
+            role="用户",
+            permissions=[{"module_code": "spot_ledger", "level": "operate"}],
+        ),
+        user=admin_user(),
+    )
+
+    assert result["final_permissions"]["spot_ledger"] == "sensitive"
 
 
 def test_create_user_uses_username_temporary_password_and_permission_snapshot(tmp_path, monkeypatch):
@@ -489,14 +509,19 @@ def test_create_user_uses_username_temporary_password_and_permission_snapshot(tm
             "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code = ?",
             (result["id"], "order_finance_progress"),
         ).fetchone()
+        spot_permission = conn.execute(
+            "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code = ?",
+            (result["id"], "spot_ledger"),
+        ).fetchone()
     assert created["username"] == "zhangsan"
     assert created["password_change_recommended"] == 1
     assert db.verify_password("zhangsan", created["password_hash"])
     assert dict(order_permission) == {"can_view": 1, "can_edit": 0, "can_sensitive": 0}
+    assert dict(spot_permission) == {"can_view": 1, "can_edit": 1, "can_sensitive": 1}
     assert main.login(main.LoginRequest(username="zhangsan", password="zhangsan"))["user"]["name"] == "张三"
     listed = next(item for item in main.list_users(user=admin_user())["users"] if item["id"] == result["id"])
     assert listed["permission_summary"]["enabled"] > 0
-    assert listed["permission_summary"]["sensitive"] == 0
+    assert listed["permission_summary"]["sensitive"] >= 1
     configurable = main.get_user_permissions(result["id"], user=admin_user())["permissions"]
     assert {item["module_code"] for item in configurable} == permissions.PERMISSION_MANAGED_MODULES
 

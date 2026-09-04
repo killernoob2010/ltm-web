@@ -232,6 +232,61 @@ def test_spot_ledger_is_the_first_sidebar_module_and_precedes_trading_management
     assert spot_index < trading_index
 
 
+def test_trade_department_spot_ledger_permissions_are_sensitive(tmp_path, monkeypatch):
+    from app import db
+    from app.spot_ledger import sync_spot_ledger_permissions
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "auth.db")
+    db.init_db()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        user = db._exec(
+            cur,
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            ("贸易测试", "trade-sensitive", "贸易处", db.password_hash("pass"), "用户"),
+        )
+        user_id = db._exec(cur, "SELECT id FROM users WHERE username = ?", ("trade-sensitive",)).fetchone()["id"]
+        sync_spot_ledger_permissions(cur)
+        row = db._exec(
+            cur,
+            "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code = 'spot_ledger'",
+            (user_id,),
+        ).fetchone()
+    assert tuple(row) == (1, 1, 1)
+
+
+def test_existing_trade_department_spot_ledger_permission_is_upgraded(tmp_path, monkeypatch):
+    from app import db
+    from app.spot_ledger import sync_spot_ledger_permissions
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "auth.db")
+    db.init_db()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        user = db._exec(
+            cur,
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            ("贸易存量测试", "trade-existing", "贸易处", db.password_hash("pass"), "用户"),
+        )
+        user_id = db._exec(cur, "SELECT id FROM users WHERE username = ?", ("trade-existing",)).fetchone()["id"]
+        db._exec(
+            cur,
+            "INSERT INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, 'spot_ledger', 1, 1, 0)",
+            (user_id,),
+        )
+        sync_spot_ledger_permissions(cur)
+        row = db._exec(
+            cur,
+            "SELECT can_view, can_edit, can_sensitive FROM module_permissions WHERE user_id = ? AND module_code = 'spot_ledger'",
+            (user_id,),
+        ).fetchone()
+    assert tuple(row) == (1, 1, 1)
+
+
 def test_supplier_legal_name_is_canonical_and_confirmed_alias_is_display_only():
     from app.spot_ledger import SUPPLIER_MAPPINGS, normalize_sales_contract_record, record_to_public
 

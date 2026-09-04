@@ -3224,6 +3224,8 @@ def _final_permission_levels(department: str, role: str, overrides: Optional[lis
             raise HTTPException(status_code=400, detail="权限模块或级别无效")
         if role == "领导" and PERMISSION_LEVEL_RANK[level] < PERMISSION_LEVEL_RANK[levels[code]]:
             continue
+        if department == "贸易处" and role == "用户" and code == "spot_ledger":
+            continue
         levels[code] = level
     return levels
 

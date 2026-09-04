@@ -122,6 +122,8 @@ def default_permission_levels(department: str, role: str) -> dict[str, str]:
         return levels
     for code in DEPARTMENT_MODULES.get(department, set()):
         levels[code] = "operate"
+    if department == "贸易处" and role == "用户":
+        levels["spot_ledger"] = "sensitive"
     if department == "期货组":
         for code in INFO_WARNING_MODULES:
             levels[code] = "sensitive"
