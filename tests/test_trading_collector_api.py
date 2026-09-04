@@ -69,7 +69,7 @@ def test_admin_pairing_code_is_redacted_and_non_admin_is_denied(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["code"].startswith("WH6-")
+    assert body["code"].startswith("LTM1-S-")
     assert "code_hash" not in body
     assert "token" not in body
 
@@ -96,12 +96,12 @@ def test_device_activation_heartbeat_revoke_and_ingest_without_browser_session(c
     ).json()
     activated = client.post(
         "/api/trading-collector/device/activate",
-        json={"pairing_code": pairing["code"], "device_name": "测试电脑", "client_version": "0.1.0", "fingerprint": "fp-api"},
+        json={"pairing_code": pairing["code"], "device_name": "测试电脑", "client_version": "0.3.0", "fingerprint": "fp-api"},
     )
     assert activated.status_code == 200
     token = activated.json()["token"]
     headers = {"X-Collector-Token": token}
-    heartbeat = client.post("/api/trading-collector/device/heartbeat", json={"client_version": "0.1.1"}, headers=headers)
+    heartbeat = client.post("/api/trading-collector/device/heartbeat", json={"client_version": "0.3.0"}, headers=headers)
     assert heartbeat.status_code == 200
     ingested = client.post("/api/trading-collector/device/ingest", json={"observations": [sample_payload()]}, headers=headers)
     assert ingested.status_code == 200
@@ -123,7 +123,7 @@ def test_read_only_fill_query_requires_permission_and_hides_full_paths(client):
     ).json()
     token = client.post(
         "/api/trading-collector/device/activate",
-        json={"pairing_code": pairing["code"], "device_name": "查询电脑", "client_version": "0.1.0", "fingerprint": "fp-query"},
+        json={"pairing_code": pairing["code"], "device_name": "查询电脑", "client_version": "0.3.0", "fingerprint": "fp-query"},
     ).json()["token"]
     payload = sample_payload()
     payload["source_path"] = r"C:\Users\Alice\WH6\Record\20260902match.dat"
@@ -164,7 +164,7 @@ def test_device_collection_policy_is_bound_to_device_account_and_requires_token(
         json={
             "pairing_code": pairing["code"],
             "device_name": "策略电脑",
-            "client_version": "0.2.0",
+            "client_version": "0.3.0",
             "fingerprint": "fp-policy",
         },
     ).json()["token"]
@@ -175,8 +175,10 @@ def test_device_collection_policy_is_bound_to_device_account_and_requires_token(
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["schema_version"] == 1
-    assert body["minimum_client_version"] == "0.2.1"
+    assert body["schema_version"] == 2
+    assert body["environment"] == "staging"
+    assert body["history_start_date"] == "2026-09-01"
+    assert body["minimum_client_version"] == "0.3.0"
     assert [(item["month"], item["source_batch_id"]) for item in body["closed_ranges"]] == [
         ("2026-08", 1)
     ]
@@ -184,6 +186,44 @@ def test_device_collection_policy_is_bound_to_device_account_and_requires_token(
 
     unauthenticated = client.get("/api/trading-collector/device/collection-policy")
     assert unauthenticated.status_code == 401
+
+
+def test_admin_collection_policy_readback_is_account_scoped(client):
+    with db.connect() as conn:
+        db._exec(
+            conn.cursor(),
+            """
+            INSERT INTO trading_import_batches
+                (account_id, range_start, range_end, status, statement_type,
+                 source_priority)
+            VALUES (?, '2026-08-01', '2026-08-31', 'active', 'monthly', 200)
+            """,
+            (account_id(),),
+        )
+
+    response = client.get(
+        f"/api/trading-collector/admin/collection-policy?account_id={account_id()}",
+        headers=auth_headers(),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == 2
+    assert body["environment"] == "staging"
+    assert body["history_start_date"] == "2026-09-01"
+    assert body["closed_ranges"][0]["month"] == "2026-08"
+
+
+def test_admin_reconcile_endpoint_is_staging_only_and_returns_audit_counts(client):
+    response = client.post(
+        "/api/trading-collector/admin/reconcile",
+        json={"account_id": account_id()},
+        headers=auth_headers(),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scanned"] >= 0
+    assert body["scanned"] == body["changed"] + body["unchanged"]
+    assert body["transaction_numbers_backfilled"] >= 0
 
 
 def test_fill_api_exposes_server_pagination_contract(client):
@@ -197,7 +237,7 @@ def test_fill_api_exposes_server_pagination_contract(client):
         json={
             "pairing_code": pairing["code"],
             "device_name": "分页电脑",
-            "client_version": "0.2.1",
+            "client_version": "0.3.0",
             "fingerprint": "fp-page",
         },
     )

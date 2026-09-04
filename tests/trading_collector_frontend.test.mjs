@@ -38,6 +38,18 @@ test("collector page renders option volume and current position states", () => {
   assert.doesNotMatch(collectorJs, /token_hash|service_role|DATABASE_URL|C:\\\\Users/);
 });
 
+test("collector page shows the server policy and bound environment without an environment selector", () => {
+  assert.match(html, /collectorCollectionPolicy/);
+  assert.match(html, /collectorReconcileBtn/);
+  assert.match(collectorJs, new RegExp("/api/trading-collector/admin/collection-policy"));
+  assert.match(collectorJs, new RegExp("/api/trading-collector/admin/reconcile"));
+  assert.match(collectorJs, /history_start_date/);
+  assert.match(collectorJs, /closed_ranges/);
+  assert.match(collectorJs, /upload_ranges/);
+  assert.match(collectorJs, /environment/);
+  assert.doesNotMatch(html, /id="collectorEnvironment"[^>]*<select/);
+});
+
 test("collector fills use 20 50 100 server pagination", () => {
   assert.match(collectorJs, /fillPageSize:\s*20/);
   assert.match(collectorJs, /\[20,\s*50,\s*100\]/);

@@ -1,4 +1,4 @@
-"""Strict, explicit collection policy received from the bound Staging device."""
+"""Strict, explicit collection policy received from the bound collector device."""
 
 from __future__ import annotations
 
@@ -91,12 +91,41 @@ class ClosedRange:
 
 
 @dataclass(frozen=True)
+class UploadRange:
+    range_start: str
+    range_end: str
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> "UploadRange":
+        if not isinstance(payload, Mapping):
+            raise ValueError("采集策略开放区间格式无效")
+        range_start = _parse_date(payload.get("range_start"), "range_start")
+        range_end = _parse_date(payload.get("range_end"), "range_end")
+        if range_start > range_end:
+            raise ValueError("采集策略开放区间起止日期无效")
+        return cls(range_start.isoformat(), range_end.isoformat())
+
+    def covers(self, trade_date: date) -> bool:
+        return self.range_start <= trade_date.isoformat() <= self.range_end
+
+    def to_payload(self) -> Dict[str, object]:
+        return {
+            "range_start": self.range_start,
+            "range_end": self.range_end,
+        }
+
+
+@dataclass(frozen=True)
 class CollectionPolicy:
     schema_version: int
+    environment: str
+    history_start_date: str
+    upload_ranges: Tuple[UploadRange, ...]
     policy_revision: str
     minimum_client_version: str
     capabilities: Tuple[str, ...]
     closed_ranges: Tuple[ClosedRange, ...]
+    current_trade_date: str
     generated_at: str
 
     @classmethod
@@ -109,6 +138,27 @@ class CollectionPolicy:
             raise ValueError("采集策略 schema 版本无效") from exc
         if schema_version != POLICY_SCHEMA_VERSION:
             raise ValueError("采集策略 schema 版本不受当前客户端支持")
+
+        environment = str(payload.get("environment") or "").strip().lower()
+        if environment not in {"staging", "production"}:
+            raise ValueError("采集策略环境无效")
+        history_start = _parse_date(payload.get("history_start_date"), "history_start_date")
+        current_trade_date = _parse_date(payload.get("current_trade_date"), "current_trade_date")
+        if history_start > current_trade_date:
+            raise ValueError("采集策略起始日期不能晚于当前交易日")
+
+        raw_upload_ranges = payload.get("upload_ranges")
+        if not isinstance(raw_upload_ranges, (list, tuple)):
+            raise ValueError("采集策略 upload_ranges 格式无效")
+        upload_ranges: List[UploadRange] = []
+        for raw_range in raw_upload_ranges:
+            upload_ranges.append(UploadRange.from_payload(raw_range))
+        upload_ranges.sort(key=lambda item: (item.range_start, item.range_end))
+        previous_end: Optional[str] = None
+        for upload_range in upload_ranges:
+            if previous_end is not None and upload_range.range_start <= previous_end:
+                raise ValueError("采集策略 upload_ranges 不得重叠")
+            previous_end = upload_range.range_end
 
         revision = str(payload.get("policy_revision") or "").strip()
         if not revision or len(revision) > 256:
@@ -138,6 +188,18 @@ class CollectionPolicy:
             ranges.append(closed_range)
         ranges.sort(key=lambda item: item.month)
 
+        for upload_range in upload_ranges:
+            if upload_range.range_end < history_start.isoformat():
+                continue
+            if upload_range.range_start > current_trade_date.isoformat():
+                continue
+            for closed_range in ranges:
+                if not (
+                    upload_range.range_end < closed_range.range_start
+                    or upload_range.range_start > closed_range.range_end
+                ):
+                    raise ValueError("采集策略开放区间不得覆盖已关闭月份")
+
         generated_at = str(payload.get("generated_at") or "").strip()
         if not generated_at:
             raise ValueError("采集策略 generated_at 缺失")
@@ -147,14 +209,22 @@ class CollectionPolicy:
             raise ValueError("采集策略 generated_at 格式无效") from exc
         return cls(
             schema_version=schema_version,
+            environment=environment,
+            history_start_date=history_start.isoformat(),
+            upload_ranges=tuple(upload_ranges),
             policy_revision=revision,
             minimum_client_version=minimum,
             capabilities=tuple(capabilities),
             closed_ranges=tuple(ranges),
+            current_trade_date=current_trade_date.isoformat(),
             generated_at=generated_at,
         )
 
     def covers(self, trade_date: str) -> bool:
+        """Compatibility alias for the explicit closed-month check."""
+        return self.is_closed(trade_date)
+
+    def is_closed(self, trade_date: str) -> bool:
         text = str(trade_date or "").strip()
         try:
             parsed = _parse_date(text, "trade_date")
@@ -162,12 +232,32 @@ class CollectionPolicy:
             return False
         return any(closed_range.covers(parsed) for closed_range in self.closed_ranges)
 
+    def allows_upload(self, trade_date: str) -> bool:
+        text = str(trade_date or "").strip()
+        try:
+            parsed = _parse_date(text, "trade_date")
+        except ValueError:
+            return False
+        if parsed < _parse_date(self.history_start_date, "history_start_date"):
+            return False
+        if self.is_closed(text):
+            return False
+        # The current trading day remains locally collectible even when a
+        # server has not yet emitted a longer historical whitelist.
+        if text == self.current_trade_date:
+            return True
+        return any(upload_range.covers(parsed) for upload_range in self.upload_ranges)
+
     def to_payload(self) -> Dict[str, object]:
         return {
             "schema_version": self.schema_version,
+            "environment": self.environment,
+            "history_start_date": self.history_start_date,
+            "upload_ranges": [upload_range.to_payload() for upload_range in self.upload_ranges],
             "policy_revision": self.policy_revision,
             "minimum_client_version": self.minimum_client_version,
             "capabilities": list(self.capabilities),
             "closed_ranges": [closed_range.to_payload() for closed_range in self.closed_ranges],
+            "current_trade_date": self.current_trade_date,
             "generated_at": self.generated_at,
         }

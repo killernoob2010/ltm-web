@@ -36,6 +36,12 @@ class IngestIn(BaseModel):
     position_snapshots: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class ReconcileIn(BaseModel):
+    account_id: int = Field(gt=0)
+    start_date: str = Field(default="", max_length=10)
+    end_date: str = Field(default="", max_length=10)
+
+
 def _service_error(exc: service.CollectorServiceError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message})
 
@@ -75,6 +81,32 @@ def get_devices(
 ):
     require_permission(user, "trading.collector", "manage")
     return {"items": service.list_devices(account_id)}
+
+
+@router.get("/admin/collection-policy")
+def get_admin_collection_policy(
+    account_id: int = Query(..., gt=0),
+    user=Depends(trading_collector_current_user),
+):
+    require_permission(user, "trading.collector", "manage")
+    try:
+        return service.get_account_collection_policy(account_id)
+    except service.CollectorServiceError as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post("/admin/reconcile")
+def reconcile_admin_collection(payload: ReconcileIn, user=Depends(trading_collector_current_user)):
+    require_permission(user, "trading.collector", "manage")
+    try:
+        return service.reconcile_intraday_range(
+            payload.account_id,
+            payload.start_date,
+            payload.end_date,
+            str(user.get("name") or user.get("username") or "trading_collector_admin"),
+        )
+    except service.CollectorServiceError as exc:
+        raise _service_error(exc) from exc
 
 
 @router.post("/admin/devices/{device_id}/revoke")

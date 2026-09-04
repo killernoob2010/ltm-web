@@ -8,13 +8,16 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+from datetime import timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+from zoneinfo import ZoneInfo
 
 from . import db
 
 
-MINIMUM_CLIENT_VERSION = "0.2.1"
-POLICY_SCHEMA_VERSION = 1
+MINIMUM_CLIENT_VERSION = "0.3.0"
+POLICY_SCHEMA_VERSION = 2
+COLLECTOR_ENVIRONMENTS = {"staging", "production"}
 POLICY_CAPABILITIES = [
     "monthly_collection_ranges_v1",
     "per_item_ingest_receipts_v1",
@@ -114,10 +117,27 @@ def get_active_monthly_ranges(cur, account_id: int) -> list[dict[str, object]]:
     return sorted(ranges.values(), key=lambda item: (str(item["range_start"]), str(item["range_end"])))
 
 
-def _policy_revision(closed_ranges: Iterable[Mapping[str, object]]) -> str:
+def _policy_revision(
+    *,
+    environment: str,
+    history_start_date: str,
+    current_trade_date: str,
+    upload_ranges: Iterable[Mapping[str, object]],
+    closed_ranges: Iterable[Mapping[str, object]],
+) -> str:
     payload = {
         "schema_version": POLICY_SCHEMA_VERSION,
+        "environment": environment,
+        "history_start_date": history_start_date,
+        "current_trade_date": current_trade_date,
         "minimum_client_version": MINIMUM_CLIENT_VERSION,
+        "upload_ranges": [
+            {
+                "range_start": item["range_start"],
+                "range_end": item["range_end"],
+            }
+            for item in upload_ranges
+        ],
         "closed_ranges": [
             {
                 "month": item["month"],
@@ -133,15 +153,126 @@ def _policy_revision(closed_ranges: Iterable[Mapping[str, object]]) -> str:
     ).hexdigest()
 
 
-def build_collection_policy(account_id: int) -> dict[str, object]:
+def _policy_date(value: object) -> Optional[date]:
+    return _normalize_date(value)
+
+
+def _business_today() -> date:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
+def _account_collection_policy(cur, account_id: int) -> Dict[str, object]:
+    row = db._exec(
+        cur,
+        """
+        SELECT environment, history_start_date
+        FROM trading_collector_account_policies
+        WHERE account_id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError("交易账户尚未配置 WH6 采集日期策略")
+    environment = str(row["environment"] or "").strip().lower()
+    if environment not in COLLECTOR_ENVIRONMENTS:
+        raise ValueError("交易账户采集策略环境无效")
+    history_start = _policy_date(row["history_start_date"])
+    if not history_start:
+        raise ValueError("交易账户采集起始日期无效")
+    return {
+        "environment": environment,
+        "configured_history_start_date": history_start,
+    }
+
+
+def is_date_uploadable(
+    cur,
+    account_id: int,
+    trade_date: object,
+    *,
+    as_of_date: Optional[object] = None,
+) -> bool:
+    """Check the server-side positive upload boundary for one business date."""
+
+    parsed_trade_date = _policy_date(trade_date)
+    if not parsed_trade_date:
+        return False
+    account_policy = _account_collection_policy(cur, account_id)
+    configured_start = account_policy["configured_history_start_date"]
+    assert isinstance(configured_start, date)
+    current_trade_date = _policy_date(as_of_date) or _business_today()
+    if parsed_trade_date < configured_start or parsed_trade_date > current_trade_date:
+        return False
+    return _closed_range_for_date(cur, account_id, parsed_trade_date.isoformat()) is None
+
+
+def _policy_open_ranges(
+    start: date,
+    end: date,
+    closed_ranges: Iterable[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    closed_days = {
+        current
+        for item in closed_ranges
+        for current in _date_range(
+            _policy_date(item["range_start"]),
+            _policy_date(item["range_end"]),
+        )
+    }
+    ranges: list[dict[str, str]] = []
+    open_start: Optional[date] = None
+    current = start
+    while current <= end:
+        if current in closed_days:
+            if open_start is not None:
+                ranges.append({"range_start": open_start.isoformat(), "range_end": (current - timedelta(days=1)).isoformat()})
+                open_start = None
+        elif open_start is None:
+            open_start = current
+        current += timedelta(days=1)
+    if open_start is not None:
+        ranges.append({"range_start": open_start.isoformat(), "range_end": end.isoformat()})
+    return ranges
+
+
+def _date_range(start: Optional[date], end: Optional[date]) -> Iterable[date]:
+    if not start or not end or start > end:
+        return ()
+    return (start + timedelta(days=offset) for offset in range((end - start).days + 1))
+
+
+def build_collection_policy(account_id: int, *, as_of_date: Optional[object] = None) -> dict[str, object]:
+    current_trade_date = _policy_date(as_of_date) or _business_today()
     with db.connect() as conn:
-        ranges = get_active_monthly_ranges(conn.cursor(), account_id)
+        cur = conn.cursor()
+        account_policy = _account_collection_policy(cur, account_id)
+        closed_ranges = get_active_monthly_ranges(cur, account_id)
+    configured_start = account_policy["configured_history_start_date"]
+    assert isinstance(configured_start, date)
+    if current_trade_date < configured_start:
+        effective_start = configured_start
+        upload_ranges: list[dict[str, str]] = []
+    else:
+        upload_ranges = _policy_open_ranges(configured_start, current_trade_date, closed_ranges)
+        effective_start = _policy_date(upload_ranges[0]["range_start"]) if upload_ranges else current_trade_date
+    effective_start_text = effective_start.isoformat() if effective_start else current_trade_date.isoformat()
+    revision = _policy_revision(
+        environment=str(account_policy["environment"]),
+        history_start_date=effective_start_text,
+        current_trade_date=current_trade_date.isoformat(),
+        upload_ranges=upload_ranges,
+        closed_ranges=closed_ranges,
+    )
     return {
         "schema_version": POLICY_SCHEMA_VERSION,
+        "environment": account_policy["environment"],
+        "history_start_date": effective_start_text,
+        "upload_ranges": upload_ranges,
         "minimum_client_version": MINIMUM_CLIENT_VERSION,
         "capabilities": list(POLICY_CAPABILITIES),
-        "closed_ranges": ranges,
-        "policy_revision": _policy_revision(ranges),
+        "closed_ranges": closed_ranges,
+        "current_trade_date": current_trade_date.isoformat(),
+        "policy_revision": revision,
         "generated_at": _now(),
     }
 
@@ -150,12 +281,15 @@ def get_device_collection_policy(device_id: int) -> dict[str, object]:
     with db.connect() as conn:
         row = db._exec(
             conn.cursor(),
-            "SELECT account_id, status FROM trading_collector_devices WHERE id = ?",
+            "SELECT account_id, environment, status FROM trading_collector_devices WHERE id = ?",
             (device_id,),
         ).fetchone()
     if not row or row["status"] != "active":
         raise ValueError("设备已暂停或撤销")
-    return build_collection_policy(int(row["account_id"]))
+    policy = build_collection_policy(int(row["account_id"]))
+    if str(policy["environment"]) != str(row["environment"] or "staging").strip().lower():
+        raise ValueError("设备环境与账户采集策略不一致")
+    return policy
 
 
 def _raw_transaction_no(raw_json: object) -> str:
@@ -188,23 +322,24 @@ def backfill_settlement_transaction_numbers(cur, *, account_id: int | None = Non
         sql += " AND b.account_id = ?"
         params.append(account_id)
     rows = db._exec(cur, sql, tuple(params)).fetchall()
-    changed = 0
+    updates = []
     for row in rows:
         transaction_no = _raw_transaction_no(row["raw_json"])
         normalized = normalize_transaction_no(transaction_no)
         if not normalized:
             continue
-        db._exec(
+        updates.append((transaction_no, normalized, row["id"]))
+    if updates:
+        db._executemany(
             cur,
             """
             UPDATE trading_trade_facts
             SET transaction_no = ?, normalized_transaction_no = ?
             WHERE id = ? AND (normalized_transaction_no IS NULL OR normalized_transaction_no = '')
             """,
-            (transaction_no, normalized, row["id"]),
+            updates,
         )
-        changed += 1
-    return changed
+    return len(updates)
 
 
 def finalize_lower_priority_monthly_trades(cur, batch_id: int) -> dict[str, int]:

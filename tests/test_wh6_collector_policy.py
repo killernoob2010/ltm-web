@@ -43,12 +43,22 @@ def policy_payload(months=("2026-06", "2026-08"), *, revision="rev-1"):
                 "source_batch_id": len(ranges) + 1,
             }
         )
+    upload_ranges = [
+        {"range_start": "2026-07-01", "range_end": "2026-07-31"},
+    ]
+    if "2026-08" not in months:
+        upload_ranges.append({"range_start": "2026-08-01", "range_end": "2026-08-31"})
+    upload_ranges.append({"range_start": "2026-09-01", "range_end": "2026-09-04"})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "environment": "staging",
+        "history_start_date": "2026-06-01",
+        "upload_ranges": upload_ranges,
         "policy_revision": revision,
-        "minimum_client_version": "0.2.1",
+        "minimum_client_version": "0.3.0",
         "capabilities": CAPABILITIES,
         "closed_ranges": ranges,
+        "current_trade_date": "2026-09-04",
         "generated_at": "2026-09-04T00:00:00+00:00",
     }
 
@@ -89,7 +99,7 @@ def test_gap_policy_skips_june_and_august_but_keeps_july():
 
 def test_policy_rejects_unknown_schema_daily_ranges_and_non_month_ranges():
     unknown = policy_payload()
-    unknown["schema_version"] = 2
+    unknown["schema_version"] = 3
     with pytest.raises(ValueError):
         CollectionPolicy.from_payload(unknown)
 
@@ -206,7 +216,7 @@ def test_staging_uploader_fetches_policy_with_device_header(monkeypatch):
     monkeypatch.setattr(uploader_module.requests, "get", fake_get)
     uploader = StagingUploader("https://ltm-web-staging.onrender.com", "device-token")
     result = uploader.get_collection_policy()
-    assert result["schema_version"] == 1
+    assert result["schema_version"] == 2
     assert calls == [
         (
             "https://ltm-web-staging.onrender.com/api/trading-collector/device/collection-policy",
@@ -246,4 +256,5 @@ def test_first_start_without_policy_scans_today_but_pauses_history(tmp_path):
         policy_fetch=raise_offline,
     )
     assert result["state"] == "policy_unavailable_history_paused"
-    assert {item["trade_date"] for item in uploaded} == {f"{today[:4]}-{today[4:6]}-{today[6:]}"}
+    assert uploaded == []
+    assert LocalOutbox(Path(config.data_dir) / "collector.sqlite3").status()["pending"] == 1

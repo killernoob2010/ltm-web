@@ -204,11 +204,12 @@ class LocalOutbox:
         seen = set()
         invalid_keys = set()
         actions: Dict[str, str] = {}
-        counts = {"acked": 0, "covered_by_monthly": 0, "conflict": 0, "quarantined": 0, "invalid": 0}
+        counts = {"acked": 0, "covered_by_monthly": 0, "conflict": 0, "quarantined": 0, "policy_rejected": 0, "invalid": 0}
         status_map = {
             "accepted": "acked",
             "duplicate": "acked",
             "settlement_covered": "covered_by_monthly",
+            "outside_upload_policy": "policy_rejected",
             "conflict": "conflict",
             "quarantined": "quarantined",
         }
@@ -301,7 +302,7 @@ class LocalOutbox:
                 SELECT event_key, payload_json, status
                 FROM outbox
                 WHERE item_type = 'fill'
-                  AND status IN ('pending', 'claimed', 'covered_by_monthly')
+                  AND status IN ('pending', 'claimed', 'covered_by_monthly', 'policy_rejected')
                 """
             ).fetchall()
             for row in rows:
@@ -312,13 +313,13 @@ class LocalOutbox:
                 trade_date = str(payload.get("trade_date") or "") if isinstance(payload, dict) else ""
                 covered = validated.covers(trade_date)
                 status = str(row["status"])
-                if covered and status in {"pending", "claimed"}:
+                if covered and status in {"pending", "claimed", "policy_rejected"}:
                     connection.execute(
                         "UPDATE outbox SET status='covered_by_monthly', available_at=?, updated_at=? WHERE event_key=?",
                         (now, now, row["event_key"]),
                     )
                     changed += 1
-                elif not covered and status == "covered_by_monthly":
+                elif not covered and status in {"covered_by_monthly", "policy_rejected"} and validated.allows_upload(trade_date):
                     connection.execute(
                         "UPDATE outbox SET status='pending', available_at=?, updated_at=? WHERE event_key=?",
                         (now, now, row["event_key"]),

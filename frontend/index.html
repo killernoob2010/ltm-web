@@ -429,15 +429,21 @@
               <select id="collectorAccountId" aria-label="采集账户"></select>
             </label>
             <button id="collectorPairingBtn" type="button">生成设备连接码</button>
+            <button id="collectorReconcileBtn" type="button" class="secondary">协调已存历史成交</button>
             <span id="collectorPairingCode" class="collector-pairing-code" aria-live="polite"></span>
             <span id="collectorStatus" class="toolbar-status">待加载</span>
           </div>
           <section class="panel">
             <div class="panel-head"><h2>采集设备</h2><span id="collectorDeviceCount"></span></div>
             <div class="table-wrap"><table class="collector-device-table">
-              <thead><tr><th>设备</th><th>账户</th><th>版本</th><th>状态</th><th>最后在线</th><th>操作</th></tr></thead>
+              <thead><tr><th>设备</th><th>账户</th><th>版本</th><th>环境</th><th>状态</th><th>最后在线</th><th>操作</th></tr></thead>
               <tbody id="collectorDevicesTable"></tbody>
             </table></div>
+          </section>
+          <section class="panel" id="collectorCollectionPolicy">
+            <div class="panel-head"><h2>当前采集策略</h2><span id="collectorPolicyEnvironment">待加载</span></div>
+            <p id="collectorPolicyStatus" class="collector-data-status" aria-live="polite">待加载</p>
+            <div id="collectorPolicyRanges" class="collector-summary-list"></div>
           </section>
           <section class="panel">
             <div class="panel-head"><h2>最新盘中期权成交（临时事实）</h2><span id="collectorFillCount"></span></div>

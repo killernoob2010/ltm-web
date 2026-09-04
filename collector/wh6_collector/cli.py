@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import time
 from typing import Any, Callable, Dict, Optional, Sequence
-from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -23,10 +23,14 @@ from .models import AccountIdentity, ParseIssue
 from .monitor import scan_source
 from .parser import business_trading_day
 from .policy import CollectionPolicy
+from .routing import COLLECTOR_URLS, ensure_collector_url, environment_for_url, resolve_collector_route
 from .setup_ui import run_first_setup
-from .uploader import StagingUploader
+from .uploader import CollectorUploader, StagingUploader
 from .version import CLIENT_VERSION, UPLOAD_BATCH_SIZE
-DEFAULT_STAGING_URL = "https://ltm-web-staging.onrender.com"
+DEFAULT_COLLECTOR_URL = COLLECTOR_URLS["staging"]
+# Compatibility constant retained for local callers; the UI no longer exposes
+# a user-selectable Staging address.
+DEFAULT_STAGING_URL = DEFAULT_COLLECTOR_URL
 REALTIME_SCAN_SECONDS = 2
 POSITION_SCAN_SECONDS = 5
 HISTORY_SCAN_SECONDS = 10
@@ -38,23 +42,16 @@ def default_data_dir() -> Path:
 
 
 def ensure_staging_url(value: str) -> str:
-    parsed = urlparse(str(value or "").strip())
-    host = (parsed.hostname or "").lower()
-    allowed = {
-        "ltm-web-staging.onrender.com",
-        "localhost",
-        "127.0.0.1",
-    }
-    if parsed.scheme not in {"https", "http"} or host not in allowed:
-        raise ValueError("测试版采集器只允许连接 Supabase Staging 对应的测试 Web 地址")
-    if host == "ltm-web-staging.onrender.com" and parsed.scheme != "https":
-        raise ValueError("Staging 公网地址必须使用 HTTPS")
-    return value.rstrip("/")
+    """Compatibility guard for legacy callers that must remain Staging-only."""
+    normalized = ensure_collector_url(value)
+    if environment_for_url(normalized) != "staging":
+        raise ValueError("旧版采集器只允许连接 Staging 服务")
+    return normalized
 
 
-@dataclass
+@dataclass(init=False)
 class CollectorConfig:
-    staging_url: str
+    collector_url: str
     source_path: str
     account: AccountIdentity
     device_token: str
@@ -63,6 +60,48 @@ class CollectorConfig:
     client_version: str = CLIENT_VERSION
     allow_weak_source: bool = False
     source_account_fingerprint: Optional[str] = None
+    environment: str = "staging"
+
+    def __init__(
+        self,
+        collector_url: Optional[str] = None,
+        source_path: str = "",
+        account: Optional[AccountIdentity] = None,
+        device_token: str = "",
+        data_dir: str = "",
+        poll_seconds: int = REALTIME_SCAN_SECONDS,
+        client_version: str = CLIENT_VERSION,
+        allow_weak_source: bool = False,
+        source_account_fingerprint: Optional[str] = None,
+        environment: Optional[str] = None,
+        *,
+        staging_url: Optional[str] = None,
+    ) -> None:
+        selected_url = collector_url or staging_url or ""
+        if account is None:
+            raise TypeError("采集器配置缺少账户身份")
+        normalized_url = ensure_collector_url(selected_url)
+        inferred_environment = environment_for_url(normalized_url)
+        selected_environment = str(environment or inferred_environment).strip().lower()
+        if selected_environment not in COLLECTOR_URLS and normalized_url not in {"http://localhost", "http://127.0.0.1", "https://localhost", "https://127.0.0.1"}:
+            raise ValueError("采集器环境无效")
+        if selected_environment != inferred_environment:
+            raise ValueError("采集器环境与服务地址不一致")
+        self.collector_url = normalized_url
+        self.source_path = source_path
+        self.account = account
+        self.device_token = device_token
+        self.data_dir = data_dir
+        self.poll_seconds = poll_seconds
+        self.client_version = client_version
+        self.allow_weak_source = allow_weak_source
+        self.source_account_fingerprint = source_account_fingerprint
+        self.environment = selected_environment
+
+    @property
+    def staging_url(self) -> str:
+        """Compatibility alias for pre-scheme-A local callers."""
+        return self.collector_url
 
     def save(self, path: Path) -> None:
         path = Path(path)
@@ -71,7 +110,8 @@ class CollectorConfig:
         # Stable account IDs are not needed after binding and must not be copied to config.
         account_payload["stable_id"] = None
         payload = {
-            "staging_url": ensure_staging_url(self.staging_url),
+            "collector_url": ensure_collector_url(self.collector_url),
+            "environment": self.environment,
             "source_path": self.source_path,
             "account": account_payload,
             "device_token": protect_token(self.device_token),
@@ -90,7 +130,7 @@ class CollectorConfig:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         account = AccountIdentity(**payload["account"])
         return cls(
-            staging_url=ensure_staging_url(payload["staging_url"]),
+            collector_url=ensure_collector_url(payload.get("collector_url") or payload["staging_url"]),
             source_path=payload["source_path"],
             account=account,
             device_token=unprotect_token(payload["device_token"]),
@@ -99,6 +139,7 @@ class CollectorConfig:
             client_version=CLIENT_VERSION,
             allow_weak_source=bool(payload.get("allow_weak_source", False)),
             source_account_fingerprint=payload.get("source_account_fingerprint"),
+            environment=payload.get("environment"),
         )
 
 
@@ -110,7 +151,9 @@ def run_once(
     scan_positions: bool = True,
     scan_history: bool = True,
 ) -> Dict[str, Any]:
-    ensure_staging_url(config.staging_url)
+    normalized_url = ensure_collector_url(config.collector_url)
+    if str(config.environment or "").strip().lower() != environment_for_url(normalized_url):
+        raise ValueError("采集器配置环境与服务地址不一致")
     outbox = LocalOutbox(Path(config.data_dir) / "collector.sqlite3")
     if config.account.account_code != "hongyuan_futures" or not config.account.confirmed or config.account.requires_manual_confirmation:
         return {
@@ -120,7 +163,7 @@ def run_once(
             "positions_accepted": 0,
         }
 
-    default_sender = StagingUploader(config.staging_url, config.device_token) if upload is None else None
+    default_sender = CollectorUploader(config.collector_url, config.device_token) if upload is None else None
     policy_required = upload is None or policy_fetch is not None
     policy: Optional[CollectionPolicy] = None
     policy_error = ""
@@ -133,6 +176,9 @@ def run_once(
                 outbox.save_collection_policy(policy)
             except Exception as exc:
                 policy_error = str(exc)
+        if policy is not None and policy.environment != config.environment:
+            policy = None
+            policy_error = "采集策略环境与设备绑定环境不一致"
         if policy is not None:
             outbox.apply_collection_policy(policy)
     history_policy_paused = policy_required and policy is None
@@ -161,9 +207,10 @@ def run_once(
         message: str = "",
         position_scan_requested: bool = False,
         allow_history: bool = True,
+        allow_realtime: bool = True,
     ) -> Dict[str, Any]:
         # A large historical backlog must never occupy the realtime upload slot.
-        claimed = outbox.claim(UPLOAD_BATCH_SIZE, priority="realtime")
+        claimed = outbox.claim(UPLOAD_BATCH_SIZE, priority="realtime") if allow_realtime else []
         if not claimed and allow_history:
             claimed = outbox.claim(UPLOAD_BATCH_SIZE, priority="history")
         if not claimed:
@@ -178,7 +225,39 @@ def run_once(
             if message:
                 result["message"] = message
             return result
-        sender = upload or default_sender or StagingUploader(config.staging_url, config.device_token)
+        if policy is not None:
+            uploadable = []
+            blocked = []
+            for item in claimed:
+                if item.get("item_type", "fill") != "fill":
+                    uploadable.append(item)
+                    continue
+                try:
+                    item_payload = json.loads(str(item["payload_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    blocked.append(item)
+                    continue
+                if policy.allows_upload(str(item_payload.get("trade_date") or "")):
+                    uploadable.append(item)
+                else:
+                    blocked.append(item)
+            if blocked:
+                outbox.release(
+                    [str(item["event_key"]) for item in blocked],
+                    "outside_upload_policy",
+                    retryable=False,
+                )
+            claimed = uploadable
+        if not claimed:
+            return {
+                "state": state,
+                "queued": outbox.status()["pending"],
+                "accepted": 0,
+                "positions_accepted": 0,
+                "issues": issue_count,
+                "position_scan_requested": position_scan_requested,
+            }
+        sender = upload or default_sender or CollectorUploader(config.collector_url, config.device_token)
         event_keys = [str(item["event_key"]) for item in claimed]
         fill_payloads = [json.loads(str(item["payload_json"])) for item in claimed if item.get("item_type", "fill") == "fill"]
         position_payloads = [json.loads(str(item["payload_json"])) for item in claimed if item.get("item_type") == "position_snapshot"]
@@ -288,36 +367,54 @@ def run_once(
     paused_state = "normal"
     unknown_history_paused = False
     realtime_fill_queued = False
-    today = business_trading_day(datetime.now().astimezone())
+    today = business_trading_day(datetime.now(ZoneInfo("Asia/Shanghai")))
     for source in sources:
         source_date = str(source.trading_date or "").replace("-", "")
         is_realtime = source.kind == "position" or source_date == today.replace("-", "")
         if source.kind == "position" and not scan_positions:
             continue
         if source.kind == "match" and not is_realtime and not scan_history:
-            continue
+            # A file may contain both a current-day row and historical rows;
+            # defer the latter to the per-record whitelist below.
+            if source_date != today.replace("-", ""):
+                continue
         if source.kind == "match" and not is_realtime and policy_required:
             if history_policy_paused or policy is None:
                 continue
             if not source_date:
                 unknown_history_paused = True
                 continue
-            source_date_iso = source_date
-            if len(source_date) == 8 and source_date.isdigit():
-                source_date_iso = "%s-%s-%s" % (source_date[:4], source_date[4:6], source_date[6:])
-            if policy.covers(source_date_iso):
-                continue
         checkpoint = outbox.load_checkpoint(str(source.path), kind=source.kind)
         batch = scan_source(source, checkpoint, account=config.account)
         priority = "realtime" if is_realtime else "history"
+        filtered_fills = []
+        contains_deferred_history = False
         for fill in batch.fills:
-            if outbox.put(fill, priority=priority) and priority == "realtime":
+            fill_date = str(fill.trade_date or "").strip()
+            fill_date_compact = fill_date.replace("-", "")
+            fill_is_realtime = fill_date_compact == today.replace("-", "")
+            if not fill_is_realtime and not scan_history:
+                contains_deferred_history = True
+                continue
+            if policy_required and not fill_is_realtime:
+                if history_policy_paused or policy is None:
+                    contains_deferred_history = True
+                    continue
+                if not policy.allows_upload(fill_date):
+                    continue
+            filtered_fills.append(fill)
+        for fill in filtered_fills:
+            fill_priority = "realtime" if str(fill.trade_date).replace("-", "") == today.replace("-", "") else priority
+            if outbox.put(fill, priority=fill_priority) and fill_priority == "realtime":
                 realtime_fill_queued = True
         if batch.position_snapshot is not None:
             outbox.put_position(batch.position_snapshot, priority="realtime")
         for issue in batch.issues:
             outbox.add_issue(issue)
-        outbox.save_checkpoint(str(source.path), batch.checkpoint, kind=batch.source_kind)
+        # Do not advance a mixed-file checkpoint past deferred history while
+        # the policy is unavailable; the next online scan must revisit it.
+        if not (history_policy_paused and contains_deferred_history):
+            outbox.save_checkpoint(str(source.path), batch.checkpoint, kind=batch.source_kind)
         issue_count += len(batch.issues)
         if any(issue.code == "unknown_format" for issue in batch.issues):
             paused_state = "format_unknown"
@@ -333,9 +430,8 @@ def run_once(
         position_scan_requested=realtime_fill_queued,
         message=policy_error,
         allow_history=not (history_policy_paused or unknown_history_paused),
+        allow_realtime=not history_policy_paused,
     )
-
-
 def run_service(config: CollectorConfig, stop_event=None) -> None:
     """Run the polling loop used by the Windows background service.
 
@@ -370,10 +466,11 @@ def run_service(config: CollectorConfig, stop_event=None) -> None:
             return
 
 
-def activate_remote_device(staging_url: str, pairing_code: str, device_name: str, fingerprint: str, client_version: str = CLIENT_VERSION) -> Dict[str, Any]:
+def activate_remote_device(pairing_code: str, device_name: str, fingerprint: str, client_version: str = CLIENT_VERSION) -> Dict[str, Any]:
     """Consume a one-time Web pairing code and return its token once."""
+    route = resolve_collector_route(pairing_code)
     response = requests.post(
-        ensure_staging_url(staging_url) + "/api/trading-collector/device/activate",
+        route["base_url"] + "/api/trading-collector/device/activate",
         json={
             "pairing_code": pairing_code,
             "device_name": device_name,
@@ -388,7 +485,11 @@ def activate_remote_device(staging_url: str, pairing_code: str, device_name: str
         except ValueError:
             detail = {}
         raise ValueError(detail.get("message") if isinstance(detail, dict) else str(detail) or "设备连接失败")
-    return response.json()
+    payload = response.json()
+    if not isinstance(payload, dict) or str(payload.get("environment") or "").strip().lower() != route["environment"]:
+        raise ValueError("服务端返回的采集环境与连接码路由不一致")
+    payload["collector_url"] = route["base_url"]
+    return payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -396,7 +497,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=default_data_dir() / "config.json")
     parser.add_argument("--configure", action="store_true", help="保存手动选择的 WH6 成交与持仓缓存路径")
     parser.add_argument("--source", type=Path, help="WH6 match.dat/position.dat 或包含它们的 Record 目录")
-    parser.add_argument("--staging-url", default=DEFAULT_STAGING_URL)
     parser.add_argument("--pairing-code", default="", help="Web 管理页生成的一次性设备连接码")
     parser.add_argument("--device-name", default="Windows WH6 采集器")
     parser.add_argument("--fingerprint", default="", help="本机设备指纹；不填写时使用本机机器标识摘要")
@@ -437,7 +537,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 sources = validate_sources(selected_path)
             source = sources[0]
             config = CollectorConfig(
-                staging_url=ensure_staging_url(args.staging_url),
+                collector_url=DEFAULT_COLLECTOR_URL,
                 source_path=str(selected_path if selected_path.is_dir() else source.path),
                 account=strong_binding("宏源期货账户", "pending", "宏源期货账户待确认"),
                 device_token="",
@@ -445,8 +545,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             if args.pairing_code:
                 fingerprint = args.fingerprint or "local-device"
-                activated = activate_remote_device(config.staging_url, args.pairing_code, args.device_name, fingerprint, CLIENT_VERSION)
+                activated = activate_remote_device(args.pairing_code, args.device_name, fingerprint, CLIENT_VERSION)
                 config.device_token = activated["token"]
+                config.collector_url = activated["collector_url"]
+                config.environment = str(activated.get("environment") or "staging").strip().lower()
                 config.account = AccountIdentity(
                     account_code="hongyuan_futures",
                     display_name="宏源期货账户",

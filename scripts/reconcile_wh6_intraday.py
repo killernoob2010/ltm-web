@@ -147,6 +147,11 @@ def _run(args: argparse.Namespace) -> CommandResult:
         ).fetchone()
         start = str(bounds["start_date"] or "")
         end = str(bounds["end_date"] or "")
+        transaction_numbers_backfilled = (
+            reconciliation.backfill_settlement_transaction_numbers(cur, account_id=account_id)
+            if start and end
+            else 0
+        )
         summary = reconciliation.reconcile_intraday_range(
             cur,
             account_id,
@@ -172,6 +177,7 @@ def _run(args: argparse.Namespace) -> CommandResult:
             "rollback_anchor": anchor,
         }
         payload.update(summary.to_dict())
+        payload["transaction_numbers_backfilled"] = transaction_numbers_backfilled
         payload["conflict"] = summary.conflicts
         return CommandResult(payload)
 

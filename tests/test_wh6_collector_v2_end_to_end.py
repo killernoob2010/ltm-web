@@ -31,7 +31,7 @@ def _account_id(tmp_path, monkeypatch):
 
 def _activate(account_id, name, fingerprint):
     issued = service.issue_pairing_code(account_id, actor_id=1)
-    return service.activate_device(issued["code"], name, "0.2.0", fingerprint)
+    return service.activate_device(issued["code"], name, "0.3.0", fingerprint)
 
 
 def test_v2_local_outbox_to_service_keeps_realtime_first_and_snapshot_non_additive(tmp_path, monkeypatch):

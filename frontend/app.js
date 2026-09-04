@@ -156,6 +156,7 @@ function applyUiPermissions() {
   setHidden("#spotLedgerStrategyBtn", guest || !canModuleSensitive("spot_ledger"));
   setHidden("#spotLedgerEditBtn", guest || !canModuleSensitive("spot_ledger"));
   setHidden("#collectorPairingBtn", guest || !canModuleSensitive("trading_collector"));
+  setHidden("#collectorReconcileBtn", guest || !canModuleSensitive("trading_collector"));
   setHidden("#collectorAccountId", guest || !canModuleSensitive("trading_collector"));
 }
 

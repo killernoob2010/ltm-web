@@ -104,7 +104,7 @@ def activate_device_via_api(client):
         json={
             "pairing_code": pairing["code"],
             "device_name": "V2 API 电脑",
-            "client_version": "0.2.0",
+            "client_version": "0.3.0",
             "fingerprint": "fp-v2-api",
         },
     ).json()["token"]

@@ -194,7 +194,7 @@ def test_outbox_ack_results_maps_each_terminal_receipt(tmp_path):
         ],
         expected_event_keys=["a", "b", "c"],
     )
-    assert result == {"acked": 1, "covered_by_monthly": 0, "conflict": 1, "quarantined": 1, "invalid": 0}
+    assert result == {"acked": 1, "covered_by_monthly": 0, "conflict": 1, "quarantined": 1, "policy_rejected": 0, "invalid": 0}
     with store._connect() as connection:
         rows = connection.execute("SELECT event_key, status FROM outbox ORDER BY event_key").fetchall()
     assert {row["event_key"]: row["status"] for row in rows} == {

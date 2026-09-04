@@ -97,7 +97,7 @@ def test_loaded_config_uses_runtime_version_not_persisted_v1(tmp_path):
                 "account": _account().to_payload(),
                 "device_token": "device-token",
                 "data_dir": str(tmp_path),
-                "client_version": "0.1.0",
+                "client_version": "0.3.0",
             }
         ),
         encoding="utf-8",
@@ -105,7 +105,7 @@ def test_loaded_config_uses_runtime_version_not_persisted_v1(tmp_path):
 
     config = CollectorConfig.load(path)
 
-    assert config.client_version == "0.2.1"
+    assert config.client_version == "0.3.0"
 
 
 def test_canonical_event_key_normalizes_date_exchange_and_leading_zero_id():
@@ -210,8 +210,8 @@ def test_migration_is_idempotent_after_schema_version_three(tmp_path):
     first = migrate_local_store(path, policy=None)
     second = migrate_local_store(path, policy=None)
 
-    assert first.new_version == 3
-    assert second.old_version == 3
+    assert first.new_version == 4
+    assert second.old_version == 4
     assert second.keys_rewritten == 0
     assert second.duplicates_merged == 0
     assert second.claims_released == 0

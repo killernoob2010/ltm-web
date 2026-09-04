@@ -41,7 +41,7 @@ def run_first_setup(config_path: Path) -> int:
         print(f"WH6 首次设置需要 Windows 图形组件：{exc}")
         return 2
 
-    from .cli import CLIENT_VERSION, DEFAULT_STAGING_URL, CollectorConfig, activate_remote_device
+    from .cli import CLIENT_VERSION, DEFAULT_COLLECTOR_URL, CollectorConfig, activate_remote_device
 
     config_path = Path(config_path)
     root = tk.Tk()
@@ -98,7 +98,7 @@ def run_first_setup(config_path: Path) -> int:
 
         pairing_code = simpledialog.askstring(
             "绑定采集设备",
-            "请先在 Web 测试版“采集设备”页面生成一次性连接码，然后粘贴到这里：",
+            "请先在对应 Web 环境的“采集设备”页面生成一次性连接码，然后粘贴到这里：",
             parent=root,
         )
         if not pairing_code or not pairing_code.strip():
@@ -108,7 +108,6 @@ def run_first_setup(config_path: Path) -> int:
         device_name = f"Windows WH6 {platform.node()[:48]}".strip() or "Windows WH6 采集器"
         try:
             activated = activate_remote_device(
-                DEFAULT_STAGING_URL,
                 pairing_code.strip(),
                 device_name,
                 build_device_fingerprint(),
@@ -136,13 +135,14 @@ def run_first_setup(config_path: Path) -> int:
             requires_manual_confirmation=False,
         )
         config = CollectorConfig(
-            staging_url=DEFAULT_STAGING_URL,
+            collector_url=activated.get("collector_url") or DEFAULT_COLLECTOR_URL,
             source_path=str(selected_path),
             account=account,
             device_token=token,
             data_dir=str(config_path.parent),
             allow_weak_source=not bool(observed.fingerprint),
             source_account_fingerprint=observed.fingerprint,
+            environment=activated.get("environment"),
         )
         config.save(config_path)
         messagebox.showinfo(

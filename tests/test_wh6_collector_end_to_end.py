@@ -38,8 +38,8 @@ def test_two_devices_produce_one_fact_and_same_signature_occurrences_are_retaine
     outbox_b = LocalOutbox(tmp_path / "pc-b" / "collector.sqlite3")
     outbox_a.put_many(first.fills)
     outbox_b.put_many(second.fills)
-    device_a = service.activate_device(service.issue_pairing_code(account_id, 1)["code"], "pc-a", "0.1.0", "fp-a")
-    device_b = service.activate_device(service.issue_pairing_code(account_id, 1)["code"], "pc-b", "0.1.0", "fp-b")
+    device_a = service.activate_device(service.issue_pairing_code(account_id, 1)["code"], "pc-a", "0.3.0", "fp-a")
+    device_b = service.activate_device(service.issue_pairing_code(account_id, 1)["code"], "pc-b", "0.3.0", "fp-b")
 
     rows_a = outbox_a.claim(10)
     rows_b = outbox_b.claim(10)

@@ -66,7 +66,7 @@ def dated_payload(event_key, trade_date, *, price="12.5", trade_id="M-001"):
 
 def activate(account_id, *, name="pc-1", fingerprint="fp-1"):
     issued = service.issue_pairing_code(account_id, actor_id=1)
-    return service.activate_device(issued["code"], name, "0.1.0", fingerprint)
+    return service.activate_device(issued["code"], name, "0.3.0", fingerprint)
 
 
 def active_monthly(account_id, start="20260801", end="20260831"):
@@ -152,7 +152,7 @@ def test_pairing_code_is_one_time_and_expires(tmp_path, monkeypatch):
     account_id = use_temp_db(tmp_path, monkeypatch)
     issued = service.issue_pairing_code(account_id, actor_id=1, ttl_seconds=900)
     assert issued["code"]
-    activated = service.activate_device(issued["code"], "pc-1", "0.1.0", "fp-1")
+    activated = service.activate_device(issued["code"], "pc-1", "0.3.0", "fp-1")
     assert activated["token"]
     with pytest.raises(service.CollectorServiceError) as exc:
         service.activate_device(issued["code"], "pc-2", "0.1.0", "fp-2")

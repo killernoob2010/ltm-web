@@ -328,6 +328,53 @@ def test_monthly_confirmation_persists_normalized_transaction_number(tmp_path, m
     assert row["normalized_transaction_no"] == "123"
 
 
+def test_existing_source_rows_backfill_transaction_number_once(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    batch_id = insert_batch(account, "20260501", "20260531", "active", "daily")
+    with db.connect() as conn:
+        cur = conn.cursor()
+        source_id = db._last_insert_id(
+            cur,
+            """
+            INSERT INTO trading_source_rows
+                (batch_id, source_type, source_file, source_sheet, source_row_no,
+                 raw_hash, raw_json)
+            VALUES (?, 'trade', 'statement.txt', '成交记录', 1, ?, ?)
+            """,
+            (batch_id, "d" * 64, json.dumps({"columns": [""] * 15 + ["000123"]})),
+        )
+        identity_id = db._last_insert_id(
+            cur,
+            """
+            INSERT INTO trading_fact_identities (account_id, fact_type, stable_key)
+            VALUES (?, 'trade', ?)
+            """,
+            (account, "backfill-identity"),
+        )
+        db._exec(
+            cur,
+            """
+            INSERT INTO trading_trade_facts
+                (identity_id, batch_id, source_row_id, trade_date, trade_time,
+                 exchange, contract, asset_type, side, open_close, quantity, price)
+            VALUES (?, ?, ?, '2026-05-10', '09:01:02', 'DCE', 'i2609',
+                    'future', '买', '开', 1, 700)
+            """,
+            (identity_id, batch_id, source_id),
+        )
+        assert reconciliation.backfill_settlement_transaction_numbers(cur, account_id=account) == 1
+        conn.commit()
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT transaction_no, normalized_transaction_no FROM trading_trade_facts WHERE identity_id = ?",
+            (identity_id,),
+        ).fetchone()
+        assert (row["transaction_no"], row["normalized_transaction_no"]) == ("000123", "123")
+        assert reconciliation.backfill_settlement_transaction_numbers(conn.cursor(), account_id=account) == 0
+
+
 def test_monthly_absence_retires_lower_priority_trade_without_deleting_history(
     tmp_path, monkeypatch
 ):

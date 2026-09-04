@@ -1,10 +1,10 @@
-name: Build WH6 Windows installer
+name: Build WH6 Windows portable executable
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - codex/wh6-settlement-governed-upload-repair-20260904
+      - staging
 
 jobs:
   build:
@@ -20,23 +20,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Inno Setup 6
-        shell: pwsh
-        run: |
-          choco install innosetup --yes --no-progress
-          "WH6_ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build and verify installer
+      - name: Build and verify portable executable
         shell: pwsh
         run: .\collector\installer\build_windows.ps1 -SkipDependencyInstall -NoPause
 
-      - name: Upload installer artifact
+      - name: Upload portable executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WH6成交采集器-0.2.1-windows-x64
+          name: WH6成交采集器-0.3.0-windows-x64
           path: |
-            collector/releases/0.2.1/WH6成交采集器-0.2.1-Setup.exe
-            collector/releases/0.2.1/WH6成交采集器-0.2.1-Setup.exe.sha256
-            collector/releases/0.2.1/README-0.2.1.txt
+            collector/releases/0.3.0/WH6成交采集器-0.3.0.exe
+            collector/releases/0.3.0/WH6成交采集器-0.3.0.exe.sha256
+            collector/releases/0.3.0/README-0.3.0.txt
           if-no-files-found: error
           retention-days: 7

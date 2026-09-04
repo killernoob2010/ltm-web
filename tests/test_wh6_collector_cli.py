@@ -366,18 +366,22 @@ def test_once_pauses_upload_after_device_authorization_failure(tmp_path, monkeyp
 
         def get_collection_policy(self):
             return {
-                "schema_version": 1,
+                "schema_version": 2,
+                "environment": "staging",
+                "history_start_date": "2026-09-01",
+                "upload_ranges": [{"range_start": "2026-09-01", "range_end": "2026-09-04"}],
                 "policy_revision": "rev-1",
-                "minimum_client_version": "0.2.1",
+                "minimum_client_version": "0.3.0",
                 "capabilities": [],
                 "closed_ranges": [],
+                "current_trade_date": "2026-09-04",
                 "generated_at": "2026-09-04T00:00:00+00:00",
             }
 
         def send(self, token, fills, positions):
             raise UploadError("unauthorized", 401)
 
-    monkeypatch.setattr(cli, "StagingUploader", UnauthorizedUploader)
+    monkeypatch.setattr(cli, "CollectorUploader", UnauthorizedUploader)
     result = run_once(config)
     assert result["state"] == "device_authorization_required"
     assert result["queued"] == 1

@@ -77,6 +77,7 @@ LEGACY_PUBLIC_TABLE_SEQUENCE_TABLES = tuple(
 TRADING_COLLECTOR_TABLES = (
     "trading_collector_pairing_codes",
     "trading_collector_devices",
+    "trading_collector_account_policies",
     "trading_intraday_fill_observations",
     "trading_intraday_fills",
     "trading_intraday_position_observations",
@@ -2469,6 +2470,7 @@ def migrate_trading_collector_schema(conn) -> None:
             CREATE TABLE IF NOT EXISTS trading_collector_pairing_codes (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                environment TEXT NOT NULL DEFAULT 'staging',
                 code_hash TEXT NOT NULL UNIQUE,
                 expires_at TEXT NOT NULL,
                 used_at TEXT,
@@ -2478,6 +2480,7 @@ def migrate_trading_collector_schema(conn) -> None:
             CREATE TABLE IF NOT EXISTS trading_collector_devices (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+                environment TEXT NOT NULL DEFAULT 'staging',
                 device_name TEXT NOT NULL,
                 client_version TEXT NOT NULL DEFAULT '',
                 fingerprint TEXT NOT NULL,
@@ -2500,10 +2503,19 @@ def migrate_trading_collector_schema(conn) -> None:
                 received_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(device_id, source_event_key, observation_hash)
             );
+            CREATE TABLE IF NOT EXISTS trading_collector_account_policies (
+                id SERIAL PRIMARY KEY,
+                account_id INTEGER NOT NULL UNIQUE REFERENCES trading_accounts(id),
+                environment TEXT NOT NULL DEFAULT 'staging',
+                history_start_date TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS trading_intraday_fills (
                 id SERIAL PRIMARY KEY,
                 account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
                 source_event_key TEXT NOT NULL,
+                canonical_event_key TEXT,
                 trade_date TEXT NOT NULL,
                 trade_time TEXT NOT NULL DEFAULT '',
                 trade_timestamp TEXT NOT NULL DEFAULT '',
@@ -2650,6 +2662,7 @@ def migrate_trading_collector_schema(conn) -> None:
         CREATE TABLE IF NOT EXISTS trading_collector_pairing_codes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            environment TEXT NOT NULL DEFAULT 'staging',
             code_hash TEXT NOT NULL UNIQUE,
             expires_at TEXT NOT NULL,
             used_at TEXT,
@@ -2659,6 +2672,7 @@ def migrate_trading_collector_schema(conn) -> None:
         CREATE TABLE IF NOT EXISTS trading_collector_devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
+            environment TEXT NOT NULL DEFAULT 'staging',
             device_name TEXT NOT NULL,
             client_version TEXT NOT NULL DEFAULT '',
             fingerprint TEXT NOT NULL,
@@ -2681,10 +2695,19 @@ def migrate_trading_collector_schema(conn) -> None:
             received_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(device_id, source_event_key, observation_hash)
         );
+        CREATE TABLE IF NOT EXISTS trading_collector_account_policies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL UNIQUE REFERENCES trading_accounts(id),
+            environment TEXT NOT NULL DEFAULT 'staging',
+            history_start_date TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS trading_intraday_fills (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id INTEGER NOT NULL REFERENCES trading_accounts(id),
             source_event_key TEXT NOT NULL,
+            canonical_event_key TEXT,
             trade_date TEXT NOT NULL,
             trade_time TEXT NOT NULL DEFAULT '',
             trade_timestamp TEXT NOT NULL DEFAULT '',
@@ -2828,7 +2851,14 @@ def migrate_trading_collector_schema(conn) -> None:
 def _ensure_trading_collector_columns(conn, cur) -> None:
     """Add reconciliation columns to existing collector databases without rebuilding them."""
     columns = {
+        "trading_collector_pairing_codes": [
+            ("environment", "TEXT NOT NULL DEFAULT 'staging'"),
+        ],
+        "trading_collector_devices": [
+            ("environment", "TEXT NOT NULL DEFAULT 'staging'"),
+        ],
         "trading_intraday_fills": [
+            ("canonical_event_key", "TEXT"),
             ("reconciliation_status", "TEXT NOT NULL DEFAULT 'unmatched'"),
             ("settlement_identity_id", "INTEGER"),
             ("settlement_batch_id", "INTEGER"),
@@ -2848,6 +2878,24 @@ def _ensure_trading_collector_columns(conn, cur) -> None:
             for name, definition in definitions:
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+    _exec(cur, "UPDATE trading_collector_pairing_codes SET environment = 'staging' WHERE environment IS NULL OR environment = ''")
+    _exec(cur, "UPDATE trading_collector_devices SET environment = 'staging' WHERE environment IS NULL OR environment = ''")
+    _exec(cur, "UPDATE trading_intraday_fills SET canonical_event_key = source_event_key WHERE canonical_event_key IS NULL OR canonical_event_key = ''")
+    _exec(
+        cur,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_intraday_fills_account_canonical ON trading_intraday_fills(account_id, canonical_event_key)",
+    )
+    _exec(
+        cur,
+        """
+        INSERT OR IGNORE INTO trading_collector_account_policies
+            (account_id, environment, history_start_date, created_at, updated_at)
+        SELECT id, 'staging', '2026-09-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM trading_accounts
+        WHERE account_code = 'hongyuan_futures'
+        """,
+    )
 
 
 def sync_trading_module_permissions(cur) -> None:

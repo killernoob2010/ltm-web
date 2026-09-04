@@ -12,6 +12,20 @@
     settlement_conflict: "月结待核对",
     duplicate_observation: "重复观察",
   }[value] || value || "—");
+  const environmentLabel = (value) => ({ staging: "测试版", production: "正式版" }[value] || value || "未知环境");
+
+  function renderCollectionPolicy(policy) {
+    const environment = String(policy.environment || "").toLowerCase();
+    $("#collectorPolicyEnvironment").textContent = environmentLabel(environment);
+    $("#collectorPolicyStatus").textContent = `历史起点：${policy.history_start_date || "—"}｜当前交易日：${policy.current_trade_date || "—"}｜策略修订：${policy.policy_revision || "—"}`;
+    const closed = (policy.closed_ranges || []).map((item) => `${esc(item.range_start)} 至 ${esc(item.range_end)}（月结已覆盖）`);
+    const uploadable = (policy.upload_ranges || []).map((item) => `${esc(item.range_start)} 至 ${esc(item.range_end)}（允许上传）`);
+    const items = [
+      ["已关闭历史区间", closed.length ? closed : ["暂无已关闭月结区间"]],
+      ["当前允许上传区间", uploadable.length ? uploadable : ["暂无可上传历史区间；当前交易日仍按策略处理"]],
+    ];
+    $("#collectorPolicyRanges").innerHTML = items.map(([title, values]) => `<div class="collector-summary-group"><strong>${esc(title)}</strong>${values.map((value) => `<span>${value}</span>`).join("")}</div>`).join("");
+  }
 
   function setStatus(message) {
     const node = $("#collectorStatus");
@@ -33,7 +47,7 @@
     $("#collectorDeviceCount").textContent = `共 ${items.length} 台`;
     body.innerHTML = items.map((item) => `<tr>
       <td>${esc(item.device_name)}</td><td>${esc(item.account_masked_name || item.account_display_name)}</td>
-      <td>${esc(item.client_version || "—")}</td><td>${esc(statusLabel(item.status))}</td>
+      <td>${esc(item.client_version || "—")}</td><td>${esc(environmentLabel(item.environment))}</td><td>${esc(statusLabel(item.status))}</td>
       <td>${esc(item.last_seen_at || "—")}</td>
       <td>${state.canManage && item.status === "active" ? `<button type="button" class="secondary collector-revoke" data-id="${esc(item.device_id)}">撤销</button>` : "—"}</td>
     </tr>`).join("");
@@ -129,14 +143,16 @@
 
   async function loadSummaryData() {
     if (!state.accountId) return;
-    const [devices, optionVolume, currentPositions] = await Promise.all([
+    const [devices, optionVolume, currentPositions, collectionPolicy] = await Promise.all([
       api(`/api/trading-collector/admin/devices?account_id=${encodeURIComponent(state.accountId)}`),
       api(`/api/trading-collector/option-volume?account_id=${encodeURIComponent(state.accountId)}`),
       api(`/api/trading-collector/positions/current?account_id=${encodeURIComponent(state.accountId)}`),
+      api(`/api/trading-collector/admin/collection-policy?account_id=${encodeURIComponent(state.accountId)}`),
     ]);
     renderDevices(devices.items || []);
     renderOptionVolume(optionVolume);
     renderCurrentPositions(currentPositions);
+    renderCollectionPolicy(collectionPolicy);
   }
 
   async function loadData() {
@@ -156,11 +172,33 @@
     } catch (error) { setStatus(`生成失败：${error.message}`); }
   }
 
+  async function reconcileExistingFills() {
+    if (!state.canManage || !state.accountId) return;
+    if (!window.confirm("确认仅在测试版协调已存盘中成交？此操作会写入协调审计和必要的结算编号回填，不修改 WH6 或真实交易。")) return;
+    const button = $("#collectorReconcileBtn");
+    button.disabled = true;
+    setStatus("正在协调已存历史成交…");
+    try {
+      const result = await api("/api/trading-collector/admin/reconcile", {
+        method: "POST",
+        body: JSON.stringify({ account_id: Number(state.accountId) }),
+      });
+      setStatus(`历史协调完成｜扫描 ${Number(result.scanned || 0)} 条｜月结覆盖 ${Number(result.covered || 0)} 条`);
+      await loadData();
+    } catch (error) {
+      setStatus(`协调失败：${error.message}`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function activate(options = {}) {
     state.canManage = Boolean(options.canManage);
     $("#collectorPairingBtn").classList.toggle("hidden", !state.canManage);
+    $("#collectorReconcileBtn").classList.toggle("hidden", !state.canManage);
     if (!state.initialized) {
       $("#collectorPairingBtn").addEventListener("click", issuePairingCode);
+      $("#collectorReconcileBtn").addEventListener("click", reconcileExistingFills);
       state.initialized = true;
     }
     try {

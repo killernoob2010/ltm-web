@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import os
 import re
 import secrets
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -21,6 +22,8 @@ OPTION_RE = re.compile(
 )
 FUTURE_RE = re.compile(r"^[a-z]{1,8}\d{3,6}$", re.IGNORECASE)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+PAIRING_CODE_RE = re.compile(r"^LTM1-(?P<route>[SP])-(?P<secret>[A-Za-z0-9_-]{12,})$")
+PAIRING_ENVIRONMENTS = {"S": "staging", "P": "production"}
 ALLOWED_OBSERVATION_FIELDS = {
     "source_event_key",
     "trade_date",
@@ -151,7 +154,7 @@ class IngestResult:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _hash(value: str) -> str:
@@ -160,6 +163,30 @@ def _hash(value: str) -> str:
 
 def _hash_json(value: Dict[str, Any]) -> str:
     return _hash(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _runtime_environment() -> str:
+    configured = str(os.getenv("LTM_RUNTIME_ENVIRONMENT") or "").strip().lower()
+    if not configured:
+        service_name = str(os.getenv("RENDER_SERVICE_NAME") or "").strip().lower()
+        configured = "production" if service_name == "ltm-web" else "staging"
+    if configured not in {"staging", "production"}:
+        raise CollectorServiceError("environment_invalid", "采集服务环境配置无效", 500)
+    return configured
+
+
+def _pairing_environment(pairing_code: str) -> Optional[str]:
+    match = PAIRING_CODE_RE.fullmatch(str(pairing_code or "").strip())
+    return PAIRING_ENVIRONMENTS.get(match.group("route")) if match else None
+
+
+def _minimum_version_satisfied(value: object) -> bool:
+    try:
+        actual = tuple(int(part) for part in str(value or "").strip().split("."))
+        required = tuple(int(part) for part in reconciliation.MINIMUM_CLIENT_VERSION.split("."))
+    except (TypeError, ValueError):
+        return False
+    return actual >= required
 
 
 def _parse_datetime(value: str) -> Optional[datetime]:
@@ -191,29 +218,45 @@ def _account(account_id: int) -> Dict[str, Any]:
     return dict(row)
 
 
-def issue_pairing_code(account_id: int, actor_id: int, ttl_seconds: int = 900) -> Dict[str, Any]:
+def issue_pairing_code(
+    account_id: int,
+    actor_id: int,
+    ttl_seconds: int = 900,
+    *,
+    environment: Optional[str] = None,
+) -> Dict[str, Any]:
     account = _account(account_id)
     if account.get("account_code") != "hongyuan_futures":
         raise CollectorServiceError("unsupported_account", "第一版采集器只允许绑定宏源期货账户", 400)
     if ttl_seconds < 60 or ttl_seconds > 3600:
         raise CollectorServiceError("invalid_ttl", "设备连接码有效期必须在 1 至 60 分钟之间")
-    code = "WH6-" + secrets.token_urlsafe(10)
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+    selected_environment = str(environment or _runtime_environment()).strip().lower()
+    if selected_environment not in {"staging", "production"}:
+        raise CollectorServiceError("environment_invalid", "采集服务环境无效", 500)
+    prefix = "S" if selected_environment == "staging" else "P"
+    code = "LTM1-%s-%s" % (prefix, secrets.token_urlsafe(16))
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).replace(microsecond=0).isoformat()
     with db.connect() as conn:
         db._exec(
             conn.cursor(),
-            "INSERT INTO trading_collector_pairing_codes (account_id, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?)",
-            (account_id, _hash(code), expires_at, actor_id),
+            "INSERT INTO trading_collector_pairing_codes (account_id, environment, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?)",
+            (account_id, selected_environment, _hash(code), expires_at, actor_id),
         )
     return {
         "code": code,
         "expires_at": expires_at,
         "account_id": account_id,
+        "environment": selected_environment,
         "account_label": account.get("masked_name") or account.get("display_name") or "宏源期货账户",
     }
 
 
 def activate_device(pairing_code: str, device_name: str, client_version: str, fingerprint: str) -> Dict[str, Any]:
+    code_environment = _pairing_environment(pairing_code)
+    if not code_environment:
+        raise CollectorServiceError("pairing_code_invalid", "设备连接码无效或已使用", 401)
+    if code_environment != _runtime_environment():
+        raise CollectorServiceError("environment_mismatch", "设备连接码不属于当前采集服务环境", 401)
     code_hash = _hash(str(pairing_code or "").strip())
     device_name = str(device_name or "").strip()[:120]
     fingerprint = str(fingerprint or "").strip()[:200]
@@ -223,14 +266,20 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
         cur = conn.cursor()
         row = db._exec(
             cur,
-            "SELECT * FROM trading_collector_pairing_codes WHERE code_hash = ? AND used_at IS NULL",
-            (code_hash,),
+            "SELECT * FROM trading_collector_pairing_codes WHERE code_hash = ? AND environment = ? AND used_at IS NULL",
+            (code_hash, code_environment),
         ).fetchone()
         if not row:
             raise CollectorServiceError("pairing_code_invalid", "设备连接码无效或已使用", 401)
         expires_at = _parse_datetime(row["expires_at"])
         if not expires_at or expires_at <= datetime.now(timezone.utc):
             raise CollectorServiceError("pairing_code_expired", "设备连接码已过期", 401)
+        if not _minimum_version_satisfied(client_version):
+            raise CollectorServiceError(
+                "client_version_unsupported",
+                "采集器版本低于当前服务端最低版本 %s" % reconciliation.MINIMUM_CLIENT_VERSION,
+                426,
+            )
         token = secrets.token_urlsafe(32)
         consumed = db._exec(
             cur,
@@ -243,10 +292,10 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
             cur,
             """
             INSERT INTO trading_collector_devices
-                (account_id, device_name, client_version, fingerprint, token_hash, status, bound_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+                (account_id, environment, device_name, client_version, fingerprint, token_hash, status, bound_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
-            (row["account_id"], device_name, str(client_version or "")[:40], fingerprint, _hash(token), _now(), _now()),
+            (row["account_id"], row["environment"], device_name, str(client_version or "")[:40], fingerprint, _hash(token), _now(), _now()),
         )
         device_id = db.last_insert_id(conn)
         if not device_id:
@@ -262,6 +311,7 @@ def activate_device(pairing_code: str, device_name: str, client_version: str, fi
         "account_id": row["account_id"],
         "device_name": device_name,
         "client_version": str(client_version or "")[:40],
+        "environment": row["environment"],
         "status": "active",
         "token": token,
         "account_label": (account["masked_name"] or account["display_name"]) if account else "宏源期货账户",
@@ -286,6 +336,9 @@ def get_device_by_token(token: str) -> Dict[str, Any]:
     result = dict(row)
     if result.get("status") != "active":
         raise CollectorServiceError("device_revoked", "设备已暂停或撤销", 401)
+    device_environment = str(result.get("environment") or "staging").strip().lower()
+    if device_environment != _runtime_environment():
+        raise CollectorServiceError("environment_mismatch", "设备令牌不属于当前采集服务环境", 401)
     return result
 
 
@@ -311,7 +364,86 @@ def get_device_collection_policy(device_id: int) -> Dict[str, Any]:
     try:
         return reconciliation.get_device_collection_policy(device_id)
     except ValueError as exc:
-        raise CollectorServiceError("device_revoked", str(exc), 401) from exc
+        message = str(exc)
+        if message == "设备已暂停或撤销":
+            raise CollectorServiceError("device_revoked", message, 401) from exc
+        if "环境" in message:
+            raise CollectorServiceError("environment_mismatch", message, 500) from exc
+        raise CollectorServiceError("policy_unavailable", message, 503) from exc
+
+
+def get_account_collection_policy(account_id: int) -> Dict[str, Any]:
+    _account(account_id)
+    try:
+        policy = reconciliation.build_collection_policy(account_id)
+    except ValueError as exc:
+        raise CollectorServiceError("policy_unavailable", str(exc), 503) from exc
+    if str(policy.get("environment") or "").strip().lower() != _runtime_environment():
+        raise CollectorServiceError("environment_mismatch", "账户采集策略不属于当前采集服务环境", 500)
+    return policy
+
+
+def reconcile_intraday_range(
+    account_id: int,
+    start_date: str = "",
+    end_date: str = "",
+    actor: str = "trading_collector_admin",
+) -> Dict[str, int]:
+    """Apply the auditable WH6 reconciliation pass in Staging only."""
+    if _runtime_environment() != "staging":
+        raise CollectorServiceError("staging_only", "WH6 历史协调接口仅允许在测试版执行", 403)
+    _account(account_id)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        invalid_range = db._exec(
+            cur,
+            """
+            SELECT id, range_start, range_end
+            FROM trading_import_batches
+            WHERE account_id = ? AND status = 'active' AND statement_type = 'monthly'
+            """,
+            (account_id,),
+        ).fetchall()
+        for batch in invalid_range:
+            if reconciliation._complete_month_range(batch["range_start"], batch["range_end"]) is None:
+                raise CollectorServiceError("invalid_monthly_range", "存在未覆盖完整自然月的 active 月结批次，已停止协调", 409)
+        duplicate_audit = db._exec(
+            cur,
+            """
+            SELECT intraday_fill_id
+            FROM trading_intraday_fill_reconciliations
+            WHERE account_id = ? AND is_current = 1
+            GROUP BY intraday_fill_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """,
+            (account_id,),
+        ).fetchone()
+        if duplicate_audit:
+            raise CollectorServiceError("duplicate_current_audit", "存在多条当前协调记录，已停止协调", 409)
+        bounds = db._exec(
+            cur,
+            """
+            SELECT MIN(trade_date) AS start_date, MAX(trade_date) AS end_date
+            FROM trading_intraday_fills
+            WHERE account_id = ?
+            """,
+            (account_id,),
+        ).fetchone()
+        start = start_date or str(bounds["start_date"] or "")
+        end = end_date or str(bounds["end_date"] or "")
+        transaction_numbers_backfilled = (
+            reconciliation.backfill_settlement_transaction_numbers(cur, account_id=account_id)
+            if start and end
+            else 0
+        )
+        summary = reconciliation.reconcile_intraday_range(cur, account_id, start, end, actor)
+        if summary.scanned != summary.changed + summary.unchanged:
+            raise CollectorServiceError("reconciliation_invariant_failed", "协调结果无法通过变更/未变更守恒校验", 500)
+        conn.commit()
+    result = summary.to_dict()
+    result["transaction_numbers_backfilled"] = transaction_numbers_backfilled
+    return result
 
 
 def revoke_device(device_id: int, actor_id: int) -> Dict[str, Any]:
@@ -331,7 +463,7 @@ def revoke_device(device_id: int, actor_id: int) -> Dict[str, Any]:
 def list_devices(account_id: Optional[int] = None) -> List[Dict[str, Any]]:
     sql = """
         SELECT d.id AS device_id, d.account_id, d.device_name, d.client_version,
-               d.status, d.bound_at, d.last_seen_at, d.revoked_at,
+               d.environment, d.status, d.bound_at, d.last_seen_at, d.revoked_at,
                a.display_name AS account_display_name, a.masked_name AS account_masked_name
         FROM trading_collector_devices d
         JOIN trading_accounts a ON a.id = d.account_id
@@ -414,14 +546,88 @@ def _validate_observation(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 def _canonical_fields(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        key: data.get(key)
-        for key in (
-            "source_event_key", "trade_date", "trade_time", "trade_timestamp", "exchange", "contract",
-            "raw_contract", "asset_type", "side", "open_close", "quantity", "price", "fee", "turnover",
-            "premium_cashflow", "close_profit", "trade_id", "order_id", "option_kind", "underlying",
-            "expiry_month", "strike", "parser_version", "data_status", "verification_status",
-        )
+        "trade_date": data.get("trade_date"),
+        "trade_time": data.get("trade_time"),
+        "trade_timestamp": data.get("trade_timestamp"),
+        "exchange": reconciliation.normalize_exchange(data.get("exchange")),
+        "contract": str(data.get("contract") or "").strip().lower(),
+        "asset_type": data.get("asset_type"),
+        "side": str(data.get("side") or "").strip().lower(),
+        "open_close": str(data.get("open_close") or "").strip().lower(),
+        "quantity": data.get("quantity"),
+        "price": data.get("price"),
+        "fee": data.get("fee"),
+        "turnover": data.get("turnover"),
+        "premium_cashflow": data.get("premium_cashflow"),
+        "close_profit": data.get("close_profit"),
+        "trade_id": reconciliation.normalize_transaction_no(data.get("trade_id")),
+        "order_id": str(data.get("order_id") or "").strip(),
+        "option_kind": data.get("option_kind"),
+        "underlying": data.get("underlying"),
+        "expiry_month": data.get("expiry_month"),
+        "strike": data.get("strike"),
     }
+
+
+def _canonical_event_key(account_id: int, data: Dict[str, Any]) -> str:
+    normalized_trade_id = reconciliation.normalize_transaction_no(data.get("trade_id"))
+    exchange = reconciliation.normalize_exchange(data.get("exchange"))
+    if normalized_trade_id:
+        return "tradeid:%s:%s:%s:%s" % (
+            account_id,
+            data["trade_date"],
+            exchange,
+            normalized_trade_id,
+        )
+    return "signature:%s" % _hash_json(
+        {
+            "account_id": account_id,
+            "trade_date": data["trade_date"],
+            "trade_time": data["trade_time"],
+            "trade_timestamp": data["trade_timestamp"],
+            "exchange": exchange,
+            "contract": data["contract"],
+            "asset_type": data["asset_type"],
+            "side": data["side"],
+            "open_close": data["open_close"],
+            "quantity": data["quantity"],
+            "price": data["price"],
+            "source_path": data.get("source_path", ""),
+            "source_record_index": data.get("source_record_index", 0),
+            "source_record_sha256": data["source_record_sha256"],
+        }
+    )
+
+
+def _legacy_trade_event_keys(data: Mapping[str, Any]) -> tuple[str, ...]:
+    normalized_trade_id = reconciliation.normalize_transaction_no(data.get("trade_id"))
+    if not normalized_trade_id:
+        return ()
+    exchange = reconciliation.normalize_exchange(data.get("exchange"))
+    return (
+        "tradeid:%s:%s:%s" % (data["trade_date"], exchange, normalized_trade_id),
+        "tradeid:%s" % normalized_trade_id,
+    )
+
+
+def _find_legacy_fill(cur, account_id: int, data: Mapping[str, Any]) -> Optional[Any]:
+    legacy_keys = _legacy_trade_event_keys(data)
+    if not legacy_keys:
+        return None
+    placeholders = ", ".join("?" for _ in legacy_keys)
+    query = """
+        SELECT * FROM trading_intraday_fills
+        WHERE account_id = ? AND (
+            source_event_key IN ({}) OR canonical_event_key IN ({})
+        )
+        ORDER BY id
+        LIMIT 1
+        """.format(placeholders, placeholders)
+    return db._exec(
+        cur,
+        query,
+        (account_id, *legacy_keys, *legacy_keys),
+    ).fetchone()
 
 
 def _observation_hash(data: Dict[str, Any]) -> str:
@@ -441,10 +647,23 @@ def _date_is_closed(cur, account_id: int, trade_date: str) -> bool:
     )
 
 
+def _date_is_uploadable(cur, account_id: int, trade_date: str) -> bool:
+    try:
+        return reconciliation.is_date_uploadable(cur, account_id, trade_date)
+    except ValueError as exc:
+        raise CollectorServiceError("policy_unavailable", str(exc), 503) from exc
+
+
 def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str, Any]]) -> IngestResult:
     if len(observations) > 500:
         raise CollectorServiceError("batch_too_large", "单次最多上传 500 条成交")
     device = get_device_by_token(device_token)
+    if not _minimum_version_satisfied(device.get("client_version")):
+        raise CollectorServiceError(
+            "client_version_unsupported",
+            "采集器版本低于当前服务端最低版本 %s" % reconciliation.MINIMUM_CLIENT_VERSION,
+            426,
+        )
     account_id = int(device["account_id"])
     accepted = duplicates = conflicts = quarantined = observation_count = 0
     fill_results: List[Dict[str, str]] = []
@@ -486,28 +705,64 @@ def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str
                         "UPDATE trading_intraday_fill_observations SET status = 'settlement_covered' WHERE id = ?",
                         (observation_id,),
                     )
-                fill_results.append({"event_key": data["source_event_key"], "status": "settlement_covered"})
+                fill_results.append({"event_key": result_event_key, "status": "settlement_covered"})
                 continue
+            if not _date_is_uploadable(cur, account_id, data["trade_date"]):
+                if observation_id:
+                    db._exec(
+                        cur,
+                        "UPDATE trading_intraday_fill_observations SET status = 'outside_upload_policy' WHERE id = ?",
+                        (observation_id,),
+                    )
+                fill_results.append({"event_key": result_event_key, "status": "outside_upload_policy"})
+                continue
+            canonical_event_key = _canonical_event_key(account_id, data)
             canonical_hash = _hash_json(_canonical_fields(data))
             existing = db._exec(
                 cur,
-                "SELECT * FROM trading_intraday_fills WHERE account_id = ? AND source_event_key = ?",
-                (account_id, data["source_event_key"]),
+                "SELECT * FROM trading_intraday_fills WHERE account_id = ? AND canonical_event_key = ?",
+                (account_id, canonical_event_key),
             ).fetchone()
             if not existing:
-                db._exec(
+                legacy = _find_legacy_fill(cur, account_id, data)
+                if legacy:
+                    existing = legacy
+                    legacy_keys = _legacy_trade_event_keys(data)
+                    legacy_canonical = str(legacy["canonical_event_key"] or "").strip()
+                    if (
+                        legacy["canonical_hash"] == canonical_hash
+                        and legacy_canonical in {"", *legacy_keys}
+                    ):
+                        db._exec(
+                            cur,
+                            """
+                            UPDATE trading_intraday_fills
+                            SET canonical_event_key = ?
+                            WHERE id = ? AND account_id = ?
+                              AND (canonical_event_key IS NULL OR canonical_event_key = ''
+                                   OR canonical_event_key = ? OR canonical_event_key = ?)
+                            """,
+                            (canonical_event_key, legacy["id"], account_id, legacy_keys[0], legacy_keys[1]),
+                        )
+                        existing = db._exec(
+                            cur,
+                            "SELECT * FROM trading_intraday_fills WHERE account_id = ? AND canonical_event_key = ?",
+                            (account_id, canonical_event_key),
+                        ).fetchone()
+            if not existing:
+                inserted_fill = db._exec(
                     cur,
                     """
                     INSERT OR IGNORE INTO trading_intraday_fills
-                        (account_id, source_event_key, trade_date, trade_time, trade_timestamp, exchange,
+                        (account_id, source_event_key, canonical_event_key, trade_date, trade_time, trade_timestamp, exchange,
                          contract, raw_contract, asset_type, side, open_close, quantity, price, fee, turnover,
                          premium_cashflow, close_profit, trade_id, order_id, option_kind, underlying, expiry_month,
                          strike, parser_version, source_record_sha256, source_path, source_record_index, data_status,
                          verification_status, first_received_at, last_observed_at, canonical_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        account_id, data["source_event_key"], data["trade_date"], data["trade_time"], data["trade_timestamp"],
+                        account_id, canonical_event_key, canonical_event_key, data["trade_date"], data["trade_time"], data["trade_timestamp"],
                         data["exchange"], data["contract"], data["raw_contract"], data["asset_type"], data["side"],
                         data["open_close"], data["quantity"], data["price"], data.get("fee"), data.get("turnover"),
                         data.get("premium_cashflow"), data.get("close_profit"), data.get("trade_id"), data.get("order_id"),
@@ -516,23 +771,24 @@ def _ingest_fill_observations(device_token: str, observations: Sequence[Dict[str
                         data["data_status"], data["verification_status"], _now(), _now(), canonical_hash,
                     ),
                 )
+                inserted_fill_created = inserted_fill.rowcount == 1
                 existing = db._exec(
                     cur,
-                    "SELECT * FROM trading_intraday_fills WHERE account_id = ? AND source_event_key = ?",
-                    (account_id, data["source_event_key"]),
+                    "SELECT * FROM trading_intraday_fills WHERE account_id = ? AND canonical_event_key = ?",
+                    (account_id, canonical_event_key),
                 ).fetchone()
-                if existing and existing["canonical_hash"] == canonical_hash:
+                if inserted_fill_created and existing and existing["canonical_hash"] == canonical_hash:
                     accepted += 1
-                    fill_results.append({"event_key": data["source_event_key"], "status": "accepted"})
+                    fill_results.append({"event_key": result_event_key, "status": "accepted"})
                     continue
             if existing and existing["canonical_hash"] == canonical_hash:
                 duplicates += 1
-                fill_results.append({"event_key": data["source_event_key"], "status": "duplicate"})
+                fill_results.append({"event_key": result_event_key, "status": "duplicate"})
                 if observation_id:
                     db._exec(cur, "UPDATE trading_intraday_fill_observations SET status = 'duplicate_observation' WHERE id = ?", (observation_id,))
                 continue
             conflicts += 1
-            fill_results.append({"event_key": data["source_event_key"], "status": "conflict"})
+            fill_results.append({"event_key": result_event_key, "status": "conflict"})
             if observation_id:
                 db._exec(cur, "UPDATE trading_intraday_fill_observations SET status = 'conflict' WHERE id = ?", (observation_id,))
             db._exec(
