@@ -265,7 +265,19 @@
   }
 
   function renderSystemField(field, record) {
-    return `<div class="spot-ledger-system-row"><dt>${escapeHtml(field.name)}</dt><dd>${escapeHtml(detailFieldValue(record, field))}</dd></div>`;
+    const presentation = presentSystemField(record, field);
+    const missingHint = presentation.missing ? ' title="数据异常：源系统未返回该字段"' : "";
+    return `<div class="spot-ledger-system-row${presentation.missing ? " is-missing" : ""}"><dt>${escapeHtml(field.name)}</dt><dd${missingHint}>${escapeHtml(presentation.value)}</dd></div>`;
+  }
+
+  function presentSystemField(record, field) {
+    const value = detailFieldValue(record, field);
+    const missing = !hasDisplayValue(value);
+    return { missing, value: missing ? "—" : value };
+  }
+
+  function visibleSystemFields(fields) {
+    return fields.filter((field) => !MANUAL_FIELDS.includes(field.code) && !DETAIL_HIDDEN_FIELDS.has(field.code));
   }
 
   function renderManualField(field, record) {
@@ -282,10 +294,10 @@
     detail.classList.remove("hidden");
     if (detail.showModal && !detail.open) detail.showModal();
     const errorText = syncErrorText(record.sync_error_summary);
-    const systemFields = moduleState.fields.filter((field) => !MANUAL_FIELDS.includes(field.code) && !DETAIL_HIDDEN_FIELDS.has(field.code) && hasDisplayValue(record[field.code]));
+    const systemFields = visibleSystemFields(moduleState.fields);
     $("#spotLedgerDetailMeta").innerHTML = `<div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div>${record.scope_status === "历史范围外" ? `<div><span>检查范围</span><strong>历史范围外：不纳入 2026 年补录与异常检查</strong></div>` : ""}${hasDisplayValue(record.last_synced_at) ? `<div><span>最近刷新</span><strong>${escapeHtml(seconds(record.last_synced_at))}</strong></div>` : ""}${errorText ? `<div class="spot-ledger-detail-alert"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
     $("#spotLedgerSystemCount").textContent = `${systemFields.length} 项`;
-    $("#spotLedgerSystemFields").innerHTML = systemFields.length ? systemFields.map((field) => renderSystemField(field, record)).join("") : '<p class="spot-ledger-detail-empty">暂无已带出的系统字段</p>';
+    $("#spotLedgerSystemFields").innerHTML = systemFields.length ? systemFields.map((field) => renderSystemField(field, record)).join("") : '<p class="spot-ledger-detail-empty">暂无系统字段定义</p>';
     $("#spotLedgerManualHint").textContent = record.scope_status === "历史范围外" ? "历史范围外，本轮不要求补录" : record.missing_fields?.length ? `待补录 ${record.missing_fields.length} 项` : "可按需修改";
     renderManualContent(record);
     $("#spotLedgerEditStatus").textContent = record.scope_status === "历史范围外" ? "历史范围外，本轮不要求补录" : record.missing_fields?.length ? `待补录：${record.missing_fields.join("、")}` : "必填字段已完成";
@@ -484,5 +496,5 @@
     }
   }
 
-  window.SpotLedger = { activate, seconds };
+  window.SpotLedger = { activate, seconds, presentSystemField, visibleSystemFields };
 })();

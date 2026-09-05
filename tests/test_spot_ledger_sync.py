@@ -415,11 +415,16 @@ def test_official_contract_scope_starts_from_locally_filtered_demands():
 
 
 @pytest.mark.parametrize(
-    "report_sales_business",
-    ["报表人员A", ""],
+    ("report_sales_business", "expected_sales_business", "expect_source_conflict"),
+    [
+        ("报表人员A", "报表人员A", True),
+        ("", "需求业务员A", False),
+    ],
 )
 def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     report_sales_business,
+    expected_sales_business,
+    expect_source_conflict,
 ):
     from app import spot_ledger_sync as sync
 
@@ -667,9 +672,16 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     assert record["U"] == "2026-08-20"
     assert record["AD"] == "XS-1"
     assert record["K"] == "海运一号"
-    assert record["AF"] == "需求业务员A"
+    assert record["AF"] == expected_sales_business
     assert record["AG"] == "销售执行经办人A"
     assert record["AG"] != "错误的合同创建人"
+    assert (
+        any(
+            error.get("type") == "conflicting_source_sales_business"
+            for error in record["sync_errors"]
+        )
+        is expect_source_conflict
+    )
     assert not any(
         error.get("type") == "missing_source_demand_salesperson"
         for error in record["sync_errors"]
@@ -679,6 +691,49 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     demand_calls = [call for call in source.http.calls if "/tradeing/demand/list" in call[1]]
     assert [call[2]["params"]["pageNum"] for call in demand_calls] == [1, 2]
     assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.http.calls)
+
+
+def test_official_report_enrichment_requests_the_reachable_tds_api_gateway():
+    from app.spot_ledger_sync import OfficialJsonSalesContractSource
+
+    class Response:
+        status_code = 200
+        url = "https://tds-api.ejianlong.com/jmreport/show"
+
+        @staticmethod
+        def json():
+            return {
+                "code": 200,
+                "result": {
+                    "dataList": {
+                        "TJJLYSHZ": {
+                            "list": [],
+                            "count": 0,
+                            "total": 0,
+                        }
+                    }
+                },
+            }
+
+    class Http:
+        def __init__(self):
+            self.requested_urls = []
+
+        def post(self, url, **_kwargs):
+            self.requested_urls.append(url)
+            if url != "https://tds-api.ejianlong.com/jmreport/show":
+                raise AssertionError(f"报表请求发往了不可达网关：{url}")
+            return Response()
+
+    http = Http()
+    source = OfficialJsonSalesContractSource(
+        http=http,
+        auth_provider=lambda: {"Authorization": "Bearer test-token"},
+        page_size=20,
+    )
+
+    assert source._fetch_report_enrichment() == {}
+    assert http.requested_urls == ["https://tds-api.ejianlong.com/jmreport/show"]
 
 
 def test_official_report_enrichment_rejects_conflicting_demand_salespeople(monkeypatch):

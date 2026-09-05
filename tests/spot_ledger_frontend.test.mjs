@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
 const spotJs = readFileSync(new URL("../frontend/spot_ledger.js", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../frontend/styles.css", import.meta.url), "utf8");
+
+function loadSpotLedgerModule() {
+  const context = {
+    window: {},
+    document: {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+  };
+  runInNewContext(spotJs, context);
+  return context.window.SpotLedger;
+}
 
 test("spot ledger page is wired into the existing shell and route", () => {
   assert.match(indexHtml, /id="spotLedgerPage"/);
@@ -96,7 +109,7 @@ test("record details expose inline manual editing without a second edit mode", (
   assert.match(spotJs, /showModal\(\)/);
 });
 
-test("record details split populated system fields from manual entry slots", () => {
+test("record details split system fields from manual entry slots", () => {
   assert.match(indexHtml, /id="spotLedgerSystemFields" class="spot-ledger-system-list"/);
   assert.match(indexHtml, /id="spotLedgerManualFields" class="spot-ledger-manual-list"/);
   assert.match(spotJs, /function hasDisplayValue\(/);
@@ -104,6 +117,35 @@ test("record details split populated system fields from manual entry slots", () 
   assert.match(spotJs, /spotLedgerManualFields/);
   assert.doesNotMatch(spotJs, /field\.control\}[^\n]*field\.source_rule/);
   assert.doesNotMatch(spotJs, /record\.source_detail_id[^\n]*来源类型/);
+});
+
+test("record details keep blank system fields visible and mark them with a dash", () => {
+  const spotLedger = loadSpotLedgerModule();
+  const blankField = spotLedger.presentSystemField({}, { code: "AF", name: "销售业务" });
+  const populatedField = spotLedger.presentSystemField(
+    { AF: "张三" },
+    { code: "AF", name: "销售业务" },
+  );
+
+  assert.equal(blankField.missing, true);
+  assert.equal(blankField.value, "—");
+  assert.equal(populatedField.missing, false);
+  assert.equal(populatedField.value, "张三");
+});
+
+test("record details exclude only manual and deliberately hidden technical fields", () => {
+  const spotLedger = loadSpotLedgerModule();
+  const fields = [
+    { code: "AF", name: "销售业务" },
+    { code: "AG", name: "销售执行" },
+    { code: "C", name: "合同归属" },
+    { code: "A", name: "序号" },
+  ];
+
+  assert.equal(
+    spotLedger.visibleSystemFields(fields).map((field) => field.code).join(","),
+    "AF,AG",
+  );
 });
 
 test("manual edit labels expose required fields and conditional long-contract rules", () => {
@@ -119,7 +161,7 @@ test("sales type keeps the source value and uses the backend land-goods relation
   assert.match(spotJs, /record\.is_land_goods/);
   assert.match(spotJs, /sales_type_options/);
   assert.match(indexHtml, /spotLedgerSalesTypeOptions/);
-  assert.match(indexHtml, /spot-ledger-source-labels-20260826/);
+  assert.match(indexHtml, /spot-ledger-source-fields-20260905/);
   assert.doesNotMatch(indexHtml, /<option>现货-市场加价<\/option>/);
 });
 
