@@ -19,7 +19,7 @@ def test_windows_build_chain_emits_one_portable_exe_without_setup_dependency():
     assert "Setup.exe" not in script
     assert "Inno Setup" not in workflow
     assert "Setup.exe" not in workflow
-    assert "WH6成交采集器-0.3.0.exe" in workflow
+    assert "WH6成交采集器-0.3.1.exe" in workflow
 
 
 def test_pyinstaller_spec_is_windowed_single_file_entrypoint():

@@ -164,6 +164,18 @@ def run_once(
         }
 
     default_sender = CollectorUploader(config.collector_url, config.device_token) if upload is None else None
+    if default_sender is not None:
+        try:
+            default_sender.heartbeat(config.client_version)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) in {401, 403}:
+                return {
+                    "state": "device_authorization_required",
+                    "message": str(exc),
+                    "queued": outbox.status()["pending"],
+                    "accepted": 0,
+                    "positions_accepted": 0,
+                }
     policy_required = upload is None or policy_fetch is not None
     policy: Optional[CollectionPolicy] = None
     policy_error = ""

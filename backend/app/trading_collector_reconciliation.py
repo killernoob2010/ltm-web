@@ -23,6 +23,7 @@ POLICY_CAPABILITIES = [
     "per_item_ingest_receipts_v1",
     "future_spread_v1",
     "positions_v2",
+    "open_ended_upload_v1",
 ]
 
 EXCHANGE_ALIASES = {
@@ -200,8 +201,7 @@ def is_date_uploadable(
     account_policy = _account_collection_policy(cur, account_id)
     configured_start = account_policy["configured_history_start_date"]
     assert isinstance(configured_start, date)
-    current_trade_date = _policy_date(as_of_date) or _business_today()
-    if parsed_trade_date < configured_start or parsed_trade_date > current_trade_date:
+    if parsed_trade_date < configured_start:
         return False
     return _closed_range_for_date(cur, account_id, parsed_trade_date.isoformat()) is None
 

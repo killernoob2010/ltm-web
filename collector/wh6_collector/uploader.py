@@ -19,6 +19,23 @@ class CollectorUploader:
         self.device_token = device_token
         self.timeout_seconds = timeout_seconds
 
+    def heartbeat(self, client_version: str) -> Dict[str, Any]:
+        response = requests.post(
+            self.base_url + "/api/trading-collector/device/heartbeat",
+            json={"client_version": client_version},
+            headers={"X-Collector-Token": self.device_token},
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code >= 400:
+            raise UploadError(
+                "采集服务状态上报失败（HTTP %s）" % response.status_code,
+                response.status_code,
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("采集服务状态响应格式无效")
+        return payload
+
     def send(
         self,
         _token: str,

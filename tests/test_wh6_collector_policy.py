@@ -23,6 +23,7 @@ CAPABILITIES = [
     "per_item_ingest_receipts_v1",
     "future_spread_v1",
     "positions_v2",
+    "open_ended_upload_v1",
 ]
 
 
@@ -221,6 +222,37 @@ def test_staging_uploader_fetches_policy_with_device_header(monkeypatch):
         (
             "https://ltm-web-staging.onrender.com/api/trading-collector/device/collection-policy",
             {"headers": {"X-Collector-Token": "device-token"}, "timeout": (5, 30)},
+        )
+    ]
+
+
+def test_staging_uploader_heartbeats_client_version_with_device_header(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"status": "active", "client_version": "0.3.1"}
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    import wh6_collector.uploader as uploader_module
+
+    monkeypatch.setattr(uploader_module.requests, "post", fake_post)
+    uploader = StagingUploader("https://ltm-web-staging.onrender.com", "device-token")
+    result = uploader.heartbeat("0.3.1")
+    assert result["client_version"] == "0.3.1"
+    assert calls == [
+        (
+            "https://ltm-web-staging.onrender.com/api/trading-collector/device/heartbeat",
+            {
+                "json": {"client_version": "0.3.1"},
+                "headers": {"X-Collector-Token": "device-token"},
+                "timeout": (5, 30),
+            },
         )
     ]
 

@@ -1,6 +1,6 @@
 """Single runtime version source for the WH6 scheme A bundle."""
 
-CLIENT_VERSION = "0.3.0"
+CLIENT_VERSION = "0.3.1"
 LOCAL_SCHEMA_VERSION = 4
 PARSER_GENERATION = 3
 UPLOAD_BATCH_SIZE = 100

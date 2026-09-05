@@ -242,6 +242,8 @@ class CollectionPolicy:
             return False
         if self.is_closed(text):
             return False
+        if "open_ended_upload_v1" in self.capabilities:
+            return True
         # The current trading day remains locally collectible even when a
         # server has not yet emitted a longer historical whitelist.
         if text == self.current_trade_date:

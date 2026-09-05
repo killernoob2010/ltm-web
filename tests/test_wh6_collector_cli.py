@@ -372,7 +372,7 @@ def test_once_pauses_upload_after_device_authorization_failure(tmp_path, monkeyp
                 "upload_ranges": [{"range_start": "2026-09-01", "range_end": "2026-09-04"}],
                 "policy_revision": "rev-1",
                 "minimum_client_version": "0.3.0",
-                "capabilities": [],
+                "capabilities": ["open_ended_upload_v1"],
                 "closed_ranges": [],
                 "current_trade_date": "2026-09-04",
                 "generated_at": "2026-09-04T00:00:00+00:00",
@@ -390,3 +390,66 @@ def test_once_pauses_upload_after_device_authorization_failure(tmp_path, monkeyp
         row = connection.execute("SELECT status, available_at FROM outbox").fetchone()
     assert row["status"] == "pending"
     assert datetime.fromisoformat(row["available_at"]) > datetime.now(timezone.utc)
+
+
+def test_once_heartbeats_declared_version_before_policy_fetch_and_upload(tmp_path, monkeypatch):
+    source_root = tmp_path / "Record"
+    source_root.mkdir()
+    _write_match(
+        source_root / "20260907match.dat",
+        [_record(timestamp="2026-09-07 09:31:02", match_id="FUTURE")],
+        size=268,
+    )
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path=str(source_root),
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path / "data"),
+        client_version="0.3.1",
+        allow_weak_source=True,
+    )
+    calls = []
+
+    class RecordingUploader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def heartbeat(self, client_version):
+            calls.append(("heartbeat", client_version))
+            return {"status": "active", "client_version": client_version}
+
+        def get_collection_policy(self):
+            calls.append(("policy", None))
+            return {
+                "schema_version": 2,
+                "environment": "staging",
+                "history_start_date": "2026-09-01",
+                "upload_ranges": [{"range_start": "2026-09-01", "range_end": "2026-09-05"}],
+                "policy_revision": "rev-open-ended",
+                "minimum_client_version": "0.3.0",
+                "capabilities": ["open_ended_upload_v1"],
+                "closed_ranges": [],
+                "current_trade_date": "2026-09-05",
+                "generated_at": "2026-09-05T00:00:00+00:00",
+            }
+
+        def send(self, token, fills, positions):
+            calls.append(("upload", [item["trade_date"] for item in fills]))
+            return {
+                "accepted": len(fills),
+                "fill_results": [
+                    {"event_key": item["source_event_key"], "status": "accepted"}
+                    for item in fills
+                ],
+            }
+
+    monkeypatch.setattr(cli, "CollectorUploader", RecordingUploader)
+    result = run_once(config)
+
+    assert result["accepted"] == 1
+    assert calls == [
+        ("heartbeat", "0.3.1"),
+        ("policy", None),
+        ("upload", ["2026-09-07"]),
+    ]

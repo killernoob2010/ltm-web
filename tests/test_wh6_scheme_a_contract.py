@@ -27,6 +27,7 @@ CAPABILITIES = [
     "per_item_ingest_receipts_v1",
     "future_spread_v1",
     "positions_v2",
+    "open_ended_upload_v1",
 ]
 
 
@@ -146,14 +147,15 @@ def test_wh6_a001_config_cannot_claim_a_different_public_environment():
         )
 
 
-def test_wh6_a002_policy_v2_keeps_closed_months_and_only_opens_whitelist():
+def test_wh6_a002_policy_v2_keeps_closed_months_and_allows_dates_after_server_today():
     policy = CollectionPolicy.from_payload(scheme_a_policy_payload())
     assert policy.schema_version == 2
     assert policy.history_start_date == "2026-09-01"
     assert policy.is_closed("2026-06-15") is True
     assert policy.allows_upload("2026-06-15") is False
     assert policy.allows_upload("2026-09-03") is True
-    assert policy.allows_upload("2026-09-05") is False
+    assert policy.allows_upload("2026-09-05") is True
+    assert policy.allows_upload("2026-09-07") is True
     assert policy.allows_upload("2026-08-31") is False
 
 
@@ -185,6 +187,21 @@ def test_wh6_a002_server_policy_exposes_active_month_closures_and_open_september
         item["range_start"] <= "2026-09-04" <= item["range_end"]
         for item in policy["upload_ranges"]
     )
+    assert "open_ended_upload_v1" in policy["capabilities"]
+    with db.connect() as conn:
+        cur = conn.cursor()
+        assert reconciliation.is_date_uploadable(
+            cur,
+            account_id,
+            "2026-09-07",
+            as_of_date="2026-09-05",
+        ) is True
+        assert reconciliation.is_date_uploadable(
+            cur,
+            account_id,
+            "2026-08-15",
+            as_of_date="2026-09-05",
+        ) is False
 
 
 def test_wh6_a002_policy_does_not_skip_a_missing_month_and_advances_after_later_closures(tmp_path, monkeypatch):
