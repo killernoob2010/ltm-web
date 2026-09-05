@@ -105,7 +105,7 @@ def test_loaded_config_uses_runtime_version_not_persisted_v1(tmp_path):
 
     config = CollectorConfig.load(path)
 
-    assert config.client_version == "0.3.1"
+    assert config.client_version == "0.3.2"
 
 
 def test_canonical_event_key_normalizes_date_exchange_and_leading_zero_id():

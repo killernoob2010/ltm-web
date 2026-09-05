@@ -27,10 +27,10 @@ jobs:
       - name: Upload portable executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WH6成交采集器-0.3.1-windows-x64
+          name: WH6成交采集器-0.3.2-windows-x64
           path: |
-            collector/releases/0.3.1/WH6成交采集器-0.3.1.exe
-            collector/releases/0.3.1/WH6成交采集器-0.3.1.exe.sha256
-            collector/releases/0.3.1/README-0.3.1.txt
+            collector/releases/0.3.2/WH6成交采集器-0.3.2.exe
+            collector/releases/0.3.2/WH6成交采集器-0.3.2.exe.sha256
+            collector/releases/0.3.2/README-0.3.2.txt
           if-no-files-found: error
           retention-days: 7

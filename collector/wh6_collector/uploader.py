@@ -14,7 +14,7 @@ class UploadError(RuntimeError):
 
 
 class CollectorUploader:
-    def __init__(self, base_url: str, device_token: str, *, timeout_seconds=(5, 30)):
+    def __init__(self, base_url: str, device_token: str, *, timeout_seconds=(5, 60)):
         self.base_url = base_url.rstrip("/")
         self.device_token = device_token
         self.timeout_seconds = timeout_seconds

@@ -123,7 +123,7 @@ def test_staging_uploader_sends_fills_and_position_snapshots_together(monkeypatc
         "observations": [{"source_event_key": "fill-1"}],
         "position_snapshots": [{"source_snapshot_key": "snapshot-1"}],
     }
-    assert calls[0][1]["timeout"] == (5, 30)
+    assert calls[0][1]["timeout"] == (5, 60)
 
 
 def test_staging_uploader_preserves_authentication_status_for_pause(monkeypatch):

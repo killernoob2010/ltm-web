@@ -308,7 +308,7 @@ def test_successful_first_run_setup_enters_service_without_second_launch(tmp_pat
     assert calls == [sentinel]
 
 
-def test_once_sends_history_in_batches_of_one_hundred(tmp_path):
+def test_once_sends_history_in_small_batches_to_keep_staging_requests_responsive(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
     _write_match(
@@ -337,9 +337,9 @@ def test_once_sends_history_in_batches_of_one_hundred(tmp_path):
         }
 
     first = run_once(config, upload=upload)
-    assert first["accepted"] == 100
-    assert len(uploaded[0]) == 100
-    assert first["queued"] == 1
+    assert first["accepted"] == 20
+    assert len(uploaded[0]) == 20
+    assert first["queued"] == 81
 
 
 def test_once_pauses_upload_after_device_authorization_failure(tmp_path, monkeypatch):
@@ -406,7 +406,7 @@ def test_once_heartbeats_declared_version_before_policy_fetch_and_upload(tmp_pat
         account=_account(),
         device_token="device-token",
         data_dir=str(tmp_path / "data"),
-        client_version="0.3.1",
+        client_version="0.3.2",
         allow_weak_source=True,
     )
     calls = []
@@ -449,7 +449,7 @@ def test_once_heartbeats_declared_version_before_policy_fetch_and_upload(tmp_pat
 
     assert result["accepted"] == 1
     assert calls == [
-        ("heartbeat", "0.3.1"),
+        ("heartbeat", "0.3.2"),
         ("policy", None),
         ("upload", ["2026-09-07"]),
     ]
