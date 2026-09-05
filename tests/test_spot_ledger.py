@@ -92,6 +92,21 @@ def test_purchase_execution_display_removes_numeric_prefix():
     assert record["AG"] == "施雨蒙"
 
 
+def test_public_persisted_record_normalizes_purchase_execution_display_name():
+    from app.spot_ledger import record_to_public
+
+    public = record_to_public({
+        "record_id": "spot:PURCHASE-EXECUTION-DISPLAY",
+        "T": "920097_常兴霖",
+        "AG": "920109_施雨蒙",
+        "D": "B06",
+        "U": "2026-08-01",
+    })
+
+    assert public["T"] == "常兴霖"
+    assert public["AG"] == "920109_施雨蒙"
+
+
 def test_confirmed_history_dictionaries_map_operation_title_and_product_category():
     from app.spot_ledger import normalize_sales_contract_record
 

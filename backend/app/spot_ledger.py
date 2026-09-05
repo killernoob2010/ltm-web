@@ -589,6 +589,8 @@ def record_to_public(record: dict[str, Any]) -> dict[str, Any]:
             result[field] = json.loads(value or "[]") if isinstance(value, str) and value.startswith("[") else (value or "")
     is_record = any(key in result for key in ("record_id", "source_detail_id", "AD", "Q", "H"))
     if is_record:
+        if "T" in result:
+            result["T"] = re.sub(r"^\d+_", "", _text(result.get("T")))
         result["supplier_display_name"] = supplier_display_name(result.get("Q"))
         result["is_land_goods"] = is_land_sales_type(result.get("D"))
         result["scope_status"] = "历史范围外" if is_historical_scope(result.get("U")) else "当前范围"
