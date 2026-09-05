@@ -192,6 +192,36 @@ def reconcile_batch(batch_id):
     return result
 
 
+def test_reconcile_batch_reuses_lookup_queries_for_repeated_trade_date(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    monthly_batch = insert_batch(account, "20260501", "20260531", "active", "monthly")
+    for index in range(3):
+        insert_wh6_fill(
+            account,
+            event_key=f"tradeid:cache-{index}",
+            trade_id=f"cache-{index}",
+        )
+
+    original_exec = db._exec
+    lookup_counts = {"settlement_rows": 0, "current_audits": 0}
+
+    def counted_exec(cursor, sql, params=None):
+        compact_sql = " ".join(sql.split())
+        if "SELECT tf.*, fi.account_id AS identity_account_id" in compact_sql:
+            lookup_counts["settlement_rows"] += 1
+        if "SELECT intraday_fill_id, authority_type, source_priority, result_status" in compact_sql:
+            lookup_counts["current_audits"] += 1
+        return original_exec(cursor, sql, params)
+
+    monkeypatch.setattr(db, "_exec", counted_exec)
+
+    result = reconcile_batch(monthly_batch)
+
+    assert result.scanned == 3
+    assert lookup_counts == {"settlement_rows": 1, "current_audits": 1}
+
+
 def test_reconciliation_schema_is_forward_only_and_auditable(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     with db.connect() as conn:

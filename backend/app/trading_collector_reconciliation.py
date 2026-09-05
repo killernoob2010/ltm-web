@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -580,6 +580,76 @@ def _row_dict(row: Mapping[str, Any]) -> Dict[str, Any]:
     return {key: row[key] for key in keys}
 
 
+@dataclass
+class ReconciliationLookupCache:
+    """Reuse read-only reconciliation lookups within one database transaction."""
+
+    account_id: int
+    active_monthly_ranges: Optional[List[Dict[str, object]]] = None
+    settlement_rows_by_date: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    settlement_versions_by_identity: Optional[Dict[int, List[Dict[str, Any]]]] = None
+    current_audits_by_fill_id: Optional[Dict[int, Dict[str, Any]]] = None
+
+    def monthly_ranges(self, cur) -> List[Dict[str, object]]:
+        if self.active_monthly_ranges is None:
+            self.active_monthly_ranges = get_active_monthly_ranges(cur, self.account_id)
+        return self.active_monthly_ranges
+
+    def settlement_rows(self, cur, trade_date: str) -> List[Dict[str, Any]]:
+        if trade_date not in self.settlement_rows_by_date:
+            self.settlement_rows_by_date[trade_date] = _settlement_rows_for_date(
+                cur, self.account_id, trade_date
+            )
+        return self.settlement_rows_by_date[trade_date]
+
+    def settlement_versions(self, cur, identity_id: int) -> List[Dict[str, Any]]:
+        if self.settlement_versions_by_identity is None:
+            rows = db._exec(
+                cur,
+                """
+                SELECT tf.*, fi.account_id AS identity_account_id,
+                       b.statement_type, b.source_priority, b.status AS batch_status,
+                       b.range_start, b.range_end
+                FROM trading_trade_facts tf
+                JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+                JOIN trading_import_batches b ON b.id = tf.batch_id
+                WHERE fi.account_id = ? AND b.account_id = ? AND b.status = 'active'
+                  AND b.statement_type IN ('daily', 'monthly')
+                ORDER BY b.source_priority DESC, b.id DESC, tf.id DESC
+                """,
+                (self.account_id, self.account_id),
+            ).fetchall()
+            grouped: Dict[int, List[Dict[str, Any]]] = {}
+            for row in rows:
+                grouped.setdefault(int(_row_value(row, "identity_id")), []).append(
+                    _row_dict(row)
+                )
+            self.settlement_versions_by_identity = grouped
+        return self.settlement_versions_by_identity.get(int(identity_id), [])
+
+    def current_audit(self, cur, fill_id: int) -> Optional[Dict[str, Any]]:
+        if self.current_audits_by_fill_id is None:
+            rows = db._exec(
+                cur,
+                """
+                SELECT intraday_fill_id, authority_type, source_priority, result_status,
+                       resolved_fields_json, field_sources_json, differences_json
+                FROM trading_intraday_fill_reconciliations
+                WHERE account_id = ? AND is_current = 1
+                """,
+                (self.account_id,),
+            ).fetchall()
+            self.current_audits_by_fill_id = {
+                int(_row_value(row, "intraday_fill_id")): _row_dict(row)
+                for row in rows
+            }
+        return self.current_audits_by_fill_id.get(int(fill_id))
+
+    def set_current_audit(self, fill_id: int, audit: Dict[str, Any]) -> None:
+        if self.current_audits_by_fill_id is not None:
+            self.current_audits_by_fill_id[int(fill_id)] = audit
+
+
 def _normalize_side(value: object) -> str:
     return {
         "buy": "买",
@@ -653,7 +723,15 @@ def _same_settlement_identity(fill: Mapping[str, Any], row: Mapping[str, Any]) -
     return True
 
 
-def _settlement_rows_for_date(cur, account_id: int, trade_date: str) -> List[Dict[str, Any]]:
+def _settlement_rows_for_date(
+    cur,
+    account_id: int,
+    trade_date: str,
+    *,
+    lookup_cache: Optional[ReconciliationLookupCache] = None,
+) -> List[Dict[str, Any]]:
+    if lookup_cache is not None:
+        return lookup_cache.settlement_rows(cur, trade_date)
     rows = db._exec(
         cur,
         """
@@ -673,7 +751,14 @@ def _settlement_rows_for_date(cur, account_id: int, trade_date: str) -> List[Dic
     return [_row_dict(row) for row in rows]
 
 
-def _settlement_versions(cur, identity_id: int) -> List[Dict[str, Any]]:
+def _settlement_versions(
+    cur,
+    identity_id: int,
+    *,
+    lookup_cache: Optional[ReconciliationLookupCache] = None,
+) -> List[Dict[str, Any]]:
+    if lookup_cache is not None:
+        return lookup_cache.settlement_versions(cur, identity_id)
     rows = db._exec(
         cur,
         """
@@ -695,8 +780,19 @@ def _source_type(row: Mapping[str, Any]) -> str:
     return statement_type if statement_type in {"daily", "monthly"} else "wh6"
 
 
-def _closed_range_for_date(cur, account_id: int, trade_date: str) -> Optional[Dict[str, object]]:
-    for item in get_active_monthly_ranges(cur, account_id):
+def _closed_range_for_date(
+    cur,
+    account_id: int,
+    trade_date: str,
+    *,
+    lookup_cache: Optional[ReconciliationLookupCache] = None,
+) -> Optional[Dict[str, object]]:
+    monthly_ranges = (
+        lookup_cache.monthly_ranges(cur)
+        if lookup_cache is not None
+        else get_active_monthly_ranges(cur, account_id)
+    )
+    for item in monthly_ranges:
         if str(item["range_start"]) <= trade_date <= str(item["range_end"]):
             return item
     return None
@@ -725,7 +821,12 @@ def _merged_settlement(versions: Sequence[Mapping[str, Any]]) -> tuple[Dict[str,
     return authority, authority_type, source_priority, identity_id
 
 
-def match_intraday_fill(cur, fill: Mapping[str, object]) -> MatchDecision:
+def match_intraday_fill(
+    cur,
+    fill: Mapping[str, object],
+    *,
+    lookup_cache: Optional[ReconciliationLookupCache] = None,
+) -> MatchDecision:
     """Find one active settlement identity without guessing across candidates."""
     account_id = int(_row_value(fill, "account_id") or 0)
     normalized_date = _normalize_date(_row_value(fill, "trade_date"))
@@ -736,7 +837,9 @@ def match_intraday_fill(cur, fill: Mapping[str, object]) -> MatchDecision:
     normalized_id = normalize_transaction_no(_row_value(fill, "trade_id"))
     rows = [
         row
-        for row in _settlement_rows_for_date(cur, account_id, trade_date)
+        for row in _settlement_rows_for_date(
+            cur, account_id, trade_date, lookup_cache=lookup_cache
+        )
         if normalize_exchange(str(_row_value(row, "exchange") or "")) == normalized_exchange
     ]
     if normalized_id:
@@ -755,14 +858,18 @@ def match_intraday_fill(cur, fill: Mapping[str, object]) -> MatchDecision:
         identity_id = int(_row_value(row, "identity_id"))
         identity_rows.setdefault(identity_id, row)
     if len(identity_rows) != 1:
-        closed = _closed_range_for_date(cur, account_id, trade_date)
+        closed = _closed_range_for_date(
+            cur, account_id, trade_date, lookup_cache=lookup_cache
+        )
         status = "monthly_unmatched" if not identity_rows and closed else "ambiguous" if len(identity_rows) > 1 else "unmatched"
         return MatchDecision(status, candidate_count=len(identity_rows), reason="no_unique_settlement_candidate")
 
     identity_id, anchor = next(iter(identity_rows.items()))
-    versions = _settlement_versions(cur, identity_id)
+    versions = _settlement_versions(cur, identity_id, lookup_cache=lookup_cache)
     settlement, authority_type, source_priority, _ = _merged_settlement(versions)
-    closed = _closed_range_for_date(cur, account_id, trade_date)
+    closed = _closed_range_for_date(
+        cur, account_id, trade_date, lookup_cache=lookup_cache
+    )
     if closed and authority_type != "monthly":
         return MatchDecision(
             "monthly_unmatched",
@@ -831,12 +938,23 @@ def _json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _persist_resolution(cur, fill: Mapping[str, Any], decision: MatchDecision) -> tuple[bool, bool]:
+def _persist_resolution(
+    cur,
+    fill: Mapping[str, Any],
+    decision: MatchDecision,
+    *,
+    lookup_cache: Optional[ReconciliationLookupCache] = None,
+) -> tuple[bool, bool]:
     settlement = decision.settlement
     resolved = resolve_fill_fields(fill, settlement, decision.authority_type)
     account_id = int(_row_value(fill, "account_id"))
     trade_date = _normalize_date(_row_value(fill, "trade_date"))
-    closed = bool(trade_date and _closed_range_for_date(cur, account_id, trade_date.isoformat()))
+    closed = bool(
+        trade_date
+        and _closed_range_for_date(
+            cur, account_id, trade_date.isoformat(), lookup_cache=lookup_cache
+        )
+    )
     is_monthly_status = decision.status in {"matched_monthly", "corrected_monthly"}
     is_conflict = decision.status in {"ambiguous", "monthly_unmatched"} and closed
     data_status = "settlement_conflict" if is_conflict else "settlement_covered" if is_monthly_status and closed else "provisional"
@@ -847,16 +965,20 @@ def _persist_resolution(cur, fill: Mapping[str, Any], decision: MatchDecision) -
     resolved_json = _json_dumps(resolved.fields)
     source_json = _json_dumps(resolved.field_sources)
     differences_json = _json_dumps(resolved.differences)
-    current = db._exec(
-        cur,
-        """
-        SELECT authority_type, source_priority, result_status,
-               resolved_fields_json, field_sources_json, differences_json
-        FROM trading_intraday_fill_reconciliations
-        WHERE intraday_fill_id = ? AND is_current = 1
-        """,
-        (_row_value(fill, "id"),),
-    ).fetchone()
+    fill_id = int(_row_value(fill, "id"))
+    if lookup_cache is not None:
+        current = lookup_cache.current_audit(cur, fill_id)
+    else:
+        current = db._exec(
+            cur,
+            """
+            SELECT authority_type, source_priority, result_status,
+                   resolved_fields_json, field_sources_json, differences_json
+            FROM trading_intraday_fill_reconciliations
+            WHERE intraday_fill_id = ? AND is_current = 1
+            """,
+            (fill_id,),
+        ).fetchone()
     unchanged = bool(
         current
         and str(_row_value(current, "authority_type")) == effective_source
@@ -867,15 +989,16 @@ def _persist_resolution(cur, fill: Mapping[str, Any], decision: MatchDecision) -
         and str(_row_value(current, "differences_json")) == differences_json
     )
     if not unchanged:
-        db._exec(
-            cur,
-            """
-            UPDATE trading_intraday_fill_reconciliations
-            SET is_current = 0
-            WHERE intraday_fill_id = ? AND is_current = 1
-            """,
-            (_row_value(fill, "id"),),
-        )
+        if current is not None:
+            db._exec(
+                cur,
+                """
+                UPDATE trading_intraday_fill_reconciliations
+                SET is_current = 0
+                WHERE intraday_fill_id = ? AND is_current = 1
+                """,
+                (fill_id,),
+            )
         db._exec(
             cur,
             """
@@ -887,11 +1010,24 @@ def _persist_resolution(cur, fill: Mapping[str, Any], decision: MatchDecision) -
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
-                _row_value(fill, "id"), account_id, identity_id, batch_id,
+                fill_id, account_id, identity_id, batch_id,
                 effective_source, source_priority, decision.status,
                 resolved_json, source_json, differences_json,
             ),
         )
+        if lookup_cache is not None:
+            lookup_cache.set_current_audit(
+                fill_id,
+                {
+                    "intraday_fill_id": fill_id,
+                    "authority_type": effective_source,
+                    "source_priority": source_priority,
+                    "result_status": decision.status,
+                    "resolved_fields_json": resolved_json,
+                    "field_sources_json": source_json,
+                    "differences_json": differences_json,
+                },
+            )
     db._exec(
         cur,
         """
@@ -903,18 +1039,26 @@ def _persist_resolution(cur, fill: Mapping[str, Any], decision: MatchDecision) -
         """,
         (
             decision.status, identity_id, batch_id, effective_source, _now(),
-            data_status, _row_value(fill, "id"), account_id,
+            data_status, fill_id, account_id,
         ),
     )
     return (not unchanged, data_status == "settlement_covered")
 
 
-def _reconcile_rows(cur, rows: Sequence[Mapping[str, Any]], actor: str) -> ReconciliationSummary:
+def _reconcile_rows(
+    cur,
+    rows: Sequence[Mapping[str, Any]],
+    actor: str,
+    *,
+    lookup_cache: Optional[ReconciliationLookupCache] = None,
+) -> ReconciliationSummary:
     del actor
     summary = ReconciliationSummary()
     for fill in rows:
-        decision = match_intraday_fill(cur, fill)
-        changed, covered = _persist_resolution(cur, fill, decision)
+        decision = match_intraday_fill(cur, fill, lookup_cache=lookup_cache)
+        changed, covered = _persist_resolution(
+            cur, fill, decision, lookup_cache=lookup_cache
+        )
         summary.add(decision.status, covered=covered, changed=changed)
     return summary
 
@@ -945,7 +1089,12 @@ def reconcile_intraday_fills_for_batch(
         """,
         (int(_row_value(batch, "account_id")), start.isoformat(), end.isoformat()),
     ).fetchall()
-    return _reconcile_rows(cur, rows, actor)
+    return _reconcile_rows(
+        cur,
+        rows,
+        actor,
+        lookup_cache=ReconciliationLookupCache(int(_row_value(batch, "account_id"))),
+    )
 
 
 def reconcile_intraday_range(
@@ -965,4 +1114,9 @@ def reconcile_intraday_range(
         params.append(end_date.isoformat())
     sql += " ORDER BY trade_date DESC, trade_time DESC, id DESC"
     rows = db._exec(cur, sql, tuple(params)).fetchall()
-    return _reconcile_rows(cur, rows, actor)
+    return _reconcile_rows(
+        cur,
+        rows,
+        actor,
+        lookup_cache=ReconciliationLookupCache(int(account_id)),
+    )
