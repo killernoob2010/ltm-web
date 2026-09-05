@@ -62,6 +62,17 @@ test("spot ledger keeps the complete field contract while presenting pending/err
   assert.match(indexHtml, /id="spotLedgerPagination"/);
 });
 
+test("spot ledger prioritizes supplement status before the contract and keeps sync status later", () => {
+  const tableHtml = indexHtml.match(/<table id="spotLedgerTable">([\s\S]*?)<\/table>/)?.[1] || "";
+  const headers = [...tableHtml.matchAll(/<th>([^<]+)<\/th>/g)].map((match) => match[1]);
+
+  assert.equal(headers[0], "补录状态");
+  assert.equal(headers.at(-1), "同步状态");
+  assert.equal(headers[1], "销售合同号");
+  assert.ok(spotJs.indexOf("record.supplement_status") < spotJs.indexOf("displayValue(record.AD)"));
+  assert.ok(spotJs.indexOf("displayValue(record.AD)") < spotJs.lastIndexOf("record.sync_status"));
+});
+
 test("spot ledger visible timestamps are reduced to seconds", () => {
   assert.match(spotJs, /slice\(0, 19\)/);
   assert.doesNotMatch(spotJs, /toISOString\(\)/);
@@ -161,7 +172,7 @@ test("sales type keeps the source value and uses the backend land-goods relation
   assert.match(spotJs, /record\.is_land_goods/);
   assert.match(spotJs, /sales_type_options/);
   assert.match(indexHtml, /spotLedgerSalesTypeOptions/);
-  assert.match(indexHtml, /spot-ledger-source-fields-20260905/);
+  assert.match(indexHtml, /spot-ledger-status-order-20260905/);
   assert.doesNotMatch(indexHtml, /<option>现货-市场加价<\/option>/);
 });
 

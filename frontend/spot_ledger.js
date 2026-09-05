@@ -178,6 +178,7 @@
     body.innerHTML = records.map((record) => {
       const error = record.sync_status === "异常";
       return `<tr class="spot-ledger-record-row" data-record-id="${escapeHtml(record.record_id)}">
+        <td><span class="spot-ledger-badge ${record.supplement_status === "待补录" ? "warning" : "success"}">${escapeHtml(record.supplement_status || "待补录")}</span></td>
         <td>${escapeHtml(displayValue(record.AD))}</td>
         <td>${escapeHtml(displayValue(record.E))}</td>
         <td>${escapeHtml(displayValue(record.AP))}</td>
@@ -190,7 +191,6 @@
         <td>${escapeHtml(displayValue(record.AB))}</td>
         <td>${escapeHtml(displayValue(record.L))}</td>
         <td>${escapeHtml(displayValue(record.X))}</td>
-        <td><span class="spot-ledger-badge ${record.supplement_status === "待补录" ? "warning" : "success"}">${escapeHtml(record.supplement_status || "待补录")}</span></td>
         <td><span class="spot-ledger-badge ${error ? "danger" : "success"}">${escapeHtml(record.sync_status || "正常")}</span></td>
       </tr>`;
     }).join("");
