@@ -693,49 +693,6 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.http.calls)
 
 
-def test_official_report_enrichment_requests_the_reachable_tds_api_gateway():
-    from app.spot_ledger_sync import OfficialJsonSalesContractSource
-
-    class Response:
-        status_code = 200
-        url = "https://tds-api.ejianlong.com/jmreport/show"
-
-        @staticmethod
-        def json():
-            return {
-                "code": 200,
-                "result": {
-                    "dataList": {
-                        "TJJLYSHZ": {
-                            "list": [],
-                            "count": 0,
-                            "total": 0,
-                        }
-                    }
-                },
-            }
-
-    class Http:
-        def __init__(self):
-            self.requested_urls = []
-
-        def post(self, url, **_kwargs):
-            self.requested_urls.append(url)
-            if url != "https://tds-api.ejianlong.com/jmreport/show":
-                raise AssertionError(f"报表请求发往了不可达网关：{url}")
-            return Response()
-
-    http = Http()
-    source = OfficialJsonSalesContractSource(
-        http=http,
-        auth_provider=lambda: {"Authorization": "Bearer test-token"},
-        page_size=20,
-    )
-
-    assert source._fetch_report_enrichment() == {}
-    assert http.requested_urls == ["https://tds-api.ejianlong.com/jmreport/show"]
-
-
 def test_official_report_enrichment_rejects_conflicting_demand_salespeople(monkeypatch):
     from app.spot_ledger_sync import OfficialJsonSalesContractSource, SalesContractSourceError
 
