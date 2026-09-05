@@ -371,3 +371,13 @@ def test_historical_records_are_publicly_out_of_scope_and_query_filters_have_202
     conditions, values = _record_query_conditions({"sync_error": "true"})
     assert any('"U" >= ?' in condition for condition in conditions)
     assert "2026-01-01" in values
+
+
+def test_sales_type_filter_is_exact_not_prefix_matching():
+    from app.spot_ledger import _record_query_conditions
+
+    conditions, values = _record_query_conditions({"sales_type": "B06"})
+
+    assert '"D" = ?' in conditions
+    assert '"D" LIKE ?' not in conditions
+    assert values == ["B06"]

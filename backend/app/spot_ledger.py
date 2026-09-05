@@ -642,8 +642,12 @@ def _record_query_conditions(params: dict[str, Any], include_inactive: bool = Fa
     for key, column in mapping.items():
         value = _text(params.get(key))
         if value:
-            conditions.append(f"{column} LIKE ?")
-            values.append(f"%{value}%")
+            if key == "sales_type":
+                conditions.append(f"{column} = ?")
+                values.append(value)
+            else:
+                conditions.append(f"{column} LIKE ?")
+                values.append(f"%{value}%")
     closed_state = _text(params.get("closed_state"))
     if closed_state:
         conditions.append("source_closed_state = ?")
