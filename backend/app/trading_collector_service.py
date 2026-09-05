@@ -1263,7 +1263,7 @@ def query_current_option_positions(account_id: int, *, now: Optional[datetime] =
             conn.cursor(),
             """
             SELECT * FROM trading_intraday_position_snapshots
-            WHERE account_id = ? AND complete = 1
+            WHERE account_id = ? AND complete IS TRUE
             ORDER BY snapshot_timestamp DESC, id DESC
             LIMIT 1
             """,

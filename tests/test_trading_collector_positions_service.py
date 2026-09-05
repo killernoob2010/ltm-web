@@ -165,6 +165,25 @@ def test_current_option_positions_exclude_futures_and_mark_expired(tmp_path, mon
     assert current["source_status"] == "expired"
 
 
+def test_current_option_positions_uses_postgres_boolean_expression(monkeypatch):
+    class EmptyResult:
+        @staticmethod
+        def fetchone():
+            return None
+
+    def postgres_strict_exec(_cursor, sql, _params=()):
+        if "complete = 1" in " ".join(sql.split()):
+            raise AssertionError("PostgreSQL does not compare boolean columns to integers")
+        return EmptyResult()
+
+    monkeypatch.setattr(service, "_account", lambda account_id: {"id": account_id})
+    monkeypatch.setattr(db, "_exec", postgres_strict_exec)
+
+    current = service.query_current_option_positions(1)
+
+    assert current["source_status"] == "unavailable"
+
+
 def test_malformed_position_is_quarantined_and_account_override_is_ignored(tmp_path, monkeypatch):
     account_id = use_temp_db(tmp_path, monkeypatch)
     device = activate(account_id)
