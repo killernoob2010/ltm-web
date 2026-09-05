@@ -77,6 +77,21 @@ def test_system_conversion_preserves_unknown_type_and_normalizes_placeholders():
     assert any(error["type"] == "conversion_mapping" for error in record["sync_errors"])
 
 
+def test_purchase_execution_display_removes_numeric_prefix():
+    from app.spot_ledger import normalize_sales_contract_record
+
+    record = normalize_sales_contract_record({
+        "detail_id": "D-PURCHASE-EXECUTION", "spot_type": "现货", "contract_status": "生效",
+        "quantity_group": "大客户组", "profit_group": "大客户组", "contract_number": "C-PURCHASE-EXECUTION",
+        "product_name": "铁矿石", "signed_date": "2026-08-01", "contract_quantity": 10,
+        "business_category_code": "B06", "purchase_execution": "920097_常兴霖",
+        "sales_execution": "920109_施雨蒙",
+    })
+
+    assert record["T"] == "常兴霖"
+    assert record["AG"] == "施雨蒙"
+
+
 def test_confirmed_history_dictionaries_map_operation_title_and_product_category():
     from app.spot_ledger import normalize_sales_contract_record
 

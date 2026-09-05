@@ -386,7 +386,7 @@ def normalize_sales_contract_record(raw: dict[str, Any], mappings: Optional[dict
         "Q": supplier_raw,
         "R": _text(_value(raw, "payment_condition", "R")),
         "S": _text(_value(raw, "purchase_business", "S")),
-        "T": _text(_value(raw, "purchase_execution", "T")),
+        "T": re.sub(r"^\d+_", "", _text(_value(raw, "purchase_execution", "T"))),
         "U": signed_date,
         "V": _text(_value(raw, "customer_nature", "V")),
         "W": _text(_value(raw, "first_cooperating_steel_mill", "W")),
