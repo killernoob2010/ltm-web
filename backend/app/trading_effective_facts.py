@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from . import db
@@ -83,6 +83,201 @@ def _statement_source_type(row: Mapping[str, Any]) -> str:
     if start and end and start == end:
         return "daily"
     return "monthly"
+
+
+def _position_direction(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "long": "买",
+        "short": "卖",
+        "多": "买",
+        "空": "卖",
+        "买入": "买",
+        "卖出": "卖",
+    }.get(text, str(value or "").strip())
+
+
+def _position_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        reconciliation.normalize_exchange(str(row.get("exchange") or "")),
+        str(row.get("contract") or "").strip().lower(),
+        str(row.get("asset_type") or "").strip().lower(),
+        _position_direction(row.get("direction")),
+    )
+
+
+def _copy_position_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    result = dict(row)
+    result["exchange"] = str(result.get("exchange") or "").upper()
+    result["contract"] = str(result.get("contract") or "").strip().lower()
+    result["asset_type"] = str(result.get("asset_type") or "").strip().lower()
+    result["direction"] = _position_direction(result.get("direction"))
+    result.setdefault(
+        "position_key",
+        f"{result['exchange']}:{result['contract']}:{result['asset_type']}:{result['direction']}",
+    )
+    result["quantity"] = _number(result.get("quantity")) or 0.0
+    result["average_price"] = _number(result.get("average_price"))
+    result.setdefault("source_record_count", 1)
+    result.setdefault("fact_status", "settlement_confirmed")
+    result.setdefault("formation_method", "settlement_snapshot")
+    result.setdefault("source_type", "monthly")
+    result.setdefault("source_label", SOURCE_LABELS.get(result["source_type"], "结算单"))
+    result.setdefault("can_classify", True)
+    return result
+
+
+def _baseline_position_items(baseline_rows: Iterable[Mapping[str, Any]]) -> Dict[tuple[str, str, str, str], Dict[str, Any]]:
+    grouped: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
+    for raw_row in baseline_rows:
+        row = _copy_position_row(raw_row)
+        key = _position_key(row)
+        previous = grouped.get(key)
+        if previous is None:
+            grouped[key] = row
+            continue
+        previous_quantity = float(previous.get("quantity") or 0)
+        row_quantity = float(row.get("quantity") or 0)
+        total_quantity = previous_quantity + row_quantity
+        if total_quantity and previous.get("average_price") is not None and row.get("average_price") is not None:
+            previous["average_price"] = (
+                previous_quantity * float(previous["average_price"])
+                + row_quantity * float(row["average_price"])
+            ) / total_quantity
+        previous["quantity"] = total_quantity
+        if previous.get("margin") is not None or row.get("margin") is not None:
+            previous["margin"] = float(previous.get("margin") or 0) + float(row.get("margin") or 0)
+        previous["source_record_count"] = int(previous.get("source_record_count") or 0) + int(row.get("source_record_count") or 0)
+    return grouped
+
+
+def _group_position_items(items: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    grouped = _baseline_position_items(items)
+    return sorted(
+        grouped.values(),
+        key=lambda row: (
+            str(row.get("contract") or ""),
+            str(row.get("direction") or ""),
+            str(row.get("asset_type") or ""),
+        ),
+    )
+
+
+def _position_projection_error(
+    baseline_rows: Iterable[Mapping[str, Any]], warning: str
+) -> Dict[str, Any]:
+    items = list(_baseline_position_items(baseline_rows).values())
+    return {
+        "status": "projection_error",
+        "items": items,
+        "warnings": [warning],
+    }
+
+
+def infer_positions_from_fills(
+    baseline_rows: Iterable[Mapping[str, Any]],
+    fills: Iterable[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Apply valid WH6 fills to a confirmed position baseline without clipping errors."""
+    baseline = list(baseline_rows)
+    positions = _baseline_position_items(baseline)
+    ordered_fills = sorted(
+        list(fills),
+        key=lambda row: (
+            _date_key(row.get("trade_date")),
+            str(row.get("trade_time") or ""),
+            int(row.get("id") or 0),
+        ),
+    )
+    changed_keys: set[tuple[str, str, str, str]] = set()
+    for fill in ordered_fills:
+        contract = str(fill.get("contract") or "").strip().lower()
+        exchange = str(fill.get("exchange") or "").strip()
+        asset_type = str(fill.get("asset_type") or "").strip().lower()
+        side = _display_side(fill.get("side"))
+        open_close = _display_open_close(fill.get("open_close"))
+        quantity = _number(fill.get("quantity"))
+        price = _number(fill.get("price"))
+        if not contract or not exchange or not asset_type or side not in {"买", "卖"}:
+            return _position_projection_error(baseline, "成交缺少合约、交易所、资产类型或买卖方向")
+        if open_close not in {"开仓", "平仓"} or quantity is None or quantity <= 0 or price is None:
+            return _position_projection_error(baseline, "成交缺少有效开平、数量或价格")
+        if open_close == "开仓":
+            direction = side
+            delta = quantity
+        elif side == "卖":
+            direction = "买"
+            delta = -quantity
+        else:
+            direction = "卖"
+            delta = -quantity
+        key = (
+            reconciliation.normalize_exchange(exchange),
+            contract,
+            asset_type,
+            direction,
+        )
+        current = positions.get(key)
+        if delta < 0 and (current is None or float(current.get("quantity") or 0) + delta < -1e-9):
+            return _position_projection_error(baseline, f"成交平仓超过已有持仓：{contract}/{direction}")
+        if current is None:
+            current = {
+                "exchange": exchange.upper(),
+                "contract": contract,
+                "asset_type": asset_type,
+                "direction": direction,
+                "position_key": f"{exchange.upper()}:{contract}:{asset_type}:{direction}",
+                "quantity": 0.0,
+                "average_price": 0.0,
+                "margin": None,
+                "valuation_price": None,
+                "floating_pnl": None,
+                "source_record_count": 0,
+                "fact_status": "provisional",
+                "formation_method": "inferred_from_settlement_and_fills",
+                "source_type": "wh6",
+                "source_label": SOURCE_LABELS["wh6"],
+                "can_classify": False,
+                "assignment_status": "not_applicable",
+            }
+            positions[key] = current
+        current_quantity = float(current.get("quantity") or 0)
+        if delta > 0:
+            if current_quantity and current.get("average_price") is not None:
+                current["average_price"] = (
+                    current_quantity * float(current["average_price"]) + delta * price
+                ) / (current_quantity + delta)
+            else:
+                current["average_price"] = price
+            current["quantity"] = current_quantity + delta
+        else:
+            current["quantity"] = current_quantity + delta
+        changed_keys.add(key)
+        if abs(float(current["quantity"])) <= 1e-9:
+            positions.pop(key, None)
+
+    for key in changed_keys:
+        current = positions.get(key)
+        if current is None:
+            continue
+        current.update(
+            {
+                "fact_status": "provisional",
+                "formation_method": "inferred_from_settlement_and_fills",
+                "source_type": "wh6",
+                "source_label": SOURCE_LABELS["wh6"],
+                "margin": None,
+                "valuation_price": None,
+                "floating_pnl": None,
+                "can_classify": False,
+                "assignment_status": "not_applicable",
+            }
+        )
+    return {
+        "status": "ok",
+        "items": sorted(positions.values(), key=lambda row: (row["contract"], row["direction"])),
+        "warnings": [],
+    }
 
 
 def _in_date_range(item: Mapping[str, Any], filters: EffectiveFactFilters) -> bool:
@@ -408,12 +603,484 @@ def query_effective_trade_selection_ids(
     return {"identity_ids": identity_ids, "total_items": len(identity_ids)}
 
 
+def _parse_datetime(value: object) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _format_datetime(value: object) -> Optional[str]:
+    parsed = _parse_datetime(value)
+    return parsed.replace(microsecond=0).isoformat() if parsed else None
+
+
+def _position_assignment_map(cur) -> Dict[tuple[str, str, str], Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT tf.contract, tf.side, tf.asset_type,
+               ba.business_type, s.name AS business_subject, st.name AS strategy,
+               CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END
+                   AS assignment_status
+        FROM trading_trade_facts tf
+        JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+        LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+        LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+        LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+        WHERE tf.is_current = 1 AND tf.open_close = '开仓'
+        """,
+    ).fetchall()
+    grouped: Dict[tuple[str, str, str], List[Dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        key = (
+            str(item["contract"] or "").strip().lower(),
+            _position_direction(item["side"]),
+            str(item["asset_type"] or "").strip().lower(),
+        )
+        grouped.setdefault(key, []).append(item)
+    assignments: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    for key, items in grouped.items():
+        classified = [item for item in items if item["assignment_status"] == "classified"]
+        if items and len(classified) == len(items):
+            assignments[key] = {
+                "assignment_status": "classified",
+                "business_type": next(iter({item["business_type"] for item in classified}))
+                if len({item["business_type"] for item in classified}) == 1 else None,
+                "business_subject": next(iter({item["business_subject"] for item in classified}))
+                if len({item["business_subject"] for item in classified}) == 1 else None,
+                "strategy": next(iter({item["strategy"] for item in classified}))
+                if len({item["strategy"] for item in classified}) == 1 else None,
+            }
+        else:
+            assignments[key] = {
+                "assignment_status": "unclassified",
+                "business_type": None,
+                "business_subject": None,
+                "strategy": None,
+            }
+    return assignments
+
+
+def _active_position_batches(cur, end_date: str = "") -> Dict[int, Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT id, account_id, range_start, range_end, position_snapshot_date,
+               position_count, status, statement_type, source_priority
+        FROM trading_import_batches
+        WHERE status = 'active' AND position_snapshot_date IS NOT NULL
+        ORDER BY id DESC
+        """,
+    ).fetchall()
+    selected: Dict[int, Dict[str, Any]] = {}
+    target = _date_key(end_date) if end_date else ""
+    for raw_row in rows:
+        row = dict(raw_row)
+        snapshot_date = _date_key(row.get("position_snapshot_date"))
+        if not snapshot_date or (target and snapshot_date != target):
+            continue
+        source_type = _statement_source_type(row)
+        priority = int(row.get("source_priority") or (200 if source_type == "monthly" else 100))
+        row["_snapshot_date"] = snapshot_date
+        row["_source_type"] = source_type
+        row["_source_priority"] = priority
+        previous = selected.get(int(row["account_id"]))
+        if previous is None or (
+            snapshot_date,
+            priority,
+            int(row["id"]),
+        ) > (
+            previous["_snapshot_date"],
+            previous["_source_priority"],
+            int(previous["id"]),
+        ):
+            selected[int(row["account_id"])] = row
+    return selected
+
+
+def _position_baseline_rows(
+    cur,
+    batch: Mapping[str, Any],
+    assignment_map: Optional[Mapping[tuple[str, str, str], Mapping[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT ps.*, b.statement_type, b.source_priority
+        FROM trading_position_snapshots ps
+        JOIN trading_import_batches b ON b.id = ps.batch_id
+        WHERE ps.batch_id = ? AND ps.is_current = 1
+        ORDER BY ps.contract, ps.direction, ps.id
+        """,
+        (int(batch["id"]),),
+    ).fetchall()
+    result = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        source_type = str(batch["_source_type"])
+        assignment = (assignment_map or {}).get(
+            (
+                str(row.get("contract") or "").strip().lower(),
+                _position_direction(row.get("direction")),
+                str(row.get("asset_type") or "").strip().lower(),
+            ),
+            {
+                "assignment_status": "unclassified",
+                "business_type": None,
+                "business_subject": None,
+                "strategy": None,
+            },
+        )
+        row.update(
+            {
+                "snapshot_date": batch["_snapshot_date"].replace("-", ""),
+                "source_type": source_type,
+                "source_label": SOURCE_LABELS[source_type],
+                "formation_method": "settlement_snapshot",
+                "fact_status": "settlement_confirmed",
+                "can_classify": True,
+                "assignment_status": assignment.get("assignment_status", "unclassified"),
+                "business_type": assignment.get("business_type"),
+                "business_subject": assignment.get("business_subject"),
+                "strategy": assignment.get("strategy"),
+            }
+        )
+        result.append(row)
+    return result
+
+
+def _position_account_ids(cur) -> List[int]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT account_id FROM trading_import_batches
+        WHERE status = 'active' AND position_snapshot_date IS NOT NULL
+        UNION
+        SELECT account_id FROM trading_intraday_position_snapshots
+        WHERE complete = 1
+        UNION
+        SELECT account_id FROM trading_intraday_fills
+        WHERE data_status = 'provisional'
+        """,
+    ).fetchall()
+    return sorted({int(row["account_id"]) for row in rows if row["account_id"] is not None})
+
+
+def _latest_wh6_snapshot(
+    cur, account_id: int, baseline_date: str = ""
+) -> tuple[Optional[Dict[str, Any]], bool]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_intraday_position_snapshots
+        WHERE account_id = ? AND complete = 1
+        ORDER BY snapshot_timestamp DESC, id DESC
+        """,
+        (account_id,),
+    ).fetchall()
+    selected: Optional[Dict[str, Any]] = None
+    persistent_conflict = False
+    for raw_row in rows:
+        row = dict(raw_row)
+        trade_date = _date_key(row.get("trade_date"))
+        if not trade_date:
+            continue
+        if baseline_date and trade_date <= baseline_date:
+            if str(row.get("conflict_status") or "none") != "none":
+                persistent_conflict = True
+            continue
+        if str(row.get("conflict_status") or "none") != "none":
+            persistent_conflict = True
+            continue
+        if selected is None or (
+            trade_date,
+            _parse_datetime(row.get("snapshot_timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+            int(row["id"]),
+        ) > (
+            _date_key(selected.get("trade_date")),
+            _parse_datetime(selected.get("snapshot_timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+            int(selected["id"]),
+        ):
+            selected = row
+    return (None if persistent_conflict else selected), persistent_conflict
+
+
+def _wh6_snapshot_rows(cur, snapshot: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_intraday_position_rows
+        WHERE snapshot_id = ? AND account_id = ?
+        ORDER BY contract, direction, id
+        """,
+        (int(snapshot["id"]), int(snapshot["account_id"])),
+    ).fetchall()
+    result = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        row.update(
+            {
+                "snapshot_date": _display_date(snapshot["trade_date"]),
+                "source_type": "wh6",
+                "source_label": "WH6完整快照",
+                "formation_method": "wh6_snapshot",
+                "fact_status": "provisional",
+                "margin": None,
+                "valuation_price": None,
+                "floating_pnl": None,
+                "can_classify": False,
+                "assignment_status": "not_applicable",
+                "source_record_count": 1,
+            }
+        )
+        result.append(row)
+    return result
+
+
+def _position_fills_after_baseline(
+    cur, account_id: int, baseline_date: str
+) -> List[Dict[str, Any]]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_intraday_fills
+        WHERE account_id = ? AND data_status = 'provisional'
+        ORDER BY trade_date ASC, trade_time ASC, id ASC
+        """,
+        (account_id,),
+    ).fetchall()
+    result = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        trade_date = _date_key(row.get("trade_date"))
+        if not trade_date or trade_date <= baseline_date:
+            continue
+        if reconciliation.statement_coverage_for_date(cur, account_id, row["trade_date"]):
+            continue
+        result.append(row)
+    return result
+
+
+def _collector_freshness(
+    cur, account_id: int, now: datetime, snapshot: Optional[Mapping[str, Any]], conflict: bool
+) -> Dict[str, Any]:
+    devices = db._exec(
+        cur,
+        """
+        SELECT last_seen_at FROM trading_collector_devices
+        WHERE account_id = ? AND status = 'active' AND last_seen_at IS NOT NULL
+        ORDER BY last_seen_at DESC
+        """,
+        (account_id,),
+    ).fetchall()
+    last_seen = _parse_datetime(devices[0]["last_seen_at"]) if devices else None
+    if last_seen is None and snapshot is not None:
+        last_seen = _parse_datetime(snapshot.get("snapshot_timestamp"))
+    age_seconds = max(0, int((now - last_seen).total_seconds())) if last_seen else None
+    if conflict:
+        status = "conflict"
+    elif age_seconds is not None and age_seconds <= 30:
+        status = "current"
+    else:
+        status = "stale"
+    return {
+        "freshness_status": status,
+        "collector_last_seen_at": _format_datetime(last_seen),
+        "age_seconds": age_seconds,
+    }
+
+
+def _filter_position_items(items: List[Dict[str, Any]], filters: EffectiveFactFilters) -> List[Dict[str, Any]]:
+    filtered = []
+    for item in items:
+        if filters.fact_status and item["fact_status"] != filters.fact_status:
+            continue
+        if filters.contract and filters.contract.lower() not in str(item.get("contract") or "").lower():
+            continue
+        if filters.direction and item["direction"] != _position_direction(filters.direction):
+            continue
+        if filters.asset_type and item["asset_type"] != filters.asset_type:
+            continue
+        if filters.classification in {"classified", "unclassified"}:
+            if item["fact_status"] != "settlement_confirmed" or item.get("assignment_status") != filters.classification:
+                continue
+        if filters.start_date and _date_key(item.get("snapshot_date")) < (_date_key(filters.start_date) or _date_key(item.get("snapshot_date"))):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _position_result(
+    items: List[Dict[str, Any]],
+    filters: EffectiveFactFilters,
+    *,
+    data_status: str,
+    baseline_snapshot_date: Optional[str],
+    formation_method: str,
+    freshness: Mapping[str, Any],
+    warnings: Iterable[str],
+) -> Dict[str, Any]:
+    filtered = _filter_position_items(items, filters)
+    filtered.sort(key=lambda item: (str(item.get("contract") or ""), str(item.get("direction") or "")))
+    total = len(filtered)
+    total_pages = max(1, (total + filters.page_size - 1) // filters.page_size)
+    page = min(filters.page, total_pages)
+    offset = (page - 1) * filters.page_size
+    visible = filtered[offset:offset + filters.page_size]
+    provisional_count = sum(item["fact_status"] == "provisional" for item in filtered)
+    settlement_count = sum(item["fact_status"] == "settlement_confirmed" for item in filtered)
+    return {
+        "items": visible,
+        "summary": {
+            "record_count": total,
+            "source_record_count": sum(int(item.get("source_record_count") or 0) for item in filtered),
+            "quantity": sum(float(item.get("quantity") or 0) for item in filtered),
+            "margin": sum(float(item.get("margin") or 0) for item in filtered if item.get("margin") is not None),
+            "provisional_count": provisional_count,
+            "settlement_confirmed_count": settlement_count,
+            "contains_provisional": provisional_count > 0,
+        },
+        "page": page,
+        "page_size": filters.page_size,
+        "total_items": total,
+        "total_pages": total_pages,
+        "data_status": data_status,
+        "baseline_snapshot_date": baseline_snapshot_date,
+        "formation_method": formation_method,
+        "fact_status": "provisional" if provisional_count else "settlement_confirmed",
+        "as_of_time": freshness.get("as_of_time"),
+        "freshness_status": freshness.get("freshness_status"),
+        "collector_last_seen_at": freshness.get("collector_last_seen_at"),
+        "age_seconds": freshness.get("age_seconds"),
+        "risk_eligible": False,
+        "warnings": list(warnings),
+    }
+
+
 def query_effective_positions(
     cur,
     filters: EffectiveFactFilters,
     *,
     now: Any = None,
 ) -> Dict[str, Any]:
-    """Position projection is completed by the current-position implementation."""
-    del cur, filters, now
-    raise NotImplementedError("当前持仓投影尚未实现")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.replace(microsecond=0)
+    baseline_batches = _active_position_batches(cur, filters.end_date)
+    assignment_map = _position_assignment_map(cur)
+    if filters.end_date:
+        all_items: List[Dict[str, Any]] = []
+        for batch in baseline_batches.values():
+            all_items.extend(_position_baseline_rows(cur, batch, assignment_map))
+        all_items = _group_position_items(all_items)
+        freshness = {
+            "as_of_time": current.isoformat(),
+            "freshness_status": "stale",
+            "collector_last_seen_at": None,
+            "age_seconds": None,
+        }
+        return _position_result(
+            all_items,
+            filters,
+            data_status="ok" if all_items else "no_position_snapshot",
+            baseline_snapshot_date=next(iter(baseline_batches.values()), {}).get("_snapshot_date")
+            if baseline_batches else None,
+            formation_method="settlement_snapshot",
+            freshness=freshness,
+            warnings=[],
+        )
+
+    all_items = []
+    warnings: List[str] = []
+    overall_status = "ok"
+    overall_method = "settlement_snapshot"
+    baseline_dates: List[str] = []
+    freshness_statuses: List[str] = []
+    latest_last_seen: Optional[str] = None
+    latest_age: Optional[int] = None
+    account_ids = _position_account_ids(cur)
+    unavailable_accounts = 0
+    for account_id in account_ids:
+        batch = baseline_batches.get(account_id)
+        baseline_date = str(batch["_snapshot_date"]) if batch else ""
+        if baseline_date:
+            baseline_dates.append(baseline_date.replace("-", ""))
+        baseline_rows = _position_baseline_rows(cur, batch, assignment_map) if batch else []
+        full_snapshot, persistent_conflict = _latest_wh6_snapshot(cur, account_id, baseline_date)
+        freshness = _collector_freshness(cur, account_id, current, full_snapshot, persistent_conflict)
+        freshness_statuses.append(str(freshness["freshness_status"]))
+        if freshness.get("collector_last_seen_at") and (
+            latest_last_seen is None or str(freshness["collector_last_seen_at"]) > latest_last_seen
+        ):
+            latest_last_seen = str(freshness["collector_last_seen_at"])
+            latest_age = freshness.get("age_seconds")
+        if persistent_conflict:
+            warnings.append("WH6完整持仓快照存在持久冲突，未用于当前持仓")
+        if full_snapshot is not None:
+            all_items.extend(_wh6_snapshot_rows(cur, full_snapshot))
+            overall_method = "wh6_snapshot"
+            continue
+        if batch is None:
+            unavailable_accounts += 1
+            warnings.append("缺少结算持仓基线和完整 WH6 持仓快照")
+            continue
+        fills = _position_fills_after_baseline(cur, account_id, baseline_date)
+        projected = infer_positions_from_fills(baseline_rows, fills)
+        if projected["status"] == "projection_error":
+            overall_status = "projection_error"
+            warnings.extend(projected["warnings"])
+            all_items.extend(projected["items"])
+        else:
+            all_items.extend(projected["items"])
+            if fills:
+                overall_method = "inferred_from_settlement_and_fills"
+    if (unavailable_accounts or not account_ids) and not all_items:
+        freshness = {
+            "as_of_time": current.isoformat(),
+            "freshness_status": "unavailable",
+            "collector_last_seen_at": None,
+            "age_seconds": None,
+        }
+        return _position_result(
+            [],
+            filters,
+            data_status="unavailable",
+            baseline_snapshot_date=None,
+            formation_method="",
+            freshness=freshness,
+            warnings=warnings or ["缺少最近一次结算确认持仓基线"],
+        )
+    all_items = _group_position_items(all_items)
+    if "conflict" in freshness_statuses:
+        freshness_status = "conflict"
+    elif "stale" in freshness_statuses:
+        freshness_status = "stale"
+    else:
+        freshness_status = "current"
+    freshness = {
+        "as_of_time": current.isoformat(),
+        "freshness_status": freshness_status,
+        "collector_last_seen_at": latest_last_seen,
+        "age_seconds": latest_age,
+    }
+    return _position_result(
+        all_items,
+        filters,
+        data_status=overall_status,
+        baseline_snapshot_date=max(baseline_dates) if baseline_dates else None,
+        formation_method=overall_method,
+        freshness=freshness,
+        warnings=warnings,
+    )

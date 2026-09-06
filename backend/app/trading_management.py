@@ -2232,89 +2232,9 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
         if view == "closes":
             return _query_close_rows_paged(cur, filters)
         if view == "positions":
-            snapshot_date = filters.end_date
-            if not snapshot_date:
-                row = db._exec(
-                    cur,
-                    """
-                    SELECT MAX(ps.snapshot_date) AS d
-                    FROM trading_position_snapshots ps
-                    JOIN trading_import_batches b ON b.id = ps.batch_id
-                    WHERE b.status = 'active' AND ps.is_current = 1
-                    """,
-                ).fetchone()
-                snapshot_date = row["d"] if row else None
-            rows = db._exec(
-                cur,
-                """
-                SELECT ps.* FROM trading_position_snapshots ps
-                JOIN trading_import_batches b ON b.id = ps.batch_id
-                WHERE b.status = 'active' AND ps.is_current = 1 AND ps.snapshot_date = ?
-                ORDER BY ps.contract, ps.direction, ps.id
-                """,
-                (snapshot_date,),
-            ).fetchall() if snapshot_date else []
-            grouped_positions: dict[tuple[str, str, str], dict[str, Any]] = {}
-            for raw_row in rows:
-                row = dict(raw_row)
-                key = (row["contract"], row["direction"], row["asset_type"])
-                group = grouped_positions.get(key)
-                if not group:
-                    group = dict(row)
-                    group["quantity"] = 0.0
-                    group["margin"] = 0.0
-                    group["weighted_price"] = 0.0
-                    group["source_record_count"] = 0
-                    grouped_positions[key] = group
-                quantity = float(row["quantity"] or 0)
-                group["quantity"] += quantity
-                group["margin"] += float(row["margin"] or 0)
-                group["weighted_price"] += float(row["average_price"] or 0) * quantity
-                group["source_record_count"] += 1
-            items = list(grouped_positions.values())
-            for item in items:
-                item["average_price"] = item.pop("weighted_price") / item["quantity"] if item["quantity"] else 0
-            assignment_rows = db._exec(
-                cur,
-                """
-                SELECT tf.contract, tf.side AS direction, tf.asset_type,
-                       ba.business_type, st.name AS strategy,
-                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
-                FROM trading_trade_facts tf
-                JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
-                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
-                WHERE tf.is_current = 1 AND tf.open_close = '开仓'
-                """,
-            ).fetchall()
-            assignments: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-            for assignment in assignment_rows:
-                item = dict(assignment)
-                assignments.setdefault((item["contract"], item["direction"], item["asset_type"]), []).append(item)
-            for item in items:
-                related = assignments.get((item["contract"], item["direction"], item["asset_type"]), [])
-                classified = [row for row in related if row["assignment_status"] == "classified"]
-                item["assignment_status"] = "classified" if related and len(classified) == len(related) else "unclassified"
-                item["business_type"] = classified[0]["business_type"] if classified and len({row["business_type"] for row in classified}) == 1 else None
-                item["strategy"] = classified[0]["strategy"] if classified and len({row["strategy"] for row in classified}) == 1 else None
-            if filters.contract:
-                items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
-            if filters.direction:
-                items = [row for row in items if row["direction"] == filters.direction]
-            if filters.asset_type:
-                items = [row for row in items if row["asset_type"] == filters.asset_type]
-            if filters.classification == "classified":
-                items = [row for row in items if row["assignment_status"] == "classified"]
-            elif filters.classification == "unclassified":
-                items = [row for row in items if row["assignment_status"] == "unclassified"]
-            summary = {
-                "record_count": len(items),
-                "source_record_count": sum(int(row.get("source_record_count") or 0) for row in items),
-                "quantity": sum(float(row["quantity"]) for row in items),
-                "margin": sum(float(row["margin"] or 0) for row in items),
-            }
-            status = "ok" if items else "no_position_snapshot"
-            return _page_result(items, summary, filters, status)
+            return trading_effective_facts.query_effective_positions(
+                cur, _effective_fact_filters(filters)
+            )
         if view == "closes":
             rows = db._exec(
                 cur,
@@ -2688,6 +2608,7 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
         open_close=filters.open_close,
         start_date=filters.start_date,
         end_date=filters.end_date,
+        fact_status="settlement_confirmed",
         page=1,
         page_size=100,
     ))
@@ -2705,6 +2626,7 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
         direction=filters.direction,
         asset_type=filters.asset_type,
         end_date=filters.end_date,
+        fact_status="settlement_confirmed",
         page=1,
         page_size=100,
     ))

@@ -1,6 +1,7 @@
 """Tests for the single effective settlement/provisional trade projection."""
 
 from pathlib import Path
+from datetime import datetime, timezone
 import sys
 
 import pytest
@@ -220,3 +221,476 @@ def test_management_api_filters_accept_fact_status():
     filters = trading_management._api_filters(fact_status="settlement_confirmed")
 
     assert filters.fact_status == "settlement_confirmed"
+
+
+def _baseline_row(contract, direction, quantity, average_price, *, margin=100):
+    return {
+        "exchange": "DCE",
+        "contract": contract,
+        "asset_type": "future",
+        "direction": direction,
+        "quantity": quantity,
+        "average_price": average_price,
+        "margin": margin,
+        "valuation_price": average_price + 10,
+        "floating_pnl": 20,
+        "snapshot_date": "20260831",
+        "source_record_count": 1,
+    }
+
+
+def _fill(fill_id, contract, side, open_close, quantity, price, *, trade_date="20260901"):
+    return {
+        "id": fill_id,
+        "trade_date": trade_date,
+        "trade_time": f"09:00:{fill_id:02d}",
+        "exchange": "DCE",
+        "contract": contract,
+        "asset_type": "future",
+        "side": side,
+        "open_close": open_close,
+        "quantity": quantity,
+        "price": price,
+    }
+
+
+def _insert_settlement_position_batch(
+    account,
+    snapshot_date,
+    rows=(),
+    *,
+    statement_type="monthly",
+    range_start="20260801",
+    range_end="20260831",
+):
+    batch_id = insert_batch(account, range_start, range_end, "active", statement_type)
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE trading_import_batches SET position_snapshot_date = ?, position_count = ? WHERE id = ?",
+            (snapshot_date, len(rows), batch_id),
+        )
+        cur = conn.cursor()
+        for index, row in enumerate(rows, start=1):
+            source_row_id = db._last_insert_id(
+                cur,
+                """
+                INSERT INTO trading_source_rows
+                    (batch_id, source_type, source_file, source_sheet, source_row_no, raw_hash, raw_json)
+                VALUES (?, 'position', 'statement.txt', '持仓', ?, ?, '{}')
+                """,
+                (batch_id, index, f"position-{batch_id}-{index}"),
+            )
+            identity_id = db._last_insert_id(
+                cur,
+                "INSERT INTO trading_fact_identities (account_id, fact_type, stable_key) VALUES (?, 'position', ?)",
+                (account, f"position-{batch_id}-{index}"),
+            )
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_position_snapshots
+                    (identity_id, batch_id, source_row_id, snapshot_date, snapshot_time,
+                     exchange, contract, asset_type, direction, open_date, quantity,
+                     average_price, margin, valuation_price, floating_pnl, market_time,
+                     is_current, valuation_status, data_status, verification_status)
+                VALUES (?, ?, ?, ?, '15:00:00', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+                        1, 'settlement_reference', 'file_imported', 'verified')
+                """,
+                (
+                    identity_id,
+                    batch_id,
+                    source_row_id,
+                    snapshot_date,
+                    row["exchange"],
+                    row["contract"],
+                    row["asset_type"],
+                    row["direction"],
+                    row.get("open_date", snapshot_date),
+                    row["quantity"],
+                    row["average_price"],
+                    row.get("margin", 100),
+                    row.get("valuation_price", row["average_price"]),
+                    row.get("floating_pnl", 0),
+                ),
+            )
+        conn.commit()
+    return batch_id
+
+
+def _insert_wh6_snapshot(
+    account,
+    trade_date="20260902",
+    snapshot_timestamp="2026-09-02T09:00:00+08:00",
+    rows=(),
+    *,
+    conflict_status="none",
+):
+    with db.connect() as conn:
+        cur = conn.cursor()
+        snapshot_id = db._last_insert_id(
+            cur,
+            """
+            INSERT INTO trading_intraday_position_snapshots
+                (account_id, source_snapshot_key, trade_date, snapshot_time, snapshot_timestamp,
+                 complete, source_snapshot_sha256, parser_version, data_status, verification_status,
+                 conflict_status, canonical_hash)
+            VALUES (?, ?, ?, '09:00:00', ?, 1, ?, 'wh6-match-v1', 'provisional', 'pending', ?, ?)
+            """,
+            (
+                account,
+                f"snapshot-{trade_date}-{snapshot_timestamp}",
+                trade_date,
+                snapshot_timestamp,
+                "a" * 64,
+                conflict_status,
+                "b" * 64,
+            ),
+        )
+        for index, row in enumerate(rows):
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_intraday_position_rows
+                    (snapshot_id, account_id, contract, raw_contract, asset_type, exchange,
+                     direction, quantity, average_price, source_record_index, source_record_sha256)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    account,
+                    row["contract"],
+                    row["contract"],
+                    row["asset_type"],
+                    row["exchange"],
+                    row["direction"],
+                    row["quantity"],
+                    row["average_price"],
+                    index,
+                    f"c{index}" * 64,
+                ),
+            )
+        conn.commit()
+    return snapshot_id
+
+
+def test_infer_positions_applies_open_close_direction_and_weighted_average():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [
+            _baseline_row("i2609", "买", 2, 700),
+            _baseline_row("i2509", "卖", 3, 900),
+            _baseline_row("i2409", "买", 1, 600),
+        ],
+        [
+            _fill(1, "i2609", "买", "开", 1, 730),
+            _fill(2, "i2609", "卖", "平", 1, 740),
+            _fill(3, "i2509", "卖", "开", 2, 920),
+            _fill(4, "i2509", "买", "平", 1, 930),
+            _fill(5, "i2701", "买", "开", 2, 100),
+        ],
+    )
+
+    assert result["status"] == "ok"
+    rows = {(row["contract"], row["direction"]): row for row in result["items"]}
+    assert rows[("i2609", "买")]["quantity"] == 2
+    assert rows[("i2609", "买")]["average_price"] == pytest.approx(710)
+    assert rows[("i2509", "卖")]["quantity"] == 4
+    assert rows[("i2509", "卖")]["average_price"] == pytest.approx(908)
+    assert rows[("i2701", "买")]["quantity"] == 2
+    assert all(row["fact_status"] == "provisional" for row in rows.values() if row["contract"] != "i2409")
+    assert rows[("i2409", "买")]["fact_status"] == "settlement_confirmed"
+
+
+def test_infer_positions_removes_zero_quantity_rows_and_preserves_unaffected_values():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [_baseline_row("i2609", "买", 1, 700), _baseline_row("i2509", "买", 2, 900)],
+        [_fill(1, "i2609", "卖", "平", 1, 710)],
+    )
+
+    contracts = {(row["contract"], row["direction"]): row for row in result["items"]}
+    assert ("i2609", "买") not in contracts
+    assert contracts[("i2509", "买")]["fact_status"] == "settlement_confirmed"
+    assert contracts[("i2509", "买")]["margin"] == 100
+
+
+def test_infer_positions_returns_projection_error_without_clipping_negative_quantity():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [_baseline_row("i2609", "买", 1, 700)],
+        [_fill(1, "i2609", "卖", "平", 2, 710)],
+    )
+
+    assert result["status"] == "projection_error"
+    assert result["items"][0]["quantity"] == 1
+    assert result["warnings"]
+
+
+def test_infer_positions_rejects_incomplete_fill_without_guessing():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [_baseline_row("i2609", "买", 1, 700)],
+        [_fill(1, "i2609", "卖", "平", 1, None)],
+    )
+
+    assert result["status"] == "projection_error"
+    assert "价格" in result["warnings"][0]
+
+
+def test_effective_positions_use_latest_settlement_baseline_and_provisional_fills(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [
+            _baseline_row("i2609", "买", 2, 700),
+            _baseline_row("i2509", "卖", 3, 900),
+        ],
+    )
+    for fill_id, contract, side, open_close, quantity, price in [
+        (1, "i2609", "买", "开", 1, 730),
+        (2, "i2609", "卖", "平", 1, 740),
+        (3, "i2509", "卖", "开", 2, 920),
+        (4, "i2509", "买", "平", 1, 930),
+    ]:
+        insert_wh6_fill(
+            account,
+            event_key=f"tradeid:position-{fill_id}",
+            trade_id=f"position-{fill_id}",
+            trade_date="2026-09-01",
+            contract=contract,
+            asset_type="future",
+            side=side,
+            open_close=open_close,
+            quantity=quantity,
+            price=str(price),
+        )
+
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(), effective_filters(), now=datetime(2026, 9, 1, 9, 1, tzinfo=timezone.utc)
+        )
+
+    rows = {(row["contract"], row["direction"]): row for row in result["items"]}
+    assert result["baseline_snapshot_date"] == "20260831"
+    assert rows[("i2609", "买")]["quantity"] == 2
+    assert rows[("i2609", "买")]["average_price"] == pytest.approx(710)
+    assert rows[("i2509", "卖")]["quantity"] == 4
+    assert rows[("i2509", "卖")]["average_price"] == pytest.approx(908)
+    assert all(row["fact_status"] == "provisional" for row in rows.values())
+
+
+def test_zero_quantity_settlement_batch_is_a_valid_empty_baseline(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(account, "20260831", [])
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:empty-baseline",
+        trade_id="empty-baseline",
+        trade_date="2026-09-01",
+        contract="i2701",
+        quantity=2,
+        price="100",
+    )
+
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(), effective_filters()
+        )
+
+    assert result["baseline_snapshot_date"] == "20260831"
+    assert result["items"][0]["contract"] == "i2701"
+    assert result["items"][0]["quantity"] == 2
+
+
+def test_no_settlement_baseline_does_not_guess_current_position_from_fills(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:no-baseline",
+        trade_id="no-baseline",
+        trade_date="2026-09-01",
+        contract="i2701",
+    )
+
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(), effective_filters()
+        )
+
+    assert result["freshness_status"] == "unavailable"
+    assert result["items"] == []
+
+
+def test_complete_wh6_snapshot_can_supply_current_position_without_settlement_baseline(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_wh6_snapshot(
+        account,
+        trade_date="20260902",
+        rows=[
+            {
+                "contract": "i2701",
+                "asset_type": "future",
+                "exchange": "DCE",
+                "direction": "long",
+                "quantity": 2,
+                "average_price": "720",
+            }
+        ],
+    )
+
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(), effective_filters()
+        )
+
+    assert result["baseline_snapshot_date"] is None
+    assert result["formation_method"] == "wh6_snapshot"
+    assert result["items"][0]["contract"] == "i2701"
+    assert result["items"][0]["quantity"] == 2
+    assert result["items"][0]["fact_status"] == "provisional"
+
+
+def test_overclose_returns_projection_error_and_confirmed_baseline(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 1, 700)],
+    )
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:overclose",
+        trade_id="overclose",
+        trade_date="2026-09-01",
+        contract="i2609",
+        side="卖",
+        open_close="平",
+        quantity=2,
+    )
+
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(), effective_filters()
+        )
+
+    assert result["data_status"] == "projection_error"
+    assert result["items"][0]["quantity"] == 1
+    assert result["warnings"]
+
+
+def test_newer_complete_wh6_snapshot_wins_without_replaying_fills(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 1, 700)],
+    )
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:after-baseline",
+        trade_id="after-baseline",
+        trade_date="2026-09-01",
+        contract="i2609",
+        quantity=2,
+        price="730",
+    )
+    _insert_wh6_snapshot(
+        account,
+        trade_date="20260902",
+        rows=[{"contract": "i2609", "asset_type": "future", "exchange": "DCE", "direction": "long", "quantity": 5, "average_price": "720"}],
+    )
+
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(), effective_filters()
+        )
+
+    assert result["formation_method"] == "wh6_snapshot"
+    assert result["items"][0]["quantity"] == 5
+    assert result["items"][0]["fact_status"] == "provisional"
+
+
+def test_persistent_snapshot_conflict_and_stale_device_are_visible(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 1, 700)],
+    )
+    _insert_wh6_snapshot(
+        account,
+        trade_date="20260902",
+        rows=[{"contract": "i2609", "asset_type": "future", "exchange": "DCE", "direction": "long", "quantity": 5, "average_price": "720"}],
+        conflict_status="persistent",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO trading_collector_devices
+                (account_id, environment, device_name, client_version, fingerprint,
+                 token_hash, status, last_seen_at)
+            VALUES (?, 'staging', 'test-device', '0.3.2', 'fingerprint', 'token-hash', 'active', ?)
+            """,
+            (account, "2026-09-01T08:00:00+00:00"),
+        )
+        conn.commit()
+        result = trading_effective_facts.query_effective_positions(
+            conn.cursor(),
+            effective_filters(),
+            now=datetime(2026, 9, 2, 9, 1, tzinfo=timezone.utc),
+        )
+
+    assert result["freshness_status"] == "conflict"
+    assert result["items"][0]["quantity"] == 1
+    assert result["age_seconds"] >= 86400
+
+
+def test_management_query_fact_rows_uses_effective_position_projection(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 1, 700)],
+    )
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:management-position",
+        trade_id="management-position",
+        trade_date="2026-09-01",
+        contract="i2609",
+        asset_type="future",
+        quantity=1,
+        price="730",
+    )
+
+    result = trading_management.query_fact_rows(
+        "positions",
+        trading_management.FactFilters(page=1, page_size=20),
+    )
+
+    assert result["formation_method"] == "inferred_from_settlement_and_fills"
+    assert result["items"][0]["fact_status"] == "provisional"
+    assert result["items"][0]["quantity"] == 2
+
+
+def test_overview_excludes_provisional_trade_facts_from_formal_totals(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:overview-provisional",
+        trade_id="overview-provisional",
+        trade_date="2026-09-01",
+    )
+
+    overview = trading_management.build_overview(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    assert overview["trades"]["record_count"] == 0
+    assert overview["trades"]["contains_provisional"] is False
