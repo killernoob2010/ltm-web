@@ -721,9 +721,10 @@ def _position_baseline_rows(
         FROM trading_position_snapshots ps
         JOIN trading_import_batches b ON b.id = ps.batch_id
         WHERE ps.batch_id = ? AND ps.is_current = 1
+          AND REPLACE(ps.snapshot_date, '-', '') = ?
         ORDER BY ps.contract, ps.direction, ps.id
         """,
-        (int(batch["id"]),),
+        (int(batch["id"]), str(batch["_snapshot_date"]).replace("-", "")),
     ).fetchall()
     result = []
     for raw_row in rows:
