@@ -529,9 +529,7 @@ def _effective_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str,
         JOIN trading_import_batches b ON b.id = tf.batch_id
         WHERE b.status = 'active' AND tf.is_current = 1
         ORDER BY tf.id DESC
-        LIMIT ? OFFSET ?
         """,
-        (-1, 0),
     ).fetchall()
     settlement_by_key: Dict[tuple[Any, ...], Dict[str, Any]] = {}
     for row in settlement_rows:

@@ -583,6 +583,27 @@ def test_effective_positions_uses_postgres_boolean_expression(monkeypatch):
     assert result["freshness_status"] == "unavailable"
 
 
+def test_effective_trades_does_not_send_negative_postgres_limit(monkeypatch):
+    class Result:
+        def fetchall(self):
+            return []
+
+    def postgres_strict_exec(_cursor, sql, params=()):
+        normalized = " ".join(sql.split())
+        if "FROM trading_trade_facts tf" in normalized and params == (-1, 0):
+            raise AssertionError("PostgreSQL does not accept LIMIT -1")
+        return Result()
+
+    monkeypatch.setattr(trading_effective_facts.db, "_exec", postgres_strict_exec)
+
+    result = trading_effective_facts.query_effective_trades(
+        None,
+        effective_filters(),
+    )
+
+    assert result["total_items"] == 0
+
+
 def test_complete_wh6_snapshot_can_supply_current_position_without_settlement_baseline(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     account = account_id()
