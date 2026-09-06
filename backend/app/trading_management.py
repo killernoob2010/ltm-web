@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from . import db
 from . import trading_collector_reconciliation as collector_reconciliation
+from . import trading_effective_facts
 from .permissions import require_permission
 from .trading_settlement import parse_settlement_statement
 from .trading_overview import (
@@ -1981,6 +1982,7 @@ class FactFilters:
     start_date: str = ""
     end_date: str = ""
     classification: str = ""
+    fact_status: str = ""
     business_type: str = ""
     page: int = 1
     page_size: int = 20
@@ -1990,7 +1992,24 @@ class FactFilters:
             raise ValueError("每页条数只允许 20、50、100")
         if self.business_type not in {"", *BUSINESS_TYPES}:
             raise ValueError("未知业务类型")
+        if self.fact_status not in trading_effective_facts.FACT_STATUSES:
+            raise ValueError("事实状态无效")
         self.page = max(1, self.page)
+
+
+def _effective_fact_filters(filters: FactFilters) -> trading_effective_facts.EffectiveFactFilters:
+    return trading_effective_facts.EffectiveFactFilters(
+        contract=filters.contract,
+        direction=filters.direction,
+        asset_type=filters.asset_type,
+        open_close=filters.open_close,
+        classification=filters.classification,
+        fact_status=filters.fact_status,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+        page=filters.page,
+        page_size=filters.page_size,
+    )
 
 
 def _page_result(items: list[dict[str, Any]], summary: dict[str, Any], filters: FactFilters, data_status: str = "ok") -> dict[str, Any]:
@@ -2207,7 +2226,9 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
         if view == "trades":
-            return _query_trade_rows_paged(cur, filters)
+            return trading_effective_facts.query_effective_trades(
+                cur, _effective_fact_filters(filters)
+            )
         if view == "closes":
             return _query_close_rows_paged(cur, filters)
         if view == "positions":
@@ -2439,36 +2460,9 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
 def query_trade_selection_identities(filters: FactFilters) -> dict[str, Any]:
     """返回当前筛选口径下的全部成交标识，避免前端逐页拉取完整行数据。"""
     with db.connect() as conn:
-        rows = db._exec(
-            conn.cursor(),
-            """
-            SELECT tf.identity_id, tf.contract, tf.side, tf.asset_type,
-                   tf.open_close, tf.trade_date,
-                   CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
-            FROM trading_trade_facts tf
-            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
-            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-            WHERE tf.is_current = 1 AND tf.open_close = '开仓'
-            ORDER BY tf.trade_date DESC, tf.id DESC
-            """,
-        ).fetchall()
-    items = [dict(row) for row in rows]
-    if filters.contract:
-        items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
-    if filters.direction:
-        items = [row for row in items if row["side"] == filters.direction]
-    if filters.asset_type:
-        items = [row for row in items if row["asset_type"] == filters.asset_type]
-    if filters.open_close:
-        items = [row for row in items if row["open_close"] == filters.open_close]
-    if filters.start_date:
-        items = [row for row in items if row["trade_date"] >= filters.start_date]
-    if filters.end_date:
-        items = [row for row in items if row["trade_date"] <= filters.end_date]
-    if filters.classification in {"classified", "unclassified"}:
-        items = [row for row in items if row["assignment_status"] == filters.classification]
-    identity_ids = [int(row["identity_id"]) for row in items]
-    return {"identity_ids": identity_ids, "total_items": len(identity_ids)}
+        return trading_effective_facts.query_effective_trade_selection_ids(
+            conn.cursor(), _effective_fact_filters(filters)
+        )
 
 
 def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
@@ -4801,6 +4795,7 @@ def _api_filters(
     start_date: str = "",
     end_date: str = "",
     classification: str = "",
+    fact_status: str = "",
     business_type: str = "",
     page: int = 1,
     page_size: int = 20,
@@ -4808,6 +4803,7 @@ def _api_filters(
     return FactFilters(
         contract=contract, direction=direction, asset_type=asset_type, open_close=open_close,
         start_date=start_date, end_date=end_date, classification=classification,
+        fact_status=fact_status,
         business_type=business_type, page=page, page_size=page_size,
     )
 
