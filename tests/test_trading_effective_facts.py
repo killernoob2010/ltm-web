@@ -187,6 +187,39 @@ def test_fact_status_filter_and_server_pagination_cover_both_sources(tmp_path, m
     assert result["summary"]["contains_provisional"] is True
 
 
+def test_effective_trade_projection_reuses_statement_coverage_lookup(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    for index in range(2):
+        insert_wh6_fill(
+            account,
+            event_key=f"tradeid:coverage-cache-{index}",
+            trade_id=f"coverage-cache-{index}",
+            trade_date=f"2026-09-0{index + 1}",
+        )
+
+    original_lookup = reconciliation.get_active_statement_coverages
+    lookup_accounts = []
+
+    def counted_lookup(cur, account_id_value):
+        lookup_accounts.append(account_id_value)
+        return original_lookup(cur, account_id_value)
+
+    monkeypatch.setattr(reconciliation, "get_active_statement_coverages", counted_lookup)
+    with db.connect() as conn:
+        reconciliation.reconcile_intraday_range(
+            conn.cursor(), account, "2026-09-01", "2026-09-02", "tester"
+        )
+        conn.commit()
+        lookup_accounts.clear()
+        result = trading_effective_facts.query_effective_trades(
+            conn.cursor(), effective_filters()
+        )
+
+    assert result["total_items"] == 2
+    assert lookup_accounts == [account]
+
+
 def test_invalid_fact_status_is_rejected():
     with pytest.raises(ValueError, match="事实状态"):
         effective_filters(fact_status="unknown")

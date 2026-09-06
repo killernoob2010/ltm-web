@@ -561,10 +561,15 @@ def _effective_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str,
         """,
     ).fetchall()
     items = list(settlement_by_key.values())
+    coverage_caches: Dict[int, reconciliation.ReconciliationLookupCache] = {}
     for raw_row in provisional_rows:
         row = dict(raw_row)
+        account_id = int(row["account_id"])
+        lookup_cache = coverage_caches.setdefault(
+            account_id, reconciliation.ReconciliationLookupCache(account_id)
+        )
         if reconciliation.statement_coverage_for_date(
-            cur, int(row["account_id"]), row["trade_date"]
+            cur, account_id, row["trade_date"], lookup_cache=lookup_cache
         ):
             continue
         items.append(_provisional_item(row))
