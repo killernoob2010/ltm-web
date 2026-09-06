@@ -285,3 +285,23 @@ test("visible business position pages refresh quotes every fifteen seconds", () 
   assert.match(tradingJs, /MutationObserver/);
   assert.match(tradingJs, /tradingManagementPage/);
 });
+
+test("effective facts expose status filters, source labels, and freshness metadata", () => {
+  assert.match(tradingJs, /factStatus/);
+  assert.match(tradingJs, /id="tmFactStatus"/);
+  assert.match(tradingJs, /fact_status/);
+  for (const label of ["临时", "结算确认", "来源", "形成方式", "数据截至"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  assert.match(tradingJs, /settlement_confirmed/);
+  assert.match(tradingJs, /provisional/);
+  assert.match(tradingJs, /freshness_status/);
+  assert.match(tradingJs, /baseline_snapshot_date/);
+});
+
+test("provisional facts cannot enter business classification controls", () => {
+  assert.match(tradingJs, /row\.can_classify/);
+  assert.match(tradingJs, /结算确认后可归类/);
+  assert.match(tradingJs, /row\.open_close === "开仓" && row\.can_classify/);
+  assert.match(tradingJs, /can_classify/);
+});

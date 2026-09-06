@@ -35,6 +35,10 @@ test("collector page renders option volume and current position states", () => {
   assert.match(collectorJs, /renderCurrentPositions/);
   assert.match(collectorJs, /持仓数据可能已过期/);
   assert.match(collectorJs, /多设备持仓不一致/);
+  assert.match(html, /最新采集持仓快照诊断/);
+  assert.match(html, /collectorPositionDiagnostics/);
+  assert.doesNotMatch(html, /id="collectorPositionsTable"/);
+  assert.match(collectorJs, /collectorPositionDiagnostics/);
   assert.doesNotMatch(collectorJs, /token_hash|service_role|DATABASE_URL|C:\\\\Users/);
 });
 

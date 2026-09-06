@@ -117,9 +117,10 @@
   }
 
   function renderCurrentPositions(data) {
-    const items = (data.items || []).filter((item) => item.asset_type === "option");
+    const items = data.items || [];
     $("#collectorPositionCount").textContent = `共 ${items.length} 条`;
     const statusMessages = {
+      ok: "快照可用",
       expired: "持仓数据可能已过期",
       multi_device_conflict: "多设备持仓不一致",
       unavailable: "当前没有可验证的完整持仓快照",
@@ -127,12 +128,15 @@
     const statusNode = $("#collectorPositionStatus");
     const message = data.message || statusMessages[data.source_status] || `快照状态：${data.source_status || "正常"}`;
     statusNode.textContent = `${message}${data.snapshot_timestamp ? `｜快照：${data.snapshot_timestamp}` : ""}`;
-    statusNode.className = `collector-data-status ${data.is_expired || data.source_status === "multi_device_conflict" ? "is-warning" : ""}`;
-    $("#collectorPositionsTable").innerHTML = items.map((item) => `<tr>
-      <td>${esc(item.contract)}</td><td>${esc(item.direction)}</td><td>${esc(item.quantity)}</td>
-      <td>${esc(item.today_quantity ?? "—")}</td><td>${esc(item.yesterday_quantity ?? "—")}</td>
-      <td>${esc(item.average_price ?? "—")}</td><td>${esc(item.exchange)}</td>
-    </tr>`).join("");
+    statusNode.className = `collector-data-status ${data.is_expired || data.source_status === "multi_device_conflict" || data.source_status === "unavailable" ? "is-warning" : ""}`;
+    const diagnostics = [
+      ["快照交易日", data.trade_date || "—"],
+      ["快照行数", items.length],
+      ["采集时间", data.snapshot_timestamp || "—"],
+      ["数据年龄", data.age_seconds == null ? "—" : `${data.age_seconds} 秒`],
+      ["冲突状态", data.conflict_status === "none" ? "无冲突" : data.conflict_status || "—"],
+    ];
+    $("#collectorPositionDiagnostics").innerHTML = diagnostics.map(([label, value]) => `<div class="collector-position-diagnostic"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
   }
 
   async function loadFills() {

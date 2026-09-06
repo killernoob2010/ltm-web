@@ -33,6 +33,7 @@
     side: "",
     openClose: "",
     classification: "",
+    factStatus: "",
     dateFrom: "",
     dateTo: "",
     config: null,
@@ -304,13 +305,14 @@
     if (tm.side) params.set("direction", tm.side);
     if (tm.openClose) params.set("open_close", tm.openClose);
     if (tm.classification) params.set("classification", tm.classification);
+    if (tm.factsTab !== "closes" && tm.factStatus) params.set("fact_status", tm.factStatus);
     if (tm.dateFrom) params.set("start_date", tm.dateFrom);
     if (tm.dateTo) params.set("end_date", tm.dateTo);
     return params.toString();
   }
 
   function factCacheKey(tab, page = tm.page) {
-    return JSON.stringify([factCacheVersion, tab, tm.query, tm.assetType, tm.side, tm.openClose, tm.classification, tm.dateFrom, tm.dateTo, page, tm.pageSize]);
+    return JSON.stringify([factCacheVersion, tab, tm.query, tm.assetType, tm.side, tm.openClose, tm.classification, tm.factStatus, tm.dateFrom, tm.dateTo, page, tm.pageSize]);
   }
 
   function invalidateFactCache() {
@@ -330,10 +332,11 @@
     return request;
   }
 
-  function factDateValue(value) { return value ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}` : ""; }
+  function factDateValue(value) { const normalized = String(value || "").replaceAll("-", ""); return /^\d{8}$/.test(normalized) ? `${normalized.slice(0,4)}-${normalized.slice(4,6)}-${normalized.slice(6,8)}` : ""; }
 
   function filters(includeOpenClose = true) {
-    return `<div class="tm-filters compact ${includeOpenClose ? "with-open-close" : "without-open-close"}"><input id="tmSearch" class="tm-filter-search" type="search" placeholder="搜索合约" value="${esc(tm.query)}"><button id="tmSearchApply" class="tm-secondary-button">搜索</button><select id="tmAssetType" class="tm-filter-select" value="${esc(tm.assetType)}"><option value="" ${tm.assetType === "" ? "selected" : ""}>全部资产</option><option value="future" ${tm.assetType === "future" ? "selected" : ""}>期货</option><option value="option" ${tm.assetType === "option" ? "selected" : ""}>期权</option></select><select id="tmSide" class="tm-filter-select" value="${esc(tm.side)}"><option value="" ${tm.side === "" ? "selected" : ""}>全部方向</option><option value="买" ${tm.side === "买" ? "selected" : ""}>买</option><option value="卖" ${tm.side === "卖" ? "selected" : ""}>卖</option></select>${includeOpenClose ? `<select id="tmOpenClose" class="tm-filter-select" value="${esc(tm.openClose)}"><option value="" ${tm.openClose === "" ? "selected" : ""}>全部开平</option><option value="开仓" ${tm.openClose === "开仓" ? "selected" : ""}>开仓</option><option value="平仓" ${tm.openClose === "平仓" ? "selected" : ""}>平仓</option></select>` : ""}<select id="tmClassification" class="tm-filter-select" value="${esc(tm.classification)}"><option value="" ${tm.classification === "" ? "selected" : ""}>全部归类状态</option><option value="classified" ${tm.classification === "classified" ? "selected" : ""}>已归类</option><option value="unclassified" ${tm.classification === "unclassified" ? "selected" : ""}>未归类</option></select><input id="tmDateFrom" class="tm-filter-date" type="date" value="${factDateValue(tm.dateFrom)}"><input id="tmDateTo" class="tm-filter-date" type="date" value="${factDateValue(tm.dateTo)}"></div>`;
+    const statusFilter = tm.factsTab === "closes" ? "" : `<select id="tmFactStatus" class="tm-filter-select"><option value="" ${tm.factStatus === "" ? "selected" : ""}>全部事实状态</option><option value="settlement_confirmed" ${tm.factStatus === "settlement_confirmed" ? "selected" : ""}>结算确认</option><option value="provisional" ${tm.factStatus === "provisional" ? "selected" : ""}>临时</option></select>`;
+    return `<div class="tm-filters compact ${includeOpenClose ? "with-open-close" : "without-open-close"}"><input id="tmSearch" class="tm-filter-search" type="search" placeholder="搜索合约" value="${esc(tm.query)}"><button id="tmSearchApply" class="tm-secondary-button">搜索</button><select id="tmAssetType" class="tm-filter-select" value="${esc(tm.assetType)}"><option value="" ${tm.assetType === "" ? "selected" : ""}>全部资产</option><option value="future" ${tm.assetType === "future" ? "selected" : ""}>期货</option><option value="option" ${tm.assetType === "option" ? "selected" : ""}>期权</option></select><select id="tmSide" class="tm-filter-select" value="${esc(tm.side)}"><option value="" ${tm.side === "" ? "selected" : ""}>全部方向</option><option value="买" ${tm.side === "买" ? "selected" : ""}>买</option><option value="卖" ${tm.side === "卖" ? "selected" : ""}>卖</option></select>${includeOpenClose ? `<select id="tmOpenClose" class="tm-filter-select" value="${esc(tm.openClose)}"><option value="" ${tm.openClose === "" ? "selected" : ""}>全部开平</option><option value="开仓" ${tm.openClose === "开仓" ? "selected" : ""}>开仓</option><option value="平仓" ${tm.openClose === "平仓" ? "selected" : ""}>平仓</option></select>` : ""}<select id="tmClassification" class="tm-filter-select" value="${esc(tm.classification)}"><option value="" ${tm.classification === "" ? "selected" : ""}>全部归类状态</option><option value="classified" ${tm.classification === "classified" ? "selected" : ""}>已归类</option><option value="unclassified" ${tm.classification === "unclassified" ? "selected" : ""}>未归类</option></select>${statusFilter}<input id="tmDateFrom" class="tm-filter-date" type="date" value="${factDateValue(tm.dateFrom)}"><input id="tmDateTo" class="tm-filter-date" type="date" value="${factDateValue(tm.dateTo)}"></div>`;
   }
 
   function filterSummary(summary) {
@@ -343,17 +346,60 @@
     return `<div class="tm-filter-summary">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
   }
 
+  const FACT_STATUS_LABELS = {
+    settlement_confirmed: "结算确认",
+    provisional: "临时",
+  };
+  const FORMATION_METHOD_LABELS = {
+    settlement_snapshot: "结算持仓快照",
+    inferred_from_settlement_and_fills: "结算基线 + WH6 成交推算",
+    wh6_snapshot: "WH6完整快照",
+  };
+  const FRESHNESS_LABELS = {
+    current: "当前",
+    stale: "已过期",
+    conflict: "存在冲突",
+    unavailable: "不可用",
+  };
+
+  function factStatusLabel(value) {
+    return FACT_STATUS_LABELS[value] || value || "—";
+  }
+
+  function formationMethodLabel(value) {
+    return FORMATION_METHOD_LABELS[value] || value || "—";
+  }
+
+  function factDataNotice(data) {
+    if (tm.factsTab === "positions") {
+      const freshness = FRESHNESS_LABELS[data.freshness_status] || data.freshness_status || "不可用";
+      const baseline = data.baseline_snapshot_date ? `结算基线 ${factDateValue(data.baseline_snapshot_date)}` : "无结算基线";
+      const asOf = data.as_of_time ? `数据截至 ${String(data.as_of_time).replace("T", " ")}` : "数据截至 —";
+      return `<div class="tm-fact-notice"><span class="tm-tag ${data.freshness_status === "current" ? "blue" : "amber"}>新鲜度：${esc(freshness)}</span><span class="tm-tag">${esc(baseline)}</span><span class="tm-tag">${esc(asOf)}</span>${data.warnings?.length ? `<span class="tm-subtle">${esc(data.warnings[0])}</span>` : ""}</div>`;
+    }
+    if (data.summary?.contains_provisional) {
+      return `<div class="tm-fact-notice"><span class="tm-tag amber">当前筛选含 ${num(data.summary.provisional_count)} 条临时事实</span><span class="tm-subtle">临时事实不进入业务归属和正式盈亏</span></div>`;
+    }
+    return "";
+  }
+
   const FACT_COLUMNS = {
-    positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["assignment","业务类型 / 策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
+    positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["fact_status","事实状态"],["source_label","来源"],["formation_method","形成方式"],["assignment","业务类型 / 策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
     closes: [["close_date","平仓日"],["settlement_type","了结类型"],["contract","合约"],["asset_type","资产类型"],["open_side","方向"],["quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","平仓盈亏"],["matched_fee","手续费"],["assignment","业务类型 / 策略"]],
-    trades: [["trade_date","成交日"],["contract","合约"],["asset_type","资产类型"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["fee","手续费"],["fact_close_pnl","平仓盈亏"],["assignment","业务类型 / 策略"]],
+    trades: [["trade_date","成交日"],["contract","合约"],["asset_type","资产类型"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["fee","手续费"],["fact_close_pnl","平仓盈亏"],["fact_status","事实状态"],["source_label","来源"],["assignment","业务类型 / 策略"]],
   };
 
   function valueCell(row, key) {
     if (key === "pending") return pending();
     if (key === "settlement_type") return esc(SETTLEMENT_TYPE_LABELS[row[key]] || row[key] || "普通平仓");
+    if (key === "fact_status") return `<span class="tm-tag ${row[key] === "provisional" ? "amber" : "blue"}">${esc(factStatusLabel(row[key]))}</span>`;
+    if (key === "source_label") return esc(row[key] || "—");
+    if (key === "formation_method") return esc(formationMethodLabel(row[key]));
     if (["open_price","fact_close_pnl"].includes(key) && row.settlement_type !== "trade_close" && row.verification_status !== "matched") return '<span class="tm-tag amber">待核验</span>';
-    if (key === "assignment") return row.assignment_status === "classified" && row.business_type ? `<span class="tm-tag blue">${esc(businessType(row.business_type))}${row.strategy ? ` / ${esc(row.strategy)}` : ""}</span>` : '<span class="tm-tag amber">待确认</span>';
+    if (key === "assignment") {
+      if (row.fact_status === "provisional" || row.can_classify === false) return '<span class="tm-tag amber">结算确认后可归类</span>';
+      return row.assignment_status === "classified" && row.business_type ? `<span class="tm-tag blue">${esc(businessType(row.business_type))}${row.strategy ? ` / ${esc(row.strategy)}` : ""}</span>` : '<span class="tm-tag amber">待确认</span>';
+    }
     if (key === "valuation_source") return esc(valuationSource(row[key]));
     if (key === "valuation_status" || key === "floating_pnl_status") return esc(valuationStatus(row[key]));
     if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity","market_price","valuation_price","underlying_price","iv","floating_pnl","delta_exposure","gamma_exposure","theta_exposure","vega_exposure","net_close_pnl","fund_interest","settlement_80","settlement_20","allocated_open_fee","allocated_close_fee","settlement_open_price","settlement_fee"].includes(key)) return num(row[key]);
@@ -365,7 +411,7 @@
   function factTable(items) {
     const columns = FACT_COLUMNS[tm.factsTab];
     const selectable = tm.factsTab === "trades" && tm.permissions.canEdit;
-    return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td>${row.open_close === "开仓" ? `<input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}>` : "继承"}</td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${columns.length + 2}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
+    return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td>${row.open_close === "开仓" && row.can_classify && row.identity_id != null ? `<input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}>` : row.open_close === "开仓" ? '<span class="tm-tag amber">结算确认后可归类</span>' : "继承"}</td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${(selectable ? 1 : 0) + columns.length + 1}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
   }
 
   function pagination(data, prefix = "tm") {
@@ -379,7 +425,7 @@
     }
     const data = cached || await loadFactData(tm.factsTab);
     const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条开仓`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页开仓</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选开仓</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
-    $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
+    $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${factDataNotice(data)}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);
   }
 
@@ -387,11 +433,11 @@
     const resetSelectionForFilter = () => { tm.selected.clear(); tm.page = 1; };
     document.querySelectorAll("[data-fact-tab]").forEach((button) => button.addEventListener("click", () => { tm.factsTab = button.dataset.factTab; tm.page = 1; renderPositionsView().catch(showError); }));
     $("#tmSearchApply")?.addEventListener("click", () => { tm.query = $("#tmSearch").value.trim(); resetSelectionForFilter(); renderPositionsView().catch(showError); });
-    [["#tmAssetType","assetType"],["#tmSide","side"],["#tmOpenClose","openClose"],["#tmClassification","classification"]].forEach(([selector,key]) => $(selector)?.addEventListener("change", (event) => { tm[key] = event.target.value; resetSelectionForFilter(); renderPositionsView().catch(showError); }));
+    [["#tmAssetType","assetType"],["#tmSide","side"],["#tmOpenClose","openClose"],["#tmClassification","classification"],["#tmFactStatus","factStatus"]].forEach(([selector,key]) => $(selector)?.addEventListener("change", (event) => { tm[key] = event.target.value; resetSelectionForFilter(); renderPositionsView().catch(showError); }));
     $("#tmDateFrom")?.addEventListener("change", (event) => { tm.dateFrom = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
     $("#tmDateTo")?.addEventListener("change", (event) => { tm.dateTo = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
     document.querySelectorAll("[data-select-row]").forEach((box) => box.addEventListener("change", () => { const id = Number(box.dataset.selectRow); box.checked ? tm.selected.add(id) : tm.selected.delete(id); renderPositionsView().catch(showError); }));
-    $("#tmSelectPage")?.addEventListener("click", () => { tm.selected.clear(); data.items.filter((row) => row.open_close === "开仓").forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
+    $("#tmSelectPage")?.addEventListener("click", () => { tm.selected.clear(); data.items.filter((row) => row.open_close === "开仓" && row.can_classify && row.identity_id != null).forEach((row) => tm.selected.add(row.identity_id)); renderPositionsView().catch(showError); });
     $("#tmSelectFiltered")?.addEventListener("click", async () => {
       tm.selectionBusy = true; await renderPositionsView();
       try {
