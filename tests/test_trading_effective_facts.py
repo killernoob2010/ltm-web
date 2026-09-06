@@ -521,6 +521,35 @@ def test_no_settlement_baseline_does_not_guess_current_position_from_fills(tmp_p
     assert result["items"] == []
 
 
+def test_effective_positions_uses_postgres_boolean_expression(monkeypatch):
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = list(rows)
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    def postgres_strict_exec(_cursor, sql, _params=()):
+        normalized = " ".join(sql.split())
+        if "complete = 1" in normalized:
+            raise AssertionError("PostgreSQL does not compare boolean columns to integers")
+        if normalized.startswith("SELECT account_id FROM trading_import_batches"):
+            return Result([{"account_id": 1}])
+        return Result()
+
+    monkeypatch.setattr(trading_effective_facts.db, "_exec", postgres_strict_exec)
+
+    result = trading_effective_facts.query_effective_positions(
+        None,
+        effective_filters(),
+    )
+
+    assert result["freshness_status"] == "unavailable"
+
+
 def test_complete_wh6_snapshot_can_supply_current_position_without_settlement_baseline(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     account = account_id()

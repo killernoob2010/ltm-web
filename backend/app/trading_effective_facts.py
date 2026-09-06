@@ -769,7 +769,7 @@ def _position_account_ids(cur) -> List[int]:
         WHERE status = 'active' AND position_snapshot_date IS NOT NULL
         UNION
         SELECT account_id FROM trading_intraday_position_snapshots
-        WHERE complete = 1
+        WHERE complete IS TRUE
         UNION
         SELECT account_id FROM trading_intraday_fills
         WHERE data_status = 'provisional'
@@ -785,7 +785,7 @@ def _latest_wh6_snapshot(
         cur,
         """
         SELECT * FROM trading_intraday_position_snapshots
-        WHERE account_id = ? AND complete = 1
+        WHERE account_id = ? AND complete IS TRUE
         ORDER BY snapshot_timestamp DESC, id DESC
         """,
         (account_id,),
