@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_wh6_collector_core import _account, _record, _write_match
 from wh6_collector.cli import CollectorConfig, run_once
 from wh6_collector.local_store import LocalOutbox
+from wh6_collector.parser import business_trading_day
 from wh6_collector.policy import CollectionPolicy
 from wh6_collector.uploader import StagingUploader
 
@@ -260,7 +261,7 @@ def test_staging_uploader_heartbeats_client_version_with_device_header(monkeypat
 def test_first_start_without_policy_scans_today_but_pauses_history(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
-    today = datetime.now().astimezone().strftime("%Y%m%d")
+    today = business_trading_day(datetime.now().astimezone()).replace("-", "")
     _write_match(source_root / f"{today}match.dat", [_record(timestamp=f"{today[:4]}-{today[4:6]}-{today[6:]} 09:31:02")], size=268)
     _write_match(source_root / "20260815match.dat", [_record(timestamp="2026-08-15 09:31:02", match_id="HISTORY")], size=268)
     uploaded = []

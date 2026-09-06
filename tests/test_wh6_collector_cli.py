@@ -22,6 +22,7 @@ from wh6_collector.cli import (
 import wh6_collector.cli as cli
 from wh6_collector.local_store import LocalOutbox
 from wh6_collector.monitor import scan_source
+from wh6_collector.parser import business_trading_day
 from wh6_collector.discovery import validate_source
 from wh6_collector.uploader import UploadError
 
@@ -243,7 +244,7 @@ def test_service_loop_rechecks_positions_after_new_realtime_fill(tmp_path, monke
 def test_once_uploads_full_asset_fills_and_position_snapshot_with_priority_payload(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
-    today = datetime.now().astimezone().strftime("%Y%m%d")
+    today = business_trading_day(datetime.now().astimezone()).replace("-", "")
     _write_match(source_root / (today + "match.dat"), [_record(contract="i2607", match_id="FUT-001")], size=268)
     write_position_json(source_root / (today + "position.dat"), rows=[_position_row("i2607-C-750")])
     uploaded = []
@@ -345,7 +346,7 @@ def test_once_sends_history_in_small_batches_to_keep_staging_requests_responsive
 def test_once_pauses_upload_after_device_authorization_failure(tmp_path, monkeypatch):
     source_root = tmp_path / "Record"
     source_root.mkdir()
-    today = datetime.now().astimezone().strftime("%Y%m%d")
+    today = business_trading_day(datetime.now().astimezone()).replace("-", "")
     _write_match(
         source_root / f"{today}match.dat",
         [_record(timestamp=f"{today[:4]}-{today[4:6]}-{today[6:]} 09:31:02")],

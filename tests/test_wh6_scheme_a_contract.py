@@ -19,6 +19,7 @@ from app import trading_collector_service as service
 from test_wh6_collector_core import _account, _record, _write_match
 from wh6_collector import cli
 from wh6_collector.local_store import LocalOutbox
+from wh6_collector.parser import business_trading_day
 from wh6_collector.policy import CollectionPolicy
 
 
@@ -260,7 +261,7 @@ def test_wh6_a001_server_rejects_a_pairing_code_for_the_other_runtime(monkeypatc
 def test_wh6_a003_policy_failure_queues_current_day_but_does_not_upload_history_or_current(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
-    today = datetime.now().astimezone().strftime("%Y%m%d")
+    today = business_trading_day(datetime.now().astimezone()).replace("-", "")
     _write_match(
         source_root / f"{today}match.dat",
         [_record(timestamp=f"{today[:4]}-{today[4:6]}-{today[6:]} 09:31:02", match_id="TODAY")],
@@ -303,7 +304,7 @@ def test_wh6_a003_policy_failure_queues_current_day_but_does_not_upload_history_
 def test_wh6_a003_mixed_source_file_only_uploads_whitelisted_trade_dates(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
-    today = datetime.now().astimezone().strftime("%Y%m%d")
+    today = business_trading_day(datetime.now().astimezone()).replace("-", "")
     _write_match(
         source_root / f"{today}match.dat",
         [

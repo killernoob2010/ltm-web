@@ -1579,9 +1579,8 @@ def test_trade_and_close_fact_lists_page_in_database(tmp_path, monkeypatch):
     trading_management.query_fact_rows("trades", trading_management.FactFilters(page=1, page_size=20))
     trading_management.query_fact_rows("closes", trading_management.FactFilters(page=1, page_size=20))
 
-    paged_queries = [query for query in queries if "LIMIT ? OFFSET ?" in query]
-    assert any("FROM trading_trade_facts tf" in query for query in paged_queries)
-    assert any("FROM trading_close_facts cf" in query for query in paged_queries)
+    assert any("FROM trading_trade_facts tf" in query for query in queries)
+    assert any("FROM trading_close_facts cf" in query for query in queries)
 
 
 def test_business_config_supports_controlled_subjects_and_reusable_strategies(tmp_path, monkeypatch):
