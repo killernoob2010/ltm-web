@@ -491,6 +491,106 @@ def test_daily_corrects_present_fields_but_does_not_close_month(tmp_path, monkey
     assert reconciliation.build_collection_policy(account)["closed_ranges"] == []
 
 
+def test_compact_settlement_date_matches_iso_wh6_date(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    fill_id = insert_wh6_fill(account, trade_date="2026-05-10", trade_id="000123")
+    daily_batch = insert_batch(account, "20260510", "20260510", "active", "daily")
+    insert_settlement_trade(
+        account,
+        daily_batch,
+        identity_key="compact-date-match",
+        transaction_no="000123",
+        trade_date="20260510",
+        price=785,
+        fee=None,
+    )
+
+    reconcile_batch(daily_batch)
+
+    assert current_resolution(fill_id)["result_status"] == "matched_daily"
+
+
+def test_daily_coverage_removes_matched_wh6_from_effective_data(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    fill_id = insert_wh6_fill(account, trade_date="2026-05-10", trade_id="000123")
+    daily_batch = insert_batch(account, "2026-05-10", "2026-05-10", "active", "daily")
+    insert_settlement_trade(
+        account,
+        daily_batch,
+        identity_key="daily-covered",
+        transaction_no="000123",
+        trade_date="2026-05-10",
+        price=785,
+        fee=None,
+    )
+
+    reconcile_batch(daily_batch)
+
+    result = current_resolution(fill_id)
+    assert result["data_status"] == "settlement_covered"
+    assert result["reconciliation_status"] == "matched_daily"
+
+
+def test_daily_coverage_without_match_is_daily_unmatched_conflict(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    fill_id = insert_wh6_fill(account, trade_date="2026-05-10", trade_id="missing")
+    daily_batch = insert_batch(account, "2026-05-10", "2026-05-10", "active", "daily")
+
+    reconcile_batch(daily_batch)
+
+    result = current_resolution(fill_id)
+    assert result["result_status"] == "daily_unmatched"
+    assert result["data_status"] == "settlement_conflict"
+    assert result["reconciliation_status"] == "daily_unmatched"
+
+
+def test_monthly_coverage_has_priority_over_daily_for_same_date(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    daily_batch = insert_batch(account, "2026-05-01", "2026-05-31", "active", "daily")
+    monthly_batch = insert_batch(account, "20260501", "20260531", "active", "monthly")
+
+    with db.connect() as conn:
+        coverage = reconciliation.statement_coverage_for_date(
+            conn.cursor(), account, "2026-05-10"
+        )
+
+    assert coverage["statement_type"] == "monthly"
+    assert coverage["source_batch_id"] == monthly_batch
+    assert daily_batch != monthly_batch
+
+
+def test_uncovered_wh6_remains_provisional(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    fill_id = insert_wh6_fill(account, trade_date="2026-05-10", trade_id="uncovered")
+
+    with db.connect() as conn:
+        reconciliation.reconcile_intraday_range(
+            conn.cursor(), account, "2026-05-10", "2026-05-10", "tester"
+        )
+        conn.commit()
+
+    result = current_resolution(fill_id)
+    assert result["result_status"] == "unmatched"
+    assert result["data_status"] == "provisional"
+
+
+def test_trade_date_helpers_accept_both_persisted_formats(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+
+    assert reconciliation.normalize_trade_date("20260510").isoformat() == "2026-05-10"
+    assert reconciliation.iso_trade_date("20260510") == "2026-05-10"
+    assert reconciliation.compact_trade_date("2026-05-10") == "20260510"
+    assert reconciliation.trade_date_variants("2026-05-10") == (
+        "2026-05-10",
+        "20260510",
+    )
+
+
 def test_monthly_overrides_daily_without_blank_overwrite(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     account = account_id()

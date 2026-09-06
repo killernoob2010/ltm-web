@@ -63,14 +63,44 @@ def normalize_transaction_no(value: object) -> str:
     return str(int(text)) if text.isdigit() else text
 
 
-def _normalize_date(value: object) -> Optional[date]:
+def normalize_trade_date(value: object) -> Optional[date]:
+    """Accept YYYYMMDD or YYYY-MM-DD and return a calendar date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
     text = str(value or "").strip()
     for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        candidate = text[:10] if fmt == "%Y-%m-%d" else text[:8]
         try:
-            return datetime.strptime(text[:10] if fmt == "%Y-%m-%d" else text[:8], fmt).date()
+            return datetime.strptime(candidate, fmt).date()
         except ValueError:
             continue
     return None
+
+
+def iso_trade_date(value: object) -> str:
+    """Return YYYY-MM-DD or an empty string for invalid input."""
+    parsed = normalize_trade_date(value)
+    return parsed.isoformat() if parsed else ""
+
+
+def compact_trade_date(value: object) -> str:
+    """Return YYYYMMDD or an empty string for invalid input."""
+    parsed = normalize_trade_date(value)
+    return parsed.strftime("%Y%m%d") if parsed else ""
+
+
+def trade_date_variants(value: object) -> tuple[str, str]:
+    """Return (YYYY-MM-DD, YYYYMMDD); invalid input raises ValueError."""
+    iso = iso_trade_date(value)
+    if not iso:
+        raise ValueError("交易日期格式无法验证")
+    return iso, compact_trade_date(iso)
+
+
+def _normalize_date(value: object) -> Optional[date]:
+    return normalize_trade_date(value)
 
 
 def _complete_month_range(start: object, end: object) -> Optional[tuple[str, str, str]]:
@@ -116,6 +146,80 @@ def get_active_monthly_ranges(cur, account_id: int) -> list[dict[str, object]]:
             },
         )
     return sorted(ranges.values(), key=lambda item: (str(item["range_start"]), str(item["range_end"])))
+
+
+def get_active_statement_coverages(cur, account_id: int) -> list[dict[str, object]]:
+    """Return normalized active daily and complete-monthly authority ranges."""
+    rows = db._exec(
+        cur,
+        """
+        SELECT id, range_start, range_end, statement_type, source_priority
+        FROM trading_import_batches
+        WHERE account_id = ? AND status = 'active'
+          AND statement_type IN ('daily', 'monthly')
+        ORDER BY source_priority DESC, id DESC
+        """,
+        (account_id,),
+    ).fetchall()
+    coverages: list[dict[str, object]] = []
+    for row in rows:
+        statement_type = str(row["statement_type"] or "").strip().lower()
+        if statement_type == "daily":
+            range_start = normalize_trade_date(row["range_start"])
+            range_end = normalize_trade_date(row["range_end"])
+            if not range_start or not range_end or range_start != range_end:
+                continue
+        elif statement_type == "monthly":
+            normalized = _complete_month_range(row["range_start"], row["range_end"])
+            if not normalized:
+                continue
+            range_start = normalize_trade_date(normalized[0])
+            range_end = normalize_trade_date(normalized[1])
+            assert range_start is not None and range_end is not None
+        else:
+            continue
+        coverages.append(
+            {
+                "source_batch_id": int(row["id"]),
+                "statement_type": statement_type,
+                "source_priority": int(row["source_priority"] or 0),
+                "range_start": range_start.isoformat(),
+                "range_end": range_end.isoformat(),
+            }
+        )
+    return coverages
+
+
+def statement_coverage_for_date(
+    cur,
+    account_id: int,
+    trade_date: object,
+    *,
+    lookup_cache: Optional["ReconciliationLookupCache"] = None,
+) -> Optional[dict[str, object]]:
+    """Return the highest-priority active statement coverage for one date."""
+    normalized = iso_trade_date(trade_date)
+    if not normalized:
+        return None
+    coverages = (
+        lookup_cache.statement_coverages(cur)
+        if lookup_cache is not None
+        else get_active_statement_coverages(cur, account_id)
+    )
+    matching = [
+        item
+        for item in coverages
+        if str(item["range_start"]) <= normalized <= str(item["range_end"])
+    ]
+    if not matching:
+        return None
+    return max(
+        matching,
+        key=lambda item: (
+            int(item["source_priority"] or 0),
+            int(item["source_batch_id"] or 0),
+        ),
+    )
 
 
 def _policy_revision(
@@ -424,6 +528,7 @@ def finalize_lower_priority_monthly_trades(cur, batch_id: int) -> dict[str, int]
 
 MATCH_STATUSES = {
     "unmatched",
+    "daily_unmatched",
     "ambiguous",
     "matched_daily",
     "corrected_daily",
@@ -507,6 +612,7 @@ class ReconciliationSummary:
     matched_monthly: int = 0
     corrected_monthly: int = 0
     unmatched: int = 0
+    daily_unmatched: int = 0
     ambiguous: int = 0
     monthly_unmatched: int = 0
     covered: int = 0
@@ -534,13 +640,15 @@ class ReconciliationSummary:
             self.corrected_monthly += 1
         elif status == "unmatched":
             self.unmatched += 1
+        elif status == "daily_unmatched":
+            self.daily_unmatched += 1
         elif status == "ambiguous":
             self.ambiguous += 1
         elif status == "monthly_unmatched":
             self.monthly_unmatched += 1
         if covered:
             self.covered += 1
-        if status in {"ambiguous", "monthly_unmatched"}:
+        if status in {"ambiguous", "daily_unmatched", "monthly_unmatched"}:
             self.conflicts += 1
         if changed:
             self.changed += 1
@@ -557,6 +665,7 @@ class ReconciliationSummary:
             "matched_monthly": self.matched_monthly,
             "corrected_monthly": self.corrected_monthly,
             "unmatched": self.unmatched,
+            "daily_unmatched": self.daily_unmatched,
             "ambiguous": self.ambiguous,
             "monthly_unmatched": self.monthly_unmatched,
             "covered": self.covered,
@@ -586,6 +695,7 @@ class ReconciliationLookupCache:
 
     account_id: int
     active_monthly_ranges: Optional[List[Dict[str, object]]] = None
+    active_statement_coverages: Optional[List[Dict[str, object]]] = None
     settlement_rows_by_date: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     settlement_versions_by_identity: Optional[Dict[int, List[Dict[str, Any]]]] = None
     current_audits_by_fill_id: Optional[Dict[int, Dict[str, Any]]] = None
@@ -595,12 +705,20 @@ class ReconciliationLookupCache:
             self.active_monthly_ranges = get_active_monthly_ranges(cur, self.account_id)
         return self.active_monthly_ranges
 
-    def settlement_rows(self, cur, trade_date: str) -> List[Dict[str, Any]]:
-        if trade_date not in self.settlement_rows_by_date:
-            self.settlement_rows_by_date[trade_date] = _settlement_rows_for_date(
-                cur, self.account_id, trade_date
+    def statement_coverages(self, cur) -> List[Dict[str, object]]:
+        if self.active_statement_coverages is None:
+            self.active_statement_coverages = get_active_statement_coverages(
+                cur, self.account_id
             )
-        return self.settlement_rows_by_date[trade_date]
+        return self.active_statement_coverages
+
+    def settlement_rows(self, cur, trade_date: str) -> List[Dict[str, Any]]:
+        cache_key = iso_trade_date(trade_date) or str(trade_date)
+        if cache_key not in self.settlement_rows_by_date:
+            self.settlement_rows_by_date[cache_key] = _settlement_rows_for_date(
+                cur, self.account_id, cache_key
+            )
+        return self.settlement_rows_by_date[cache_key]
 
     def settlement_versions(self, cur, identity_id: int) -> List[Dict[str, Any]]:
         if self.settlement_versions_by_identity is None:
@@ -732,6 +850,10 @@ def _settlement_rows_for_date(
 ) -> List[Dict[str, Any]]:
     if lookup_cache is not None:
         return lookup_cache.settlement_rows(cur, trade_date)
+    try:
+        iso_date, compact_date = trade_date_variants(trade_date)
+    except ValueError:
+        return []
     rows = db._exec(
         cur,
         """
@@ -743,10 +865,10 @@ def _settlement_rows_for_date(
         JOIN trading_import_batches b ON b.id = tf.batch_id
         WHERE fi.account_id = ? AND b.account_id = ? AND b.status = 'active'
           AND b.statement_type IN ('daily', 'monthly') AND tf.is_current = 1
-          AND tf.trade_date = ?
+          AND tf.trade_date IN (?, ?)
         ORDER BY tf.id DESC
         """,
-        (account_id, account_id, trade_date),
+        (account_id, account_id, iso_date, compact_date),
     ).fetchall()
     return [_row_dict(row) for row in rows]
 
@@ -787,13 +909,16 @@ def _closed_range_for_date(
     *,
     lookup_cache: Optional[ReconciliationLookupCache] = None,
 ) -> Optional[Dict[str, object]]:
+    normalized_date = iso_trade_date(trade_date)
+    if not normalized_date:
+        return None
     monthly_ranges = (
         lookup_cache.monthly_ranges(cur)
         if lookup_cache is not None
         else get_active_monthly_ranges(cur, account_id)
     )
     for item in monthly_ranges:
-        if str(item["range_start"]) <= trade_date <= str(item["range_end"]):
+        if str(item["range_start"]) <= normalized_date <= str(item["range_end"]):
             return item
     return None
 
@@ -829,7 +954,7 @@ def match_intraday_fill(
 ) -> MatchDecision:
     """Find one active settlement identity without guessing across candidates."""
     account_id = int(_row_value(fill, "account_id") or 0)
-    normalized_date = _normalize_date(_row_value(fill, "trade_date"))
+    normalized_date = normalize_trade_date(_row_value(fill, "trade_date"))
     if not account_id or not normalized_date:
         return MatchDecision("unmatched", reason="invalid_fill_identity")
     trade_date = normalized_date.isoformat()
@@ -858,10 +983,17 @@ def match_intraday_fill(
         identity_id = int(_row_value(row, "identity_id"))
         identity_rows.setdefault(identity_id, row)
     if len(identity_rows) != 1:
-        closed = _closed_range_for_date(
+        coverage = statement_coverage_for_date(
             cur, account_id, trade_date, lookup_cache=lookup_cache
         )
-        status = "monthly_unmatched" if not identity_rows and closed else "ambiguous" if len(identity_rows) > 1 else "unmatched"
+        if len(identity_rows) > 1:
+            status = "ambiguous"
+        elif coverage and coverage["statement_type"] == "monthly":
+            status = "monthly_unmatched"
+        elif coverage and coverage["statement_type"] == "daily":
+            status = "daily_unmatched"
+        else:
+            status = "unmatched"
         return MatchDecision(status, candidate_count=len(identity_rows), reason="no_unique_settlement_candidate")
 
     identity_id, anchor = next(iter(identity_rows.items()))
@@ -949,15 +1081,20 @@ def _persist_resolution(
     resolved = resolve_fill_fields(fill, settlement, decision.authority_type)
     account_id = int(_row_value(fill, "account_id"))
     trade_date = _normalize_date(_row_value(fill, "trade_date"))
-    closed = bool(
-        trade_date
-        and _closed_range_for_date(
-            cur, account_id, trade_date.isoformat(), lookup_cache=lookup_cache
-        )
+    coverage = statement_coverage_for_date(
+        cur,
+        account_id,
+        trade_date.isoformat() if trade_date else "",
+        lookup_cache=lookup_cache,
     )
-    is_monthly_status = decision.status in {"matched_monthly", "corrected_monthly"}
-    is_conflict = decision.status in {"ambiguous", "monthly_unmatched"} and closed
-    data_status = "settlement_conflict" if is_conflict else "settlement_covered" if is_monthly_status and closed else "provisional"
+    is_conflict = decision.status in {"ambiguous", "daily_unmatched", "monthly_unmatched"} and bool(coverage)
+    is_covered = decision.status in {
+        "matched_daily",
+        "corrected_daily",
+        "matched_monthly",
+        "corrected_monthly",
+    } and bool(coverage)
+    data_status = "settlement_conflict" if is_conflict else "settlement_covered" if is_covered else "provisional"
     effective_source = decision.authority_type if settlement else "wh6"
     identity_id = decision.identity_id
     batch_id = decision.batch_id
