@@ -56,3 +56,9 @@ def test_build_sales_type_backfill_plan_does_not_convert_codes():
     assert result["invalid"] == 1
     assert result["to_update"] == 0
     assert result["plans"] == []
+
+
+def test_staging_write_timeout_covers_large_backfill_request():
+    bridge = _load_bridge()
+
+    assert bridge.DEFAULT_STAGING_TIMEOUT >= 120

@@ -33,6 +33,7 @@ from app.spot_ledger_sync import (  # noqa: E402
 
 STAGING_BASE_URL = "https://ltm-web-staging.onrender.com"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+DEFAULT_STAGING_TIMEOUT = 120
 
 
 def validate_staging_base_url(value: str) -> str:
@@ -161,7 +162,7 @@ class StagingLedgerClient:
         base_url: str,
         username: str,
         password: str,
-        timeout: float = 30,
+        timeout: float = DEFAULT_STAGING_TIMEOUT,
         session: requests.Session | None = None,
     ):
         self.base_url = validate_staging_base_url(base_url)
@@ -239,7 +240,7 @@ def main() -> int:
     parser.add_argument("--base-url", default=STAGING_BASE_URL)
     parser.add_argument("--apply", action="store_true", help="通过测试版接口写入完整销售类型")
     parser.add_argument("--change-log", type=Path, default=Path("/tmp/spot-ledger-sales-type-change-log.json"))
-    parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--timeout", type=float, default=DEFAULT_STAGING_TIMEOUT)
     args = parser.parse_args()
     username = os.getenv("STAGING_LEDGER_USERNAME", "")
     password = os.getenv("STAGING_LEDGER_PASSWORD", "")
