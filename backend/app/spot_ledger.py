@@ -53,7 +53,7 @@ TECHNICAL_FIELDS = (
 LIST_RECORD_FIELDS = (
     "record_id", "source_detail_id", "AD", "E", "AP", "D", "U", "H", "AU", "I", "Q", "AB", "L", "X",
     "record_source_type", "strategic_group", "strategic_account", "strategic_contract", "strategic_open_direction",
-    "strategic_opened_at", "strategic_open_quantity", "strategic_quantity_unit", "strategic_status",
+    "strategic_opened_at", "strategic_open_quantity", "strategic_close_quantity", "strategic_quantity_unit", "strategic_status",
     "supplement_status", "sync_status", "sync_error_summary",
 )
 BACKFILL_SNAPSHOT_FIELDS = (
@@ -665,10 +665,11 @@ def _record_query_conditions(
     if closed_state:
         conditions.append("source_closed_state = ?")
         values.append("已结案" if closed_state in {"已结案", "结案", "是", "1", "true"} else "未结案")
-    for key, column in (("from_date", '"U"'), ("to_date", '"U"')):
+    date_column = 'COALESCE(NULLIF("U", \'\'), SUBSTR(strategic_opened_at, 1, 10))' if include_strategic else '"U"'
+    for key in ("from_date", "to_date"):
         value = _normalize_date(params.get(key))
         if value:
-            conditions.append(f"{column} {'>=' if key == 'from_date' else '<='} ?")
+            conditions.append(f"{date_column} {'>=' if key == 'from_date' else '<='} ?")
             values.append(value)
     for key, column in (("purchase_quantity", '"L"'), ("sales_quantity", '"X"')):
         value = _text(params.get(key))

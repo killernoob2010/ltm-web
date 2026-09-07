@@ -180,22 +180,21 @@
     body.innerHTML = records.map((record) => {
       if (record.record_source_type === "战略套保") {
         const strategyValue = (value) => value === null || value === undefined || value === "" ? "—" : displayValue(value);
-        const strategyStatus = strategyValue(record.strategic_status);
+        const strategyQuantity = (value) => {
+          const quantity = strategyValue(value);
+          return quantity === "—" ? quantity : `${quantity} ${strategyValue(record.strategic_quantity_unit)}`;
+        };
         return `<tr class="spot-ledger-record-row spot-ledger-strategy-row" data-record-id="${escapeHtml(record.record_id)}">
-          <td><span class="spot-ledger-badge success">战略套保</span></td>
-          <td>${escapeHtml(strategyValue(record.strategic_contract))}</td>
-          <td>${escapeHtml(strategyValue(record.strategic_group))}</td>
-          <td>${escapeHtml(strategyValue(record.strategic_group))}</td>
-          <td><span class="spot-ledger-badge success">战略套保</span></td>
-          <td>${escapeHtml(seconds(record.strategic_opened_at) || "—")}</td>
-          <td>${escapeHtml(strategyValue(record.strategic_contract))}</td>
-          <td>—</td>
-          <td>—</td>
-          <td>—</td>
-          <td>—</td>
-          <td>${escapeHtml(strategyValue(record.strategic_open_quantity))}</td>
-          <td>${escapeHtml(strategyValue(record.strategic_close_quantity))}</td>
-          <td><span class="spot-ledger-badge success">${escapeHtml(strategyStatus)}</span></td>
+          <td colspan="14"><div class="spot-ledger-strategy-summary">
+            <span class="spot-ledger-badge success">战略套保</span>
+            <span>组别：${escapeHtml(strategyValue(record.strategic_group))}</span>
+            <span>账户：${escapeHtml(strategyValue(record.strategic_account))}</span>
+            <span>合约：${escapeHtml(strategyValue(record.strategic_contract))}</span>
+            <span>开仓时间：${escapeHtml(seconds(record.strategic_opened_at) || "—")}</span>
+            <span>开仓数量：${escapeHtml(strategyQuantity(record.strategic_open_quantity))}</span>
+            <span>平仓数量：${escapeHtml(strategyQuantity(record.strategic_close_quantity))}</span>
+            <span>状态：${escapeHtml(strategyValue(record.strategic_status))}</span>
+          </div></td>
         </tr>`;
       }
       const error = record.sync_status === "异常";

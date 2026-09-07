@@ -472,3 +472,36 @@ test("strategic records remain identifiable in the refreshed ledger list", async
   assert.match(rows, /I2609/);
   assert.match(rows, /战略套保/);
 });
+
+test("fully closed strategic records keep close quantity and status in the labeled summary", async () => {
+  const strategyRow = {
+    record_id: "strategy:test-id",
+    record_source_type: "战略套保",
+    strategic_group: "大客户组",
+    strategic_account: "财达",
+    strategic_contract: "I2609",
+    strategic_open_direction: "多",
+    strategic_opened_at: "2026-08-24 09:00:00",
+    strategic_open_quantity: 10,
+    strategic_quantity_unit: "吨",
+    strategic_closed_at: "2026-08-25 09:00:00",
+    strategic_close_quantity: 10,
+    strategic_status: "已平仓",
+  };
+  const harness = await activateStrategyHarness({
+    refresh: async () => ({ records: [strategyRow], count: 1, sales_type_options: [] }),
+  });
+
+  await harness.saveButton.dispatchEvent({ type: "click", preventDefault() {} });
+
+  const rows = harness.selectors.get("#spotLedgerTableBody").innerHTML;
+  assert.match(rows, /<td colspan="14"[^>]*>/);
+  assert.match(rows, /战略套保/);
+  assert.match(rows, /组别：大客户组/);
+  assert.match(rows, /账户：财达/);
+  assert.match(rows, /合约：I2609/);
+  assert.match(rows, /开仓时间：2026-08-24 09:00:00/);
+  assert.match(rows, /开仓数量：10 吨/);
+  assert.match(rows, /平仓数量：10 吨/);
+  assert.match(rows, /已平仓/);
+});

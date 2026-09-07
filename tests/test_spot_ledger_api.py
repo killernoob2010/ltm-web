@@ -568,6 +568,37 @@ def test_strategy_records_are_listed_with_a_minimal_strategy_projection(ledger_c
     assert strategy["strategic_status"] == "未平仓"
 
 
+def test_fully_closed_strategy_list_projection_includes_close_quantity_and_status(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging, get_records
+
+    admin, _ = ledger_context
+    created = create_strategic_hedging(
+        StrategicHedgingIn(**_strategy_payload(
+            contract="I2609-C-800", closed_at="2026-08-25 09:00:00", close_quantity=10, close_price=820,
+        )),
+        user=admin,
+    )
+    result = get_records(limit=100, offset=0, user=admin)
+    strategy = next(row for row in result["records"] if row["record_id"] == created["record"]["record_id"])
+
+    assert strategy["strategic_close_quantity"] == 10
+    assert strategy["strategic_status"] == "已平仓"
+
+
+def test_strategy_list_and_count_use_opened_date_for_date_filters(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging, get_records
+
+    admin, _ = ledger_context
+    created = create_strategic_hedging(
+        StrategicHedgingIn(**_strategy_payload(contract="I2609-C-800", opened_at="2026-08-24 09:00:00")),
+        user=admin,
+    )
+    result = get_records(from_date="2026-08-01", to_date="2026-08-31", limit=100, offset=0, user=admin)
+
+    assert any(row["record_id"] == created["record"]["record_id"] for row in result["records"])
+    assert result["count"] == len(result["records"])
+
+
 @pytest.mark.parametrize(
     "updates",
     [
