@@ -13,6 +13,7 @@
     pageSize: 20,
     total: 0,
     selectedRecord: null,
+    strategySaving: false,
     bound: false,
   };
 
@@ -55,7 +56,8 @@
 
   function seconds(value) {
     if (!value) return "";
-    return String(value).replace("T", " ").slice(0, 19);
+    const text = String(value).replace("T", " ");
+    return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(text) ? `${text}:00` : text.slice(0, 19);
   }
 
   function setStatus(message, error) {
@@ -176,6 +178,26 @@
       return;
     }
     body.innerHTML = records.map((record) => {
+      if (record.record_source_type === "战略套保") {
+        const strategyValue = (value) => value === null || value === undefined || value === "" ? "—" : displayValue(value);
+        const strategyStatus = strategyValue(record.strategic_status);
+        return `<tr class="spot-ledger-record-row spot-ledger-strategy-row" data-record-id="${escapeHtml(record.record_id)}">
+          <td><span class="spot-ledger-badge success">战略套保</span></td>
+          <td>${escapeHtml(strategyValue(record.strategic_contract))}</td>
+          <td>${escapeHtml(strategyValue(record.strategic_group))}</td>
+          <td>${escapeHtml(strategyValue(record.strategic_group))}</td>
+          <td><span class="spot-ledger-badge success">战略套保</span></td>
+          <td>${escapeHtml(seconds(record.strategic_opened_at) || "—")}</td>
+          <td>${escapeHtml(strategyValue(record.strategic_contract))}</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>${escapeHtml(strategyValue(record.strategic_open_quantity))}</td>
+          <td>${escapeHtml(strategyValue(record.strategic_close_quantity))}</td>
+          <td><span class="spot-ledger-badge success">${escapeHtml(strategyStatus)}</span></td>
+        </tr>`;
+      }
       const error = record.sync_status === "异常";
       return `<tr class="spot-ledger-record-row" data-record-id="${escapeHtml(record.record_id)}">
         <td><span class="spot-ledger-badge ${record.supplement_status === "待补录" ? "warning" : "success"}">${escapeHtml(record.supplement_status || "待补录")}</span></td>
@@ -216,12 +238,14 @@
       renderPagination();
       setStatus(`当前 ${moduleState.records.length} 条｜共 ${moduleState.total} 条`);
       if (view === "errors" && result.runs?.length) setSyncStatus(`最近同步任务：${result.runs[0].status}｜${seconds(result.runs[0].finished_at || result.runs[0].started_at)}｜${result.runs[0].source_mode || "来源未标注"}｜当前范围同步异常：${result.count || 0} 条`);
+      return true;
     } catch (error) {
       moduleState.records = [];
       moduleState.total = 0;
       renderRows([]);
       renderPagination();
       setStatus(error.message || "读取失败", true);
+      return false;
     }
   }
 
@@ -293,6 +317,10 @@
     const detail = $("#spotLedgerDetail");
     detail.classList.remove("hidden");
     if (detail.showModal && !detail.open) detail.showModal();
+    if (record.record_source_type === "战略套保") {
+      renderStrategicDetail(record);
+      return;
+    }
     const errorText = syncErrorText(record.sync_error_summary);
     const systemFields = visibleSystemFields(moduleState.fields);
     $("#spotLedgerDetailMeta").innerHTML = `<div><span>补录状态</span><strong>${escapeHtml(displayValue(record.supplement_status))}</strong></div><div><span>同步状态</span><strong>${escapeHtml(displayValue(record.sync_status))}</strong></div>${record.scope_status === "历史范围外" ? `<div><span>检查范围</span><strong>历史范围外：不纳入 2026 年补录与异常检查</strong></div>` : ""}${hasDisplayValue(record.last_synced_at) ? `<div><span>最近刷新</span><strong>${escapeHtml(seconds(record.last_synced_at))}</strong></div>` : ""}${errorText ? `<div class="spot-ledger-detail-alert"><span>同步异常</span><strong>${escapeHtml(errorText)}</strong></div>` : ""}`;
@@ -301,6 +329,35 @@
     $("#spotLedgerManualHint").textContent = record.scope_status === "历史范围外" ? "历史范围外，本轮不要求补录" : record.missing_fields?.length ? `待补录 ${record.missing_fields.length} 项` : "可按需修改";
     renderManualContent(record);
     $("#spotLedgerEditStatus").textContent = record.scope_status === "历史范围外" ? "历史范围外，本轮不要求补录" : record.missing_fields?.length ? `待补录：${record.missing_fields.join("、")}` : "必填字段已完成";
+  }
+
+  function renderStrategicDetail(record) {
+    const direction = record.strategic_open_direction === "多" ? "买入开仓（多）" : record.strategic_open_direction === "空" ? "卖出开仓（空）" : record.strategic_open_direction;
+    const fields = [
+      ["组别", record.strategic_group],
+      ["账户", record.strategic_account],
+      ["合约/品种", record.strategic_contract],
+      ["开仓方向", direction],
+      ["开仓日期时间", seconds(record.strategic_opened_at)],
+      ["开仓数量", record.strategic_open_quantity],
+      ["数量单位", record.strategic_quantity_unit],
+      ["开仓价格", record.strategic_open_price],
+      ["价格币种/单位", record.strategic_price_currency],
+      ["平仓日期时间", seconds(record.strategic_closed_at)],
+      ["平仓数量", record.strategic_close_quantity],
+      ["平仓价格", record.strategic_close_price],
+      ["状态", record.strategic_status],
+      ["备注", record.strategic_remark],
+    ];
+    $("#spotLedgerDetailMeta").innerHTML = fields.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(hasDisplayValue(value) ? displayValue(value) : "—")}</strong></div>`).join("");
+    $("#spotLedgerSystemCount").textContent = `${fields.length} 项`;
+    $("#spotLedgerSystemFields").innerHTML = "";
+    $("#spotLedgerManualHint").textContent = "战略套保字段只读展示";
+    $("#spotLedgerManualFields").innerHTML = "";
+    $("#spotLedgerEditActions").innerHTML = "";
+    $("#spotLedgerEditActions").classList.add("hidden");
+    $("#spotLedgerEditForm").classList.add("hidden");
+    $("#spotLedgerEditStatus").textContent = "战略套保记录只读";
   }
 
   function closeDetail() {
@@ -315,8 +372,10 @@
       const result = await moduleState.api(`/api/spot-ledger/records/${encodeURIComponent(recordId)}`);
       moduleState.fields = result.fields || moduleState.fields;
       renderDetail(result.record);
+      return true;
     } catch (error) {
       setStatus(error.message || "详情读取失败", true);
+      return false;
     }
   }
 
@@ -414,8 +473,50 @@
 
   async function saveStrategy(event) {
     event?.preventDefault();
+    if (moduleState.strategySaving) return;
     const form = $("#spotLedgerStrategyForm");
-    const data = Object.fromEntries(new FormData(form).entries());
+    const status = $("#spotLedgerStrategyStatus");
+    if (!form) return;
+    if (typeof form.reportValidity === "function" && !form.reportValidity()) return;
+    const data = {};
+    new FormData(form).forEach((value, key) => {
+      data[key] = typeof value === "string" ? value.trim() : value;
+    });
+    if (!data.open_price) {
+      status.textContent = "请填写开仓价格";
+      return;
+    }
+    const requiredStrategyFields = [
+      ["group_name", "组别"], ["account", "账户"], ["contract", "合约/品种"], ["open_direction", "开仓方向"],
+      ["opened_at", "开仓日期时间"], ["open_quantity", "开仓数量"], ["quantity_unit", "数量单位"], ["price_currency", "价格币种/单位"],
+    ];
+    const missingStrategyField = requiredStrategyFields.find(([field]) => !data[field]);
+    if (missingStrategyField) {
+      status.textContent = `请填写${missingStrategyField[1]}`;
+      return;
+    }
+    if (!["大客户组", "东北组", "山东组", "黄骅组", "天津组", "唐山组", "南方组"].includes(data.group_name)) {
+      status.textContent = "请选择有效组别";
+      return;
+    }
+    if (!["多", "空"].includes(data.open_direction)) {
+      status.textContent = "请选择有效开仓方向";
+      return;
+    }
+    if (data.quantity_unit !== "吨") {
+      status.textContent = "数量单位必须为吨";
+      return;
+    }
+    const closeValues = [data.closed_at, data.close_quantity, data.close_price];
+    const hasClose = closeValues.some((value) => String(value ?? "").trim() !== "");
+    if (hasClose && closeValues.some((value) => String(value ?? "").trim() === "")) {
+      status.textContent = "平仓日期、平仓数量、平仓价格必须同时填写";
+      return;
+    }
+    if (hasClose && Number(data.close_quantity) !== Number(data.open_quantity)) {
+      status.textContent = "当前仅支持全开全平，不支持部分平仓";
+      return;
+    }
     const payload = {
       ...data,
       open_quantity: Number(data.open_quantity),
@@ -424,13 +525,34 @@
       close_price: data.close_price ? Number(data.close_price) : null,
       closed_at: data.closed_at || null,
     };
+    const saveButton = $("#spotLedgerSaveStrategyBtn");
+    moduleState.strategySaving = true;
+    if (saveButton) saveButton.disabled = true;
     try {
       const result = await moduleState.api("/api/spot-ledger/strategic-hedging", { method: "POST", body: JSON.stringify(payload) });
-      $("#spotLedgerStrategyStatus").textContent = `已保存：${result.record.strategic_status}｜${seconds(result.record.strategic_opened_at)}｜${displayValue(result.record.strategic_contract)}`;
+      const successStatus = `已保存：${result.record.strategic_status}｜${seconds(result.record.strategic_opened_at)}｜${displayValue(result.record.strategic_contract)}`;
+      status.textContent = successStatus;
       setStatus("战略套保记录已保存");
       form.reset();
+      const refreshErrors = [];
+      const opened = await openRecord(result.record.record_id);
+      if (!opened) refreshErrors.push("详情回读失败");
+      const refreshed = await loadView(moduleState.view);
+      if (!refreshed) refreshErrors.push("列表刷新失败");
+      try {
+        await loadCounts();
+      } catch (error) {
+        refreshErrors.push(error.message || "计数刷新失败");
+      }
+      if (refreshErrors.length) {
+        status.textContent = `${successStatus}｜刷新失败：${refreshErrors.join("；")}`;
+        setStatus("战略套保已保存，但列表或计数刷新失败，请稍后重试", true);
+      }
     } catch (error) {
-      $("#spotLedgerStrategyStatus").textContent = error.message || "保存失败";
+      status.textContent = error.message || "保存失败";
+    } finally {
+      moduleState.strategySaving = false;
+      if (saveButton) saveButton.disabled = false;
     }
   }
 

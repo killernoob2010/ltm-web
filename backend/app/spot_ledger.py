@@ -19,7 +19,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import db
 from .permissions import can, is_admin, require_permission
@@ -52,6 +52,8 @@ TECHNICAL_FIELDS = (
 )
 LIST_RECORD_FIELDS = (
     "record_id", "source_detail_id", "AD", "E", "AP", "D", "U", "H", "AU", "I", "Q", "AB", "L", "X",
+    "record_source_type", "strategic_group", "strategic_account", "strategic_contract", "strategic_open_direction",
+    "strategic_opened_at", "strategic_open_quantity", "strategic_quantity_unit", "strategic_status",
     "supplement_status", "sync_status", "sync_error_summary",
 )
 BACKFILL_SNAPSHOT_FIELDS = (
@@ -637,8 +639,10 @@ def _request_user(request: Request) -> dict[str, Any]:
     return dict(user)
 
 
-def _record_query_conditions(params: dict[str, Any], include_inactive: bool = False) -> tuple[list[str], list[Any]]:
-    conditions = ["record_source_type = '现货同步'"]
+def _record_query_conditions(
+    params: dict[str, Any], include_inactive: bool = False, include_strategic: bool = False,
+) -> tuple[list[str], list[Any]]:
+    conditions = ["record_source_type IN ('现货同步', '战略套保')" if include_strategic else "record_source_type = '现货同步'"]
     values: list[Any] = []
     if not include_inactive:
         conditions.append("is_active = 1")
@@ -694,11 +698,12 @@ def list_records(
     *,
     user: Optional[dict[str, Any]] = None,
     include_inactive: bool = False,
+    include_strategic: bool = False,
     list_projection: bool = False,
 ) -> list[dict[str, Any]]:
     params = params or {}
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
-    conditions, values = _record_query_conditions(params, include_inactive=include_inactive)
+    conditions, values = _record_query_conditions(params, include_inactive=include_inactive, include_strategic=include_strategic)
     limit_value = params.get("limit")
     offset_value = params.get("offset")
     limit = max(1, min(int(limit_value) if isinstance(limit_value, (int, str)) and str(limit_value).isdigit() else 500, 5000))
@@ -707,20 +712,24 @@ def list_records(
         ", ".join(_quoted(column) if column in FIELD_CODES else column for column in LIST_RECORD_FIELDS)
         if list_projection else "*"
     )
+    order_column = 'COALESCE(NULLIF("U", \'\'), strategic_opened_at)' if include_strategic else '"U"'
     with db.connect() as conn:
         cur = conn.cursor()
         rows = db._exec(
             cur,
-            f"SELECT {selected_columns} FROM spot_ledger_records WHERE {' AND '.join(conditions)} ORDER BY \"U\" DESC, record_id LIMIT ? OFFSET ?",
+            f"SELECT {selected_columns} FROM spot_ledger_records WHERE {' AND '.join(conditions)} ORDER BY {order_column} DESC, record_id LIMIT ? OFFSET ?",
             (*values, limit, offset),
         ).fetchall()
     return [record_to_public(_row_dict(row)) for row in rows]
 
 
-def count_records(params: Optional[dict[str, Any]] = None, *, user: Optional[dict[str, Any]] = None, include_inactive: bool = False) -> int:
+def count_records(
+    params: Optional[dict[str, Any]] = None, *, user: Optional[dict[str, Any]] = None,
+    include_inactive: bool = False, include_strategic: bool = False,
+) -> int:
     params = params or {}
     require_permission(_get_user(user), SPOT_LEDGER_RESOURCE, "view")
-    conditions, values = _record_query_conditions(params, include_inactive=include_inactive)
+    conditions, values = _record_query_conditions(params, include_inactive=include_inactive, include_strategic=include_strategic)
     with db.connect() as conn:
         row = db._exec(
             conn.cursor(),
@@ -792,8 +801,8 @@ def get_records(
 ):
     params = locals().copy()
     return {
-        "records": list_records(params, user=user, list_projection=True),
-        "count": count_records(params, user=user),
+        "records": list_records(params, user=user, include_strategic=True, list_projection=True),
+        "count": count_records(params, user=user, include_strategic=True),
         "sales_type_options": list_sales_type_options(user=user),
         "limit": limit,
         "offset": offset,
@@ -1238,6 +1247,46 @@ class StrategicHedgingIn(BaseModel):
     spot_record_id: Optional[str] = None
     remark: str = ""
 
+    @field_validator("group_name", "account", "contract", "open_direction", "opened_at", "quantity_unit", "price_currency", mode="before")
+    @classmethod
+    def trim_required_text(cls, value: Any) -> str:
+        value = _text(value)
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("group_name")
+    @classmethod
+    def validate_group_name(cls, value: str) -> str:
+        if value not in SHANGHAI_GROUPS:
+            raise ValueError("组别不在七个标准组范围内")
+        return value
+
+    @field_validator("open_direction")
+    @classmethod
+    def validate_open_direction(cls, value: str) -> str:
+        if value not in {"多", "空"}:
+            raise ValueError("开仓方向只能选择多或空")
+        return value
+
+    @field_validator("quantity_unit")
+    @classmethod
+    def validate_quantity_unit(cls, value: str) -> str:
+        if value != "吨":
+            raise ValueError("数量单位必须为吨")
+        return value
+
+    @field_validator("closed_at", "spot_record_id", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: Any) -> Optional[str]:
+        value = _text(value)
+        return value or None
+
+    @field_validator("remark", mode="before")
+    @classmethod
+    def trim_remark(cls, value: Any) -> str:
+        return _text(value)
+
 
 def _execute_insert(cur, sql: str, params: tuple[Any, ...]):
     if db._is_pg():
@@ -1257,7 +1306,7 @@ def create_strategic_hedging(payload: StrategicHedgingIn, user=Depends(_request_
         raise HTTPException(status_code=400, detail="当前仅支持全开全平，不支持部分平仓")
     status = "已平仓" if has_close else "未平仓"
     record_id = f"strategy:{uuid4().hex}"
-    fields = {code: "" for code in FIELD_CODES}
+    fields = {code: None if code in NUMERIC_FIELDS else "" for code in FIELD_CODES}
     fields.update({"A": "战略套保", "E": payload.group_name, "AP": payload.group_name})
     timestamp = datetime.now().isoformat(timespec="seconds")
     columns = [

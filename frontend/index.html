@@ -637,13 +637,13 @@
             <form id="spotLedgerStrategyForm" class="dialog-form">
               <h2>新增战略套保（全开全平）</h2>
               <div class="spot-ledger-strategy-grid">
-                <label>组别<input name="group_name" required></label>
-                <label>账户<input name="account" required></label>
+                <label>组别<select name="group_name" required><option value="">请选择</option><option value="大客户组">大客户组</option><option value="东北组">东北组</option><option value="山东组">山东组</option><option value="黄骅组">黄骅组</option><option value="天津组">天津组</option><option value="唐山组">唐山组</option><option value="南方组">南方组</option></select></label>
+                <label>账户<input name="account" value="宏源" required></label>
                 <label>合约/品种<input name="contract" required></label>
-                <label>开仓方向<input name="open_direction" required></label>
-                <label>开仓日期时间<input name="opened_at" type="datetime-local" required></label>
+                <label>开仓方向<select name="open_direction" required><option value="">请选择</option><option value="多">买入开仓（多）</option><option value="空">卖出开仓（空）</option></select></label>
+                <label>开仓日期时间<input name="opened_at" type="datetime-local" step="1" required></label>
                 <label>开仓数量<input name="open_quantity" type="number" step="0.0001" min="0.0001" required></label>
-                <label>数量单位<input name="quantity_unit" value="吨" required></label>
+                <label>数量单位<input name="quantity_unit" value="吨" readonly required></label>
                 <label>开仓价格<input name="open_price" type="number" step="0.01" required></label>
                 <label>价格币种/单位<input name="price_currency" value="元/吨" required></label>
                 <label>平仓日期时间<input name="closed_at" type="datetime-local"></label>
@@ -1708,7 +1708,7 @@
     <script src="/static/trading_management.js?v=20260907-trade-load-v1"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
-    <script src="/static/spot_ledger.js?v=spot-ledger-status-order-20260905"></script>
+    <script src="/static/spot_ledger.js?v=spot-ledger-strategic-save-20260907"></script>
     <script src="/static/closing_review_agent.js?v=closing-review-agent-v1"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&collector=20260903a&password-dialog=20260904a&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
     <script src="/static/trading_collector.js?v=20260906-position-diagnostics-v1"></script>

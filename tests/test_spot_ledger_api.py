@@ -4,11 +4,13 @@ import asyncio
 import io
 import os
 from pathlib import Path
+import re
 import sys
 
 import pytest
 from fastapi import HTTPException
 from openpyxl import load_workbook
+from pydantic import ValidationError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
@@ -440,6 +442,146 @@ def test_strategy_hedging_requires_complete_open_close_and_rejects_partial_close
     partial = payload.model_copy(update={"close_quantity": 5})
     with pytest.raises(HTTPException) as invalid:
         create_strategic_hedging(partial, user=admin)
+    assert invalid.value.status_code == 400
+
+
+def test_strategy_insert_uses_null_for_non_applicable_numeric_fields(ledger_context, monkeypatch):
+    from app import spot_ledger
+
+    admin, _ = ledger_context
+    payload = spot_ledger.StrategicHedgingIn(
+        group_name="大客户组", account="宏源", contract="I2609", open_direction="多",
+        opened_at="2026-08-24 09:00:00", open_quantity=10, quantity_unit="吨",
+        open_price=800, price_currency="元/吨",
+    )
+    captured = {}
+    original_insert = spot_ledger._execute_insert
+
+    def recording_insert(cur, sql, params):
+        captured.update(sql=sql, params=params)
+        return original_insert(cur, sql, params)
+
+    monkeypatch.setattr(spot_ledger, "_execute_insert", recording_insert)
+    created = spot_ledger.create_strategic_hedging(payload, user=admin)
+
+    match = re.search(r"INSERT INTO spot_ledger_records \((?P<columns>.*?)\) VALUES", captured["sql"], re.S)
+    assert match
+    columns = [item.strip().strip('"') for item in match.group("columns").split(",")]
+    insert_values = dict(zip(columns, captured["params"]))
+    assert all(insert_values[code] is None for code in spot_ledger.NUMERIC_FIELDS)
+    assert created["record"]["strategic_status"] == "未平仓"
+
+
+def _strategy_payload(**updates):
+    values = {
+        "group_name": "大客户组",
+        "account": "宏源",
+        "contract": "I2609",
+        "open_direction": "多",
+        "opened_at": "2026-08-24 09:00:00",
+        "open_quantity": 10,
+        "quantity_unit": "吨",
+        "open_price": 800,
+        "price_currency": "元/吨",
+    }
+    values.update(updates)
+    return values
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("group_name", "不存在组"),
+        ("open_direction", "平仓"),
+        ("quantity_unit", "手"),
+        ("account", "   "),
+        ("contract", "\t"),
+        ("opened_at", "  "),
+        ("price_currency", "\n"),
+    ],
+)
+def test_strategy_input_rejects_invalid_or_whitespace_values(field, value):
+    with pytest.raises(ValidationError):
+        from app.spot_ledger import StrategicHedgingIn
+
+        StrategicHedgingIn(**_strategy_payload(**{field: value}))
+
+
+def test_strategy_input_trims_text_and_allows_custom_account():
+    from app.spot_ledger import StrategicHedgingIn
+
+    payload = StrategicHedgingIn(**_strategy_payload(account=" 财达 ", contract=" I2609 ", remark=" 备注 "))
+
+    assert payload.account == "财达"
+    assert payload.contract == "I2609"
+    assert payload.remark == "备注"
+
+
+def test_strategy_input_rejects_missing_open_price():
+    from app.spot_ledger import StrategicHedgingIn
+
+    with pytest.raises(ValidationError):
+        StrategicHedgingIn(**_strategy_payload(open_price=None))
+
+
+def test_strategy_record_round_trips_strategy_fields_without_polluting_spot_fields(ledger_context):
+    from app.spot_ledger import NUMERIC_FIELDS, StrategicHedgingIn, create_strategic_hedging, get_record
+
+    admin, _ = ledger_context
+    payload = StrategicHedgingIn(**_strategy_payload(
+        account="财达", contract="I2609-C-800", open_direction="空", open_quantity=12.5,
+        opened_at="2026-08-24 09:00:00", remark="战略专用备注",
+    ))
+    created = create_strategic_hedging(payload, user=admin)
+    record = get_record(created["record"]["record_id"], user=admin)["record"]
+
+    assert record["record_source_type"] == "战略套保"
+    assert record["strategic_group"] == "大客户组"
+    assert record["strategic_account"] == "财达"
+    assert record["strategic_contract"] == "I2609-C-800"
+    assert record["strategic_open_direction"] == "空"
+    assert record["strategic_open_quantity"] == 12.5
+    assert record["strategic_quantity_unit"] == "吨"
+    assert record["strategic_open_price"] == 800
+    assert record["strategic_price_currency"] == "元/吨"
+    assert record["strategic_remark"] == "战略专用备注"
+    assert record["strategic_status"] == "未平仓"
+    assert all(record[code] is None for code in NUMERIC_FIELDS)
+
+
+def test_strategy_records_are_listed_with_a_minimal_strategy_projection(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging, get_records
+
+    admin, _ = ledger_context
+    created = create_strategic_hedging(
+        StrategicHedgingIn(**_strategy_payload(account="财达", contract="I2609-C-800", open_quantity=12.5)),
+        user=admin,
+    )
+    result = get_records(limit=100, offset=0, user=admin)
+    strategy = next(row for row in result["records"] if row["record_id"] == created["record"]["record_id"])
+
+    assert strategy["record_source_type"] == "战略套保"
+    assert strategy["strategic_group"] == "大客户组"
+    assert strategy["strategic_contract"] == "I2609-C-800"
+    assert strategy["strategic_opened_at"] == "2026-08-24 09:00:00"
+    assert strategy["strategic_open_quantity"] == 12.5
+    assert strategy["strategic_status"] == "未平仓"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"closed_at": "2026-08-25 09:00:00"},
+        {"close_quantity": 10},
+        {"close_price": 820},
+    ],
+)
+def test_strategy_rejects_incomplete_close_fields(ledger_context, updates):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging
+
+    admin, _ = ledger_context
+    with pytest.raises(HTTPException) as invalid:
+        create_strategic_hedging(StrategicHedgingIn(**_strategy_payload(**updates)), user=admin)
     assert invalid.value.status_code == 400
 
 
