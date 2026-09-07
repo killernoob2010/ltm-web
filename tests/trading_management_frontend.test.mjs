@@ -115,6 +115,13 @@ test("fact tabs cache by filters without prefetching sibling tabs", () => {
   assert.match(tradingJs + css, /tm-table-loading/);
 });
 
+test("fact request failures replace the permanent loader with a retry state", () => {
+  assert.match(tradingJs, /function renderFactLoadError/);
+  assert.match(tradingJs, /交易记录读取失败，请重试/);
+  assert.match(tradingJs, /id="tmFactRetry"/);
+  assert.match(css, /\.tm-table-error/);
+});
+
 test("fact filters preserve their visible values after rerender", () => {
   assert.match(tradingJs, /value="\$\{esc\(tm\.assetType\)\}"/);
   assert.match(tradingJs, /value="\$\{esc\(tm\.side\)\}"/);

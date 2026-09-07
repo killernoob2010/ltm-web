@@ -293,26 +293,41 @@ def _in_date_range(item: Mapping[str, Any], filters: EffectiveFactFilters) -> bo
     return True
 
 
-def _assignment_maps(cur) -> tuple[Dict[int, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
+def _identity_scope(column: str, identity_ids: Optional[Iterable[int]]) -> tuple[str, tuple[int, ...]]:
+    if identity_ids is None:
+        return "", ()
+    values = tuple(sorted({int(identity_id) for identity_id in identity_ids}))
+    if not values:
+        return " AND 1 = 0", ()
+    return f" AND {column} IN ({','.join('?' for _ in values)})", values
+
+
+def _assignment_maps(
+    cur, identity_ids: Optional[Iterable[int]] = None
+) -> tuple[Dict[int, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
+    direct_scope, direct_params = _identity_scope("ba.trade_identity_id", identity_ids)
     direct: Dict[int, Dict[str, Any]] = {}
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT ba.trade_identity_id, s.name AS business_subject,
                ba.business_type, st.name AS strategy,
                'classified' AS assignment_status
         FROM trading_business_assignments ba
         LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
         LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+        WHERE 1 = 1{direct_scope}
         """,
+        direct_params,
     ).fetchall()
     for row in rows:
         direct[int(row["trade_identity_id"])] = dict(row)
 
+    close_scope, close_params = _identity_scope("l.close_trade_identity_id", identity_ids)
     close: Dict[int, Dict[str, Any]] = {}
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT l.close_trade_identity_id,
                ba.business_type, s.name AS business_subject, st.name AS strategy,
                CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END
@@ -324,7 +339,9 @@ def _assignment_maps(cur) -> tuple[Dict[int, Dict[str, Any]], Dict[int, Dict[str
           ON ba.trade_identity_id = a.open_trade_identity_id
         LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
         LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+        WHERE 1 = 1{close_scope}
         """,
+        close_params,
     ).fetchall()
     grouped: Dict[int, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -352,10 +369,13 @@ def _assignment_maps(cur) -> tuple[Dict[int, Dict[str, Any]], Dict[int, Dict[str
     return direct, close
 
 
-def _close_pnl_map(cur) -> Dict[int, Optional[float]]:
+def _close_pnl_map(
+    cur, identity_ids: Optional[Iterable[int]] = None
+) -> Dict[int, Optional[float]]:
+    scope, params = _identity_scope("l.close_trade_identity_id", identity_ids)
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT l.close_trade_identity_id,
                SUM(cf.fact_close_pnl * l.matched_quantity / NULLIF(cf.quantity, 0))
                    AS fact_close_pnl
@@ -363,9 +383,10 @@ def _close_pnl_map(cur) -> Dict[int, Optional[float]]:
         JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
         JOIN trading_import_batches cb
           ON cb.id = cf.batch_id AND cb.status = 'active'
-        WHERE cf.is_current = 1
+        WHERE cf.is_current = 1{scope}
         GROUP BY l.close_trade_identity_id
         """,
+        params,
     ).fetchall()
     return {int(row["close_trade_identity_id"]): _number(row["fact_close_pnl"]) for row in rows}
 
@@ -517,6 +538,210 @@ def _page_result(items: List[Dict[str, Any]], filters: EffectiveFactFilters) -> 
     }
 
 
+def _ranked_settlement_query(filters: EffectiveFactFilters) -> tuple[str, str, tuple[Any, ...]]:
+    normalized_transaction = (
+        "LOWER(TRIM(COALESCE(NULLIF(tf.normalized_transaction_no, ''), "
+        "tf.transaction_no, '')))"
+    )
+    normalized_date = "REPLACE(COALESCE(tf.trade_date, ''), '-', '')"
+    normalized_exchange = "LOWER(REPLACE(TRIM(COALESCE(tf.exchange, '')), ' ', ''))"
+    side = (
+        "CASE LOWER(TRIM(COALESCE(side, ''))) "
+        "WHEN 'buy' THEN '买' WHEN '买入' THEN '买' "
+        "WHEN 'sell' THEN '卖' WHEN '卖出' THEN '卖' "
+        "ELSE TRIM(COALESCE(side, '')) END"
+    )
+    open_close = (
+        "CASE LOWER(TRIM(COALESCE(open_close, ''))) "
+        "WHEN 'open' THEN '开仓' WHEN '开' THEN '开仓' "
+        "WHEN 'close' THEN '平仓' WHEN '平' THEN '平仓' "
+        "ELSE TRIM(COALESCE(open_close, '')) END"
+    )
+    ranked = f"""
+        WITH ranked_settlement AS (
+            SELECT tf.*, b.statement_type, b.source_priority,
+                   b.status AS batch_status, b.range_start, b.range_end,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY tf.identity_id,
+                           CASE WHEN {normalized_transaction} <> ''
+                                THEN {normalized_date} ELSE '' END,
+                           CASE WHEN {normalized_transaction} <> ''
+                                THEN {normalized_exchange} ELSE '' END,
+                           {normalized_transaction}
+                       ORDER BY b.source_priority DESC, tf.id DESC
+                   ) AS effective_rank
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id
+            WHERE b.status = 'active' AND tf.is_current = 1
+        )
+    """
+    conditions = ["effective_rank = 1"]
+    params: List[Any] = []
+    if filters.contract:
+        conditions.append("LOWER(COALESCE(contract, '')) LIKE ?")
+        params.append(f"%{filters.contract.lower()}%")
+    if filters.direction:
+        conditions.append(f"{side} = ?")
+        params.append(_display_side(filters.direction))
+    if filters.asset_type:
+        conditions.append("LOWER(COALESCE(asset_type, '')) = ?")
+        params.append(filters.asset_type.lower())
+    if filters.open_close:
+        conditions.append(f"{open_close} = ?")
+        params.append(_display_open_close(filters.open_close))
+    if filters.start_date:
+        conditions.append("REPLACE(COALESCE(trade_date, ''), '-', '') >= ?")
+        params.append(filters.start_date.replace("-", ""))
+    if filters.end_date:
+        conditions.append("REPLACE(COALESCE(trade_date, ''), '-', '') <= ?")
+        params.append(filters.end_date.replace("-", ""))
+    return ranked, " AND ".join(conditions), tuple(params)
+
+
+def _provisional_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str, Any]]:
+    if filters.fact_status == "settlement_confirmed":
+        return []
+    rows = db._exec(
+        cur,
+        """
+        SELECT * FROM trading_intraday_fills
+        WHERE data_status = 'provisional'
+        ORDER BY trade_date DESC, trade_time DESC, id DESC
+        """,
+    ).fetchall()
+    items: List[Dict[str, Any]] = []
+    coverage_caches: Dict[int, reconciliation.ReconciliationLookupCache] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        account_id = int(row["account_id"])
+        lookup_cache = coverage_caches.setdefault(
+            account_id, reconciliation.ReconciliationLookupCache(account_id)
+        )
+        if reconciliation.statement_coverage_for_date(
+            cur, account_id, row["trade_date"], lookup_cache=lookup_cache
+        ):
+            continue
+        item = _provisional_item(row)
+        if _passes_filters(item, filters):
+            items.append(item)
+    return items
+
+
+def _query_paged_settlement_rows(
+    cur, filters: EffectiveFactFilters
+) -> tuple[List[Mapping[str, Any]], Dict[str, float]]:
+    if filters.fact_status == "provisional":
+        return [], {"record_count": 0.0, "quantity": 0.0, "fee": 0.0, "fact_close_pnl": 0.0}
+    ranked, where_clause, params = _ranked_settlement_query(filters)
+    summary_row = db._exec(
+        cur,
+        ranked
+        + f"""
+        , close_pnl AS (
+            SELECT l.close_trade_identity_id,
+                   SUM(cf.fact_close_pnl * l.matched_quantity / NULLIF(cf.quantity, 0))
+                       AS fact_close_pnl
+            FROM trading_close_trade_links l
+            JOIN trading_close_facts cf ON cf.identity_id = l.close_identity_id
+            JOIN trading_import_batches cb
+              ON cb.id = cf.batch_id AND cb.status = 'active'
+            WHERE cf.is_current = 1
+            GROUP BY l.close_trade_identity_id
+        )
+        SELECT COUNT(*) AS record_count,
+               COALESCE(SUM(quantity), 0) AS quantity,
+               COALESCE(SUM(fee), 0) AS fee,
+               COALESCE(SUM(close_pnl.fact_close_pnl), 0) AS fact_close_pnl
+        FROM ranked_settlement
+        LEFT JOIN close_pnl
+          ON close_pnl.close_trade_identity_id = ranked_settlement.identity_id
+        WHERE {where_clause}
+        """,
+        params,
+    ).fetchone()
+    summary = {
+        key: float(summary_row[key] or 0)
+        for key in ("record_count", "quantity", "fee", "fact_close_pnl")
+    }
+    limit = filters.page * filters.page_size
+    rows = db._exec(
+        cur,
+        ranked
+        + f"""
+        SELECT * FROM ranked_settlement
+        WHERE {where_clause}
+        ORDER BY REPLACE(COALESCE(trade_date, ''), '-', '') DESC,
+                 COALESCE(trade_time, '') DESC,
+                 COALESCE(source_priority, 0) DESC,
+                 id DESC
+        LIMIT ?
+        """,
+        params + (limit,),
+    ).fetchall()
+    return rows, summary
+
+
+def _query_effective_trades_paged(cur, filters: EffectiveFactFilters) -> Dict[str, Any]:
+    settlement_rows, settlement_summary = _query_paged_settlement_rows(cur, filters)
+    identity_ids = [int(row["identity_id"]) for row in settlement_rows]
+    direct_assignments, close_assignments = _assignment_maps(cur, identity_ids)
+    close_pnl = _close_pnl_map(cur, identity_ids)
+    items: List[Dict[str, Any]] = []
+    for row in settlement_rows:
+        row_dict = dict(row)
+        identity_id = int(row_dict["identity_id"])
+        assignment = direct_assignments.get(identity_id)
+        if _display_open_close(row_dict["open_close"]) != "开仓":
+            assignment = close_assignments.get(identity_id, assignment)
+        item = _settlement_item(
+            row_dict,
+            assignment=assignment,
+            fact_close_pnl=close_pnl.get(identity_id),
+        )
+        if _passes_filters(item, filters):
+            items.append(item)
+
+    provisional_items = _provisional_trade_items(cur, filters)
+    items.extend(provisional_items)
+    items.sort(
+        key=lambda item: (
+            item["_sort_date"],
+            item["_sort_time"],
+            item["source_priority"],
+            item["_sort_id"],
+        ),
+        reverse=True,
+    )
+
+    provisional_count = len(provisional_items)
+    total = int(settlement_summary["record_count"]) + provisional_count
+    total_pages = max(1, (total + filters.page_size - 1) // filters.page_size)
+    page = min(filters.page, total_pages)
+    start = (page - 1) * filters.page_size
+    visible = items[start:start + filters.page_size]
+    for item in visible:
+        for key in ("_sort_date", "_sort_time", "_sort_id", "source_priority"):
+            item.pop(key, None)
+    return {
+        "items": visible,
+        "summary": {
+            "record_count": total,
+            "quantity": settlement_summary["quantity"]
+            + sum(float(item["quantity"] or 0) for item in provisional_items),
+            "fee": settlement_summary["fee"],
+            "fact_close_pnl": settlement_summary["fact_close_pnl"],
+            "provisional_count": provisional_count,
+            "settlement_confirmed_count": int(settlement_summary["record_count"]),
+            "contains_provisional": provisional_count > 0,
+        },
+        "page": page,
+        "page_size": filters.page_size,
+        "total_items": total,
+        "total_pages": total_pages,
+        "data_status": "imported",
+    }
+
+
 def _effective_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str, Any]]:
     direct_assignments, close_assignments = _assignment_maps(cur)
     close_pnl = _close_pnl_map(cur)
@@ -590,6 +815,8 @@ def _effective_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str,
 
 def query_effective_trades(cur, filters: EffectiveFactFilters) -> Dict[str, Any]:
     """Return one filtered, deduplicated projection of effective trade facts."""
+    if not filters.classification:
+        return _query_effective_trades_paged(cur, filters)
     return _page_result(_effective_trade_items(cur, filters), filters)
 
 

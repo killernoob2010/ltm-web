@@ -414,6 +414,20 @@
     return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td>${row.open_close === "开仓" && row.can_classify && row.identity_id != null ? `<input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}>` : row.open_close === "开仓" ? '<span class="tm-tag amber">结算确认后可归类</span>' : "继承"}</td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${(selectable ? 1 : 0) + columns.length + 1}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
   }
 
+  function renderFactLoadError(error) {
+    showError(error);
+    const loading = $("#tmPositionsView .tm-table-loading");
+    if (!loading) return;
+    loading.className = "tm-table-error";
+    loading.innerHTML = `<strong>交易记录读取失败，请重试</strong><span>${esc(error.message || "服务暂时不可用")}</span><button id="tmFactRetry" class="tm-secondary-button">重新读取</button>`;
+    $("#tmFactRetry")?.addEventListener("click", () => renderPositionsView());
+    document.querySelectorAll("[data-fact-tab]").forEach((button) => button.addEventListener("click", () => {
+      tm.factsTab = button.dataset.factTab;
+      tm.page = 1;
+      renderPositionsView();
+    }));
+  }
+
   function pagination(data, prefix = "tm") {
     return `<div class="tm-pagination"><span>共 ${data.total_items} 条</span><label>每页<select id="${prefix}PageSize">${[20,50,100].map((size) => `<option value="${size}" ${Number(data.page_size) === size ? "selected" : ""}>${size}</option>`).join("")}</select>条</label><button id="${prefix}Prev" ${data.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${data.page} / ${data.total_pages} 页</span><button id="${prefix}Next" ${data.page >= data.total_pages ? "disabled" : ""}>下一页</button></div>`;
   }
@@ -423,7 +437,13 @@
     if (!cached) {
       $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><span class="tm-tag blue">统一事实层</span></div>${filters(tm.factsTab === "trades")}<div class="tm-table-loading"><span class="spinner"></span><span>正在读取${tm.factsTab === "positions" ? "持仓" : tm.factsTab === "closes" ? "平仓" : "交易"}记录…</span></div></section>`;
     }
-    const data = cached || await loadFactData(tm.factsTab);
+    let data;
+    try {
+      data = cached || await loadFactData(tm.factsTab);
+    } catch (error) {
+      renderFactLoadError(error);
+      return;
+    }
     const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条开仓`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页开仓</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选开仓</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
     $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${factDataNotice(data)}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
     wireFactActions(data);

@@ -588,6 +588,14 @@ def test_effective_trades_does_not_send_negative_postgres_limit(monkeypatch):
         def fetchall(self):
             return []
 
+        def fetchone(self):
+            return {
+                "record_count": 0,
+                "quantity": 0,
+                "fee": 0,
+                "fact_close_pnl": 0,
+            }
+
     def postgres_strict_exec(_cursor, sql, params=()):
         normalized = " ".join(sql.split())
         if "FROM trading_trade_facts tf" in normalized and params == (-1, 0):
@@ -602,6 +610,53 @@ def test_effective_trades_does_not_send_negative_postgres_limit(monkeypatch):
     )
 
     assert result["total_items"] == 0
+
+
+def test_first_trade_page_does_not_materialize_entire_settlement_history(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    batch_id = insert_batch(account, "2026-05-01", "2026-05-31", "active", "monthly")
+    for index in range(40):
+        insert_settlement_trade(
+            account,
+            batch_id,
+            identity_key=f"bounded-page-{index}",
+            transaction_no=str(index + 1),
+            trade_date="2026-05-10",
+            price=700 + index,
+            fee=1,
+        )
+
+    original_exec = trading_effective_facts.db._exec
+
+    class BoundedSettlementResult:
+        def __init__(self, result):
+            self._result = result
+
+        def fetchall(self):
+            rows = self._result.fetchall()
+            if len(rows) > 20:
+                raise AssertionError("first page materialized more than one page of settlement rows")
+            return rows
+
+        def fetchone(self):
+            return self._result.fetchone()
+
+    def bounded_exec(cursor, sql, params=None):
+        result = original_exec(cursor, sql, params)
+        normalized = " ".join(sql.split())
+        if "SELECT tf.*" in normalized and "FROM trading_trade_facts tf" in normalized:
+            return BoundedSettlementResult(result)
+        return result
+
+    monkeypatch.setattr(trading_effective_facts.db, "_exec", bounded_exec)
+    with db.connect() as conn:
+        result = trading_effective_facts.query_effective_trades(
+            conn.cursor(), effective_filters(page=1, page_size=20)
+        )
+
+    assert result["total_items"] == 40
+    assert len(result["items"]) == 20
 
 
 def test_complete_wh6_snapshot_can_supply_current_position_without_settlement_baseline(tmp_path, monkeypatch):
