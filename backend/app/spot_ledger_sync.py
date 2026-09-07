@@ -1471,9 +1471,15 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                     dictionaries.get("operation_type", {}),
                     self._business_category_value(demand),
                 )
-                business_category = (
-                    report_fields.get("business_category") or source_business_category
-                )
+                report_business_category = str(
+                    report_fields.get("business_category") or ""
+                ).strip()
+                if is_complete_source_sales_type(report_business_category):
+                    business_category = report_business_category
+                elif is_complete_source_sales_type(source_business_category):
+                    business_category = source_business_category
+                else:
+                    business_category = report_business_category or source_business_category
                 report_sales_business = str(report_fields.get("sales_business") or "").strip()
                 demand_sales_business = str(demand.get("workManName") or "").strip()
                 sales_business = report_sales_business or demand_sales_business

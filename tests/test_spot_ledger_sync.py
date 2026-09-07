@@ -765,15 +765,17 @@ def test_official_dictionary_fetch_includes_trade_system_business_categories():
 
 
 @pytest.mark.parametrize(
-    ("business_type", "expected_label"),
+    ("business_type", "report_business_category", "expected_label"),
     [
-        ("B06", "贸易-落地-固定价-B05"),
-        ("B0601", "贸易-港口现货-背对背-B06"),
-        ("B09", "贸易-代理落地-B09"),
+        ("B06", "", "贸易-落地-固定价-B05"),
+        ("B0601", "", "贸易-港口现货-背对背-B06"),
+        ("B09", "", "贸易-代理落地-B09"),
+        ("B0601", "B0601", "贸易-港口现货-背对背-B06"),
     ],
 )
 def test_official_json_source_displays_business_type_like_trade_system(
     business_type,
+    report_business_category,
     expected_label,
 ):
     from app import spot_ledger_sync as sync
@@ -817,7 +819,14 @@ def test_official_json_source_displays_business_type_like_trade_system(
             return {}
 
         def _fetch_report_enrichment(self):
-            return {}
+            if not report_business_category:
+                return {}
+            return {
+                "sale-line-1": {
+                    "business_category": report_business_category,
+                    "sales_business": "",
+                }
+            }
 
         def _fetch_contract_bundle(self, contract_row):
             return sync.OfficialContractBundle(
