@@ -549,6 +549,13 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
                     ],
                     "source_type": [{"dictValue": "10", "dictLabel": "现货"}],
                     "price_mode": [{"dictValue": "20", "dictLabel": "固定价"}],
+                    "operation_type": [
+                        {
+                            "dictValue": "B07",
+                            "dictLabel": "贸易-港口现货-市场加价-B07",
+                        },
+                        {"dictValue": "B05", "dictLabel": "贸易-落地-B05"},
+                    ],
                 }
                 return Response({"code": 200, "data": dictionaries[kwargs["params"]["dictType"]]})
             if "/getRelevanceContract/" in url:
@@ -717,6 +724,141 @@ def test_official_json_source_fetches_all_pages_and_maps_confirmed_relations(
     demand_calls = [call for call in source.http.calls if "/tradeing/demand/list" in call[1]]
     assert [call[2]["params"]["pageNum"] for call in demand_calls] == [1, 2]
     assert not any("/tradeing/saleContract/saleContractList" in call[1] for call in source.http.calls)
+
+
+def test_official_dictionary_fetch_includes_trade_system_business_categories():
+    from app import spot_ledger_sync as sync
+
+    class Response:
+        status_code = 200
+        url = "https://tds-api.ejianlong.com/system/dict/data/type"
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class Http:
+        def get(self, _url, **kwargs):
+            dictionary_type = kwargs["params"]["dictType"]
+            rows = {
+                "operation_type": [
+                    {
+                        "dictValue": "B0601",
+                        "dictLabel": "贸易-港口现货-背对背-B06",
+                    }
+                ]
+            }.get(dictionary_type, [])
+            return Response({"code": 200, "data": rows})
+
+    source = sync.OfficialJsonSalesContractSource(
+        http=Http(),
+        auth_provider=lambda: {"Authorization": "Bearer test-token"},
+    )
+
+    dictionaries = source._fetch_dictionaries()
+
+    assert dictionaries.get("operation_type") == {
+        "B0601": "贸易-港口现货-背对背-B06"
+    }
+
+
+@pytest.mark.parametrize(
+    ("business_type", "expected_label"),
+    [
+        ("B06", "贸易-落地-固定价-B05"),
+        ("B0601", "贸易-港口现货-背对背-B06"),
+        ("B09", "贸易-代理落地-B09"),
+    ],
+)
+def test_official_json_source_displays_business_type_like_trade_system(
+    business_type,
+    expected_label,
+):
+    from app import spot_ledger_sync as sync
+
+    class Source(sync.OfficialJsonSalesContractSource):
+        def __init__(self):
+            super().__init__(auth_provider=lambda: {}, enrich_sales_type_labels=True)
+
+        def _fetch_dictionaries(self):
+            return {
+                "quantity_attribution": {"Q1": "大客户组"},
+                "profit_attribution": {"P1": "东北组"},
+                "source_type": {"10": "现货"},
+                "price_mode": {"20": "固定价"},
+                "operation_type": {
+                    "B06": "贸易-落地-固定价-B05",
+                    "B0601": "贸易-港口现货-背对背-B06",
+                    "B09": "贸易-代理落地-B09",
+                },
+            }
+
+        def _fetch_contract_scope(self, _dictionaries):
+            return sync.OfficialContractScope(
+                active_contracts=[{"saleContractId": "contract-1", "status": "70"}],
+                demands={
+                    "demand-1": {
+                        "demandId": "demand-1",
+                        "sourceType": "10",
+                        "businessType": business_type,
+                        "quantityAttribution": "Q1",
+                        "profitAttribution": "P1",
+                        "workManName": "需求业务员A",
+                    }
+                },
+                in_scope_demand_ids={"demand-1"},
+                page_count=1,
+                diagnostics={"active_contract_count": 1},
+            )
+
+        def _fetch_settlements(self):
+            return {}
+
+        def _fetch_report_enrichment(self):
+            return {}
+
+        def _fetch_contract_bundle(self, contract_row):
+            return sync.OfficialContractBundle(
+                contract_row=contract_row,
+                contract_id="contract-1",
+                detail={
+                    "status": "70",
+                    "contractCode": "XS-1",
+                    "signingDate": "2026-09-04",
+                    "workCompName": "操作抬头A",
+                    "workManName": "销售执行A",
+                    "coustomName": "客户A",
+                },
+                lines=[
+                    {
+                        "saleContractMxId": "sale-line-1",
+                        "goodsCode": "GOODS-1",
+                        "goodsName": "铁矿石",
+                        "countQuantity": 100,
+                        "taxPrice": 858.8,
+                        "priceMode": "20",
+                    }
+                ],
+                match_rows=[
+                    {
+                        "demandId": "demand-1",
+                        "goodsCode": "GOODS-1",
+                        "matchPrice": 700,
+                    }
+                ],
+            )
+
+    scan = Source().fetch_full_scan()
+
+    assert len(scan.records) == 1
+    assert scan.records[0]["D"] == expected_label
+    assert scan.diagnostics["source_sales_type_label_count"] == 1
+    assert not any(
+        error.get("type") == "missing_source_sales_type_label"
+        for error in scan.records[0]["sync_errors"]
+    )
 
 
 def test_official_report_enrichment_rejects_conflicting_demand_salespeople(monkeypatch):

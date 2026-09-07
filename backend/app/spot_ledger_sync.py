@@ -637,6 +637,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         "profit_attribution",
         "source_type",
         "price_mode",
+        "operation_type",
     )
 
     def __init__(
@@ -1466,7 +1467,13 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                 purchase_line = purchase_lines.get(purchase_line_id, {})
                 price_mode, _ = self._dictionary_label(dictionaries["price_mode"], line.get("priceMode"))
                 report_fields = report_enrichment.get(detail_id, {})
-                business_category = report_fields.get("business_category") or self._business_category_value(demand)
+                source_business_category, _ = self._dictionary_label(
+                    dictionaries.get("operation_type", {}),
+                    self._business_category_value(demand),
+                )
+                business_category = (
+                    report_fields.get("business_category") or source_business_category
+                )
                 report_sales_business = str(report_fields.get("sales_business") or "").strip()
                 demand_sales_business = str(demand.get("workManName") or "").strip()
                 sales_business = report_sales_business or demand_sales_business
@@ -1555,7 +1562,9 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         }
         if self.enrich_sales_type_labels:
             diagnostics["source_sales_type_label_count"] = sum(
-                1 for fields in report_enrichment.values() if fields.get("business_category")
+                1
+                for record in normalized_records
+                if is_complete_source_sales_type(record.get("D"))
             )
             diagnostics["source_sales_business_label_count"] = sum(
                 1 for record in normalized_records if record.get("AF")
