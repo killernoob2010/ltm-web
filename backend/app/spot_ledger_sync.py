@@ -29,7 +29,6 @@ from .spot_ledger import (
     DEFAULT_NAME_MAPPINGS,
     FIELD_CODES,
     FIELD_DEFINITIONS,
-    HISTORY_SOURCE_FALLBACK_FIELDS,
     MANUAL_FIELDS,
     NUMERIC_FIELDS,
     SPOT_LEDGER_FOCUS_START_DATE,
@@ -39,6 +38,7 @@ from .spot_ledger import (
     _normalize_date,
     calculate_derived_fields,
     initialize_schema,
+    is_complete_source_sales_type,
     is_historical_scope,
     missing_required_fields,
     normalize_sales_contract_record,
@@ -648,7 +648,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
         max_pages: int = 1000,
         max_workers: int = 8,
         timeout_seconds: float = 30,
-        enrich_sales_type_labels: bool = False,
+        enrich_sales_type_labels: bool = True,
     ):
         if page_size < 1 or max_pages < 1 or not 1 <= max_workers <= 16:
             raise ValueError("page_size、max_pages 和 max_workers 必须在安全范围内")
@@ -668,8 +668,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
             return cls()
         session = requests.Session()
         provider = JianlongPasswordAuthProvider(username, password, http=session)
-        enrich_labels = (os.getenv("SPOT_LEDGER_SOURCE_LABEL_ENRICHMENT", "true") or "").strip().lower() not in {"0", "false", "no", "off"}
-        return cls(http=session, auth_provider=provider, enrich_sales_type_labels=enrich_labels)
+        return cls(http=session, auth_provider=provider, enrich_sales_type_labels=True)
 
     def _headers(self, *, refresh: bool = False) -> dict[str, str]:
         if not callable(self.auth_provider):
@@ -1483,7 +1482,7 @@ class OfficialJsonSalesContractSource(SalesContractSource):
                             "message": "报表需求业务员与需求详情业务员不一致，已采用报表需求业务员",
                         }
                     )
-                if self.enrich_sales_type_labels and re.fullmatch(r"[A-Z]{1,3}\d{2,}", str(business_category or ""), flags=re.IGNORECASE):
+                if self.enrich_sales_type_labels and not is_complete_source_sales_type(business_category):
                     record_errors.append(
                         {
                             "type": "missing_source_sales_type_label",
@@ -2696,6 +2695,10 @@ def _merge_record(incoming: dict[str, Any], existing: Optional[dict[str, Any]]) 
         # K 是系统优先补录字段：源有有效船名时覆盖，否则保留既有人工值。
         if _empty(incoming.get("K")) and not _empty(existing.get("K")):
             merged["K"] = existing["K"]
+        # A source outage may leave only a business-type code in the incoming scan.
+        # Keep the last complete trade-system label until the source can be read again.
+        if is_complete_source_sales_type(existing.get("D")) and not is_complete_source_sales_type(merged.get("D")):
+            merged["D"] = existing["D"]
         merged["record_id"] = existing.get("record_id") or merged.get("record_id")
     return calculate_derived_fields(merged)
 
@@ -3205,7 +3208,7 @@ def migrate_history_workbook(path: str | Path, apply: bool = False) -> dict[str,
             summary["matched"] += 1
             candidate = matches[0]
             proposed: dict[str, Any] = {}
-            for field in MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS | HISTORY_SOURCE_FALLBACK_FIELDS:
+            for field in MANUAL_FIELDS | SYSTEM_PRIORITY_FIELDS:
                 if field == "long_contract_object":
                     continue
                 value = history.get(field)

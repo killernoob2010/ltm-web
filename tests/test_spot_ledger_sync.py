@@ -60,6 +60,32 @@ def test_full_scan_upsert_is_idempotent_and_preserves_manual_fields(ledger_db):
     assert len(detail) == 2
 
 
+def test_merge_preserves_last_verified_source_sales_type_when_refresh_only_returns_code(ledger_db):
+    from app.spot_ledger_sync import _merge_record
+
+    merged = _merge_record(
+        {
+            "source_detail_id": "D-SALES-TYPE",
+            "D": "B06",
+            "sync_errors": [
+                {
+                    "type": "missing_source_sales_type_label",
+                    "field": "D",
+                    "message": "源系统未返回完整业务类别原文",
+                }
+            ],
+        },
+        {
+            "record_id": "spot:D-SALES-TYPE",
+            "source_detail_id": "D-SALES-TYPE",
+            "D": "贸易-落地-固定价-B05",
+        },
+    )
+
+    assert merged["D"] == "贸易-落地-固定价-B05"
+    assert merged["sync_errors"][0]["type"] == "missing_source_sales_type_label"
+
+
 def test_sync_runs_expose_compact_metadata_without_raw_error_details(ledger_db):
     from app.spot_ledger_sync import apply_full_scan, get_sync_runs
 
@@ -2245,7 +2271,7 @@ def test_history_migration_is_2026_only_and_does_not_overwrite_nonempty_conflict
     assert by_contract["C-103"]["AM"] in (None, "")
 
 
-def test_history_sales_type_prefers_system_value_and_uses_excel_only_when_system_is_blank(ledger_db, tmp_path):
+def test_history_workbook_never_writes_sales_type(ledger_db, tmp_path):
     from openpyxl import Workbook
     from app.spot_ledger_sync import apply_full_scan, migrate_history_workbook
 
@@ -2263,10 +2289,10 @@ def test_history_sales_type_prefers_system_value_and_uses_excel_only_when_system
     workbook.save(path)
 
     preview = migrate_history_workbook(path)
-    assert preview["conflicts"] == 1
-    assert preview["candidate_updates"] == 1
+    assert preview["conflicts"] == 0
+    assert preview["candidate_updates"] == 0
     applied = migrate_history_workbook(path, apply=True)
-    assert applied["updated"] == 1
+    assert applied["updated"] == 0
 
     with ledger_db.connect() as conn:
         rows = conn.execute(
@@ -2275,4 +2301,4 @@ def test_history_sales_type_prefers_system_value_and_uses_excel_only_when_system
         ).fetchall()
     by_contract = {row["AD"]: row for row in rows}
     assert by_contract["C-102"]["D"] == "B09"
-    assert by_contract["C-103"]["D"] == "贸易-落地-固定价-B05"
+    assert by_contract["C-103"]["D"] in (None, "")

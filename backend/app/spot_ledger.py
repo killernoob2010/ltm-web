@@ -37,6 +37,7 @@ KNOWN_SALES_TYPE_VALUES = frozenset({"现货-市场加价", "现货-背对背", 
 LAND_SALES_TYPE_VALUES = frozenset({LAND_SALES_TYPE, "贸易-代理落地-B09"})
 SALES_TYPE_CODE_PATTERN = re.compile(r"(?<![A-Z0-9])B(?:05|06|07|09)\d*(?![A-Z0-9])", re.IGNORECASE)
 SOURCE_SALES_TYPE_CODE_PATTERN = re.compile(r"^[A-Z]{1,3}\d{2,}$", re.IGNORECASE)
+SOURCE_SALES_TYPE_LABEL_PATTERN = re.compile(r"(?<![A-Z0-9])B\d{2,}(?![A-Z0-9])", re.IGNORECASE)
 HISTORY_SOURCE_FALLBACK_FIELDS = frozenset({"D"})
 PLACEHOLDER_VALUES = {"--", "***", "---", "**", "****", "—", "——"}
 NUMERIC_FIELDS = {"L", "M", "N", "O", "X", "Y", "Z", "AA", "AH", "AI", "AJ", "AK", "AL"}
@@ -268,6 +269,12 @@ def _sales_type_code(raw_value: Any) -> str:
     text = _text(raw_value).upper()
     match = SALES_TYPE_CODE_PATTERN.search(text)
     return match.group(0)[:3] if match else ""
+
+
+def is_complete_source_sales_type(raw_value: Any) -> bool:
+    """Return whether D contains the complete source label, not only its code."""
+    text = _text(raw_value)
+    return bool(text and re.search(r"[\u4e00-\u9fff]", text) and SOURCE_SALES_TYPE_LABEL_PATTERN.search(text))
 
 
 def is_land_sales_type(raw_value: Any) -> bool:
@@ -812,6 +819,17 @@ class SpotLedgerSystemFallbackPatch(SpotLedgerPatch):
     """Admin-only source fallback used when the system field is blank."""
 
 
+class SourceSalesTypeBackfillRow(BaseModel):
+    source_detail_id: str = Field(min_length=1, max_length=200)
+    business_category: str = Field(min_length=1, max_length=256)
+    expected_value: Optional[str] = None
+
+
+class SourceSalesTypeBackfillRequest(BaseModel):
+    rows: list[SourceSalesTypeBackfillRow] = Field(default_factory=list)
+    apply: bool = False
+
+
 @router.patch("/spot-ledger/records/{record_id}")
 def patch_record(record_id: str, payload: SpotLedgerPatch, user=Depends(_request_user)):
     active_user = _get_user(user)
@@ -875,35 +893,174 @@ def patch_system_fallback(record_id: str, payload: SpotLedgerSystemFallbackPatch
     active_user = _get_user(user)
     if not is_admin(active_user):
         raise HTTPException(status_code=403, detail="仅管理员可写入系统字段兜底值")
-    values = payload.values or {}
-    expected_values = payload.expected_values or {}
-    unknown = sorted(set(values) - set(HISTORY_SOURCE_FALLBACK_FIELDS))
-    unknown_expected = sorted(set(expected_values) - set(HISTORY_SOURCE_FALLBACK_FIELDS))
-    if unknown or unknown_expected or set(values) != set(HISTORY_SOURCE_FALLBACK_FIELDS):
-        raise HTTPException(status_code=400, detail={"message": "系统兜底只允许写入销售类型原值", "fields": unknown or unknown_expected})
-    incoming = _text(values.get("D"))
-    if not incoming:
-        raise HTTPException(status_code=400, detail="销售类型兜底值不能为空")
+    raise HTTPException(status_code=410, detail="销售类型不再接受 Excel 兜底写入，请使用贸易系统来源同步")
+
+
+def get_source_sales_type_snapshot(*, user: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Return only the current source IDs and D values for the trade-system bridge."""
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可读取销售类型来源快照")
+    with db.connect() as conn:
+        rows = db._exec(
+            conn.cursor(),
+            """
+            SELECT record_id, source_detail_id, "D"
+            FROM spot_ledger_records
+            WHERE record_source_type = '现货同步'
+              AND is_active = 1
+              AND source_detail_id IS NOT NULL
+              AND TRIM(source_detail_id) <> ''
+            ORDER BY source_detail_id
+            """,
+        ).fetchall()
+    records = [
+        {
+            "record_id": _row_dict(row).get("record_id"),
+            "source_detail_id": _row_dict(row).get("source_detail_id"),
+            "D": _row_dict(row).get("D"),
+        }
+        for row in rows
+    ]
+    return {"records": records, "count": len(records)}
+
+
+@router.get("/spot-ledger/source-sales-type-snapshot")
+def source_sales_type_snapshot_view(user=Depends(_request_user)):
+    return get_source_sales_type_snapshot(user=user)
+
+
+def source_sales_type_backfill(
+    payload: SourceSalesTypeBackfillRequest,
+    user: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Preview or apply complete D values received from the trade-system report."""
+    active_user = _get_user(user)
+    if not is_admin(active_user):
+        raise HTTPException(status_code=403, detail="仅管理员可回填贸易系统销售类型")
+    if len(payload.rows) > 5000:
+        raise HTTPException(status_code=400, detail="单次销售类型来源回填不得超过 5000 条")
+
+    seen: set[str] = set()
+    invalid = 0
+    valid_rows: list[SourceSalesTypeBackfillRow] = []
+    for item in payload.rows:
+        detail_id = _text(item.source_detail_id)
+        if detail_id in seen or not is_complete_source_sales_type(item.business_category):
+            invalid += 1
+            continue
+        seen.add(detail_id)
+        valid_rows.append(item)
+
+    by_detail_id: dict[str, dict[str, Any]] = {}
+    if valid_rows:
+        marks = ", ".join("?" for _ in valid_rows)
+        with db.connect() as conn:
+            rows = db._exec(
+                conn.cursor(),
+                f"""
+                SELECT * FROM spot_ledger_records
+                WHERE record_source_type = '现货同步'
+                  AND is_active = 1
+                  AND source_detail_id IN ({marks})
+                """,
+                tuple(_text(item.source_detail_id) for item in valid_rows),
+            ).fetchall()
+            by_detail_id = {
+                _text(_row_dict(row).get("source_detail_id")): _row_dict(row)
+                for row in rows
+            }
+
+    result = {
+        "ok": True,
+        "dry_run": not payload.apply,
+        "source_rows": len(payload.rows),
+        "matched": 0,
+        "to_update": 0,
+        "unchanged": 0,
+        "unmatched": 0,
+        "invalid": invalid,
+        "conflicts": 0,
+        "updated": 0,
+    }
+    plans: list[tuple[SourceSalesTypeBackfillRow, dict[str, Any], str]] = []
+    for item in valid_rows:
+        detail_id = _text(item.source_detail_id)
+        current = by_detail_id.get(detail_id)
+        if current is None:
+            result["unmatched"] += 1
+            continue
+        result["matched"] += 1
+        current_value = _text(current.get("D"))
+        expected = item.expected_value
+        if expected is None and payload.apply:
+            result["conflicts"] += 1
+            continue
+        if expected is not None and current_value != _text(expected):
+            result["conflicts"] += 1
+            continue
+        incoming = _text(item.business_category)
+        if current_value == incoming:
+            result["unchanged"] += 1
+            continue
+        result["to_update"] += 1
+        plans.append((item, current, current_value))
+
+    if not payload.apply or not plans:
+        return result
+
     with db.connect() as conn:
         cur = conn.cursor()
-        row = db._exec(cur, "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="台账记录不存在")
-        current = _row_dict(row)
-        if expected_values and not _expected_value_equal("D", current.get("D"), expected_values.get("D")):
-            raise HTTPException(status_code=409, detail={"message": "记录已被其他操作更新", "fields": ["D"]})
-        if _text(current.get("D")):
-            raise HTTPException(status_code=409, detail={"message": "系统已有销售类型，Excel 不能覆盖", "fields": ["D"]})
-        projected = calculate_derived_fields({**current, "D": incoming})
-        missing = missing_required_fields(projected)
-        db._exec(
-            cur,
-            'UPDATE spot_ledger_records SET "D" = ?, missing_fields = ?, supplement_status = ?, updated_at = ? WHERE record_id = ?',
-            (incoming, json.dumps(missing, ensure_ascii=False), "待补录" if missing else "已完成", datetime.now().isoformat(timespec="seconds"), record_id),
-        )
-        saved = db._exec(cur, "SELECT * FROM spot_ledger_records WHERE record_id = ?", (record_id,)).fetchone()
-    return {"record": record_to_public(_row_dict(saved)), "missing_fields": missing}
+        for item, current, current_value in plans:
+            record_id = _text(current.get("record_id"))
+            projected = calculate_derived_fields({**current, "D": _text(item.business_category)})
+            missing = missing_required_fields(projected)
+            try:
+                parsed_errors = json.loads(current.get("sync_error_summary") or "[]")
+            except (TypeError, ValueError):
+                parsed_errors = []
+            remaining_errors = [
+                error for error in parsed_errors
+                if not isinstance(error, dict) or error.get("type") != "missing_source_sales_type_label"
+            ] if isinstance(parsed_errors, list) else []
+            source_payload = current.get("source_payload_json") or ""
+            try:
+                payload_object = json.loads(source_payload) if source_payload else {}
+            except (TypeError, ValueError):
+                payload_object = {}
+            if isinstance(payload_object, dict):
+                payload_object["D"] = _text(item.business_category)
+                source_payload = json.dumps(payload_object, ensure_ascii=False, default=str)
+            updated = db._exec(
+                cur,
+                """
+                UPDATE spot_ledger_records
+                SET "D" = ?, missing_fields = ?, supplement_status = ?, sync_status = ?,
+                    sync_error_summary = ?, source_payload_json = ?, updated_at = ?
+                WHERE record_id = ? AND COALESCE("D", '') = COALESCE(?, '')
+                """,
+                (
+                    _text(item.business_category),
+                    json.dumps(missing, ensure_ascii=False),
+                    "待补录" if missing else "已完成",
+                    "异常" if remaining_errors else "正常",
+                    json.dumps(remaining_errors, ensure_ascii=False) if remaining_errors else "",
+                    source_payload,
+                    datetime.now().isoformat(timespec="seconds"),
+                    record_id,
+                    current_value,
+                ),
+            )
+            if getattr(updated, "rowcount", 1) != 1:
+                result["conflicts"] += 1
+                continue
+            result["updated"] += 1
+    return result
 
+
+@router.post("/spot-ledger/source-sales-type-backfill")
+def source_sales_type_backfill_view(payload: SourceSalesTypeBackfillRequest, user=Depends(_request_user)):
+    return source_sales_type_backfill(payload, user=user)
 
 def get_pending(
     *,

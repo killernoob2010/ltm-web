@@ -105,6 +105,82 @@ def test_backfill_snapshot_is_admin_only_current_scope_and_omits_payload(ledger_
     assert denied.value.status_code == 403
 
 
+def test_source_sales_type_snapshot_is_admin_only_and_not_excel_scoped(ledger_context):
+    from app.spot_ledger import get_source_sales_type_snapshot
+
+    admin, trade_user = ledger_context
+    snapshot = get_source_sales_type_snapshot(user=admin)
+
+    assert snapshot["count"] == len(snapshot["records"])
+    assert {"record_id", "source_detail_id", "D"} <= set(snapshot["records"][0])
+    assert all(set(row) == {"record_id", "source_detail_id", "D"} for row in snapshot["records"])
+    with pytest.raises(HTTPException) as denied:
+        get_source_sales_type_snapshot(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_sales_type_backfill_uses_complete_trade_source_labels_and_expected_values(ledger_context):
+    from app.spot_ledger import (
+        SourceSalesTypeBackfillRequest,
+        get_record,
+        source_sales_type_backfill,
+    )
+
+    admin, _ = ledger_context
+    preview = source_sales_type_backfill(
+        SourceSalesTypeBackfillRequest(
+            rows=[
+                {"source_detail_id": "D1001", "business_category": "贸易-港口现货-市场加价-B07", "expected_value": "B07"},
+                {"source_detail_id": "D1002", "business_category": "B06", "expected_value": "B07"},
+                {"source_detail_id": "missing", "business_category": "贸易-港口现货-背对背-B06", "expected_value": ""},
+            ],
+            apply=False,
+        ),
+        user=admin,
+    )
+
+    assert preview["matched"] == 1
+    assert preview["to_update"] == 1
+    assert preview["invalid"] == 1
+    assert preview["unmatched"] == 1
+    assert preview["updated"] == 0
+
+    applied = source_sales_type_backfill(
+        SourceSalesTypeBackfillRequest(
+            rows=[
+                {"source_detail_id": "D1001", "business_category": "贸易-港口现货-市场加价-B07", "expected_value": "B07"},
+            ],
+            apply=True,
+        ),
+        user=admin,
+    )
+
+    assert applied["updated"] == 1
+    assert get_record("spot:D1001", user=admin)["record"]["D"] == "贸易-港口现货-市场加价-B07"
+
+
+def test_source_sales_type_backfill_rejects_optimistic_value_conflict(ledger_context):
+    from app.spot_ledger import SourceSalesTypeBackfillRequest, source_sales_type_backfill
+
+    admin, _ = ledger_context
+    result = source_sales_type_backfill(
+        SourceSalesTypeBackfillRequest(
+            rows=[
+                {
+                    "source_detail_id": "D1001",
+                    "business_category": "贸易-港口现货-市场加价-B07",
+                    "expected_value": "已经变化",
+                }
+            ],
+            apply=True,
+        ),
+        user=admin,
+    )
+
+    assert result["conflicts"] == 1
+    assert result["updated"] == 0
+
+
 def test_patch_record_honors_expected_values_for_backfill_race_safety(ledger_context):
     from app.spot_ledger import SpotLedgerPatch, get_record, patch_record
 
@@ -333,38 +409,20 @@ def test_manual_edit_requires_sensitive_permission_and_cannot_change_system_fiel
     assert readonly.value.status_code == 400
 
 
-def test_system_fallback_only_fills_blank_sales_type_for_admin(ledger_context):
-    from app.spot_ledger import SpotLedgerSystemFallbackPatch, get_record, patch_system_fallback
+def test_legacy_system_fallback_rejects_excel_sales_type_writes(ledger_context):
+    from app.spot_ledger import SpotLedgerSystemFallbackPatch, patch_system_fallback
 
-    admin, trade_user = ledger_context
-    with db.connect() as conn:
-        conn.execute('UPDATE spot_ledger_records SET "D" = ? WHERE record_id = ?', ("", "spot:D1001"))
-
-    updated = patch_system_fallback(
-        "spot:D1001",
-        SpotLedgerSystemFallbackPatch(values={"D": "贸易-代理落地-B09"}, expected_values={"D": ""}),
-        user=admin,
-    )
-    assert updated["record"]["D"] == "贸易-代理落地-B09"
-    assert updated["record"]["is_land_goods"] is True
-
-    with pytest.raises(HTTPException) as denied:
+    admin, _ = ledger_context
+    with pytest.raises(HTTPException) as rejected:
         patch_system_fallback(
-            "spot:D1002",
-            SpotLedgerSystemFallbackPatch(values={"D": "B05"}),
-            user=trade_user,
-        )
-    assert denied.value.status_code == 403
-
-    with pytest.raises(HTTPException) as occupied:
-        patch_system_fallback(
-            "spot:D1002",
-            SpotLedgerSystemFallbackPatch(values={"D": "B05"}),
+            "spot:D1001",
+            SpotLedgerSystemFallbackPatch(
+                values={"D": "贸易-代理落地-B09"},
+                expected_values={"D": "B07"},
+            ),
             user=admin,
         )
-    assert occupied.value.status_code == 409
-
-    assert get_record("spot:D1001", user=admin)["record"]["D"] == "贸易-代理落地-B09"
+    assert rejected.value.status_code == 410
 
 
 def test_strategy_hedging_requires_complete_open_close_and_rejects_partial_close(ledger_context):
@@ -430,4 +488,6 @@ def test_spot_ledger_routes_are_registered_in_main_app():
     assert "/api/spot-ledger/source-dry-run" in paths
     assert "/api/spot-ledger/source-report-dry-run" in paths
     assert "/api/spot-ledger/source-scope-readiness" in paths
+    assert "/api/spot-ledger/source-sales-type-snapshot" in paths
+    assert "/api/spot-ledger/source-sales-type-backfill" in paths
     assert not any(path.endswith("/sync-now") for path in paths)
