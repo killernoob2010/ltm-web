@@ -106,6 +106,19 @@ def _position_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
+def _hedge_flag(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _baseline_lot_order(row: Mapping[str, Any], index: int) -> tuple[str, int, str, int, int]:
+    opened = _date_key(row.get("open_date") or row.get("snapshot_date"))
+    try:
+        row_id = int(row.get("id") or row.get("source_record_id") or index)
+    except (TypeError, ValueError):
+        row_id = index
+    return opened, -1, "", row_id, index
+
+
 def _copy_position_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     result = dict(row)
     result["exchange"] = str(result.get("exchange") or "").upper()
@@ -198,13 +211,53 @@ def _position_projection_error(
     }
 
 
+def _position_lots(baseline_rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    lots: List[Dict[str, Any]] = []
+    for index, raw_row in enumerate(baseline_rows):
+        row = _copy_position_row(raw_row)
+        if float(row.get("quantity") or 0) <= 0:
+            continue
+        row["_lot_order"] = _baseline_lot_order(row, index)
+        lots.append(row)
+    return lots
+
+
+def _close_lots(
+    lots: List[Dict[str, Any]],
+    position_key: tuple[str, str, str, str],
+    quantity: float,
+    hedge_flag: str,
+) -> bool:
+    matching = [lot for lot in lots if _position_key(lot) == position_key]
+    if hedge_flag:
+        same_hedge = [
+            lot for lot in matching if _hedge_flag(lot.get("hedge_flag")) == hedge_flag
+        ]
+        if same_hedge:
+            matching = same_hedge
+        elif any(_hedge_flag(lot.get("hedge_flag")) for lot in matching):
+            return False
+    matching.sort(key=lambda lot: lot["_lot_order"])
+    if sum(float(lot.get("quantity") or 0) for lot in matching) + 1e-9 < quantity:
+        return False
+    remaining = float(quantity)
+    for lot in matching:
+        if remaining <= 1e-9:
+            break
+        lot_quantity = float(lot.get("quantity") or 0)
+        take = min(lot_quantity, remaining)
+        lot["quantity"] = lot_quantity - take
+        remaining -= take
+    return remaining <= 1e-9
+
+
 def infer_positions_from_fills(
     baseline_rows: Iterable[Mapping[str, Any]],
     fills: Iterable[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     """Apply valid WH6 fills to a confirmed position baseline without clipping errors."""
     baseline = list(baseline_rows)
-    positions = _baseline_position_items(baseline)
+    lots = _position_lots(baseline)
     ordered_fills = sorted(
         list(fills),
         key=_fill_order_key,
@@ -237,65 +290,61 @@ def infer_positions_from_fills(
             asset_type,
             direction,
         )
-        current = positions.get(key)
-        if delta < 0 and (current is None or float(current.get("quantity") or 0) + delta < -1e-9):
-            return _position_projection_error(baseline, f"成交平仓超过已有持仓：{contract}/{direction}")
-        if current is None:
-            current = {
-                "exchange": exchange.upper(),
-                "contract": contract,
-                "asset_type": asset_type,
-                "direction": direction,
-                "position_key": f"{exchange.upper()}:{contract}:{asset_type}:{direction}",
-                "quantity": 0.0,
-                "average_price": 0.0,
-                "margin": None,
-                "valuation_price": None,
-                "floating_pnl": None,
-                "source_record_count": 0,
-                "fact_status": "provisional",
-                "formation_method": "inferred_from_settlement_and_fills",
-                "source_type": "wh6",
-                "source_label": SOURCE_LABELS["wh6"],
-                "can_classify": False,
-                "assignment_status": "not_applicable",
-            }
-            positions[key] = current
-        current_quantity = float(current.get("quantity") or 0)
-        if delta > 0:
-            if current_quantity and current.get("average_price") is not None:
-                current["average_price"] = (
-                    current_quantity * float(current["average_price"]) + delta * price
-                ) / (current_quantity + delta)
-            else:
-                current["average_price"] = price
-            current["quantity"] = current_quantity + delta
+        if delta < 0:
+            if not _close_lots(lots, key, quantity, _hedge_flag(fill.get("hedge_flag"))):
+                return _position_projection_error(baseline, f"成交平仓超过已有持仓：{contract}/{direction}")
         else:
-            current["quantity"] = current_quantity + delta
+            lots.append(
+                {
+                    "exchange": exchange.upper(),
+                    "contract": contract,
+                    "asset_type": asset_type,
+                    "direction": direction,
+                    "position_key": f"{exchange.upper()}:{contract}:{asset_type}:{direction}",
+                    "quantity": quantity,
+                    "average_price": price,
+                    "open_date": fill.get("trade_date"),
+                    "hedge_flag": fill.get("hedge_flag"),
+                    "margin": None,
+                    "valuation_price": None,
+                    "floating_pnl": None,
+                    "source_record_count": 0,
+                    "fact_status": "provisional",
+                    "formation_method": "inferred_from_settlement_and_fills",
+                    "source_type": "wh6",
+                    "source_label": SOURCE_LABELS["wh6"],
+                    "can_classify": False,
+                    "assignment_status": "not_applicable",
+                    "_lot_order": (
+                        *_fill_order_key(fill),
+                        len(lots),
+                    ),
+                }
+            )
         changed_keys.add(key)
-        if abs(float(current["quantity"])) <= 1e-9:
-            positions.pop(key, None)
 
-    for key in changed_keys:
-        current = positions.get(key)
-        if current is None:
-            continue
-        current.update(
-            {
-                "fact_status": "provisional",
-                "formation_method": "inferred_from_settlement_and_fills",
-                "source_type": "wh6",
-                "source_label": SOURCE_LABELS["wh6"],
-                "margin": None,
-                "valuation_price": None,
-                "floating_pnl": None,
-                "can_classify": False,
-                "assignment_status": "not_applicable",
-            }
-        )
+    lots = [lot for lot in lots if float(lot.get("quantity") or 0) > 1e-9]
+    for lot in lots:
+        if _position_key(lot) in changed_keys:
+            lot.update(
+                {
+                    "fact_status": "provisional",
+                    "formation_method": "inferred_from_settlement_and_fills",
+                    "source_type": "wh6",
+                    "source_label": SOURCE_LABELS["wh6"],
+                    "margin": None,
+                    "valuation_price": None,
+                    "floating_pnl": None,
+                    "can_classify": False,
+                    "assignment_status": "not_applicable",
+                }
+            )
+    items = _group_position_items(lots)
+    for item in items:
+        item.pop("_lot_order", None)
     return {
         "status": "ok",
-        "items": sorted(positions.values(), key=lambda row: (row["contract"], row["direction"])),
+        "items": items,
         "warnings": [],
     }
 

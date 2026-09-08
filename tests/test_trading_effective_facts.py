@@ -256,7 +256,16 @@ def test_management_api_filters_accept_fact_status():
     assert filters.fact_status == "settlement_confirmed"
 
 
-def _baseline_row(contract, direction, quantity, average_price, *, margin=100):
+def _baseline_row(
+    contract,
+    direction,
+    quantity,
+    average_price,
+    *,
+    margin=100,
+    open_date="20260831",
+    hedge_flag=None,
+):
     return {
         "exchange": "DCE",
         "contract": contract,
@@ -268,6 +277,8 @@ def _baseline_row(contract, direction, quantity, average_price, *, margin=100):
         "valuation_price": average_price + 10,
         "floating_pnl": 20,
         "snapshot_date": "20260831",
+        "open_date": open_date,
+        "hedge_flag": hedge_flag,
         "source_record_count": 1,
     }
 
@@ -282,6 +293,7 @@ def _fill(
     *,
     trade_date="20260901",
     trade_time=None,
+    hedge_flag=None,
 ):
     return {
         "id": fill_id,
@@ -294,6 +306,7 @@ def _fill(
         "open_close": open_close,
         "quantity": quantity,
         "price": price,
+        "hedge_flag": hedge_flag,
     }
 
 
@@ -416,7 +429,7 @@ def _insert_wh6_snapshot(
     return snapshot_id
 
 
-def test_infer_positions_applies_open_close_direction_and_weighted_average():
+def test_infer_positions_applies_fifo_open_close_costs():
     result = trading_effective_facts.infer_positions_from_fills(
         [
             _baseline_row("i2609", "买", 2, 700),
@@ -435,12 +448,72 @@ def test_infer_positions_applies_open_close_direction_and_weighted_average():
     assert result["status"] == "ok"
     rows = {(row["contract"], row["direction"]): row for row in result["items"]}
     assert rows[("i2609", "买")]["quantity"] == 2
-    assert rows[("i2609", "买")]["average_price"] == pytest.approx(710)
+    assert rows[("i2609", "买")]["average_price"] == pytest.approx(715)
     assert rows[("i2509", "卖")]["quantity"] == 4
-    assert rows[("i2509", "卖")]["average_price"] == pytest.approx(908)
+    assert rows[("i2509", "卖")]["average_price"] == pytest.approx(910)
     assert rows[("i2701", "买")]["quantity"] == 2
     assert all(row["fact_status"] == "provisional" for row in rows.values() if row["contract"] != "i2409")
     assert rows[("i2409", "买")]["fact_status"] == "settlement_confirmed"
+
+
+def test_infer_positions_uses_fifo_cost_after_partial_close():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [
+            _baseline_row(
+                "i2701-p-650", "卖", 99, 4.7, open_date="20260828"
+            ),
+            _baseline_row(
+                "i2701-p-650", "卖", 100, 4.6, open_date="20260831"
+            ),
+            _baseline_row(
+                "i2701-p-650", "卖", 100, 4.7, open_date="20260831"
+            ),
+            _baseline_row(
+                "i2701-p-650", "卖", 1, 5.2, open_date="20260902"
+            ),
+        ],
+        [
+            _fill(
+                1,
+                "i2701-p-650",
+                "买",
+                "平",
+                100,
+                3.5,
+                trade_date="20260908",
+            )
+        ],
+    )
+
+    assert result["status"] == "ok"
+    row = result["items"][0]
+    assert row["quantity"] == 200
+    assert row["average_price"] == pytest.approx(4.653)
+
+
+def test_infer_positions_matches_fifo_with_available_hedge_flag():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [
+            _baseline_row("i2701", "卖", 32, 707, hedge_flag="投机"),
+            _baseline_row("i2701", "卖", 100, 727, hedge_flag="套保"),
+        ],
+        [
+            _fill(
+                1,
+                "i2701",
+                "买",
+                "平",
+                100,
+                744.5,
+                hedge_flag="套保",
+            )
+        ],
+    )
+
+    assert result["status"] == "ok"
+    row = result["items"][0]
+    assert row["quantity"] == 32
+    assert row["average_price"] == pytest.approx(707)
 
 
 def test_infer_positions_removes_zero_quantity_rows_and_preserves_unaffected_values():
@@ -553,9 +626,9 @@ def test_effective_positions_use_latest_settlement_baseline_and_provisional_fill
     rows = {(row["contract"], row["direction"]): row for row in result["items"]}
     assert result["baseline_snapshot_date"] == "20260831"
     assert rows[("i2609", "买")]["quantity"] == 2
-    assert rows[("i2609", "买")]["average_price"] == pytest.approx(710)
+    assert rows[("i2609", "买")]["average_price"] == pytest.approx(715)
     assert rows[("i2509", "卖")]["quantity"] == 4
-    assert rows[("i2509", "卖")]["average_price"] == pytest.approx(908)
+    assert rows[("i2509", "卖")]["average_price"] == pytest.approx(910)
     assert all(row["fact_status"] == "provisional" for row in rows.values())
 
 
