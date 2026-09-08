@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional, Protocol, Union
 SH_JUNNENG_RULE_VERSION = "sh_junneng_v1"
 OPTION_RISK_FREE_RATE = 0.015
 TQSDK_FETCH_TIMEOUT_SECONDS = 5
+TQSDK_INITIALIZATION_TIMEOUT_SECONDS = 30
 TQSDK_KLINE_FETCH_TIMEOUT_SECONDS = 25
 _DCE_OPTION_CONTRACT_RE = re.compile(
     r"^(?P<product>[a-z]+)(?P<year>\d{2})(?P<month>\d{2})-"
@@ -556,7 +557,7 @@ class TqSdkQuoteProvider:
         initialization = self._executor.submit(self._initialize)
         try:
             self._api = initialization.result(
-                timeout=TQSDK_FETCH_TIMEOUT_SECONDS
+                timeout=TQSDK_INITIALIZATION_TIMEOUT_SECONDS
             )
         except FutureTimeoutError:
             def close_late_api(future: Future) -> None:
