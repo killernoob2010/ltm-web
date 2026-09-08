@@ -26,7 +26,7 @@ from .permissions import require_permission
 TEMPLATE_KEY = "iron_ore_weekly"
 TEMPLATE_VERSION = "V1.0"
 TEMPLATE_NAME = "铁矿石周报（46页基线）"
-RENDERER_VERSION = "iron-ore-weekly-renderer-2"
+RENDERER_VERSION = "iron-ore-weekly-renderer-3"
 RULES_REFERENCE = "docs/2026-09-08-iron-ore-weekly-report-rules.md"
 
 TEMPLATE_CONFIG = {
@@ -191,28 +191,38 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         history_port_inventory = _rows(
             cur,
             """SELECT * FROM dv_port_inventory_facts
+               WHERE week_start <= ?
                ORDER BY week_start, port_name, product, id""",
+            (current_week,),
         )
         history_inventory_summary = _rows(
             cur,
             """SELECT * FROM dv_inventory_summary_facts
+               WHERE week_start <= ?
                ORDER BY week_start, port_name, metric, id""",
+            (current_week,),
         )
         history_inventory_mainstream = _rows(
             cur,
             """SELECT * FROM dv_inventory_mainstream_facts
+               WHERE week_start <= ?
                ORDER BY week_start, port_name, product, id""",
+            (current_week,),
         )
         history_legacy = _rows(
             cur,
             """SELECT * FROM dv_integrated_points
                WHERE metric_type IN ('inventory', 'arrival', 'apparent_demand')
+                 AND week_start <= ?
                ORDER BY week_start, source_country, category, product, id""",
+            (current_week,),
         )
         history_grade = _rows(
             cur,
             """SELECT * FROM dv_inventory_grade_facts
+               WHERE week_start <= ?
                ORDER BY week_start, grade, category, port_name, id""",
+            (current_week,),
         )
         try:
             prices = _rows(
