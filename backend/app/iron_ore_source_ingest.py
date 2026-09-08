@@ -122,13 +122,17 @@ def _port_name(value: Any) -> str:
 
 def _sample_info(raw_sample: Any) -> tuple[str, str, str, str]:
     sample = _text(raw_sample)
-    port, region = SAMPLE_TO_PORT.get(sample, (sample, ""))
+    english = ("Jiangyin", "Nantong", "Taicang", "Zhoushan", "Fuzhou", "Zhanjiang", "Lanqiao", "Lanshan", "Lianyungang", "Qingdao", "Rizhao", "Caofeidian", "Huanghua", "Jingtang", "Tianjin")
+    names = {name.lower(): port for name, (port, _) in zip(english, SAMPLE_TO_PORT.values())}
+    names.update({"连云": "连云港", "天津港": "天津", "total": "总计"})
+    normalized = names.get(sample.lower(), sample)
+    port, region = SAMPLE_TO_PORT.get(sample, (normalized, ""))
     return sample, port, region, "sample" if sample in SAMPLE_TO_PORT else "unknown_sample"
 
 
 def _is_total_label(value: Any) -> bool:
     text = _text(value)
-    return text in {"总计", "全国", "全国合计"} or "总计" in text or text.endswith("合计")
+    return text.lower() == "total" or text in {"总计", "全国", "全国合计"} or "总计" in text or text.endswith("合计")
 
 
 def _header_row(rows: Sequence[Sequence[Any]], first_value: str) -> Optional[int]:
@@ -206,11 +210,13 @@ def _inventory_identity(sheet: str, raw_product: str, category: str = "") -> tup
 
 
 def _category_for_product_sheet(sheet: str) -> str:
-    return {"粗粉": "粉矿", "块矿": "块矿", "球团": "球团", "精粉": "精粉"}.get(sheet, "")
+    return {"粉矿": "粉矿", "粗粉": "粉矿", "块矿": "块矿", "球团": "球团", "精粉": "精粉"}.get(sheet, "")
 
 
 def _parse_inventory(path: Path, package: SourcePackage) -> None:
-    for sheet_name in ("总览", "粗粉", "块矿", "球团", "精粉", "分品位", "主流品种"):
+    historical = bool(package.source_files and package.source_files[-1]["template_type"] == "inventory_history")
+    excluded_dates = set()
+    for sheet_name in ("总览", "粗粉", "粉矿", "块矿", "球团", "精粉", "分品位", "主流品种"):
         rows = _read_sheet(path, sheet_name)
         if not rows:
             continue
@@ -218,11 +224,30 @@ def _parse_inventory(path: Path, package: SourcePackage) -> None:
         if header_index is None:
             continue
         headers = [_text(value) for value in rows[header_index]]
+        # Historical workbooks contain a repeated horizontal auxiliary block.
+        if "统计日期" in headers[1:]:
+            headers = headers[:headers.index("统计日期", 1)]
+        old_three_grades = any(h.startswith("中品") for h in headers)
+        if historical:
+            seen_headers = set()
+            for index, header in enumerate(headers):
+                if header in seen_headers:
+                    headers[index] = ""
+                elif header:
+                    seen_headers.add(header)
+        latest_date = None
         for offset, values in enumerate(rows[header_index + 1 :], start=header_index + 2):
             if len(values) < 2:
                 continue
             observed = _date_value(values[0])
             if observed is None:
+                continue
+            if historical and sheet_name == "总览":
+                if latest_date is not None and observed < latest_date:
+                    excluded_dates.add(observed.isoformat())
+                    continue
+                latest_date = observed
+            if observed.isoformat() in excluded_dates:
                 continue
             raw_port = values[1]
             if not _text(raw_port):
@@ -249,13 +274,13 @@ def _parse_inventory(path: Path, package: SourcePackage) -> None:
                     package.inventory_summary.append(row)
                 continue
 
-            if sheet_name in {"粗粉", "块矿", "球团", "精粉"}:
+            if sheet_name in {"粗粉", "粉矿", "块矿", "球团", "精粉"}:
                 category = _category_for_product_sheet(sheet_name)
                 for col_index, raw_product in enumerate(headers[3:], start=4):
                     if not raw_product or "总计" in raw_product:
                         continue
                     source_country, product, canonical_category = _inventory_identity(
-                        sheet_name, raw_product, category
+                        "粗粉" if sheet_name == "粉矿" else sheet_name, raw_product, category
                     )
                     row = _base_row(
                         path=path, sheet=sheet_name, row_no=offset, col_no=col_index,
@@ -282,6 +307,8 @@ def _parse_inventory(path: Path, package: SourcePackage) -> None:
                     grade, category = _grade_and_category(raw_grade)
                     if not grade:
                         continue
+                    if old_three_grades:
+                        grade = {"高品": "高品（旧三档）", "中品": "中低品"}.get(grade, grade)
                     row = _base_row(
                         path=path, sheet=sheet_name, row_no=offset, col_no=col_index,
                         observed=observed, raw_port=raw_port,
@@ -329,12 +356,15 @@ def _parse_inventory(path: Path, package: SourcePackage) -> None:
                     })
                     package.inventory_mainstream.append(row)
 
+    if excluded_dates:
+        package.validation.setdefault("excluded_out_of_order_dates", []).extend(sorted(excluded_dates))
+
 
 def _grade_and_category(label: str) -> tuple[str, str]:
     label = _text(label)
     if not label:
         return "", ""
-    grade = next((prefix for prefix in ("中高品", "中低品", "高品", "低品") if label.startswith(prefix)), "")
+    grade = next((prefix for prefix in ("中高品", "中低品", "高品", "中品", "低品") if label.startswith(prefix)), "")
     if not grade:
         return "", ""
     if label.endswith("总计"):
@@ -510,6 +540,8 @@ def _parse_estimated_and_shipments(paths: Sequence[Path], package: SourcePackage
 
 def _classify_file(path: Path, sheets: Sequence[str]) -> str:
     names = set(sheets)
+    if {"总览", "粉矿"}.issubset(names) and "粗粉" not in names:
+        return "inventory_history"
     if {"总览", "粗粉"}.issubset(names):
         return "inventory"
     if {"国家", "品种", "货种品位"}.issubset(names):
@@ -548,7 +580,7 @@ def parse_mysteel_source_files(paths: Sequence[Path | str]) -> SourcePackage:
             continue
         package.source_files.append(_file_metadata(path))
         sheets = package.source_files[-1]["sheets"]
-        if {"总览", "粗粉"}.issubset(set(sheets)):
+        if "总览" in sheets and ({"粗粉", "粉矿"} & set(sheets)):
             _parse_inventory(path, package)
         if {"国家", "品种", "货种品位"}.issubset(set(sheets)):
             _parse_actual_arrival(path, package)
@@ -562,7 +594,11 @@ def parse_mysteel_source_files(paths: Sequence[Path | str]) -> SourcePackage:
     try:
         from . import data_visualization as dv
 
-        package.legacy_points = dv.integrate_mysteel_files(normalized).get("points", [])
+        # The old historical format is captured by V2 facts. Keep the V1 parser
+        # on its supported source formats rather than partially importing history.
+        legacy_paths = [Path(item["path"]) for item in package.source_files
+                        if item["template_type"] != "inventory_history"]
+        package.legacy_points = dv.integrate_mysteel_files(legacy_paths).get("points", [])
     except Exception as exc:  # source detail remains useful even if V1 parse warns
         package.validation.setdefault("legacy_parse_warnings", []).append(str(exc))
 

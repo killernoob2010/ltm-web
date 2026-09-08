@@ -94,3 +94,27 @@ def test_build_v2_workbook_round_trips_authoritative_sheets(tmp_path):
     assert any(row[3] == "南通" and row[7] == "PB粉" for row in wb["港口品种库存"].iter_rows(min_row=2, values_only=True))
     assert any(row[0] == "actual" for row in wb["到港明细"].iter_rows(min_row=2, values_only=True))
     wb.close()
+
+
+def test_historical_inventory_first_block_and_old_grades(tmp_path):
+    from backend.app.iron_ore_source_ingest import parse_mysteel_source_files
+    path = tmp_path / 'history.xlsx'
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '总览'
+    ws.append(['统计日期', '港口', '区域', '库存总量'])
+    ws.append([datetime(2025, 9, 1), 'Total', '', 10])
+    ws = wb.create_sheet('粉矿')
+    ws.append(['统计日期', '港口', '区域', 'PB粉', '统计日期', '港口', '区域', 'PB粉'])
+    ws.append([datetime(2025, 9, 1), 'Total', '', 10, datetime(2025, 9, 1), 'Total', '', 999])
+    ws = wb.create_sheet('分品位')
+    ws.append(['统计日期', '港口', '区域', '高品总计', '中品总计', '低品总计'])
+    ws.append([datetime(2025, 9, 1), 'Jiangyin', '', 5, 3, 2])
+    wb.save(path)
+    p = parse_mysteel_source_files([path])
+    assert len(p.inventory_port_product) == 1
+    assert p.inventory_port_product[0]['value'] == 10
+    assert p.inventory_port_product[0]['scope_type'] == 'total'
+    assert p.inventory_port_product[0]['category'] == '粉矿'
+    assert {r['grade'] for r in p.inventory_grade} == {'高品（旧三档）', '中低品', '低品'}
+    assert {r['port_name'] for r in p.inventory_grade} == {'江阴'}
