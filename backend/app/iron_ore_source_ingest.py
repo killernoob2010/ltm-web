@@ -552,7 +552,9 @@ def parse_mysteel_source_files(paths: Sequence[Path | str]) -> SourcePackage:
             _parse_inventory(path, package)
         if {"国家", "品种", "货种品位"}.issubset(set(sheets)):
             _parse_actual_arrival(path, package)
-    _parse_estimated_and_shipments(normalized, package)
+    supply_paths = [Path(item["path"]) for item in package.source_files
+                    if item["template_type"] in {"shipment_and_estimate", "global_shipment"}]
+    _parse_estimated_and_shipments(supply_paths, package)
 
     # Keep the V1 summary in the exported workbook so existing charts and
     # table-demand consumers can continue to read the same columns.  This is
@@ -653,10 +655,46 @@ def update_source_package_output(package_id: str, output_path: str, output_sha25
 def _insert_fact_rows(cur, table: str, columns: Sequence[str], rows: Sequence[Dict[str, Any]]) -> int:
     if not rows:
         return 0
+    identity_columns = [column for column in (
+        "observed_date", "week_start", "port_name", "scope_type", "product", "category",
+        "source_country", "metric", "grade", "raw_grade", "arrival_kind", "method", "slice_type", "dimension",
+    ) if column in columns]
+    if db._is_pg():
+        # Serialize overlapping imports while comparing and inserting facts.
+        db._exec(cur, f"LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE")
+    dates = sorted({row.get("observed_date") for row in rows if row.get("observed_date")})
+    existing = []
+    for start in range(0, len(dates), 500):
+        chunk = dates[start:start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        existing.extend(dict(row) for row in db._exec(
+            cur, f"SELECT * FROM {table} WHERE observed_date IN ({placeholders})", tuple(chunk)
+        ).fetchall())
+
+    def identity(row):
+        return tuple(row.get(column) or "" for column in identity_columns)
+
+    known = {identity(row): row for row in existing}
+    unique = []
+    for row in rows:
+        key = identity(row)
+        prior = known.get(key)
+        if prior is not None:
+            if (prior.get("value") != row.get("value")
+                    or prior.get("value_status") != row.get("value_status")
+                    or prior.get("unit") != row.get("unit")):
+                raise ValueError(
+                    f"同一观测记录存在数值冲突：{row.get('observed_date')} "
+                    f"{row.get('port_name')} {row.get('product') or row.get('dimension') or row.get('metric') or row.get('grade')}；"
+                    "本次导入已取消，请核对来源版本"
+                )
+            continue
+        known[key] = row
+        unique.append(row)
     placeholders = ", ".join("?" for _ in columns)
     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
-    db._executemany(cur, sql, [tuple(row.get(column) for column in columns) for row in rows])
-    return len(rows)
+    db._executemany(cur, sql, [tuple(row.get(column) for column in columns) for row in unique])
+    return len(unique)
 
 
 def _store_source_package_facts_in_connection(

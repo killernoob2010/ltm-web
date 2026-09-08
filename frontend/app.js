@@ -3559,7 +3559,7 @@ function renderDVReportReadiness(result) {
   const validation = result.validation;
   const items = [
     ["库存", (validation.inventory?.previous_count || 0) + " / " + (validation.inventory?.current_count || 0)],
-    ["实际到港", (validation.actual_arrival?.previous_count || 0) + " / " + (validation.actual_arrival?.current_count || 0)],
+    [validation.actual_arrival?.latest_available ? "实际到港（最新可用周）" : "实际到港", (validation.actual_arrival?.previous_count || 0) + " / " + (validation.actual_arrival?.current_count || 0)],
     ["预计/估算到港", (validation.estimated_arrival?.previous_count || 0) + " / " + (validation.estimated_arrival?.current_count || 0)],
     ["旧表需", (validation.legacy_apparent_demand?.previous_count || 0) + " / " + (validation.legacy_apparent_demand?.current_count || 0)],
     ["期现价格", (validation.prices?.previous_count || 0) + " / " + (validation.prices?.current_count || 0)],
