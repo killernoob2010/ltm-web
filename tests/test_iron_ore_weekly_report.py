@@ -231,3 +231,28 @@ def test_compressed_snapshot_preserves_all_data_and_reads_legacy_json():
     assert _decode_snapshot_json(stored) == data
     assert _decode_snapshot_json(original) == data
     assert hashlib.sha256(_canonical_json(_decode_snapshot_json(stored)).encode('utf8')).digest() == hashlib.sha256(original.encode('utf8')).digest()
+
+
+def test_report_work_runs_off_event_loop_and_serializes(monkeypatch):
+    import asyncio
+    import threading
+    import time
+    from backend.app import iron_ore_weekly_report as report
+    monkeypatch.setattr(report, '_require_report_view', lambda user: None)
+    active = 0
+    peak = 0
+    workers = []
+    def work(week):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        workers.append(threading.get_ident())
+        time.sleep(0.02)
+        active -= 1
+        return {'report_week': week}
+    monkeypatch.setattr(report, 'report_readiness', work)
+    async def run():
+        return await asyncio.gather(report.report_readiness_api('2026-W36', {}), report.report_readiness_api('2026-W37', {}))
+    assert [r['report_week'] for r in asyncio.run(run())] == ['2026-W36', '2026-W37']
+    assert peak == 1
+    assert all(worker != threading.get_ident() for worker in workers)

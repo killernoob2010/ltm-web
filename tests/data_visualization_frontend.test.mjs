@@ -125,7 +125,7 @@ test("weekly report page keeps readiness visible when history loading fails", ()
 });
 
 test("weekly report frontend fix invalidates the cached application script", () => {
-  assert.match(indexHtml, /weekly-report=20260908-v2-import-fix/);
+  assert.match(indexHtml, /weekly-report=20260908-report-queue/);
 });
 
 test("sidebar groups put data visualization before admin", () => {
@@ -289,4 +289,20 @@ test("V2 integration summary displays legacy counts alongside source detail coun
   assert.match(target.innerHTML, /港口×品种库存<\/span><strong>4944/);
   render({ total_points: 12, metrics: { inventory: 12 } }, ["legacy.xlsx"], {});
   assert.match(target.innerHTML, /库存<\/span><strong>12/);
+});
+
+test("weekly readiness ignores an older week response arriving last", async () => {
+  const source = appJs.slice(appJs.indexOf("async function checkDVReportReadiness("), appJs.indexOf("async function loadDVReportHistory("));
+  const week = { value: "2026-W37" }, state = {}, button = {}, status = {};
+  const pending = [], rendered = [];
+  const check = new Function("dvReportWeek", "dvReportState", "dvGenerateReportBtn", "dvReportStatus", "api", "renderDVReportReadiness", source + "; return checkDVReportReadiness;")(week, state, button, status, () => new Promise(resolve => pending.push(resolve)), result => rendered.push(result.report_week));
+  const old = check();
+  week.value = "2026-W36";
+  const current = check();
+  assert.equal(button.disabled, true);
+  pending[1]({ report_week: "2026-W36" });
+  await current;
+  pending[0]({ report_week: "2026-W37" });
+  await old;
+  assert.deepEqual(rendered, ["2026-W36"]);
 });

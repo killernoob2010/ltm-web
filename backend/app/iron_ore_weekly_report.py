@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+import threading
 import uuid
 import zlib
 from datetime import date, datetime, timedelta
@@ -19,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from . import db
@@ -1348,6 +1350,16 @@ def generate_report(report_week: str, template_version: str = TEMPLATE_VERSION, 
         raise
 
 
+_report_work_lock = threading.Lock()
+
+
+def _run_report_work(function, *args):
+    # One report operation at a time; keep database/rendering work off the
+    # web event loop so collector requests remain serviceable.
+    with _report_work_lock:
+        return function(*args)
+
+
 router = APIRouter()
 
 
@@ -1364,7 +1376,7 @@ async def report_templates(user=Depends(_report_user)):
 @router.get("/data-visualization/reports/readiness")
 async def report_readiness_api(report_week: str = Query(...), user=Depends(_report_user)):
     _require_report_view(user)
-    return report_readiness(report_week)
+    return await run_in_threadpool(_run_report_work, report_readiness, report_week)
 
 
 @router.get("/data-visualization/reports/runs")
@@ -1387,7 +1399,7 @@ async def report_runs(limit: int = Query(default=30), user=Depends(_report_user)
 async def report_generate_api(payload: ReportGenerateRequest, user=Depends(_report_user)):
     _require_report_edit(user)
     try:
-        return generate_report(payload.report_week, payload.template_version, user.get("name", ""), payload.force_new_revision)
+        return await run_in_threadpool(_run_report_work, generate_report, payload.report_week, payload.template_version, user.get("name", ""), payload.force_new_revision)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -4628,8 +4628,13 @@ function renderDVReportReadiness(result) {
 
 async function checkDVReportReadiness() {
   if (!dvReportWeek.value) return;
+  const reportWeek = dvReportWeek.value;
+  const requestId = (dvReportState.readinessRequestId || 0) + 1;
+  dvReportState.readinessRequestId = requestId;
+  dvGenerateReportBtn.disabled = true;
   dvReportStatus.textContent = "正在检查数据...";
-  const result = await api("/api/data-visualization/reports/readiness?report_week=" + encodeURIComponent(dvReportWeek.value));
+  const result = await api("/api/data-visualization/reports/readiness?report_week=" + encodeURIComponent(reportWeek));
+  if (requestId !== dvReportState.readinessRequestId || reportWeek !== dvReportWeek.value) return;
   renderDVReportReadiness(result);
 }
 
