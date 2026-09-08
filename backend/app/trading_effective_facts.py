@@ -173,8 +173,12 @@ def _fill_order_key(row: Mapping[str, Any]) -> tuple[str, int, str, int]:
     """
     trade_date = _date_key(row.get("trade_date"))
     trade_time = str(row.get("trade_time") or "").strip()
-    is_night = trade_time >= "21:00:00" or trade_time < "05:00:00"
-    session_order = 0 if is_night else 1
+    if trade_time >= "21:00:00":
+        session_order = 0
+    elif trade_time and trade_time < "05:00:00":
+        session_order = 1
+    else:
+        session_order = 2
     try:
         row_id = int(row.get("id") or 0)
     except (TypeError, ValueError):

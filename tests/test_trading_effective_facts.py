@@ -497,13 +497,22 @@ def test_infer_positions_orders_night_session_before_day_session_on_same_trade_d
                 "平",
                 1,
                 710,
+                trade_time="00:30:00",
+            ),
+            _fill(
+                3,
+                "i2609",
+                "买",
+                "开",
+                1,
+                720,
                 trade_time="09:30:00",
             ),
         ],
     )
 
     assert result["status"] == "ok"
-    assert result["items"] == []
+    assert result["items"][0]["quantity"] == 1
 
 
 def test_effective_positions_use_latest_settlement_baseline_and_provisional_fills(tmp_path, monkeypatch):
