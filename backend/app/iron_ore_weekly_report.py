@@ -150,7 +150,7 @@ def _parse_report_week(value: str) -> tuple[str, int, int]:
 
 
 def _rows(cur, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    return [dict(row) for row in db._exec(cur, sql, params).fetchall()]
+    return [dict(row) for row in db._exec(cur, sql, params)]
 
 
 def _week_rows(cur, table: str, weeks: tuple[str, str]) -> List[Dict[str, Any]]:
@@ -222,14 +222,17 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         inventory_mainstream = _week_rows(cur, "dv_inventory_mainstream_facts", weeks)
         history_port_inventory = _rows(
             cur,
-            """SELECT * FROM dv_port_inventory_facts
+            """SELECT id, package_id, week_start, observed_date, scope_type, port_name,
+                         product, category, source_country, mainstream_status, value, value_status
+               FROM dv_port_inventory_facts
                WHERE week_start <= ? AND scope_type = 'total'
                ORDER BY week_start, port_name, product, id""",
             (current_week,),
         )
         history_inventory_summary = _rows(
             cur,
-            """SELECT * FROM dv_inventory_summary_facts
+            """SELECT id, package_id, week_start, observed_date, scope_type, port_name, metric, value
+               FROM dv_inventory_summary_facts
                WHERE week_start <= ? AND (scope_type = 'total' OR metric = '库存总量')
                ORDER BY week_start, port_name, metric, id""",
             (current_week,),
@@ -237,7 +240,7 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         history_legacy = _rows(
             cur,
             """SELECT id, batch_id, week_start, display_date, metric_type, source_country,
-                         product, category, mainstream_status, value FROM dv_integrated_points
+                         product, category, mainstream_status, source_section, value FROM dv_integrated_points
                WHERE metric_type IN ('inventory', 'arrival', 'apparent_demand')
                  AND week_start <= ?
                ORDER BY week_start, source_country, category, product, id""",
