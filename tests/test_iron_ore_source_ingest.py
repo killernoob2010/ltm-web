@@ -118,3 +118,33 @@ def test_historical_inventory_first_block_and_old_grades(tmp_path):
     assert p.inventory_port_product[0]['category'] == '粉矿'
     assert {r['grade'] for r in p.inventory_grade} == {'高品（旧三档）', '中低品', '低品'}
     assert {r['port_name'] for r in p.inventory_grade} == {'江阴'}
+
+
+def test_arrival_repeated_grade_labels_keep_parent_cargo_form(tmp_path):
+    from backend.app.iron_ore_source_ingest import parse_mysteel_source_files
+    path = tmp_path / 'arrival.xlsx'
+    _arrival_workbook(path)
+    wb = openpyxl.load_workbook(path)
+    ws = wb['货种品位']
+    ws.delete_rows(1, ws.max_row)
+    ws.append(['全国到港量分货种及品位货物明细'])
+    ws.append([])
+    ws.append([None, None, None, '粉矿', None, '块矿', None])
+    ws.append(['到港时间', '港口', '总计', '60%以下', '粉矿 汇总', '60%以下', '块矿 汇总'])
+    ws.append([datetime(2026, 8, 30), '南通港', 100, 30, 60, 10, 40])
+    wb.save(path)
+    rows = [r for r in parse_mysteel_source_files([path]).arrival_actual if r['slice_type']=='form' and r['dimension']=='60%以下']
+    assert {(r['category'], r['value']) for r in rows} == {('粉矿', 30), ('块矿', 10)}
+
+
+def test_estimated_arrival_preserves_distinct_source_columns_for_same_product(tmp_path):
+    from backend.app.iron_ore_source_ingest import parse_mysteel_source_files
+    path = tmp_path / 'forecast.xlsx'
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '澳洲预计到达中国锚地量'
+    ws.append(['日期', '杨迪粉', '大杨迪', 'PB粉'])
+    ws.append(['2026/08/24-2026/08/30', 1, 2, 3])
+    wb.save(path)
+    rows = [r for r in parse_mysteel_source_files([path]).arrival_estimated if r['product']=='杨迪粉']
+    assert {(r['dimension'], r['value'], r['source_cell']) for r in rows} == {('杨迪粉', 1, 'B2'), ('大杨迪', 2, 'C2')}
