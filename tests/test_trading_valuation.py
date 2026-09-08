@@ -474,6 +474,34 @@ def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():
         assert forbidden not in source
 
 
+def test_tqsdk_cold_start_can_finish_after_normal_quote_deadline(monkeypatch):
+    api = object()
+
+    class Initialization:
+        def result(self, timeout):
+            if timeout < 6:
+                raise trading_valuation.FutureTimeoutError()
+            return api
+
+        def add_done_callback(self, callback):
+            pass
+
+    class Executor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, function):
+            return Initialization()
+
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(trading_valuation, "ThreadPoolExecutor", Executor)
+    provider = TqSdkQuoteProvider("unused", "unused")
+    assert provider._api is api
+    assert trading_valuation.TQSDK_FETCH_TIMEOUT_SECONDS == 5
+
+
 def test_tqsdk_provider_calculates_black76_from_the_same_quote_snapshot(monkeypatch):
     now = 1_774_073_600.0
     monkeypatch.setattr(trading_valuation.time, "time", lambda: now)
