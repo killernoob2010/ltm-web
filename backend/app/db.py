@@ -1207,6 +1207,8 @@ def init_db() -> None:
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
         migrate_trading_collector_schema(conn)
+        from .trading_collector_replication import initialize_schema as initialize_replication_schema
+        initialize_replication_schema(conn)
         migrate_closing_review_agent_schema(conn)
         migrate_platts_index_schema(conn)
         if _is_pg():

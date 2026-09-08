@@ -81,6 +81,7 @@ from . import (
     spot_ledger,
     trading_management,
     trading_collector,
+    trading_collector_replication,
     trading_valuation,
 )
 
@@ -164,6 +165,7 @@ app.include_router(trading_management.router, prefix="/api/trading-management")
 app.include_router(closing_trading_review.router, prefix="/api")
 app.include_router(closing_review_agent.router, prefix="/api")
 app.include_router(trading_collector.router, prefix="/api")
+app.include_router(trading_collector_replication.router)
 
 
 class LoginRequest(BaseModel):
@@ -1351,6 +1353,7 @@ def startup() -> None:
             start_order_finance_sync_scheduler()
             start_order_lifecycle_sync_scheduler()
             start_spot_ledger_sync_scheduler()
+            trading_collector_replication.start_scheduler()
             start_closing_review_scheduler()
         except Exception as exc:
             print(f"[startup] data synchronization startup skipped: {exc}")
