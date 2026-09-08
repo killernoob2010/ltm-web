@@ -777,6 +777,8 @@ def _extract_australia_arrivals(path: Path) -> List[Dict[str, Any]]:
                 is_calculable=True,
                 note="澳洲直接采用预计到中国锚地量，归类为到港",
             ))
+            points[-1].update({"raw_product": raw_product, "source_row": row,
+                               "source_column": col, "source_cell": ws.cell(row, col).coordinate})
     wb.close()
     return points
 
@@ -1801,55 +1803,51 @@ def _merge_integrated_points_v2_in_connection(cur, rows, file_name, user_name):
         "metric_type", "source_country", "product", "category", "mainstream_status", "value", "unit",
         "source_file", "source_sheet", "source_section", "is_calculable", "validation_status", "note",
     )
+    key_columns = ("week_start", "metric_type", "source_country", "product", "category", "display_date", "source_section")
+    def row_key(row):
+        return tuple(row.get(column) or "" for column in key_columns)
+
+    known = {}
+    weeks = sorted({row["week_start"] for row in rows})
+    if rows and db._is_pg():
+        db._exec(cur, "LOCK TABLE dv_integrated_points IN SHARE ROW EXCLUSIVE MODE")
+    for start in range(0, len(weeks), 500):
+        chunk = weeks[start:start + 500]
+        marks = ",".join("?" for _ in chunk)
+        existing_rows = db._exec(cur, f"SELECT * FROM dv_integrated_points WHERE week_start IN ({marks}) ORDER BY id", tuple(chunk)).fetchall()
+        for existing in existing_rows:
+            known.setdefault(row_key(dict(existing)), dict(existing))
+    pending_inserts = {}
+    pending_updates = {}
     for row in rows:
-        key_params = (
-            row.get("week_start", ""), row.get("metric_type", ""), row.get("source_country", ""),
-            row.get("product", ""), row.get("category", ""), row.get("display_date", ""),
-            row.get("source_section", ""),
-        )
-        existing = db._exec(
-            cur,
-            """SELECT id, value FROM dv_integrated_points
-               WHERE week_start = ? AND metric_type = ? AND source_country = ?
-                 AND product = ? AND category = ? AND display_date = ?
-                 AND COALESCE(source_section, '') = ?
-               ORDER BY id LIMIT 1""",
-            key_params,
-        ).fetchone()
+        key = row_key(row)
+        existing = known.get(key)
         if existing and row.get("value") is None and existing["value"] is not None:
             skipped += 1
             continue
-        values = tuple(
-            batch_id if column == "batch_id" else row.get(column, "")
-            for column in columns
-        )
+        values = tuple(batch_id if column == "batch_id" else row.get(column, "") for column in columns)
         if existing:
-            db._exec(
-                cur,
-                """UPDATE dv_integrated_points SET
-                   batch_id = ?, week_end = ?, business_year = ?, business_week = ?, week_label = ?,
-                   display_date = ?, source_country = ?, product = ?, category = ?, mainstream_status = ?,
-                   value = ?, unit = ?, source_file = ?, source_sheet = ?, source_section = ?,
-                   is_calculable = ?, validation_status = ?, note = ?
-                   WHERE id = ?""",
-                (
-                    values[0], values[2], values[3], values[4], values[5], values[6], values[8], values[9],
-                    values[10], values[11], values[12], values[13], values[14], values[15], values[16],
-                    values[17], values[18], values[19], existing["id"],
-                ),
-            )
             updated += 1
         else:
-            db._exec(
-                cur,
-                """INSERT INTO dv_integrated_points
-                   (batch_id, week_start, week_end, business_year, business_week, week_label, display_date,
-                    metric_type, source_country, product, category, mainstream_status, value, unit, source_file,
-                    source_sheet, source_section, is_calculable, validation_status, note)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                values,
-            )
             inserted += 1
+        if existing and existing.get("id") is not None:
+            pending_updates[existing["id"]] = (
+                values[0], values[2], values[3], values[4], values[5], values[6], values[8], values[9],
+                values[10], values[11], values[12], values[13], values[14], values[15], values[16],
+                values[17], values[18], values[19], existing["id"],
+            )
+        else:
+            pending_inserts[key] = values
+        known[key] = {"id": existing.get("id") if existing else None, "value": row.get("value")}
+    if pending_updates:
+        db._executemany(cur, """UPDATE dv_integrated_points SET
+            batch_id = ?, week_end = ?, business_year = ?, business_week = ?, week_label = ?,
+            display_date = ?, source_country = ?, product = ?, category = ?, mainstream_status = ?,
+            value = ?, unit = ?, source_file = ?, source_sheet = ?, source_section = ?,
+            is_calculable = ?, validation_status = ?, note = ? WHERE id = ?""", list(pending_updates.values()))
+    if pending_inserts:
+        marks = ",".join("?" for _ in columns)
+        db._executemany(cur, f"INSERT INTO dv_integrated_points ({', '.join(columns)}) VALUES ({marks})", list(pending_inserts.values()))
     if batch_id is not None:
         db._exec(
             cur,

@@ -4479,6 +4479,7 @@ async function loadDVIntegrationLatest() {
 }
 
 function renderDVIntegrationSummary(summary, files, mergeSummary) {
+  summary = { ...summary, ...(summary.legacy_summary || {}) };
   const metrics = summary.metrics || {};
   const merge = mergeSummary || {};
   const items = [

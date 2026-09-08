@@ -21,7 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from . import db
 
 
-PARSER_VERSION = "iron-ore-source-v2.0"
+PARSER_VERSION = "iron-ore-source-v2.1"
 MAPPING_VERSION = "mysteel-port-sample-2026-09"
 STRUCTURE_VERSION = "iron-ore-integrated-v2"
 
@@ -416,6 +416,15 @@ def _parse_actual_arrival(path: Path, package: SourcePackage) -> None:
         if header_index is None:
             continue
         headers = [_text(value) for value in rows[header_index]]
+        form_by_column = {}
+        if slice_type == "form" and header_index > 0:
+            parent_form = ""
+            parent_headers = rows[header_index - 1]
+            for index in range(2, len(headers)):
+                parent = _text(parent_headers[index]) if index < len(parent_headers) else ""
+                if parent:
+                    parent_form = next((form for form in ("粉矿", "精粉", "块矿", "球团", "未知") if form in parent), "")
+                form_by_column[index + 1] = parent_form
         for offset, values in enumerate(rows[header_index + 1 :], start=header_index + 2):
             if len(values) < 2:
                 continue
@@ -466,7 +475,8 @@ def _parse_actual_arrival(path: Path, package: SourcePackage) -> None:
                         "mainstream_status": _mainstream_status(product, category),
                     })
                 else:
-                    grade, category = _arrival_form_dimension(raw_dimension)
+                    context = form_by_column.get(col_index, "")
+                    grade, category = _arrival_form_dimension(context + raw_dimension)
                     row.update({"grade": grade, "category": category or "未知"})
                 package.arrival_actual.append(row)
 
@@ -502,7 +512,7 @@ def _point_to_row(point: Dict[str, Any], *, kind: str, method: str) -> Dict[str,
         "port_name": "",
         "scope_type": "national",
         "slice_type": "product",
-        "dimension": point.get("product", ""),
+        "dimension": point.get("raw_product") or point.get("product", ""),
         "product": point.get("product", ""),
         "category": point.get("category", ""),
         "grade": "",
@@ -513,9 +523,9 @@ def _point_to_row(point: Dict[str, Any], *, kind: str, method: str) -> Dict[str,
         "unit": point.get("unit", "万吨"),
         "source_file": point.get("source_file", ""),
         "source_sheet": point.get("source_sheet", ""),
-        "source_row": None,
-        "source_column": None,
-        "source_cell": "",
+        "source_row": point.get("source_row"),
+        "source_column": point.get("source_column"),
+        "source_cell": point.get("source_cell", ""),
         "mapping_version": MAPPING_VERSION,
     }
 

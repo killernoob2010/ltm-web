@@ -125,7 +125,7 @@ test("weekly report page keeps readiness visible when history loading fails", ()
 });
 
 test("weekly report frontend fix invalidates the cached application script", () => {
-  assert.match(indexHtml, /weekly-report=20260908-data-fix/);
+  assert.match(indexHtml, /weekly-report=20260908-v2-import-fix/);
 });
 
 test("sidebar groups put data visualization before admin", () => {
@@ -276,4 +276,17 @@ test("data visualization chart treats missing points as gaps", () => {
   assert.match(appJs, /formatDVChartTooltip\(closest\.point, closest\.product, closest\.year\)/);
   assert.match(appJs, /firstPoint = true;\s+continue;/);
   assert.doesNotMatch(appJs, /ln2\.product \+ " \| " \+ ln2\.year \+ " \| " \+ formatChartNumber/);
+});
+
+
+test("V2 integration summary displays legacy counts alongside source detail counts", () => {
+  const source = appJs.slice(appJs.indexOf("function renderDVIntegrationSummary("), appJs.indexOf("async function fileToIntegrationPayload("));
+  const target = { innerHTML: "" };
+  const render = new Function("dvIntegrationSummary", source + "; return renderDVIntegrationSummary;")(target);
+  render({ legacy_summary: { total_points: 720, metrics: { inventory: 300, arrival: 120 }, product_count: 100 }, inventory_port_product_count: 4944 }, ["source.xlsx"], {});
+  assert.match(target.innerHTML, /标准数据点<\/span><strong>720/);
+  assert.match(target.innerHTML, /库存<\/span><strong>300/);
+  assert.match(target.innerHTML, /港口×品种库存<\/span><strong>4944/);
+  render({ total_points: 12, metrics: { inventory: 12 } }, ["legacy.xlsx"], {});
+  assert.match(target.innerHTML, /库存<\/span><strong>12/);
 });

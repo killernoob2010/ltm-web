@@ -26,7 +26,7 @@ from .permissions import require_permission
 TEMPLATE_KEY = "iron_ore_weekly"
 TEMPLATE_VERSION = "V1.0"
 TEMPLATE_NAME = "铁矿石周报（46页基线）"
-RENDERER_VERSION = "iron-ore-weekly-renderer-3"
+RENDERER_VERSION = "iron-ore-weekly-renderer-4"
 RULES_REFERENCE = "docs/2026-09-08-iron-ore-weekly-report-rules.md"
 
 TEMPLATE_CONFIG = {
@@ -191,22 +191,15 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         history_port_inventory = _rows(
             cur,
             """SELECT * FROM dv_port_inventory_facts
-               WHERE week_start <= ?
+               WHERE week_start <= ? AND scope_type = 'total'
                ORDER BY week_start, port_name, product, id""",
             (current_week,),
         )
         history_inventory_summary = _rows(
             cur,
             """SELECT * FROM dv_inventory_summary_facts
-               WHERE week_start <= ?
+               WHERE week_start <= ? AND (scope_type = 'total' OR metric = '库存总量')
                ORDER BY week_start, port_name, metric, id""",
-            (current_week,),
-        )
-        history_inventory_mainstream = _rows(
-            cur,
-            """SELECT * FROM dv_inventory_mainstream_facts
-               WHERE week_start <= ?
-               ORDER BY week_start, port_name, product, id""",
             (current_week,),
         )
         history_legacy = _rows(
@@ -220,7 +213,7 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         history_grade = _rows(
             cur,
             """SELECT * FROM dv_inventory_grade_facts
-               WHERE week_start <= ?
+               WHERE week_start <= ? AND scope_type = 'total' AND category = '全品种'
                ORDER BY week_start, grade, category, port_name, id""",
             (current_week,),
         )
@@ -254,7 +247,7 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         "inventory_mainstream": inventory_mainstream,
         "history_port_inventory": history_port_inventory,
         "history_inventory_summary": history_inventory_summary,
-        "history_inventory_mainstream": history_inventory_mainstream,
+        "history_inventory_mainstream": [],
         "history_inventory": _report_inventory(history_legacy, history_port_inventory),
         "history_legacy_inventory": [row for row in history_legacy if row.get("metric_type") == "inventory"],
         "history_grade": history_grade,

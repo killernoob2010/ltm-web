@@ -70,3 +70,33 @@ def test_overlapping_packages_do_not_duplicate_facts_and_conflicts_roll_back(tmp
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM dv_port_inventory_facts").fetchone()["COUNT(*)"] == 1
         assert conn.execute("SELECT COUNT(*) FROM dv_source_packages WHERE package_id = ?", (conflict.package_id,)).fetchone()["COUNT(*)"] == 0
+
+
+def test_v2_summary_bulk_merge_preserves_last_value_and_blank_protection(tmp_path, monkeypatch):
+    from datetime import date
+    from backend.app import db
+    from backend.app import data_visualization as dv
+
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setattr(db, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data' / 'app.db')
+    db.init_db()
+    base = dv._make_point(week_start=date(2026, 8, 31), display_date=date(2026, 9, 1),
+                         metric_type='inventory', source_country='澳洲', product='PB粉', category='粉矿',
+                         value=10, source_file='source.xlsx', source_sheet='粗粉', source_section='总计', is_calculable=False)
+    rows = [dict(base, product=f'品种{i}') for i in range(100)]
+    queries = []
+    original = db._exec
+    def counted(cur, sql, params=()):
+        if 'SELECT' in sql and 'FROM dv_integrated_points' in sql: queries.append(sql)
+        return original(cur, sql, params)
+    monkeypatch.setattr(db, '_exec', counted)
+    with db.connect() as conn:
+        result = dv._merge_integrated_points_v2_in_connection(conn.cursor(), rows + [dict(rows[0], value=12), dict(rows[0], value=None)], 'source.xlsx', 'tester')
+    assert (result['inserted'], result['updated'], result['skipped']) == (100, 1, 1)
+    assert len(queries) <= 2
+    with db.connect() as conn:
+        result = dv._merge_integrated_points_v2_in_connection(conn.cursor(), [dict(rows[0], value=14), dict(rows[0], value=None)], 'update.xlsx', 'tester')
+        saved = db._exec(conn.cursor(), "SELECT value FROM dv_integrated_points WHERE product='品种0'").fetchall()
+    assert [r['value'] for r in saved] == [14]
+    assert (result['inserted'], result['updated'], result['skipped']) == (0, 1, 1)
