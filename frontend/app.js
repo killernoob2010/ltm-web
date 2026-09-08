@@ -4673,7 +4673,17 @@ async function initDVReport() {
     await loadDVReportTemplates();
     dvReportState.initialized = true;
   }
-  await Promise.all([checkDVReportReadiness(), loadDVReportHistory()]);
+  const results = await Promise.allSettled([checkDVReportReadiness(), loadDVReportHistory()]);
+  const readinessResult = results[0];
+  const historyResult = results[1];
+  if (readinessResult.status === "rejected") {
+    dvReportReadiness.innerHTML = '<div class="error-cell">数据检查失败：' + escapeHtml(readinessResult.reason?.message || "请求失败") + '</div>';
+    dvReportStatus.textContent = "数据检查失败，请重试";
+    dvGenerateReportBtn.disabled = true;
+  }
+  if (historyResult.status === "rejected") {
+    dvReportHistory.innerHTML = '<div class="error-cell">历史报告加载失败：' + escapeHtml(historyResult.reason?.message || "请求失败") + '</div>';
+  }
 }
 
 async function generateDVReport() {
