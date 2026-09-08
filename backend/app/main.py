@@ -1320,14 +1320,27 @@ def calculate_missing_cache_from_prices(payload: InfoCalculateIn) -> Optional[di
     return calculated
 
 
+def initialize_release_database() -> None:
+    for attempt in range(5):
+        try:
+            db.init_db()
+            return
+        except Exception as exc:
+            if getattr(exc, "pgcode", None) not in {"40P01", "40001"} or attempt == 4:
+                raise
+            print("[startup] database initialization retry after transaction conflict")
+            time.sleep(attempt + 1)
+
+
 @app.on_event("startup")
 def startup() -> None:
     def initialize_database() -> None:
         try:
-            db.init_db()
+            initialize_release_database()
             data_visualization.seed_dv_data()
         except Exception as exc:
-            print(f"[startup] database initialization skipped: {exc}")
+            print(f"[startup] database initialization failed: {type(exc).__name__}")
+            return
         try:
             start_iron_ore_basis_sync_scheduler()
             start_order_finance_sync_scheduler()
