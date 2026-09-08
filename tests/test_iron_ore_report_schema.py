@@ -1,7 +1,28 @@
 import os
 import sys
+import re
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+
+def test_every_postgres_report_table_is_private():
+    from app import iron_ore_report_schema as schema
+
+    statements = []
+
+    class Connection:
+        def cursor(self):
+            return self
+
+        def execute(self, statement):
+            statements.append(statement)
+
+    schema.ensure_report_schema(Connection(), postgres=True)
+    created = set(re.findall(r'CREATE TABLE IF NOT EXISTS (\w+)', '\n'.join(statements)))
+    assert created
+    for table in created:
+        assert f'ALTER TABLE {table} ENABLE ROW LEVEL SECURITY' in statements
+        assert f'REVOKE ALL ON {table} FROM PUBLIC, anon, authenticated' in statements
 
 
 def test_report_schema_creates_source_and_report_tables(tmp_path, monkeypatch):

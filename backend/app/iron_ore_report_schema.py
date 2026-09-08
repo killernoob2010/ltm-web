@@ -266,7 +266,13 @@ def ensure_report_schema(conn: Any, postgres: bool = False) -> None:
         cursor = conn.cursor()
         for statement in POSTGRES_STATEMENTS:
             cursor.execute(statement)
-        for table in ("dv_report_file_contents", "dv_source_file_contents", "dv_source_package_contents"):
+        for table in (
+            "dv_source_files", "dv_source_packages", "dv_port_inventory_facts",
+            "dv_inventory_summary_facts", "dv_inventory_grade_facts",
+            "dv_inventory_mainstream_facts", "dv_arrival_facts", "dv_report_templates",
+            "dv_report_snapshots", "dv_report_runs", "dv_report_artifacts",
+            "dv_report_file_contents", "dv_source_file_contents", "dv_source_package_contents",
+        ):
             cursor.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
             cursor.execute(f"REVOKE ALL ON {table} FROM PUBLIC, anon, authenticated")
         return
