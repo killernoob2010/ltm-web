@@ -122,7 +122,7 @@ test("fact request failures replace the permanent loader with a retry state", ()
   assert.match(tradingJs, /交易记录读取失败，请重试/);
   assert.match(tradingJs, /id="tmFactRetry"/);
   assert.match(css, /\.tm-table-error/);
-  assert.match(html, /trading_management\.js\?v=20260908-live-pnl-v2/);
+  assert.match(html, /trading_management\.js\?v=20260908-live-pnl-v3/);
 });
 
 test("fact filters preserve their visible values after rerender", () => {
@@ -299,8 +299,19 @@ test("visible business position pages refresh quotes every fifteen seconds", () 
 test("fact quote refresh keeps the last successful valuation visible", () => {
   assert.match(tradingJs, /function preserveFactValuation/);
   assert.match(tradingJs, /行情更新失败，沿用上次行情/);
-  assert.match(tradingJs, /factCache\.get\(factValuationKey\(\)\)/);
-  assert.doesNotMatch(tradingJs, /loadFactData\("positions", \{ refresh: true \}\)/);
+  assert.match(tradingJs, /factCache\.get\(requestKey\)/);
+  assert.match(tradingJs, /loadFactData\("positions", \{ refresh: true \}\)/);
+});
+
+test("fact tabs refresh their server facts while the page stays open", () => {
+  assert.match(tradingJs, /FACT_QUOTE_REFRESH_MS\s*=\s*10000/);
+  assert.match(tradingJs, /loadFactData\(tm\.factsTab, \{ refresh: true \}\)/);
+  assert.doesNotMatch(tradingJs, /tm\.factsTab !== "positions" \|\| document\.visibilityState/);
+});
+
+test("unavailable quote rows expose the provider reason", () => {
+  assert.match(tradingJs, /market_data_message/);
+  assert.match(tradingJs, /行情源不可用/);
 });
 
 test("fact quote refresh does not reuse pnl when the effective position changed", () => {

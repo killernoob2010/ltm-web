@@ -968,6 +968,7 @@ def test_fact_position_valuation_does_not_fallback_to_quotes_or_settlement(tmp_p
                 settlement_price=680,
                 multiplier=100,
                 market_data_status="provider_error",
+                market_data_message="天勤行情认证未配置",
             )
             for request in requests
         },
@@ -981,6 +982,7 @@ def test_fact_position_valuation_does_not_fallback_to_quotes_or_settlement(tmp_p
     assert row["valuation_price"] is None
     assert row["floating_pnl"] is None
     assert row["valuation_status"] == "unavailable"
+    assert row["valuation_message"] == "行情源不可用：天勤行情认证未配置"
     assert result["summary"]["floating_pnl"] is None
     assert result["summary"]["floating_pnl_status"] == "unavailable"
 

@@ -18,13 +18,16 @@ class CollectorUploader:
         self.base_url = base_url.rstrip("/")
         self.device_token = device_token
         self.timeout_seconds = timeout_seconds
+        self.heartbeat_timeout_seconds = (5, 10)
+        self.policy_timeout_seconds = (5, 10)
+        self.ingest_timeout_seconds = (5, 30)
 
     def heartbeat(self, client_version: str) -> Dict[str, Any]:
         response = requests.post(
             self.base_url + "/api/trading-collector/device/heartbeat",
             json={"client_version": client_version},
             headers={"X-Collector-Token": self.device_token},
-            timeout=self.timeout_seconds,
+            timeout=self.heartbeat_timeout_seconds,
         )
         if response.status_code >= 400:
             raise UploadError(
@@ -49,7 +52,7 @@ class CollectorUploader:
                 "position_snapshots": list(position_snapshots),
             },
             headers={"X-Collector-Token": self.device_token},
-            timeout=self.timeout_seconds,
+            timeout=self.ingest_timeout_seconds,
         )
         if response.status_code >= 400:
             raise UploadError("采集服务上传失败（HTTP %s）" % response.status_code, response.status_code)
@@ -59,7 +62,7 @@ class CollectorUploader:
         response = requests.get(
             self.base_url + "/api/trading-collector/device/collection-policy",
             headers={"X-Collector-Token": self.device_token},
-            timeout=self.timeout_seconds,
+            timeout=self.policy_timeout_seconds,
         )
         if response.status_code >= 400:
             raise UploadError(

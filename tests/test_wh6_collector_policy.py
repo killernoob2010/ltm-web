@@ -222,7 +222,7 @@ def test_staging_uploader_fetches_policy_with_device_header(monkeypatch):
     assert calls == [
         (
             "https://ltm-web-staging.onrender.com/api/trading-collector/device/collection-policy",
-            {"headers": {"X-Collector-Token": "device-token"}, "timeout": (5, 60)},
+            {"headers": {"X-Collector-Token": "device-token"}, "timeout": (5, 10)},
         )
     ]
 
@@ -252,7 +252,7 @@ def test_staging_uploader_heartbeats_client_version_with_device_header(monkeypat
             {
                 "json": {"client_version": "0.3.2"},
                 "headers": {"X-Collector-Token": "device-token"},
-                "timeout": (5, 60),
+                "timeout": (5, 10),
             },
         )
     ]
@@ -289,5 +289,5 @@ def test_first_start_without_policy_scans_today_but_pauses_history(tmp_path):
         policy_fetch=raise_offline,
     )
     assert result["state"] == "policy_unavailable_history_paused"
-    assert uploaded == []
-    assert LocalOutbox(Path(config.data_dir) / "collector.sqlite3").status()["pending"] == 1
+    assert [item["trade_date"] for item in uploaded] == [today[:4] + "-" + today[4:6] + "-" + today[6:]]
+    assert LocalOutbox(Path(config.data_dir) / "collector.sqlite3").status()["pending"] == 0

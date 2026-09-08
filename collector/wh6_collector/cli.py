@@ -34,6 +34,8 @@ DEFAULT_STAGING_URL = DEFAULT_COLLECTOR_URL
 REALTIME_SCAN_SECONDS = 2
 POSITION_SCAN_SECONDS = 5
 HISTORY_SCAN_SECONDS = 10
+HEARTBEAT_INTERVAL_SECONDS = 30
+_last_heartbeat_at: Dict[str, float] = {}
 
 
 def default_data_dir() -> Path:
@@ -164,7 +166,13 @@ def run_once(
         }
 
     default_sender = CollectorUploader(config.collector_url, config.device_token) if upload is None else None
-    if default_sender is not None:
+    heartbeat_key = str(Path(config.data_dir).expanduser())
+    heartbeat_due = (
+        heartbeat_key not in _last_heartbeat_at
+        or time.monotonic() - _last_heartbeat_at[heartbeat_key] >= HEARTBEAT_INTERVAL_SECONDS
+    )
+    if default_sender is not None and heartbeat_due:
+        _last_heartbeat_at[heartbeat_key] = time.monotonic()
         try:
             default_sender.heartbeat(config.client_version)
         except Exception as exc:
@@ -442,7 +450,9 @@ def run_once(
         position_scan_requested=realtime_fill_queued,
         message=policy_error,
         allow_history=not (history_policy_paused or unknown_history_paused),
-        allow_realtime=not history_policy_paused,
+        # The upload policy governs historical ranges. Current-day fills and
+        # position snapshots remain safe to upload when policy refresh is down.
+        allow_realtime=True,
     )
 def run_service(config: CollectorConfig, stop_event=None) -> None:
     """Run the polling loop used by the Windows background service.

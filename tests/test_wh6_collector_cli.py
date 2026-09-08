@@ -454,3 +454,61 @@ def test_once_heartbeats_declared_version_before_policy_fetch_and_upload(tmp_pat
         ("policy", None),
         ("upload", ["2026-09-07"]),
     ]
+
+
+def test_repeated_service_polls_throttle_heartbeat_without_delaying_realtime_upload(tmp_path, monkeypatch):
+    source_root = tmp_path / "Record"
+    source_root.mkdir()
+    today = business_trading_day(datetime.now().astimezone()).replace("-", "")
+    _write_match(
+        source_root / f"{today}match.dat",
+        [_record(timestamp=f"{today[:4]}-{today[4:6]}-{today[6:]} 09:31:02")],
+        size=268,
+    )
+    config = CollectorConfig(
+        staging_url="http://127.0.0.1:8000",
+        source_path=str(source_root),
+        account=_account(),
+        device_token="device-token",
+        data_dir=str(tmp_path / "data"),
+        allow_weak_source=True,
+    )
+    calls = []
+
+    class RecordingUploader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def heartbeat(self, client_version):
+            calls.append("heartbeat")
+            return {"status": "active"}
+
+        def get_collection_policy(self):
+            calls.append("policy")
+            return {
+                "schema_version": 2,
+                "environment": "staging",
+                "history_start_date": "2026-09-01",
+                "upload_ranges": [{"range_start": "2026-09-01", "range_end": "2026-09-30"}],
+                "policy_revision": "rev-realtime",
+                "minimum_client_version": "0.3.0",
+                "capabilities": ["open_ended_upload_v1"],
+                "closed_ranges": [],
+                "current_trade_date": today[:4] + "-" + today[4:6] + "-" + today[6:],
+                "generated_at": "2026-09-08T00:00:00+00:00",
+            }
+
+        def send(self, token, fills, positions):
+            calls.append("upload")
+            return {
+                "accepted": len(fills),
+                "fill_results": [
+                    {"event_key": item["source_event_key"], "status": "accepted"}
+                    for item in fills
+                ],
+            }
+
+    monkeypatch.setattr(cli, "CollectorUploader", RecordingUploader)
+    assert run_once(config)["accepted"] == 1
+    assert run_once(config)["accepted"] == 0
+    assert calls.count("heartbeat") == 1

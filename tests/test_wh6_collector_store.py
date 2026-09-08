@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from test_wh6_collector_core import _account, _record, _write_match, _source
 from wh6_collector.discovery import discover_wh6_sources, validate_source, validate_sources
-from wh6_collector.local_store import LocalOutbox
+from wh6_collector.local_store import LocalOutbox, retry_delay_seconds
 from wh6_collector.monitor import ScanBatch, scan_source
 from wh6_collector.parser import parse_match_records
 
@@ -168,7 +168,7 @@ def test_scan_unknown_format_becomes_quarantined_issue_instead_of_crashing(tmp_p
     assert batch.issues[0].severity == "error"
 
 
-def _seed_outbox_rows(store, keys, *, attempts=0):
+def _seed_outbox_rows(store, keys, *, attempts=0, priority="history"):
     with store._connect() as connection:
         for key in keys:
             connection.execute(
@@ -176,11 +176,18 @@ def _seed_outbox_rows(store, keys, *, attempts=0):
                 INSERT INTO outbox
                     (event_key, payload_json, item_type, priority, status, attempts,
                      available_at, created_at, updated_at)
-                VALUES (?, ?, 'fill', 'history', 'pending', ?, '2000-01-01T00:00:00+00:00',
+                VALUES (?, ?, 'fill', ?, 'pending', ?, '2000-01-01T00:00:00+00:00',
                         '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00')
                 """,
-                (key, json.dumps({"source_event_key": key, "trade_date": "2026-09-04"}), attempts),
+                (key, json.dumps({"source_event_key": key, "trade_date": "2026-09-04"}), priority, attempts),
             )
+
+
+def test_realtime_retry_backoff_is_capped_for_fresh_fills():
+    assert retry_delay_seconds(1, "realtime") == 5
+    assert retry_delay_seconds(4, "realtime") == 20
+    assert retry_delay_seconds(20, "realtime") == 20
+    assert retry_delay_seconds(20, "history") == 300
 
 
 def test_outbox_ack_results_maps_each_terminal_receipt(tmp_path):

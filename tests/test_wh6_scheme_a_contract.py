@@ -258,7 +258,7 @@ def test_wh6_a001_server_rejects_a_pairing_code_for_the_other_runtime(monkeypatc
     assert exc.value.code == "environment_mismatch"
 
 
-def test_wh6_a003_policy_failure_queues_current_day_but_does_not_upload_history_or_current(tmp_path):
+def test_wh6_a003_policy_failure_uploads_current_day_but_pauses_history(tmp_path):
     source_root = tmp_path / "Record"
     source_root.mkdir()
     today = business_trading_day(datetime.now().astimezone()).replace("-", "")
@@ -297,8 +297,8 @@ def test_wh6_a003_policy_failure_queues_current_day_but_does_not_upload_history_
         policy_fetch=raise_offline,
     )
     assert result["state"] == "policy_unavailable_history_paused"
-    assert uploaded == []
-    assert LocalOutbox(Path(config.data_dir) / "collector.sqlite3").status()["pending"] == 1
+    assert [item["trade_date"] for item in uploaded] == [today[:4] + "-" + today[4:6] + "-" + today[6:]]
+    assert LocalOutbox(Path(config.data_dir) / "collector.sqlite3").status()["pending"] == 0
 
 
 def test_wh6_a003_mixed_source_file_only_uploads_whitelisted_trade_dates(tmp_path):

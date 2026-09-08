@@ -2470,6 +2470,8 @@ def query_fact_position_valuation(filters: FactFilters) -> dict[str, Any]:
                 "valuation_message": (
                     "合约已到期"
                     if valuation_status == "expired"
+                    else f"行情源不可用：{quote.market_data_message}"
+                    if valuation_price is None and quote.market_data_message
                     else "暂无最新成交价"
                     if valuation_price is None
                     else ""

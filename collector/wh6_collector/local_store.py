@@ -12,8 +12,23 @@ from .models import FillRecord, ParseIssue, PositionSnapshot
 from .policy import CollectionPolicy
 
 
+REALTIME_RETRY_MAX_SECONDS = 20
+HISTORY_RETRY_MAX_SECONDS = 300
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def retry_delay_seconds(attempts: int, priority: str = "history", *, retryable: bool = True) -> int:
+    """Return the next outbox retry delay, keeping current-day fills responsive."""
+    if not retryable:
+        return HISTORY_RETRY_MAX_SECONDS
+    exponent = min(max(int(attempts) - 1, 0), 6)
+    delay = 5 * (2 ** exponent)
+    if priority == "realtime":
+        return min(REALTIME_RETRY_MAX_SECONDS, delay)
+    return min(HISTORY_RETRY_MAX_SECONDS, delay)
 
 
 class LocalOutbox:
@@ -174,12 +189,12 @@ class LocalOutbox:
         with self._connect() as connection:
             placeholders = ",".join("?" for _ in event_keys)
             rows = connection.execute(
-                f"SELECT event_key, attempts FROM outbox WHERE event_key IN ({placeholders})",
+                f"SELECT event_key, attempts, priority FROM outbox WHERE event_key IN ({placeholders})",
                 tuple(event_keys),
             ).fetchall()
             for row in rows:
                 attempts = int(row["attempts"] or 0)
-                delay = 300 if not retryable else min(300, 5 * (2 ** min(max(attempts - 1, 0), 6)))
+                delay = retry_delay_seconds(attempts, str(row["priority"] or "history"), retryable=retryable)
                 available_at = (now + timedelta(seconds=delay)).isoformat()
                 connection.execute(
                     """

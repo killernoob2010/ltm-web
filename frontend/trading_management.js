@@ -55,7 +55,7 @@
   const factRequests = new Map();
   let factCacheVersion = 0;
   const BUSINESS_QUOTE_REFRESH_MS = 15000;
-  const FACT_QUOTE_REFRESH_MS = 15000;
+  const FACT_QUOTE_REFRESH_MS = 10000;
   let businessQuoteRefreshTimer = null;
   let businessQuoteRefreshInFlight = false;
   let factQuoteRefreshTimer = null;
@@ -395,7 +395,9 @@
         : data.summary?.floating_pnl_status === "loading"
         ? "正在读取最新成交价"
         : data.summary?.floating_pnl_status === "unavailable"
-        ? "暂无可用最新成交价"
+        ? (data.items.find((row) => row.market_data_message)?.market_data_message
+          ? `行情源不可用：${data.items.find((row) => row.market_data_message).market_data_message}`
+          : "暂无可用最新成交价")
         : "浮盈等待行情";
       return `<div class="tm-fact-notice"><span class="tm-tag ${data.freshness_status === "current" ? "blue" : "amber"}">新鲜度：${esc(freshness)}</span><span class="tm-tag">${esc(baseline)}</span><span class="tm-tag">${esc(asOf)}</span><span class="tm-tag ${data.summary?.floating_pnl_status === "live" ? "blue" : "amber"}">${esc(valuation)}</span>${data.warnings?.length ? `<span class="tm-subtle">${esc(data.warnings[0])}</span>` : ""}</div>`;
     }
@@ -604,6 +606,7 @@
               valuation_status: "unavailable",
               floating_pnl_status: "unavailable",
               market_data_message: error.message || "行情读取失败",
+              valuation_message: `行情源不可用：${error.message || "行情读取失败"}`,
             })),
           };
       factCache.set(requestKey, failed);
@@ -631,12 +634,12 @@
       data = cached || await loadFactData(tm.factsTab);
     } catch (error) {
       renderFactLoadError(error);
+      startFactQuoteRefresh();
       return;
     }
     const valuationReady = tm.factsTab !== "positions" || Object.prototype.hasOwnProperty.call(data.summary || {}, "valuation_count");
     renderFactContent(data, { requestValuation: !valuationReady });
-    if (tm.factsTab === "positions") startFactQuoteRefresh();
-    else stopFactQuoteRefresh();
+    startFactQuoteRefresh();
   }
 
   function wireFactActions(data) {
@@ -892,22 +895,36 @@
   }
 
   async function refreshFactQuotes() {
-    if (tm.view !== "positions" || tm.factsTab !== "positions") return;
-    const data = factCache.get(factValuationKey());
-    if (!data) return;
+    if (tm.view !== "positions") return;
+    if (tm.factsTab !== "positions") {
+      const requestKey = factCacheKey(tm.factsTab, tm.page, tm.pageSize);
+      const data = await loadFactData(tm.factsTab, { refresh: true });
+      if (requestKey !== factCacheKey(tm.factsTab, tm.page, tm.pageSize)) return;
+      factCache.set(requestKey, data);
+      renderFactContent(data, { requestValuation: false });
+      return;
+    }
+    const requestKey = factValuationKey();
+    const data = factCache.get(requestKey);
+    if (!data) {
+      const fresh = await loadFactData("positions", { refresh: true });
+      if (requestKey !== factValuationKey() || tm.factsTab !== "positions") return;
+      renderFactContent(fresh);
+      return;
+    }
     await loadFactValuation(data);
   }
 
   function startFactQuoteRefresh() {
     stopFactQuoteRefresh();
-    if (tm.view !== "positions" || tm.factsTab !== "positions" || document.visibilityState !== "visible" || $("#tradingManagementPage").classList.contains("hidden")) return;
+    if (tm.view !== "positions" || document.visibilityState !== "visible" || $("#tradingManagementPage").classList.contains("hidden")) return;
     factQuoteRefreshTimer = window.setInterval(async () => {
-      if (document.visibilityState !== "visible" || tm.view !== "positions" || tm.factsTab !== "positions" || factQuoteRefreshInFlight) return;
+      if (document.visibilityState !== "visible" || tm.view !== "positions" || factQuoteRefreshInFlight) return;
       factQuoteRefreshInFlight = true;
       try {
         await refreshFactQuotes();
       } catch (error) {
-        showError(error);
+        showToast(`数据更新失败，继续显示上次结果：${error.message || "服务暂时不可用"}`);
       } finally {
         factQuoteRefreshInFlight = false;
       }
