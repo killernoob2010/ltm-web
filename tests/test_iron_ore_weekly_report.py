@@ -256,3 +256,11 @@ def test_report_work_runs_off_event_loop_and_serializes(monkeypatch):
     assert [r['report_week'] for r in asyncio.run(run())] == ['2026-W36', '2026-W37']
     assert peak == 1
     assert all(worker != threading.get_ident() for worker in workers)
+
+
+def test_report_does_not_restore_withheld_history_from_legacy_fallback():
+    from backend.app.iron_ore_weekly_report import _report_inventory
+    legacy = [{'metric_type': 'inventory', 'week_start': '2020-01-06', 'product': '卡拉拉精粉', 'value': 999}]
+    detailed = [{'scope_type': 'total', 'week_start': '2020-01-06', 'product': '卡拉拉精粉', 'value': 999, 'value_status': 'withheld_historical_column'}]
+    assert _report_inventory(legacy, detailed) == []
+    assert detailed[0]['value'] == 999

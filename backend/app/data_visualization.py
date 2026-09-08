@@ -1436,9 +1436,6 @@ def _v2_sheet_records(ws, field_map: Dict[str, str]) -> tuple[List[Dict[str, Any
             if field in {"observed_date", "week_start"}:
                 item[field] = _normalize_date_value(raw)
             elif field in {"value", "source_row", "source_column"}:
-                if field == "source_row":
-                    item[field] = row_no
-                    continue
                 if raw in (None, ""):
                     item[field] = None
                 else:

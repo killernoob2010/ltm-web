@@ -148,3 +148,29 @@ def test_estimated_arrival_preserves_distinct_source_columns_for_same_product(tm
     wb.save(path)
     rows = [r for r in parse_mysteel_source_files([path]).arrival_estimated if r['product']=='杨迪粉']
     assert {(r['dimension'], r['value'], r['source_cell']) for r in rows} == {('杨迪粉', 1, 'B2'), ('大杨迪', 2, 'C2')}
+
+
+def test_historical_inventory_withholds_unreliable_totals_without_changing_raw_values():
+    from backend.app.iron_ore_source_ingest import SourcePackage, _flag_historical_inventory
+    p = SourcePackage()
+    base = {'source_file': 'history.xlsx', 'observed_date': '2020-01-07', 'category': '粉矿', 'source_country': '澳洲', 'value_status': 'numeric'}
+    for product, total in [('PB粉', 15), ('麦克粉', 30), ('卡拉拉精粉', 15)]:
+        p.inventory_port_product.append(dict(base, product=product, scope_type='total', value=total))
+        p.inventory_port_product.extend(dict(base, product=product, scope_type='sample', port_name=str(i), value=1) for i in range(15))
+    _flag_historical_inventory(p, 'history.xlsx')
+    totals = [r for r in p.inventory_port_product if r['scope_type'] == 'total']
+    assert [(r['value'], r['value_status']) for r in totals] == [(15, 'numeric'), (30, 'withheld_total_mismatch'), (15, 'withheld_historical_column')]
+    assert all(r['value'] == 1 for r in p.inventory_port_product if r['scope_type'] == 'sample')
+
+
+def test_v2_roundtrip_preserves_original_source_row(tmp_path):
+    from backend.app.iron_ore_source_ingest import SourcePackage, build_v2_workbook
+    from backend.app.data_visualization import _parse_integrated_excel
+    p = SourcePackage()
+    p.inventory_port_product = [{'observed_date': '2020-01-07', 'week_start': '2020-01-06', 'scope_type': 'total', 'product': 'PB粉', 'category': '粉矿', 'value': 15, 'value_status': 'numeric', 'source_file': 'history.xlsx', 'source_sheet': '粉矿', 'source_row': 4567, 'source_column': 4, 'source_cell': 'D4567'}]
+    path = tmp_path / 'history-v2.xlsx'
+    path.write_bytes(build_v2_workbook(p))
+    result = _parse_integrated_excel(path)
+    assert not result['errors']
+    row = result['details']['inventory_port_product'][0]
+    assert (row['source_row'], row['source_column'], row['source_cell']) == (4567, 4, 'D4567')

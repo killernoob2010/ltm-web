@@ -30,7 +30,7 @@ from .permissions import require_permission
 TEMPLATE_KEY = "iron_ore_weekly"
 TEMPLATE_VERSION = "V1.0"
 TEMPLATE_NAME = "铁矿石周报（46页基线）"
-RENDERER_VERSION = "iron-ore-weekly-renderer-5"
+RENDERER_VERSION = "iron-ore-weekly-renderer-6"
 RULES_REFERENCE = "docs/2026-09-08-iron-ore-weekly-report-rules.md"
 
 TEMPLATE_CONFIG = {
@@ -170,8 +170,9 @@ def _count_for_week(rows: Iterable[Dict[str, Any]], week_start: str) -> int:
 def _report_inventory(legacy, detailed):
     """Use the complete source totals for V2 weeks; retain older V1 history."""
     totals = [dict(row, metric_type="inventory", display_date=row.get("observed_date"))
-              for row in detailed if row.get("scope_type") == "total"]
-    detailed_weeks = {row["week_start"] for row in totals}
+              for row in detailed if row.get("scope_type") == "total"
+              and not str(row.get("value_status", "")).startswith("withheld_")]
+    detailed_weeks = {row["week_start"] for row in detailed if row.get("scope_type") == "total"}
     return [row for row in legacy if row.get("metric_type") == "inventory"
             and row.get("week_start") not in detailed_weeks] + totals
 
@@ -340,6 +341,9 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         },
     }
     warnings = []
+    withheld = sum(1 for row in history_port_inventory if str(row.get("value_status", "")).startswith("withheld_"))
+    if withheld:
+        warnings.append(f"历史原表有 {withheld} 项品种汇总已标记异常并保留原值，报告曲线不使用这些异常值")
     if not validation["inventory"]["current_count"] or not validation["inventory"]["previous_count"]:
         warnings.append("库存未同时取得本期和上期汇总，无法完成库存周变比较")
     if not validation["actual_arrival"]["current_count"]:

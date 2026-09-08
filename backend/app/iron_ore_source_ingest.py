@@ -358,6 +358,33 @@ def _parse_inventory(path: Path, package: SourcePackage) -> None:
 
     if excluded_dates:
         package.validation.setdefault("excluded_out_of_order_dates", []).extend(sorted(excluded_dates))
+    if historical:
+        _flag_historical_inventory(package, path.name)
+
+
+def _flag_historical_inventory(package: SourcePackage, source_file: str) -> None:
+    """Retain raw history but withhold the known unreliable product totals."""
+    rows = [row for row in package.inventory_port_product if row.get("source_file") == source_file]
+    samples = {}
+    def key(row):
+        return tuple(row.get(field) for field in ("observed_date", "product", "category", "source_country"))
+    for row in rows:
+        if row.get("scope_type") == "sample":
+            samples.setdefault(key(row), {})[row.get("port_name")] = row.get("value")
+    counts = {}
+    for row in rows:
+        if row.get("scope_type") != "total" or row.get("value") is None:
+            continue
+        values = samples.get(key(row), {})
+        reason = ""
+        if row.get("product") == "卡拉拉精粉":
+            reason = "withheld_historical_column"
+        elif len(values) == 15 and all(value is not None for value in values.values()) and abs(sum(values.values()) - row["value"]) > 1:
+            reason = "withheld_total_mismatch"
+        if reason:
+            row["value_status"] = reason
+            counts[reason] = counts.get(reason, 0) + 1
+    package.validation.setdefault("withheld_historical_totals", {})[source_file] = counts
 
 
 def _grade_and_category(label: str) -> tuple[str, str]:
