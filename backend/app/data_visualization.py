@@ -5,6 +5,7 @@ Excel 解析、业务周计算、表需计算、导入预检/确认、数据查�
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -1146,6 +1147,47 @@ def _cleanup_tmp(paths: List[Path]) -> None:
             pass
 
 
+def _source_package_summary(package) -> Dict[str, Any]:
+    """Return a compact business preview without exposing every source row."""
+    validation = dict(package.validation or {})
+    validation["package_id"] = package.package_id
+    validation["structure_version"] = package.structure_version
+    validation["parser_version"] = package.parser_version
+    validation["mapping_version"] = package.mapping_version
+    validation["source_files"] = [item.get("file_name", "") for item in package.source_files]
+    validation["legacy_summary"] = _summarize_points(package.legacy_points, [])
+    return validation
+
+
+def _prepare_source_package(file_paths: List[Path], source_names: List[str], user_name: str):
+    """Parse, archive and export a V2 package without activating analytics."""
+    from .iron_ore_source_ingest import (
+        archive_source_package,
+        build_v2_workbook,
+        parse_mysteel_source_files,
+        update_source_package_output,
+    )
+
+    package = parse_mysteel_source_files(file_paths)
+    name_map = {path.name: name for path, name in zip(file_paths, source_names)}
+    for metadata in package.source_files:
+        metadata["file_name"] = name_map.get(metadata.get("file_name", ""), metadata.get("file_name", ""))
+    for row in package.all_rows:
+        row["source_file"] = name_map.get(row.get("source_file", ""), row.get("source_file", ""))
+    for point in package.legacy_points:
+        point["source_file"] = name_map.get(point.get("source_file", ""), point.get("source_file", ""))
+
+    archived = archive_source_package(package, user_name)
+    output = build_v2_workbook(package)
+    output_dir = db.DATA_DIR / "iron_ore_source_packages"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{package.package_id}.xlsx"
+    output_path.write_bytes(output)
+    output_sha256 = hashlib.sha256(output).hexdigest()
+    update_source_package_output(package.package_id, str(output_path), output_sha256)
+    return package, archived, output_path, _source_package_summary(package)
+
+
 def _split_filter_values(value: str) -> List[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
@@ -1271,7 +1313,7 @@ def _filter_rows_by_product_labels(rows: List[Dict[str, Any]], product_list: Lis
     )
 
 
-def _parse_integrated_excel(file_path):
+def _parse_integrated_excel_v1(file_path):
     import openpyxl
     wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
     sheet_name = '整合明细'
@@ -1357,6 +1399,152 @@ def _parse_integrated_excel(file_path):
     summary['duplicate_key_count'] = duplicate_key_count
     wb.close()
     return {'rows': rows, 'errors': errors, 'summary': summary}
+
+
+_V2_REQUIRED_SHEETS = {"整合明细", "港口品种库存", "库存汇总分档", "到港明细", "批次信息"}
+
+
+def _v2_sheet_records(ws, field_map: Dict[str, str]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], [{"row": 0, "message": f"Sheet「{ws.title}」为空"}]
+    header_index = next((idx for idx, row in enumerate(rows) if any(str(value or "").strip() for value in row)), None)
+    if header_index is None:
+        return [], [{"row": 0, "message": f"Sheet「{ws.title}」没有表头"}]
+    headers = [str(value or "").strip() for value in rows[header_index]]
+    mapped = {idx: field_map[header] for idx, header in enumerate(headers) if header in field_map}
+    if not mapped:
+        return [], [{"row": header_index + 1, "message": f"Sheet「{ws.title}」表头无法识别"}]
+    parsed: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    for row_no, values in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        if not any(value not in (None, "") for value in values):
+            continue
+        item: Dict[str, Any] = {"source_row": row_no}
+        for idx, field in mapped.items():
+            raw = values[idx] if idx < len(values) else None
+            if field in {"observed_date", "week_start"}:
+                item[field] = _normalize_date_value(raw)
+            elif field in {"value", "source_row", "source_column"}:
+                if field == "source_row":
+                    item[field] = row_no
+                    continue
+                if raw in (None, ""):
+                    item[field] = None
+                else:
+                    try:
+                        item[field] = float(raw) if field == "value" else int(raw)
+                    except (TypeError, ValueError):
+                        errors.append({"row": row_no, "message": f"{field}不是数字"})
+                        item[field] = None
+            else:
+                item[field] = str(raw).strip() if raw not in (None, "") else ""
+        if item.get("value_status") == "":
+            item["value_status"] = "missing" if item.get("value") is None else "numeric"
+        parsed.append(item)
+    return parsed, errors
+
+
+def _parse_v2_details(file_path: Path) -> Dict[str, Any]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    try:
+        errors: List[Dict[str, Any]] = []
+        missing = sorted(_V2_REQUIRED_SHEETS - set(wb.sheetnames))
+        if missing:
+            return {"package_id": "", "file_sha256": hashlib.sha256(Path(file_path).read_bytes()).hexdigest(), "errors": [{"row": 0, "message": f"V2缺少Sheet: {', '.join(missing)}"}]}
+        info_rows = list(wb["批次信息"].iter_rows(values_only=True))
+        batch_info = {
+            str(row[0]).strip(): row[1]
+            for row in info_rows[1:]
+            if len(row) >= 2 and row[0] not in (None, "")
+        }
+        package_id = str(batch_info.get("包ID") or "").strip()
+        if not package_id:
+            errors.append({"row": 0, "message": "批次信息缺少包ID"})
+
+        inventory_fields = {
+            "观测日期": "observed_date", "统计周一": "week_start", "样本": "sample_name", "港口": "port_name",
+            "区域": "region", "范围": "scope_type", "原始品种": "raw_product", "品种": "product",
+            "种类": "category", "来源国家": "source_country", "主流/非主流": "mainstream_status",
+            "数值": "value", "数值状态": "value_status", "单位": "unit", "来源文件": "source_file",
+            "来源Sheet": "source_sheet", "来源行": "source_row", "来源列": "source_column",
+            "来源单元格": "source_cell", "映射版本": "mapping_version",
+        }
+        summary_fields = {
+            "观测日期": "observed_date", "统计周一": "week_start", "样本": "sample_name", "港口": "port_name",
+            "区域": "region", "范围": "scope_type", "指标": "metric", "品位档": "grade", "种类": "category",
+            "数值": "value", "数值状态": "value_status", "单位": "unit", "来源文件": "source_file",
+            "来源Sheet": "source_sheet", "来源行": "source_row", "来源列": "source_column",
+            "来源单元格": "source_cell", "映射版本": "mapping_version",
+        }
+        arrival_fields = {
+            "到港口径": "arrival_kind", "方法": "method", "观测日期": "observed_date", "统计周一": "week_start",
+            "港口": "port_name", "范围": "scope_type", "切片": "slice_type", "维度": "dimension",
+            "品种": "product", "种类": "category", "品位档": "grade", "来源国家": "source_country",
+            "主流/非主流": "mainstream_status", "数值": "value", "数值状态": "value_status", "单位": "unit",
+            "来源文件": "source_file", "来源Sheet": "source_sheet", "来源行": "source_row", "来源列": "source_column",
+            "来源单元格": "source_cell", "映射版本": "mapping_version",
+        }
+        inventory, inventory_errors = _v2_sheet_records(wb["港口品种库存"], inventory_fields)
+        mainstream = []
+        if "主流品种库存" in wb.sheetnames:
+            mainstream, mainstream_errors = _v2_sheet_records(wb["主流品种库存"], inventory_fields)
+        else:
+            mainstream_errors = []
+        aggregate, aggregate_errors = _v2_sheet_records(wb["库存汇总分档"], summary_fields)
+        arrivals, arrival_errors = _v2_sheet_records(wb["到港明细"], arrival_fields)
+        for row in aggregate:
+            row.setdefault("raw_grade", row.get("grade", ""))
+        errors.extend(inventory_errors + mainstream_errors + aggregate_errors + arrival_errors)
+        return {
+            "package_id": package_id,
+            "file_sha256": hashlib.sha256(Path(file_path).read_bytes()).hexdigest(),
+            "parser_version": str(batch_info.get("解析版本") or ""),
+            "mapping_version": str(batch_info.get("映射版本") or ""),
+            "inventory_port_product": inventory,
+            "inventory_mainstream": mainstream,
+            "inventory_summary": [row for row in aggregate if not row.get("grade")],
+            "inventory_grade": [row for row in aggregate if row.get("grade")],
+            "arrival_actual": [row for row in arrivals if row.get("arrival_kind") == "actual"],
+            "arrival_estimated": [row for row in arrivals if row.get("arrival_kind") != "actual"],
+            "errors": errors,
+            "summary": {
+                "inventory_port_product_count": len(inventory),
+                "inventory_mainstream_count": len(mainstream),
+                "inventory_summary_count": len([row for row in aggregate if not row.get("grade")]),
+                "inventory_grade_count": len([row for row in aggregate if row.get("grade")]),
+                "arrival_actual_count": len([row for row in arrivals if row.get("arrival_kind") == "actual"]),
+                "arrival_estimated_count": len([row for row in arrivals if row.get("arrival_kind") != "actual"]),
+            },
+        }
+    finally:
+        wb.close()
+
+
+def _parse_integrated_excel(file_path):
+    import openpyxl
+
+    wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    is_v2 = _V2_REQUIRED_SHEETS.issubset(set(wb.sheetnames))
+    wb.close()
+    if not is_v2:
+        return _parse_integrated_excel_v1(file_path)
+    legacy = _parse_integrated_excel_v1(file_path)
+    details = _parse_v2_details(file_path)
+    errors = list(legacy.get("errors", [])) + list(details.get("errors", []))
+    summary = dict(legacy.get("summary", {}))
+    summary.update(details.get("summary", {}))
+    summary["structure_version"] = "iron-ore-integrated-v2"
+    return {
+        "version": "v2",
+        "package_id": details.get("package_id", ""),
+        "rows": legacy.get("rows", []),
+        "details": details,
+        "errors": errors,
+        "summary": summary,
+    }
 
 
 def _summarize_integrated_rows(rows):
@@ -1580,6 +1768,152 @@ def _import_integrated_points(rows, file_name, user_name):
     return batch_id
 
 
+def _merge_integrated_points_v2_in_connection(cur, rows, file_name, user_name):
+    """Merge V2 compatibility rows without deleting the existing V1 summary."""
+    rows = [_normalize_integrated_point(row) for row in rows]
+    batch_id = None
+    if rows:
+        batch_id = db._last_insert_id(
+            cur,
+            """INSERT INTO dv_integration_batches
+               (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+               VALUES (?, 'committed', ?, ?, ?, ?)""",
+            (
+                file_name,
+                len(rows),
+                sum(1 for row in rows if row.get("metric_type") == "apparent_demand"),
+                json.dumps({"source": "integrated_import_v2", "inserted": 0}, ensure_ascii=False),
+                user_name,
+            ),
+        )
+
+    inserted = updated = skipped = 0
+    columns = (
+        "batch_id", "week_start", "week_end", "business_year", "business_week", "week_label", "display_date",
+        "metric_type", "source_country", "product", "category", "mainstream_status", "value", "unit",
+        "source_file", "source_sheet", "source_section", "is_calculable", "validation_status", "note",
+    )
+    for row in rows:
+        key_params = (
+            row.get("week_start", ""), row.get("metric_type", ""), row.get("source_country", ""),
+            row.get("product", ""), row.get("category", ""), row.get("display_date", ""),
+            row.get("source_section", ""),
+        )
+        existing = db._exec(
+            cur,
+            """SELECT id, value FROM dv_integrated_points
+               WHERE week_start = ? AND metric_type = ? AND source_country = ?
+                 AND product = ? AND category = ? AND display_date = ?
+                 AND COALESCE(source_section, '') = ?
+               ORDER BY id LIMIT 1""",
+            key_params,
+        ).fetchone()
+        if existing and row.get("value") is None and existing["value"] is not None:
+            skipped += 1
+            continue
+        values = tuple(
+            batch_id if column == "batch_id" else row.get(column, "")
+            for column in columns
+        )
+        if existing:
+            db._exec(
+                cur,
+                """UPDATE dv_integrated_points SET
+                   batch_id = ?, week_end = ?, business_year = ?, business_week = ?, week_label = ?,
+                   display_date = ?, source_country = ?, product = ?, category = ?, mainstream_status = ?,
+                   value = ?, unit = ?, source_file = ?, source_sheet = ?, source_section = ?,
+                   is_calculable = ?, validation_status = ?, note = ?
+                   WHERE id = ?""",
+                (
+                    values[0], values[2], values[3], values[4], values[5], values[6], values[8], values[9],
+                    values[10], values[11], values[12], values[13], values[14], values[15], values[16],
+                    values[17], values[18], values[19], existing["id"],
+                ),
+            )
+            updated += 1
+        else:
+            db._exec(
+                cur,
+                """INSERT INTO dv_integrated_points
+                   (batch_id, week_start, week_end, business_year, business_week, week_label, display_date,
+                    metric_type, source_country, product, category, mainstream_status, value, unit, source_file,
+                    source_sheet, source_section, is_calculable, validation_status, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                values,
+            )
+            inserted += 1
+    if batch_id is not None:
+        db._exec(
+            cur,
+            "UPDATE dv_integration_batches SET validation_summary = ? WHERE id = ?",
+            (json.dumps({"source": "integrated_import_v2", "inserted": inserted, "updated": updated, "skipped": skipped}, ensure_ascii=False), batch_id),
+        )
+    return {"batch_id": batch_id, "inserted": inserted, "updated": updated, "skipped": skipped}
+
+
+def _import_integrated_v2(parsed_result: Dict[str, Any], file_name: str, user_name: str) -> Dict[str, Any]:
+    """Atomically merge V2 compatibility rows and activate detail facts."""
+    from .iron_ore_source_ingest import SourcePackage, _store_source_package_facts_in_connection
+
+    details = parsed_result.get("details") or {}
+    package_id = details.get("package_id") or parsed_result.get("package_id")
+    if not package_id:
+        raise HTTPException(status_code=400, detail="V2整合文件缺少包ID")
+    package = SourcePackage(
+        package_id=package_id,
+        parser_version=details.get("parser_version") or "iron-ore-source-v2.0",
+        mapping_version=details.get("mapping_version") or "mysteel-port-sample-2026-09",
+    )
+    package.inventory_port_product = details.get("inventory_port_product", [])
+    package.inventory_mainstream = details.get("inventory_mainstream", [])
+    package.inventory_summary = details.get("inventory_summary", [])
+    package.inventory_grade = details.get("inventory_grade", [])
+    package.arrival_actual = details.get("arrival_actual", [])
+    package.arrival_estimated = details.get("arrival_estimated", [])
+    package.validation = parsed_result.get("summary", {})
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        existing = db._exec(
+            cur, "SELECT status, output_sha256 FROM dv_source_packages WHERE package_id = ?", (package_id,)
+        ).fetchone()
+        if existing and existing["output_sha256"] and details.get("file_sha256") and existing["output_sha256"] != details["file_sha256"]:
+            raise ValueError("V2整合包内容与已登记包ID不一致，请使用原始导出文件或重新整合")
+        if existing and existing["status"] == "activated":
+            return {
+                "duplicate": True,
+                "package_id": package_id,
+                "batch_id": None,
+                "summary": parsed_result.get("summary", {}),
+                "merge_summary": {"inserted": 0, "updated": 0, "skipped": 0, "activated": True},
+            }
+        legacy = _merge_integrated_points_v2_in_connection(cur, parsed_result.get("rows", []), file_name, user_name)
+        stored = _store_source_package_facts_in_connection(cur, package, (), user_name)
+        if stored.get("duplicate"):
+            return {
+                "duplicate": True,
+                "package_id": package_id,
+                "batch_id": legacy.get("batch_id"),
+                "summary": parsed_result.get("summary", {}),
+                "merge_summary": {"inserted": 0, "updated": 0, "skipped": 0, "activated": True},
+            }
+        conn.commit()
+    clear_cache("dv:")
+    return {
+        "duplicate": False,
+        "package_id": package_id,
+        "batch_id": legacy.get("batch_id"),
+        "summary": parsed_result.get("summary", {}),
+        "merge_summary": {
+            "inserted": stored.get("inserted", 0) + legacy.get("inserted", 0),
+            "updated": legacy.get("updated", 0),
+            "skipped": legacy.get("skipped", 0),
+            "legacy_batch_id": legacy.get("batch_id"),
+            "activated": True,
+        },
+    }
+
+
 def _run_integrated_import_job(job_id: str, source_path: str, file_name: str, user_name: str) -> None:
     job = _INTEGRATED_IMPORT_JOBS[job_id]
     try:
@@ -1601,12 +1935,24 @@ def _run_integrated_import_job(job_id: str, source_path: str, file_name: str, us
             "message": f"正在写入 {len(result['rows'])} 条数据",
             "summary": result["summary"],
         })
-        batch_id = _import_integrated_points(result["rows"], file_name, user_name)
+        if result.get("version") == "v2":
+            import_result = _import_integrated_v2(result, file_name, user_name)
+            batch_id = import_result.get("batch_id")
+            imported_count = import_result.get("merge_summary", {}).get("inserted", 0)
+            message = "V2整合包已激活" if not import_result.get("duplicate") else "V2整合包已存在，未重复导入"
+        else:
+            batch_id = _import_integrated_points(result["rows"], file_name, user_name)
+            import_result = {"duplicate": False, "merge_summary": {"legacy": True}}
+            imported_count = len(result["rows"])
+            message = f"已导入 {imported_count} 条数据"
         job.update({
             "status": "succeeded",
             "stage": "done",
-            "message": f"已导入 {len(result['rows'])} 条数据",
+            "message": message,
             "batch_id": batch_id,
+            "version": result.get("version", "v1"),
+            "package_id": result.get("package_id") or (result.get("details") or {}).get("package_id"),
+            "merge_summary": import_result.get("merge_summary", {}),
             "summary": result["summary"],
             "finished_at": datetime.utcnow().isoformat(),
         })
@@ -2369,10 +2715,11 @@ def _now_expr() -> str:
 @router.get("/data-visualization/integration/local-preview")
 async def integration_local_preview(user=Depends(dv_current_user)):
     file_paths = _local_mysteel_files()
-    result = integrate_mysteel_files(file_paths)
+    from .iron_ore_source_ingest import parse_mysteel_source_files
+    package = parse_mysteel_source_files(file_paths)
     return {
         "files": [path.name for path in file_paths],
-        "summary": result["summary"],
+        "summary": _source_package_summary(package),
     }
 
 
@@ -2380,53 +2727,63 @@ async def integration_local_preview(user=Depends(dv_current_user)):
 async def integration_local_commit(user=Depends(dv_current_user)):
     dv_require_sensitive("data_visualization_integration", user)
     file_paths = _local_mysteel_files()
-    result = integrate_mysteel_files(file_paths)
-    batch_id = _save_integrated_points(result["points"], [path.name for path in file_paths], user["name"])
+    if not file_paths:
+        raise HTTPException(status_code=400, detail="本地目录暂无可整合的 Mysteel Excel")
+    package, archived, output_path, summary = _prepare_source_package(
+        file_paths, [path.name for path in file_paths], user["name"]
+    )
     return {
         "ok": True,
-        "batch_id": batch_id,
+        "package_id": package.package_id,
+        "archive": archived,
+        "output_file": output_path.name,
         "files": [path.name for path in file_paths],
-        "summary": result["summary"],
+        "summary": summary,
     }
 
 
 @router.post("/data-visualization/integration/preview")
 async def integration_upload_preview(payload: IntegrationFilesRequest, user=Depends(dv_current_user)):
+    dv_require_sensitive("data_visualization_integration", user)
+    if not payload.files:
+        raise HTTPException(status_code=400, detail="请先选择原始 Excel 文件")
     tmp_paths = _write_uploads_to_tmp(payload.files)
     try:
-        result = integrate_mysteel_files(tmp_paths)
-        source_names = {path.name: item.file_name for path, item in zip(tmp_paths, payload.files)}
-        for point in result["summary"]["samples"]:
-            point["source_file"] = source_names.get(point["source_file"], point["source_file"])
+        package, archived, output_path, summary = _prepare_source_package(
+            tmp_paths, [item.file_name for item in payload.files], user["name"]
+        )
     finally:
         _cleanup_tmp(tmp_paths)
     return {
         "files": [item.file_name for item in payload.files],
-        "summary": result["summary"],
+        "package_id": package.package_id,
+        "archive": archived,
+        "output_file": output_path.name,
+        "summary": summary,
     }
 
 
 @router.post("/data-visualization/integration/commit")
 async def integration_upload_commit(payload: IntegrationFilesRequest, user=Depends(dv_current_user)):
+    """Backward-compatible route name: prepare/export only, never activate data."""
     dv_require_sensitive("data_visualization_integration", user)
+    if not payload.files:
+        raise HTTPException(status_code=400, detail="请先选择原始 Excel 文件")
     tmp_paths = _write_uploads_to_tmp(payload.files)
     try:
-        result = integrate_mysteel_files(tmp_paths)
-        source_names = {path.name: item.file_name for path, item in zip(tmp_paths, payload.files)}
-        for point in result["points"]:
-            point["source_file"] = source_names.get(point["source_file"], point["source_file"])
-        for point in result["summary"]["samples"]:
-            point["source_file"] = source_names.get(point["source_file"], point["source_file"])
-        batch_id = _save_integrated_points(result["points"], [item.file_name for item in payload.files], user["name"])
+        package, archived, output_path, summary = _prepare_source_package(
+            tmp_paths, [item.file_name for item in payload.files], user["name"]
+        )
     finally:
         _cleanup_tmp(tmp_paths)
-    batch_summary = _load_integration_batch_summary(batch_id)
     return {
         "ok": True,
-        "batch_id": batch_id,
+        "package_id": package.package_id,
+        "archive": archived,
+        "output_file": output_path.name,
         "files": [item.file_name for item in payload.files],
-        "summary": batch_summary["summary"],
-        "merge_summary": batch_summary["merge_summary"],
+        "summary": summary,
+        "merge_summary": {"inserted": 0, "updated": 0, "skipped": 0, "activated": False},
     }
 
 
@@ -2434,6 +2791,106 @@ async def integration_upload_commit(payload: IntegrationFilesRequest, user=Depen
 async def integration_latest(user=Depends(dv_current_user)):
     dv_require_view("data_visualization.display", user)
     return ttl_cached("dv:integration_latest", 60, _integration_latest_payload)
+
+
+@router.get("/data-visualization/integration/schema")
+async def integration_schema(user=Depends(dv_current_user)):
+    """Describe the V1/V2 integrated-file contract and available detail facts."""
+    dv_require_view("data_visualization.display", user)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        package = db._exec(
+            cur,
+            """SELECT package_id, status, parser_version, mapping_version,
+                      output_path, created_at
+               FROM dv_source_packages ORDER BY created_at DESC, id DESC LIMIT 1""",
+        ).fetchone()
+        counts = {}
+        for table in (
+            "dv_port_inventory_facts", "dv_inventory_summary_facts", "dv_inventory_grade_facts",
+            "dv_inventory_mainstream_facts", "dv_arrival_facts",
+        ):
+            counts[table] = db._exec(cur, f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]
+    return {
+        "current_version": "v2",
+        "legacy_version": "v1_summary_only",
+        "required_sheets": ["整合明细", "港口品种库存", "库存汇总分档", "到港明细", "批次信息"],
+        "optional_sheets": ["主流品种库存"],
+        "arrival_kinds": ["actual", "source_forecast", "model_estimate"],
+        "detail_counts": counts,
+        "latest_package": _row_to_dict(package),
+    }
+
+
+async def _detail_query(
+    table: str,
+    user,
+    *,
+    week_start: Optional[str] = None,
+    port_name: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    dv_require_view("data_visualization.display", user)
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    where = []
+    params: List[Any] = []
+    if week_start:
+        where.append("week_start = ?")
+        params.append(week_start)
+    if port_name:
+        where.append("port_name = ?")
+        params.append(port_name)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with db.connect() as conn:
+        cur = conn.cursor()
+        total = db._exec(cur, f"SELECT COUNT(*) AS c FROM {table}{clause}", tuple(params)).fetchone()["c"]
+        rows = db._exec(
+            cur,
+            f"SELECT * FROM {table}{clause} ORDER BY week_start DESC, observed_date DESC, id DESC LIMIT ? OFFSET ?",
+            tuple(params) + (limit, offset),
+        ).fetchall()
+    return {"rows": [_row_to_dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/data-visualization/detail/port-inventory")
+async def detail_port_inventory(
+    week_start: Optional[str] = Query(default=None),
+    port_name: Optional[str] = Query(default=None),
+    limit: int = Query(default=100),
+    offset: int = Query(default=0),
+    user=Depends(dv_current_user),
+):
+    return await _detail_query(
+        "dv_port_inventory_facts", user, week_start=week_start, port_name=port_name, limit=limit, offset=offset
+    )
+
+
+@router.get("/data-visualization/detail/inventory-grade")
+async def detail_inventory_grade(
+    week_start: Optional[str] = Query(default=None),
+    port_name: Optional[str] = Query(default=None),
+    limit: int = Query(default=100),
+    offset: int = Query(default=0),
+    user=Depends(dv_current_user),
+):
+    return await _detail_query(
+        "dv_inventory_grade_facts", user, week_start=week_start, port_name=port_name, limit=limit, offset=offset
+    )
+
+
+@router.get("/data-visualization/detail/arrival")
+async def detail_arrival(
+    week_start: Optional[str] = Query(default=None),
+    port_name: Optional[str] = Query(default=None),
+    limit: int = Query(default=100),
+    offset: int = Query(default=0),
+    user=Depends(dv_current_user),
+):
+    return await _detail_query(
+        "dv_arrival_facts", user, week_start=week_start, port_name=port_name, limit=limit, offset=offset
+    )
 
 
 def _integration_latest_payload():
@@ -2518,10 +2975,23 @@ def _integration_latest_payload():
 
 
 @router.get("/data-visualization/integration/export")
-async def integration_export(user=Depends(dv_current_user)):
+async def integration_export(package_id: Optional[str] = Query(default=None), user=Depends(dv_current_user)):
     require_permission(user, "data_visualization.integration", "export")
-    content = build_integrated_workbook_bytes()
-    filename = f"iron_ore_integrated_{date.today().isoformat()}.xlsx"
+    if package_id:
+        with db.connect() as conn:
+            cur = conn.cursor()
+            row = db._exec(
+                cur,
+                "SELECT output_path FROM dv_source_packages WHERE package_id = ?",
+                (package_id,),
+            ).fetchone()
+        if not row or not row["output_path"] or not Path(row["output_path"]).exists():
+            raise HTTPException(status_code=404, detail="整合包不存在或文件已失效")
+        content = Path(row["output_path"]).read_bytes()
+        filename = f"iron_ore_integrated_v2_{package_id}.xlsx"
+    else:
+        content = build_integrated_workbook_bytes()
+        filename = f"iron_ore_integrated_{date.today().isoformat()}.xlsx"
     db.log_operation(user["id"], "data_visualization", "导出整合数据", filename, "dv_integrated_points", None)
     return Response(
         content=content,
@@ -2716,11 +3186,22 @@ async def import_integrated_commit(
     if result['errors']:
         raise HTTPException(status_code=400, detail=f'整合 Excel 存在 {len(result["errors"])} 条错误，无法导入')
 
-    batch_id = _import_integrated_points(rows, file_name, user['name'])
+    if result.get("version") == "v2":
+        import_result = _import_integrated_v2(result, file_name, user['name'])
+        batch_id = import_result.get("batch_id")
+        message = "V2整合包已激活" if not import_result.get("duplicate") else "V2整合包已存在，未重复导入"
+    else:
+        batch_id = _import_integrated_points(rows, file_name, user['name'])
+        import_result = {"duplicate": False, "merge_summary": {"legacy": True}}
+        message = f'已导入 {len(rows)} 条数据'
     return {
         'batch_id': batch_id,
+        'version': result.get("version", "v1"),
+        'package_id': result.get("package_id") or (result.get("details") or {}).get("package_id"),
         'summary': result['summary'],
-        'message': f'已导入 {len(rows)} 条数据',
+        'merge_summary': import_result.get("merge_summary", {}),
+        'duplicate': import_result.get("duplicate", False),
+        'message': message,
     }
 
 

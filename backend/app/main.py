@@ -63,6 +63,7 @@ from .spot_ledger_sync import start_spot_ledger_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
+    iron_ore_weekly_report,
     iron_ore_basis,
     iron_ore_basis_snapshot_sync,
     operation_log_archive,
@@ -141,6 +142,7 @@ USER_SESSION_TTL_HOURS = int(os.getenv("USER_SESSION_TTL_HOURS", str(24 * 7)))
 GUEST_SESSION_TTL_HOURS = int(os.getenv("GUEST_SESSION_TTL_HOURS", "8"))
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
+app.include_router(iron_ore_weekly_report.router, prefix="/api")
 app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
@@ -1338,6 +1340,7 @@ def startup() -> None:
         try:
             initialize_release_database()
             data_visualization.seed_dv_data()
+            iron_ore_weekly_report.register_builtin_templates()
         except Exception as exc:
             print(f"[startup] database initialization failed: {type(exc).__name__}")
         try:

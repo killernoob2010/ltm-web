@@ -839,19 +839,51 @@
         <section id="dvIntegrationPage" class="page hidden">
           <div class="toolbar">
             <label id="dvIntegrationImportLabel" class="file-button">
-              导入 Excel
+              上传原始 Excel
               <input type="file" id="dvIntegrationFiles" accept=".xlsx,.xls" multiple hidden />
             </label>
             <button type="button" id="dvExportBtn" class="secondary">下载整合 Excel</button>
             <span id="dvIntegrationFileInfo" class="toolbar-status"></span>
-            <span id="dvIntegrationStatus" class="toolbar-status">待整合</span>
+            <span id="dvIntegrationStatus" class="toolbar-status">待上传</span>
           </div>
           <section class="panel">
             <div class="panel-head">
               <h2>整合概览</h2>
               <span id="dvIntegrationBatchInfo"></span>
             </div>
+            <p class="muted">上传后系统会归档原件、提取明细并生成 V2 整合 Excel；此步骤不会改变已生效的数据，需在“数据管理”中预览并确认导入。</p>
             <div id="dvIntegrationSummary" class="dv-integration-summary"></div>
+          </section>
+        </section>
+
+        <!-- 数据可视化管理 - 周报生成 -->
+        <section id="dvReportPage" class="page hidden">
+          <div class="toolbar">
+            <label>
+              报告周
+              <input id="dvReportWeek" type="week" />
+            </label>
+            <label>
+              模板版本
+              <select id="dvReportTemplate"></select>
+            </label>
+            <button type="button" id="dvCheckReportBtn" class="secondary">检查数据</button>
+            <button type="button" id="dvGenerateReportBtn">生成 PDF</button>
+            <span id="dvReportStatus" class="toolbar-status">待选择报告周</span>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>周报生成准备</h2>
+              <span id="dvReportIdentity"></span>
+            </div>
+            <div id="dvReportReadiness" class="dv-integration-summary"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>历史报告</h2>
+              <span>旧报告按模板版本和报告修订保留</span>
+            </div>
+            <div id="dvReportHistory" class="table-wrap"></div>
           </section>
         </section>
 

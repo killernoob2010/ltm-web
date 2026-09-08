@@ -5,5 +5,6 @@ requests==2.32.3
 psycopg2-binary==2.9.12
 pypinyin==0.54.0
 xlrd==2.0.2
+reportlab==4.4.4
 cryptography==49.0.0
 tqsdk==3.10.1

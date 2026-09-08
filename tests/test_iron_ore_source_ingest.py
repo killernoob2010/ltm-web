@@ -1,0 +1,96 @@
+from datetime import datetime
+from pathlib import Path
+
+import openpyxl
+
+
+def _inventory_workbook(path: Path) -> None:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "总览"
+    ws.append(["统计日期", "港口", "区域", "库存总量", "粉矿", "块矿", "球团", "精粉"])
+    ws.append([datetime(2026, 9, 1), "样本2", "沿江", 8, 3, 1, 2, 2])
+    ws.append([datetime(2026, 9, 1), "总计", "", 100, 60, 15, 10, 15])
+
+    grade = wb.create_sheet("分品位")
+    grade.append([None, None, None, "Fe 64%以上", None, None, None, None, "Fe60%-64%", None, None, None, None, "Fe 55%-60%", None, None, None, None, "Fe 55%以下", None])
+    grade.append(["统计日期", "港口", "区域", "高品粉矿", "高品块矿", "高品球团", "高品精粉", "高品总计", "中高品粉矿", "中高品块矿", "中高品球团", "中高品精粉", "中高品总计", "中低品粉矿", "中低品块矿", "中低品球团", "中低品精粉", "中低品总计", "低品粉矿", "低品块矿"])
+    grade.append([datetime(2026, 9, 1), "样本2", "沿江", 1, 0, 0, 0, 1, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 3, 0])
+
+    powder = wb.create_sheet("粗粉")
+    powder.append(["统计日期", "港口", "区域", "粉矿总计", "澳粉总计", "PB粉", "纽曼粉"])
+    powder.append([datetime(2026, 9, 1), "样本2", "沿江", 3, 3, 1, None])
+    powder.append([datetime(2026, 9, 1), "总计", "", 60, 60, 20, 10])
+    for sheet_name, total_header in (("块矿", "块矿总计"), ("球团", "球团总计"), ("精粉", "精粉总计")):
+        sheet = wb.create_sheet(sheet_name)
+        sheet.append(["统计日期", "港口", "区域", total_header, "PB块" if sheet_name == "块矿" else "澳大利亚"])
+        sheet.append([datetime(2026, 9, 1), "样本2", "沿江", 1, 1])
+    wb.save(path)
+
+
+def _arrival_workbook(path: Path) -> None:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "国家"
+    ws.append(["全国到港量来源地货量明细"])
+    ws.append([])
+    ws.append(["到港时间", "港口", "总计", "澳大利亚", "巴西"])
+    ws.append([datetime(2026, 8, 30), "南通港", 100, 70, 30])
+    ws.append([datetime(2026, 8, 30), "日照港", 200, 120, None])
+
+    product = wb.create_sheet("品种")
+    product.append(["全国到港量分货物明细"])
+    product.append([])
+    product.append(["到港时间", "港口", "总计", "PB粉", "卡粉"])
+    product.append([datetime(2026, 8, 30), "南通港", 100, 40, 60])
+
+    form = wb.create_sheet("货种品位")
+    form.append(["全国到港量分货种及品位货物明细"])
+    form.append([])
+    form.append([None, None, None, "粉矿"])
+    form.append(["到港时间", "港口", "总计", "60%以下", "粉矿 汇总"])
+    form.append([datetime(2026, 8, 30), "南通港", 100, None, 100])
+    wb.save(path)
+
+
+def test_parse_source_files_captures_port_product_grade_and_actual_arrival(tmp_path):
+    from backend.app.iron_ore_source_ingest import parse_mysteel_source_files
+
+    inventory = tmp_path / "库存.xlsx"
+    arrival = tmp_path / "到港.xlsx"
+    _inventory_workbook(inventory)
+    _arrival_workbook(arrival)
+
+    package = parse_mysteel_source_files([inventory, arrival])
+
+    nantong = [row for row in package.inventory_port_product if row["port_name"] == "南通" and row["product"] == "PB粉"]
+    assert nantong and nantong[0]["sample_name"] == "样本2"
+    assert nantong[0]["scope_type"] == "sample"
+    assert nantong[0]["value"] == 1.0
+    assert any(row["grade"] == "高品" and row["value"] == 1.0 for row in package.inventory_grade)
+
+    actual = [row for row in package.arrival_actual if row["slice_type"] == "product" and row["product"] == "PB粉"]
+    assert actual and actual[0]["arrival_kind"] == "actual"
+    assert actual[0]["port_name"] == "南通"
+
+    missing_country = [row for row in package.arrival_actual if row["slice_type"] == "country" and row["dimension"] == "巴西" and row["port_name"] == "日照"]
+    assert missing_country and missing_country[0]["value"] is None
+    assert missing_country[0]["value_status"] == "missing"
+
+
+def test_build_v2_workbook_round_trips_authoritative_sheets(tmp_path):
+    from backend.app.iron_ore_source_ingest import build_v2_workbook, parse_mysteel_source_files
+
+    inventory = tmp_path / "库存.xlsx"
+    arrival = tmp_path / "到港.xlsx"
+    _inventory_workbook(inventory)
+    _arrival_workbook(arrival)
+    package = parse_mysteel_source_files([inventory, arrival])
+
+    output = tmp_path / "整合V2.xlsx"
+    output.write_bytes(build_v2_workbook(package))
+    wb = openpyxl.load_workbook(output, read_only=True, data_only=True)
+    assert {"整合明细", "港口品种库存", "库存汇总分档", "到港明细", "批次信息"}.issubset(wb.sheetnames)
+    assert any(row[3] == "南通" and row[7] == "PB粉" for row in wb["港口品种库存"].iter_rows(min_row=2, values_only=True))
+    assert any(row[0] == "actual" for row in wb["到港明细"].iter_rows(min_row=2, values_only=True))
+    wb.close()

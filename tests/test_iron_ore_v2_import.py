@@ -1,0 +1,47 @@
+from test_iron_ore_source_ingest import _arrival_workbook, _inventory_workbook
+
+
+def test_v2_import_preserves_legacy_summary_and_inserts_detail_facts(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.data_visualization import _import_integrated_v2, _parse_integrated_excel
+    from backend.app.iron_ore_source_ingest import build_v2_workbook, parse_mysteel_source_files
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "data" / "app.db")
+    db.init_db()
+    inventory = tmp_path / "库存.xlsx"
+    arrival = tmp_path / "到港.xlsx"
+    _inventory_workbook(inventory)
+    _arrival_workbook(arrival)
+    package = parse_mysteel_source_files([inventory, arrival])
+    workbook = tmp_path / "v2.xlsx"
+    workbook.write_bytes(build_v2_workbook(package))
+
+    with db.connect() as conn:
+        cur = conn.cursor()
+        batch_id = db._last_insert_id(cur, """INSERT INTO dv_integration_batches
+            (file_names, status, point_count, apparent_demand_count, validation_summary, created_by)
+            VALUES (?, 'committed', 1, 0, '{}', ?)""", ("old.xlsx", "tester"))
+        db._exec(cur, """INSERT INTO dv_integrated_points
+            (batch_id, week_start, week_end, business_year, business_week, week_label,
+             display_date, metric_type, source_country, product, category, mainstream_status,
+             value, unit, source_file, source_sheet, source_section, is_calculable, validation_status, note)
+            VALUES (?, '2026-08-24', '2026-08-30', 2026, 35, '2026 W35', '2026-08-30',
+                    'inventory', '澳洲', 'PB粉', '粉矿', '主流', 10, '万吨', 'old.xlsx', '库存', '总计', 1, 'ok', '')""",
+            (batch_id,))
+
+    parsed = _parse_integrated_excel(workbook)
+    assert parsed["version"] == "v2"
+    result = _import_integrated_v2(parsed, workbook.name, "tester")
+    assert result["duplicate"] is False
+    duplicate = _import_integrated_v2(parsed, workbook.name, "tester")
+    assert duplicate["duplicate"] is True
+    with db.connect() as conn:
+        cur = conn.cursor()
+        legacy = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_integrated_points").fetchone()["c"]
+        detail = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_port_inventory_facts").fetchone()["c"]
+        arrivals = db._exec(cur, "SELECT COUNT(*) AS c FROM dv_arrival_facts WHERE arrival_kind = 'actual'").fetchone()["c"]
+    assert legacy >= 1
+    assert detail > 0
+    assert arrivals > 0
