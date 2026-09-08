@@ -12,6 +12,7 @@ RESOURCE_MODULES = {
     "data_visualization.data": "data_visualization_data",
     "data_visualization.integration": "data_visualization_integration",
     "data_visualization.integrated_points": "data_visualization_integration",
+    "data_visualization.report": "data_visualization_report",
     "order_finance.records": "order_finance_progress",
     "order_finance.capital": "order_finance_capital",
     "order_lifecycle.records": "order_lifecycle_progress",
@@ -63,6 +64,7 @@ ACTIVE_BUSINESS_MODULES = {
     "data_visualization_integration",
     "data_visualization_data",
     "data_visualization_chart",
+    "data_visualization_report",
     "order_finance_progress",
     "order_finance_capital",
     "order_lifecycle_progress",
@@ -84,21 +86,21 @@ INFO_WARNING_MODULES = {
 DEPARTMENT_MODULES = {
     "贸易处": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
-        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart", "data_visualization_report",
         "spot_ledger",
     },
     "期货组": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
-        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart", "data_visualization_report",
         "trading_overview", "trading_positions", "trading_sh_junneng", "trading_options", "trading_export",
     },
     "财企处": {
-        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart", "data_visualization_report",
         "order_finance_progress", "order_finance_capital",
         "order_lifecycle_progress",
     },
     "资金处": {
-        "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "data_visualization_integration", "data_visualization_data", "data_visualization_chart", "data_visualization_report",
         "order_finance_progress", "order_finance_capital",
         "order_lifecycle_progress",
     },

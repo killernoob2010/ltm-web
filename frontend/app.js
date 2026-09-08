@@ -149,6 +149,8 @@ function applyUiPermissions() {
     setHidden(selector, guest || !canModuleSensitive("data_visualization_integration")));
   ["#dvImportBtn", "#dvCommitImportBtn"].forEach((selector) =>
     setHidden(selector, guest || !canModuleSensitive("data_visualization_data")));
+  ["#dvCheckReportBtn", "#dvGenerateReportBtn"].forEach((selector) =>
+    setHidden(selector, guest || !canModuleEdit("data_visualization_report")));
   setHidden("#tradingImportBtn", guest || !canModuleSensitive("trading_positions"));
   setHidden("#plattsIndexUploadBtn", guest || !canModuleSensitive("platts_index_monitor"));
   setHidden("#plattsIndexConfirmBtn", guest || !canModuleSensitive("platts_index_monitor"));
@@ -270,6 +272,15 @@ const dvIntegrationFileInfo = document.querySelector("#dvIntegrationFileInfo");
 const dvIntegrationStatus = document.querySelector("#dvIntegrationStatus");
 const dvIntegrationBatchInfo = document.querySelector("#dvIntegrationBatchInfo");
 const dvIntegrationSummary = document.querySelector("#dvIntegrationSummary");
+const dvReportPage = document.querySelector("#dvReportPage");
+const dvReportWeek = document.querySelector("#dvReportWeek");
+const dvReportTemplate = document.querySelector("#dvReportTemplate");
+const dvCheckReportBtn = document.querySelector("#dvCheckReportBtn");
+const dvGenerateReportBtn = document.querySelector("#dvGenerateReportBtn");
+const dvReportStatus = document.querySelector("#dvReportStatus");
+const dvReportIdentity = document.querySelector("#dvReportIdentity");
+const dvReportReadiness = document.querySelector("#dvReportReadiness");
+const dvReportHistory = document.querySelector("#dvReportHistory");
 const dvDataPage = document.querySelector("#dvDataPage");
 const dvChartPage = document.querySelector("#dvChartPage");
 const dvDataTabs = document.querySelector("#dvDataTabs");
@@ -579,7 +590,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, tradingCollectorPage, closingReviewAgentPage, orderVesselOverviewPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, tradingCollectorPage, closingReviewAgentPage, orderVesselOverviewPage, orderFinancePage, orderLifecyclePage, orderFinanceCapitalPage, dvIntegrationPage, dvReportPage, dvDataPage, dvChartPage, tradingManagementPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -701,6 +712,11 @@ async function activateModule(code, subName, subView = "") {
   if (code === "data_visualization_integration") {
     showOnly(dvIntegrationPage);
     await loadDVIntegrationLatest();
+    return;
+  }
+  if (code === "data_visualization_report") {
+    showOnly(dvReportPage);
+    await initDVReport();
     return;
   }
   if (code === "data_visualization_data") {
@@ -4393,6 +4409,7 @@ orderLifecycleNextBtn.addEventListener("click", () => {
 // ═══════════════════════════════════════════════════════════════
 
 let dvIntegrationUploadFiles = [];
+let dvIntegrationPackageId = "";
 
 let dvState = {
   currentMetric: "shipment",
@@ -4466,6 +4483,7 @@ function renderDVIntegrationSummary(summary, files, mergeSummary) {
   const merge = mergeSummary || {};
   const items = [
     ["文件数", files.length || "-"],
+    ["原始包状态", "已归档/未入库"],
     ["标准数据点", summary.total_points || 0],
     ["库存", metrics.inventory || summary.inventory_count || 0],
     ["发运", metrics.shipment || summary.shipment_count || 0],
@@ -4477,6 +4495,10 @@ function renderDVIntegrationSummary(summary, files, mergeSummary) {
     ["本次覆盖", merge.updated || 0],
     ["本次跳过", merge.skipped || 0],
     ["空值未覆盖", merge.skipped_blank_overwrite || 0],
+    ["港口×品种库存", summary.inventory_port_product_count || 0],
+    ["库存分档", (summary.inventory_summary_count || 0) + (summary.inventory_grade_count || 0)],
+    ["实际到港明细", summary.arrival_actual_count || 0],
+    ["预计/估算到港", summary.arrival_estimated_count || 0],
   ];
   dvIntegrationSummary.innerHTML = items.map(function(item) {
     return '<div class="dv-summary-item"><span>' + item[0] + '</span><strong>' + item[1] + '</strong></div>';
@@ -4500,10 +4522,10 @@ async function fileToIntegrationPayload(file) {
   return { file_name: file.name, file_data: base64 };
 }
 
-async function uploadAndCommitIntegration() {
+async function prepareIntegrationPackage() {
   const files = Array.from(dvIntegrationFiles.files || []);
   if (!files.length) return;
-  dvIntegrationStatus.textContent = "正在上传并整合...";
+  dvIntegrationStatus.textContent = "正在解析、归档并整合（尚未入库）...";
   if (dvIntegrationFileInfo) dvIntegrationFileInfo.textContent = files.map(function(file) { return file.name; }).join("，");
   dvIntegrationFiles.disabled = true;
   dvIntegrationUploadFiles = [];
@@ -4516,8 +4538,9 @@ async function uploadAndCommitIntegration() {
       body: JSON.stringify({ files: dvIntegrationUploadFiles }),
     });
     renderDVIntegrationSummary(result.summary, result.files || [], result.merge_summary || {});
-    dvIntegrationBatchInfo.textContent = "批次 " + result.batch_id;
-    dvIntegrationStatus.textContent = "上传文件已整合，可下载 Excel";
+    dvIntegrationPackageId = result.package_id || "";
+    dvIntegrationBatchInfo.textContent = "整合包 " + (dvIntegrationPackageId || "已生成");
+    dvIntegrationStatus.textContent = "原件已归档并生成 V2 整合 Excel，尚未入库；请下载后在数据管理确认导入";
     dvState.dvDataFilterInitialized = false;
     dvState.dvChartControlsInitialized = false;
   } finally {
@@ -4531,7 +4554,8 @@ async function exportIntegratedExcel() {
   dvIntegrationStatus.textContent = "正在生成整合 Excel...";
   const headers = {};
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const response = await fetch("/api/data-visualization/integration/export", { headers });
+  const query = dvIntegrationPackageId ? "?package_id=" + encodeURIComponent(dvIntegrationPackageId) : "";
+  const response = await fetch("/api/data-visualization/integration/export" + query, { headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || "下载失败");
@@ -4540,7 +4564,7 @@ async function exportIntegratedExcel() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `iron_ore_integrated_${today()}.xlsx`;
+  link.download = `iron_ore_integrated_v2_${today()}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -4549,13 +4573,138 @@ async function exportIntegratedExcel() {
 }
 
 dvIntegrationFiles.addEventListener("change", function() {
-  uploadAndCommitIntegration().catch(function(error) {
+  prepareIntegrationPackage().catch(function(error) {
     dvIntegrationStatus.textContent = error.message;
   });
 });
 
 dvExportBtn.addEventListener("click", function() {
   exportIntegratedExcel().catch(function(error) { dvIntegrationStatus.textContent = error.message; });
+});
+
+let dvReportState = { initialized: false, busy: false };
+
+function currentReportWeekValue() {
+  const current = new Date();
+  const day = current.getDay() || 7;
+  current.setDate(current.getDate() - day + 1);
+  const first = new Date(current.getFullYear(), 0, 1);
+  const week = Math.ceil((((current - first) / 86400000) + first.getDay() + 1) / 7);
+  return current.getFullYear() + "-W" + String(week).padStart(2, "0");
+}
+
+async function loadDVReportTemplates() {
+  const result = await api("/api/data-visualization/reports/templates");
+  dvReportTemplate.innerHTML = (result.templates || []).map(function(item) {
+    return '<option value="' + escapeHtml(item.version) + '">' + escapeHtml(item.version + "｜" + item.name) + '</option>';
+  }).join("");
+  if (!dvReportTemplate.value) dvReportTemplate.value = "V1.0";
+}
+
+function renderDVReportReadiness(result) {
+  if (!result || !result.validation) {
+    dvReportReadiness.innerHTML = '<div class="empty-cell">请选择报告周并检查数据</div>';
+    return;
+  }
+  const validation = result.validation;
+  const items = [
+    ["库存", (validation.inventory?.previous_count || 0) + " / " + (validation.inventory?.current_count || 0)],
+    ["实际到港", (validation.actual_arrival?.previous_count || 0) + " / " + (validation.actual_arrival?.current_count || 0)],
+    ["预计/估算到港", (validation.estimated_arrival?.previous_count || 0) + " / " + (validation.estimated_arrival?.current_count || 0)],
+    ["旧表需", (validation.legacy_apparent_demand?.previous_count || 0) + " / " + (validation.legacy_apparent_demand?.current_count || 0)],
+    ["期现价格", (validation.prices?.previous_count || 0) + " / " + (validation.prices?.current_count || 0)],
+  ];
+  dvReportReadiness.innerHTML = items.map(function(item) {
+    return '<div class="dv-summary-item"><span>' + item[0] + '（上期/本期）</span><strong>' + item[1] + '</strong></div>';
+  }).join("");
+  (validation.warnings || []).forEach(function(warning) {
+    dvReportReadiness.innerHTML += '<div class="error-cell">' + escapeHtml(warning) + '</div>';
+  });
+  dvReportIdentity.textContent = result.report_week + "｜数据周一 " + result.week_start;
+  dvReportStatus.textContent = result.ready ? "数据检查通过，可生成 PDF" : "数据未就绪，无法生成";
+  dvGenerateReportBtn.disabled = !result.ready;
+}
+
+async function checkDVReportReadiness() {
+  if (!dvReportWeek.value) return;
+  dvReportStatus.textContent = "正在检查数据...";
+  const result = await api("/api/data-visualization/reports/readiness?report_week=" + encodeURIComponent(dvReportWeek.value));
+  renderDVReportReadiness(result);
+}
+
+async function loadDVReportHistory() {
+  const result = await api("/api/data-visualization/reports/runs?limit=20");
+  const rows = result.runs || [];
+  if (!rows.length) {
+    dvReportHistory.innerHTML = '<div class="empty-cell">暂无历史报告</div>';
+    return;
+  }
+  dvReportHistory.innerHTML = '<table><thead><tr><th>报告周</th><th>模板</th><th>修订</th><th>状态</th><th>生成时间</th><th>操作</th></tr></thead><tbody>' + rows.map(function(row) {
+    const action = row.status === "succeeded" ? '<button type="button" class="secondary dv-report-download" data-run-id="' + escapeHtml(row.id) + '">下载</button>' : '';
+    return '<tr><td>' + escapeHtml(row.report_week || '') + '</td><td>' + escapeHtml(row.template_version || '') + '</td><td>R' + (row.revision_no || 1) + '</td><td>' + escapeHtml(row.status || '') + '</td><td>' + escapeHtml(row.created_at || '') + '</td><td>' + action + '</td></tr>';
+  }).join("") + '</tbody></table>';
+}
+
+async function downloadDVReport(runId) {
+  const headers = {};
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  const response = await fetch("/api/data-visualization/reports/" + encodeURIComponent(runId) + "/download", { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(function() { return {}; });
+    const detail = payload.detail;
+    throw new Error((detail && typeof detail === "object" ? detail.message : detail) || "报告下载失败");
+  }
+  const blob = await response.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const disposition = response.headers.get("content-disposition") || "";
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const plain = disposition.match(/filename="?([^";]+)"?/i);
+  link.download = encoded ? decodeURIComponent(encoded[1]) : (plain ? plain[1] : "铁矿石周报.pdf");
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+}
+
+async function initDVReport() {
+  if (!dvReportWeek.value) dvReportWeek.value = currentReportWeekValue();
+  if (!dvReportState.initialized) {
+    await loadDVReportTemplates();
+    dvReportState.initialized = true;
+  }
+  await Promise.all([checkDVReportReadiness(), loadDVReportHistory()]);
+}
+
+async function generateDVReport() {
+  if (dvReportState.busy || !dvReportWeek.value) return;
+  dvReportState.busy = true;
+  dvGenerateReportBtn.disabled = true;
+  dvReportStatus.textContent = "正在生成 PDF...";
+  try {
+    const result = await api("/api/data-visualization/reports/generate", {
+      method: "POST",
+      body: JSON.stringify({ report_week: dvReportWeek.value, template_version: dvReportTemplate.value || "V1.0" }),
+    });
+    dvReportStatus.textContent = "PDF 已生成，可在历史报告中下载";
+    if (result.file_path && result.run_id) {
+      await downloadDVReport(result.run_id);
+    }
+    await loadDVReportHistory();
+  } finally {
+    dvReportState.busy = false;
+    dvGenerateReportBtn.disabled = false;
+  }
+}
+
+dvReportWeek.addEventListener("change", function() { checkDVReportReadiness().catch(function(error) { dvReportStatus.textContent = error.message; }); });
+dvCheckReportBtn.addEventListener("click", function() { checkDVReportReadiness().catch(function(error) { dvReportStatus.textContent = error.message; }); });
+dvGenerateReportBtn.addEventListener("click", function() { generateDVReport().catch(function(error) { dvReportStatus.textContent = error.message; }); });
+dvReportHistory.addEventListener("click", function(event) {
+  const button = event.target.closest("[data-run-id]");
+  if (!button) return;
+  button.disabled = true;
+  downloadDVReport(button.dataset.runId).catch(function(error) { dvReportStatus.textContent = error.message; }).finally(function() { button.disabled = false; });
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────

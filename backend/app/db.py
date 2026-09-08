@@ -112,6 +112,7 @@ MODULES = [
     ("数据可视化管理", "data_visualization_integration", "数据整合"),
     ("数据可视化管理", "data_visualization_data", "数据管理"),
     ("数据可视化管理", "data_visualization_chart", "数据展示"),
+    ("数据可视化管理", "data_visualization_report", "周报生成"),
     ("订单融资管理", "order_finance_progress", "订单融资进度"),
     ("订单融资管理", "order_finance_capital", "融资资金监控"),
     ("订单融资管理", "order_lifecycle_progress", "订单全流程管理"),
@@ -1201,6 +1202,8 @@ def init_db() -> None:
         from .spot_ledger import initialize_schema as initialize_spot_ledger_schema, sync_spot_ledger_permissions
         initialize_spot_ledger_schema(conn)
         migrate_dv_integration_schema(conn)
+        from .iron_ore_report_schema import ensure_report_schema
+        ensure_report_schema(conn, postgres=_is_pg())
         migrate_iron_ore_basis_schema(conn)
         migrate_trading_management_schema(conn)
         migrate_trading_collector_schema(conn)
@@ -1219,6 +1222,7 @@ def init_db() -> None:
         ensure_admin_user(cur, "admin")
         sync_trading_module_permissions(cur)
         sync_platts_index_permissions(cur)
+        sync_data_visualization_report_permissions(cur)
         sync_order_lifecycle_permissions(cur)
         sync_spot_ledger_permissions(cur)
         conn.commit()
@@ -2962,6 +2966,40 @@ def sync_platts_index_permissions(cur) -> None:
                 """,
                 (user["id"], "platts_index_monitor", *permission),
             )
+
+
+def sync_data_visualization_report_permissions(cur) -> None:
+    """Add the report module for existing users without changing choices.
+
+    The report page is a new data-visualization entry.  Existing users should
+    receive the same default visibility/operation level as their department's
+    other data-visualization pages, while an already explicit report choice is
+    left untouched.
+    """
+    report_code = "data_visualization_report"
+    data_visualization_departments = {"贸易处", "期货组", "财企处", "资金处", "管理部门"}
+    users = _exec(cur, "SELECT id, department, role FROM users").fetchall()
+    for user in users:
+        existing = _exec(
+            cur,
+            "SELECT id FROM module_permissions WHERE user_id = ? AND module_code = ?",
+            (user["id"], report_code),
+        ).fetchone()
+        if existing:
+            continue
+        if user["role"] in {"管理员", "admin"}:
+            permission = (1, 1, 1)
+        elif user["role"] == "领导":
+            permission = (1, 0, 0)
+        elif user["department"] in data_visualization_departments:
+            permission = (1, 1, 0)
+        else:
+            permission = (0, 0, 0)
+        _exec(
+            cur,
+            "INSERT OR IGNORE INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, ?, ?, ?)",
+            (user["id"], report_code, *permission),
+        )
 
 
 def ensure_admin_user(cur, name: str) -> int:

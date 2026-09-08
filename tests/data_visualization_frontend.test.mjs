@@ -87,7 +87,7 @@ test("data visualization chart viewport grows with tall screens", () => {
 });
 
 test("data integration page keeps only upload and download actions", () => {
-  assert.match(integrationSection, /导入 Excel/);
+  assert.match(integrationSection, /上传原始 Excel/);
   assert.match(integrationSection, /下载整合 Excel/);
   assert.doesNotMatch(integrationSection, /上传 Excel/);
   assert.doesNotMatch(integrationSection, /读取本地模板/);
@@ -96,12 +96,26 @@ test("data integration page keeps only upload and download actions", () => {
   assert.doesNotMatch(integrationSection, /id="dvIntegrationSamples"/);
 });
 
-test("data integration upload automatically commits uploaded files", () => {
-  assert.match(appJs, /正在上传并整合/);
-  assert.match(appJs, /上传文件已整合，可下载 Excel/);
+test("data integration upload prepares a versioned package before activation", () => {
+  assert.match(appJs, /正在解析、归档并整合（尚未入库）/);
+  assert.match(appJs, /原件已归档并生成 V2 整合 Excel，尚未入库/);
+  assert.match(appJs, /prepareIntegrationPackage/);
   assert.doesNotMatch(appJs, /dvUploadCommitBtn/);
   assert.doesNotMatch(appJs, /previewLocalIntegration/);
   assert.doesNotMatch(appJs, /commitLocalIntegration/);
+});
+
+test("weekly report page exposes template version, readiness and PDF controls", () => {
+  assert.match(indexHtml, /id="dvReportPage"/);
+  assert.match(indexHtml, /id="dvReportWeek"/);
+  assert.match(indexHtml, /id="dvReportTemplate"/);
+  assert.match(indexHtml, /id="dvReportReadiness"/);
+  assert.match(indexHtml, /id="dvGenerateReportBtn"/);
+  assert.match(appJs, /api\/data-visualization\/reports\/readiness/);
+  assert.match(appJs, /api\/data-visualization\/reports\/generate/);
+  assert.match(appJs, /async function downloadDVReport\(runId\)/);
+  assert.match(appJs, /headers\.Authorization = `Bearer \$\{state\.token\}`/);
+  assert.match(appJs, /V1\.0/);
 });
 
 test("sidebar groups put data visualization before admin", () => {

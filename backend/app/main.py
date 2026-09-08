@@ -68,6 +68,7 @@ from . import (
     closing_review_agent,
     closing_trading_review,
     futures_market_readonly,
+    iron_ore_weekly_report,
     iron_ore_basis,
     iron_ore_basis_snapshot_sync,
     operation_log_archive,
@@ -149,6 +150,7 @@ GUEST_SESSION_TTL_HOURS = int(os.getenv("GUEST_SESSION_TTL_HOURS", "8"))
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.include_router(data_visualization.router, prefix="/api")
 app.include_router(futures_market_readonly.router, prefix="/api")
+app.include_router(iron_ore_weekly_report.router, prefix="/api")
 app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
@@ -1338,6 +1340,7 @@ def startup() -> None:
         try:
             db.init_db()
             data_visualization.seed_dv_data()
+            iron_ore_weekly_report.register_builtin_templates()
             option_research.ensure_schema()
             option_backtest.ensure_schema()
             option_research.start_auto_probe()
