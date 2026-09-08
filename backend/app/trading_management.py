@@ -2498,7 +2498,9 @@ def query_fact_position_valuation(filters: FactFilters) -> dict[str, Any]:
             remaining_quantity=quantity,
             multiplier=multiplier,
         )
-        item["floating_pnl_status"] = "live"
+        item["floating_pnl_status"] = (
+            "stale" if valuation_status == "stale" else "live"
+        )
 
     values = [
         float(item["floating_pnl"])
@@ -2506,12 +2508,19 @@ def query_fact_position_valuation(filters: FactFilters) -> dict[str, Any]:
         if item.get("floating_pnl") is not None
     ]
     statuses = [str(item.get("floating_pnl_status") or "unavailable") for item in all_items]
+    value_statuses = {status for status in statuses if status in {"live", "stale"}}
     result["summary"].update(
         {
             "floating_pnl": sum(values) if values else None,
             "floating_pnl_status": (
                 "live"
                 if statuses and all(status == "live" for status in statuses)
+                else "stale"
+                if statuses
+                and value_statuses
+                and value_statuses <= {"live", "stale"}
+                and all(status in {"live", "stale"} for status in statuses)
+                and "stale" in value_statuses
                 else "partial"
                 if values
                 else "unavailable"

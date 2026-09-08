@@ -81,6 +81,7 @@
   })[value] || value || "—";
   const valuationStatus = (value) => ({
     live: "实时",
+    stale: "沿用上次行情",
     settlement_reference: "参考",
     unavailable: "行情不可用",
     expired: "已到期",
@@ -387,6 +388,8 @@
       const asOf = data.as_of_time ? `数据截至 ${String(data.as_of_time).replace("T", " ")}` : "数据截至 —";
       const valuation = data.summary?.floating_pnl_status === "live"
         ? "浮盈已按最新成交价更新"
+        : data.summary?.floating_pnl_status === "stale"
+        ? "行情更新失败，沿用上次行情"
         : data.summary?.floating_pnl_status === "partial"
         ? "部分持仓暂无最新成交价"
         : data.summary?.floating_pnl_status === "loading"
@@ -427,7 +430,7 @@
     if (key === "floating_pnl" && row.floating_pnl_status === "loading") return '<span class="tm-tag">行情加载中</span>';
     if (key === "floating_pnl" && row.floating_pnl == null && row.floating_pnl_status === "expired") return '<span class="tm-tag amber">已到期</span>';
     if (key === "floating_pnl" && row.floating_pnl == null && row.floating_pnl_status === "unavailable") return `<span class="tm-tag amber">${esc(row.valuation_message || "暂无行情")}</span>`;
-    if (key === "floating_pnl" && row.floating_pnl != null && row.floating_pnl_status === "live") return money(row.floating_pnl);
+    if (key === "floating_pnl" && row.floating_pnl != null && ["live", "stale"].includes(row.floating_pnl_status)) return money(row.floating_pnl);
     if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity","market_price","valuation_price","underlying_price","iv","floating_pnl","delta_exposure","gamma_exposure","theta_exposure","vega_exposure","net_close_pnl","fund_interest","settlement_80","settlement_20","allocated_open_fee","allocated_close_fee","settlement_open_price","settlement_fee"].includes(key)) return num(row[key]);
     if (key === "asset_type") return row[key] === "option" ? "期权" : "期货";
     if (key === "business_type") return row.assignment_status === "classified" && row[key] ? `<span class="tm-tag blue">${esc(businessType(row[key]))}</span>` : '<span class="tm-tag amber">待确认</span>';
@@ -463,7 +466,7 @@
   }
 
   function withFactValuationLoading(data) {
-    if (tm.factsTab !== "positions") return data;
+    if (tm.factsTab !== "positions" || Object.prototype.hasOwnProperty.call(data.summary || {}, "valuation_count")) return data;
     return {
       ...data,
       summary: { ...data.summary, floating_pnl: null, floating_pnl_status: "loading" },
@@ -479,12 +482,72 @@
     return row.position_key || `${row.exchange || ""}:${row.contract || ""}:${row.asset_type || ""}:${row.direction || ""}`;
   }
 
+  const FACT_VALUATION_FIELDS = ["market_price", "valuation_price", "valuation_source", "market_time", "valuation_status", "market_data_status", "market_data_message", "floating_pnl", "floating_pnl_status", "contract_multiplier", "valuation_message"];
+
+  function preserveFactValuation(base, previous, { stale = false, message = "行情更新失败，沿用上次行情" } = {}) {
+    if (!previous || !Object.prototype.hasOwnProperty.call(previous.summary || {}, "valuation_count")) return base;
+    const previousRows = new Map((previous.items || []).map((row) => [positionRowKey(row), row]));
+    const items = (base.items || []).map((row) => {
+      const previousRow = previousRows.get(positionRowKey(row));
+      if (!previousRow) return row;
+      const preserved = { ...row };
+      FACT_VALUATION_FIELDS.forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(previousRow, field)) preserved[field] = previousRow[field];
+      });
+      if (stale && previousRow.floating_pnl != null) {
+        preserved.valuation_status = "stale";
+        preserved.floating_pnl_status = "stale";
+        preserved.market_data_status = "stale";
+        preserved.market_data_message = message;
+        preserved.valuation_message = message;
+      }
+      return preserved;
+    });
+    const summary = { ...base.summary };
+    ["floating_pnl", "floating_pnl_status", "valuation_count", "valuation_total_count"].forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(previous.summary, field)) summary[field] = previous.summary[field];
+    });
+    if (stale && previous.summary.floating_pnl != null) summary.floating_pnl_status = "stale";
+    return { ...base, summary, items };
+  }
+
   function mergeFactValuation(base, valuation) {
-    const values = new Map((valuation.items || []).map((row) => [positionRowKey(row), row]));
+    const previousRows = new Map((base.items || []).map((row) => [positionRowKey(row), row]));
+    let preservedPrevious = false;
+    const items = (valuation.items || []).map((current) => {
+      const previous = previousRows.get(positionRowKey(current));
+      if (current.floating_pnl == null && previous?.floating_pnl != null) {
+        preservedPrevious = true;
+        return {
+          ...current,
+          valuation_status: "stale",
+          floating_pnl_status: "stale",
+          market_data_status: "stale",
+          market_data_message: "行情更新失败，沿用上次行情",
+          valuation_message: "行情更新失败，沿用上次行情",
+          floating_pnl: previous.floating_pnl,
+          valuation_price: previous.valuation_price,
+          market_price: previous.market_price,
+          valuation_source: previous.valuation_source,
+          market_time: previous.market_time,
+          contract_multiplier: previous.contract_multiplier,
+        };
+      }
+      return current;
+    });
+    const summary = { ...base.summary, ...valuation.summary };
+    if (preservedPrevious && base.summary?.floating_pnl != null) {
+      summary.floating_pnl = base.summary.floating_pnl;
+      summary.floating_pnl_status = "stale";
+      ["valuation_count", "valuation_total_count"].forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(base.summary, field)) summary[field] = base.summary[field];
+      });
+    }
     return {
       ...base,
-      summary: { ...base.summary, ...valuation.summary },
-      items: base.items.map((row) => ({ ...row, ...(values.get(positionRowKey(row)) || {}) })),
+      ...valuation,
+      summary,
+      items,
     };
   }
 
@@ -499,19 +562,23 @@
       renderFactContent(merged, { requestValuation: false });
     } catch (error) {
       if (requestKey !== factValuationKey() || tm.factsTab !== "positions" || factCache.get(requestKey) !== base) return;
-      const failed = {
-        ...base,
-        summary: { ...base.summary, floating_pnl: null, floating_pnl_status: "unavailable" },
-        items: base.items.map((row) => ({
-          ...row,
-          valuation_status: "unavailable",
-          floating_pnl_status: "unavailable",
-          market_data_message: error.message || "行情读取失败",
-        })),
-      };
+      const hasPreviousValuation = Number(base.summary?.valuation_count || 0) > 0 || base.items.some((row) => row.floating_pnl != null);
+      const failed = hasPreviousValuation
+        ? preserveFactValuation(base, base, { stale: true })
+        : {
+            ...base,
+            summary: { ...base.summary, floating_pnl: null, floating_pnl_status: "unavailable", valuation_count: 0, valuation_total_count: base.items.length },
+            items: base.items.map((row) => ({
+              ...row,
+              valuation_status: "unavailable",
+              floating_pnl_status: "unavailable",
+              market_data_message: error.message || "行情读取失败",
+            })),
+          };
       factCache.set(requestKey, failed);
       renderFactContent(failed, { requestValuation: false });
-      showToast(`实时行情读取失败：${error.message || "暂无行情"}`);
+      if (hasPreviousValuation) showToast("行情更新失败，沿用上次行情");
+      else showToast(`实时行情读取失败：${error.message || "暂无行情"}`);
     }
   }
 
@@ -795,10 +862,9 @@
 
   async function refreshFactQuotes() {
     if (tm.view !== "positions" || tm.factsTab !== "positions") return;
-    const data = await loadFactData("positions", { refresh: true });
-    if (tm.view !== "positions" || tm.factsTab !== "positions") return;
-    factCache.set(factValuationKey(), data);
-    renderFactContent(data);
+    const data = factCache.get(factValuationKey());
+    if (!data) return;
+    await loadFactValuation(data);
   }
 
   function startFactQuoteRefresh() {

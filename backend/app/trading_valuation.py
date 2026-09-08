@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import math
@@ -99,7 +99,8 @@ def select_live_trade_price(
         return None, "expired", "expired"
     last_price = _valid_price(snapshot.last_price)
     if last_price is not None:
-        return last_price, "last_trade", "live"
+        status = "stale" if snapshot.market_data_status in {"stale", "provider_error"} else "live"
+        return last_price, "last_trade", status
     return None, "unavailable", "unavailable"
 
 
@@ -761,6 +762,7 @@ class MarketDataService:
         provider_factory: Optional[Callable[[], QuoteProvider]] = None,
         provider_retry_seconds: float = 30,
         ttl_seconds: float = 10,
+        stale_ttl_seconds: float = 60,
     ):
         self.provider = provider
         self.provider_factory = provider_factory
@@ -770,8 +772,10 @@ class MarketDataService:
             "" if provider is not None else "天勤行情认证未配置"
         )
         self._next_provider_retry = 0.0
-        self.ttl_seconds = ttl_seconds
+        self.ttl_seconds = max(float(ttl_seconds), 0)
+        self.stale_ttl_seconds = max(float(stale_ttl_seconds), 0)
         self._cache: dict[str, tuple[float, QuoteSnapshot]] = {}
+        self._last_good: dict[str, tuple[float, QuoteSnapshot]] = {}
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
 
@@ -820,10 +824,29 @@ class MarketDataService:
             with self._lock:
                 for request in missing:
                     snapshot = fetched.get(request.contract)
-                    if snapshot is not None:
+                    last_price = (
+                        _valid_price(snapshot.last_price)
+                        if snapshot is not None and not snapshot.expired
+                        else None
+                    )
+                    if last_price is not None:
                         snapshot.market_data_status = "live"
                         snapshot.market_data_message = ""
+                        self._last_good[request.contract] = (
+                            now + self.stale_ttl_seconds,
+                            replace(snapshot),
+                        )
                     else:
+                        previous = self._last_good.get(request.contract)
+                        if previous and previous[0] > now:
+                            snapshot = replace(
+                                previous[1],
+                                market_data_status="stale",
+                                market_data_message="行情读取失败，沿用上次行情",
+                            )
+                        elif previous:
+                            self._last_good.pop(request.contract, None)
+                    if snapshot is None:
                         snapshot = QuoteSnapshot(
                             settlement_price=request.settlement_price,
                             source=(

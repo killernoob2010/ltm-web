@@ -296,6 +296,13 @@ test("visible business position pages refresh quotes every fifteen seconds", () 
   assert.match(tradingJs, /tradingManagementPage/);
 });
 
+test("fact quote refresh keeps the last successful valuation visible", () => {
+  assert.match(tradingJs, /function preserveFactValuation/);
+  assert.match(tradingJs, /行情更新失败，沿用上次行情/);
+  assert.match(tradingJs, /factCache\.get\(factValuationKey\(\)\)/);
+  assert.doesNotMatch(tradingJs, /loadFactData\("positions", \{ refresh: true \}\)/);
+});
+
 test("effective facts expose status filters, source labels, and live valuation metadata", () => {
   assert.match(tradingJs, /factStatus/);
   assert.match(tradingJs, /id="tmFactStatus"/);

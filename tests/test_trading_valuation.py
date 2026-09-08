@@ -425,6 +425,43 @@ def test_market_data_service_retries_provider_initialization():
     assert attempts == 2
 
 
+def test_market_data_service_keeps_last_good_quote_when_refresh_fails():
+    class FlakyProvider:
+        calls = 0
+
+        def fetch(self, requests):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    request.contract: QuoteSnapshot(
+                        last_price=12.5,
+                        market_time="2026-09-08T09:30:00+08:00",
+                    )
+                    for request in requests
+                }
+            raise RuntimeError("temporary market outage")
+
+        def close(self):
+            pass
+
+    provider = FlakyProvider()
+    service = MarketDataService(
+        provider=provider,
+        ttl_seconds=0,
+        stale_ttl_seconds=30,
+    )
+    request = QuoteRequest(contract="rb2610", exchange="SHFE")
+
+    first = service.get_quotes([request])["rb2610"]
+    second = service.get_quotes([request])["rb2610"]
+
+    assert first.last_price == 12.5
+    assert second.last_price == 12.5
+    assert second.market_data_status == "stale"
+    assert second.market_data_message == "行情读取失败，沿用上次行情"
+    assert select_live_trade_price(second) == (12.5, "last_trade", "stale")
+
+
 def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():
     source = inspect.getsource(TqSdkQuoteProvider)
     for forbidden in (

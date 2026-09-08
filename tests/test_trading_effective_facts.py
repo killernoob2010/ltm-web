@@ -865,6 +865,40 @@ def test_fact_position_valuation_uses_latest_trade_price_for_provisional_rows(tm
     assert result["summary"]["floating_pnl_status"] == "live"
 
 
+def test_fact_position_valuation_keeps_stale_last_trade_pnl_visible(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 1, 700)],
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            request.contract: trading_management.QuoteSnapshot(
+                last_price=750,
+                multiplier=100,
+                market_data_status="stale",
+                market_data_message="行情读取失败，沿用上次行情",
+            )
+            for request in requests
+        },
+    )
+
+    result = trading_management.query_fact_position_valuation(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    row = result["items"][0]
+    assert row["valuation_price"] == 750
+    assert row["floating_pnl"] == pytest.approx(5000)
+    assert row["floating_pnl_status"] == "stale"
+    assert result["summary"]["floating_pnl"] == pytest.approx(5000)
+    assert result["summary"]["floating_pnl_status"] == "stale"
+
+
 def test_fact_position_valuation_does_not_fallback_to_quotes_or_settlement(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     account = account_id()
