@@ -174,3 +174,33 @@ def test_v2_roundtrip_preserves_original_source_row(tmp_path):
     assert not result['errors']
     row = result['details']['inventory_port_product'][0]
     assert (row['source_row'], row['source_column'], row['source_cell']) == (4567, 4, 'D4567')
+
+
+def test_source_and_integrated_export_survive_temporary_file_loss(tmp_path, monkeypatch):
+    import asyncio
+    import hashlib
+    from backend.app import db, data_visualization as dv
+    from backend.app.iron_ore_source_ingest import SourcePackage, archive_source_package, build_v2_workbook, update_source_package_output
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setattr(db, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data' / 'app.db')
+    monkeypatch.setattr(dv, 'require_permission', lambda *args: None)
+    monkeypatch.setattr(db, 'log_operation', lambda *args: None)
+    db.init_db()
+    original = tmp_path / 'original.xlsx'
+    _inventory_workbook(original)
+    original_bytes = original.read_bytes()
+    sha = hashlib.sha256(original_bytes).hexdigest()
+    p = SourcePackage(source_files=[{'path': str(original), 'file_name': original.name, 'sha256': sha, 'template_type': 'inventory'}])
+    archived = archive_source_package(p, 'tester')
+    output = tmp_path / 'v2.xlsx'
+    content = build_v2_workbook(p)
+    output.write_bytes(content)
+    update_source_package_output(p.package_id, str(output), hashlib.sha256(content).hexdigest())
+    output.unlink()
+    Path(archived['source_files'][0]['archive_path']).unlink()
+    response = asyncio.run(dv.integration_export(package_id=p.package_id, user={'id': 1}))
+    assert response.body == content
+    with db.connect() as conn:
+        saved = db._exec(conn.cursor(), 'SELECT content FROM dv_source_file_contents WHERE file_sha256 = ?', (sha,)).fetchone()
+        assert bytes(saved['content']) == original_bytes

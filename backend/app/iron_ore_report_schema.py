@@ -237,6 +237,8 @@ SQLITE_STATEMENTS = (
         FOREIGN KEY (run_id) REFERENCES dv_report_runs(id)
     )
     """,
+    "CREATE TABLE IF NOT EXISTS dv_source_file_contents (file_sha256 TEXT PRIMARY KEY, content BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS dv_source_package_contents (package_id TEXT PRIMARY KEY, content BLOB NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_dv_source_files_type_date ON dv_source_files(template_type, source_date_end)",
     "CREATE INDEX IF NOT EXISTS idx_dv_source_packages_status ON dv_source_packages(status, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_dv_port_inventory_facts_week ON dv_port_inventory_facts(week_start, port_name, product)",
@@ -264,8 +266,9 @@ def ensure_report_schema(conn: Any, postgres: bool = False) -> None:
         cursor = conn.cursor()
         for statement in POSTGRES_STATEMENTS:
             cursor.execute(statement)
-        cursor.execute("ALTER TABLE dv_report_file_contents ENABLE ROW LEVEL SECURITY")
-        cursor.execute("REVOKE ALL ON dv_report_file_contents FROM PUBLIC, anon, authenticated")
+        for table in ("dv_report_file_contents", "dv_source_file_contents", "dv_source_package_contents"):
+            cursor.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            cursor.execute(f"REVOKE ALL ON {table} FROM PUBLIC, anon, authenticated")
         return
     _migrate_sqlite_template_table(conn)
     for statement in SQLITE_STATEMENTS:

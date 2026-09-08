@@ -671,6 +671,13 @@ def archive_source_package(package: SourcePackage, user_name: str) -> Dict[str, 
                 shutil.copy2(source_path, destination)
             metadata["archive_path"] = str(destination)
             metadata["path"] = str(destination)
+            content = destination.read_bytes()
+            if hashlib.sha256(content).hexdigest() != metadata["sha256"]:
+                raise ValueError("原始文件存档校验失败")
+            db._exec(cur,
+                     "INSERT INTO dv_source_file_contents (file_sha256, content) VALUES (?, ?) ON CONFLICT(file_sha256) DO NOTHING"
+                     + (" RETURNING file_sha256 AS id" if db._is_pg() else ""),
+                     (metadata["sha256"], content))
             existing = db._exec(cur, "SELECT id FROM dv_source_files WHERE sha256 = ?", (metadata["sha256"],)).fetchone()
             if existing:
                 source_ids.append(existing["id"])
@@ -715,6 +722,9 @@ def archive_source_package(package: SourcePackage, user_name: str) -> Dict[str, 
 
 
 def update_source_package_output(package_id: str, output_path: str, output_sha256: str) -> None:
+    content = Path(output_path).read_bytes()
+    if hashlib.sha256(content).hexdigest() != output_sha256:
+        raise ValueError("整合文件存档校验失败")
     with db.connect() as conn:
         cur = conn.cursor()
         db._exec(
@@ -722,6 +732,10 @@ def update_source_package_output(package_id: str, output_path: str, output_sha25
             "UPDATE dv_source_packages SET output_path = ?, output_sha256 = ? WHERE package_id = ?",
             (output_path, output_sha256, package_id),
         )
+        db._exec(cur,
+                 "INSERT INTO dv_source_package_contents (package_id, content) VALUES (?, ?) ON CONFLICT(package_id) DO UPDATE SET content = excluded.content"
+                 + (" RETURNING package_id AS id" if db._is_pg() else ""),
+                 (package_id, content))
         conn.commit()
 
 
