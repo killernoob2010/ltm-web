@@ -1340,7 +1340,6 @@ def startup() -> None:
             data_visualization.seed_dv_data()
         except Exception as exc:
             print(f"[startup] database initialization failed: {type(exc).__name__}")
-            return
         try:
             start_iron_ore_basis_sync_scheduler()
             start_order_finance_sync_scheduler()
