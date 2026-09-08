@@ -54,3 +54,17 @@ def test_positions_empty_is_not_successful_position_capture(databases,monkeypatc
     monkeypatch.setenv('LTM_RUNTIME_ENVIRONMENT','staging')
     result=relay.export_page('positions',0)
     assert result['records']==[]
+
+def test_rejected_observation_is_not_marked_complete(databases,monkeypatch):
+    monkeypatch.setattr(service,'ingest_observations',lambda *a,**k: service.IngestResult(quarantined=1))
+    with pytest.raises(ValueError):relay.apply_page('fills',databases)
+    with db.connect() as conn:
+        assert conn.execute('SELECT count(*) FROM trading_collector_replica_receipts').fetchone()[0]==0
+
+def test_empty_live_page_keeps_cursor_and_audit_rewinds(databases):
+    page={**databases,'records':[],'after':19,'next_cursor':19}
+    relay.apply_page('fills',page)
+    relay.apply_page('fills',page,audit=True)
+    with db.connect() as conn:
+        assert conn.execute("SELECT cursor_id FROM trading_collector_replica_state WHERE stream='fills'").fetchone()[0]==19
+        assert conn.execute("SELECT cursor_id FROM trading_collector_replica_state WHERE stream='fills:audit'").fetchone()[0]==0

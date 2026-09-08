@@ -122,6 +122,8 @@ def apply_page(stream, page, *, audit=False):
         token=_replica_device(row['device_id'])
         # Ingest commits before receipt. A crash between them replays safely via existing deduplication.
         result=service.ingest_observations(token,[row['payload']] if stream=='fills' else [],[row['payload']] if stream=='positions' else [])
+        if result.quarantined or result.position_quarantined:
+            raise ValueError('replication record rejected; review required')
         status=json.dumps(result.__dict__,ensure_ascii=False,default=str)
         with db.connect() as conn:
             db._exec(conn.cursor(),'''INSERT OR IGNORE INTO trading_collector_replica_receipts
@@ -170,10 +172,13 @@ def start_scheduler():
             except Exception as exc:
                 # Never include request headers, credentials, or source payloads in logs.
                 logger.warning('WH6 replication pending retry: %s',type(exc).__name__)
-                with db.connect() as conn:
-                    for stream in STREAMS:
-                        db._exec(conn.cursor(),'''INSERT INTO trading_collector_replica_state(stream,cursor_id,last_error) VALUES (?,0,?)
-                            ON CONFLICT(stream) DO UPDATE SET last_error=excluded.last_error''',(stream,'同步失败，等待重试'))
+                try:
+                    with db.connect() as conn:
+                        for stream in STREAMS:
+                            db._exec(conn.cursor(),'''INSERT INTO trading_collector_replica_state(stream,cursor_id,last_error) VALUES (?,0,?)
+                                ON CONFLICT(stream) DO UPDATE SET last_error=excluded.last_error''',(stream,'同步失败，等待重试'))
+                except Exception:
+                    logger.warning('WH6 replication state unavailable; retry retained')
             threading.Event().wait(10)
     threading.Thread(target=run,daemon=True,name='wh6-replication').start()
 
