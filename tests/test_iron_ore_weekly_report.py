@@ -264,3 +264,36 @@ def test_report_does_not_restore_withheld_history_from_legacy_fallback():
     detailed = [{'scope_type': 'total', 'week_start': '2020-01-06', 'product': '卡拉拉精粉', 'value': 999, 'value_status': 'withheld_historical_column'}]
     assert _report_inventory(legacy, detailed) == []
     assert detailed[0]['value'] == 999
+
+
+def test_inventory_reimport_does_not_duplicate_changed_source_section(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.data_visualization import _merge_integrated_points_v2_in_connection
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setattr(db, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data' / 'app.db')
+    db.init_db()
+    _seed_legacy(db, '2026-08-24', 10)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = dict(db._exec(cur, 'SELECT * FROM dv_integrated_points').fetchone())
+        row.update(value=12, source_section='总计行:PB粉')
+        result = _merge_integrated_points_v2_in_connection(cur, [row], 'new.xlsx', 'tester')
+        assert result['inserted'] == 0
+        assert result['updated'] == 1
+        saved = db._exec(cur, 'SELECT value FROM dv_integrated_points').fetchall()
+        assert [r['value'] for r in saved] == [12]
+
+
+def test_report_history_retains_estimated_arrival_method_label(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.iron_ore_weekly_report import _load_report_input
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setattr(db, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data' / 'app.db')
+    db.init_db()
+    _seed_legacy(db, '2026-08-24', 10, metric='arrival')
+    with db.connect() as conn:
+        db._exec(conn.cursor(), "UPDATE dv_integrated_points SET source_section = '历史估算'")
+    rows = _load_report_input('2026-W36')['input']['history_arrival_estimated']
+    assert rows[0]['source_section'] == '历史估算'

@@ -1802,7 +1802,10 @@ def _merge_integrated_points_v2_in_connection(cur, rows, file_name, user_name):
     )
     key_columns = ("week_start", "metric_type", "source_country", "product", "category", "display_date", "source_section")
     def row_key(row):
-        return tuple(row.get(column) or "" for column in key_columns)
+        # Inventory source-section labels changed between the historical and
+        # current templates; they do not identify a different stock observation.
+        return tuple(row.get(column) or "" for column in key_columns
+                     if column != "source_section" or row.get("metric_type") != "inventory")
 
     known = {}
     weeks = sorted({row["week_start"] for row in rows})
