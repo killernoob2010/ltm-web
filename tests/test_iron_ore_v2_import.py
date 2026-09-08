@@ -45,3 +45,28 @@ def test_v2_import_preserves_legacy_summary_and_inserts_detail_facts(tmp_path, m
     assert legacy >= 1
     assert detail > 0
     assert arrivals > 0
+
+
+def test_overlapping_packages_do_not_duplicate_facts_and_conflicts_roll_back(tmp_path, monkeypatch):
+    import pytest
+    from backend.app import db
+    from backend.app.iron_ore_source_ingest import SourcePackage, store_source_package_facts
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "data" / "app.db")
+    db.init_db()
+    from backend.app.iron_ore_source_ingest import parse_mysteel_source_files
+    source = tmp_path / "inventory.xlsx"
+    _inventory_workbook(source)
+    row = dict(parse_mysteel_source_files([source]).inventory_port_product[0], value=10)
+    first = SourcePackage(inventory_port_product=[row, dict(row)])
+    assert store_source_package_facts(first)["inventory_port_product"] == 1
+    second = SourcePackage(inventory_port_product=[dict(row, source_file="b.xlsx")])
+    assert store_source_package_facts(second)["inventory_port_product"] == 0
+    conflict = SourcePackage(inventory_port_product=[dict(row, value=11)])
+    with pytest.raises(ValueError, match="数值冲突"):
+        store_source_package_facts(conflict)
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM dv_port_inventory_facts").fetchone()["COUNT(*)"] == 1
+        assert conn.execute("SELECT COUNT(*) FROM dv_source_packages WHERE package_id = ?", (conflict.package_id,)).fetchone()["COUNT(*)"] == 0

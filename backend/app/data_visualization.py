@@ -1094,11 +1094,18 @@ def integrate_mysteel_files(file_paths: List[Path]) -> Dict[str, Any]:
         if not path.exists():
             warnings.append(f"文件不存在: {path.name}")
             continue
-        australia_shipments = _extract_australia_shipments(path)
-        australia = _extract_australia_arrivals(path)
-        brazil = _extract_brazil_estimated_arrivals(path)
-        global_points = _extract_global_shipments(path)
-        inventory = _extract_inventory(path)
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        try:
+            sheets = set(workbook.sheetnames)
+        finally:
+            workbook.close()
+        australia_shipments = _extract_australia_shipments(path) if "澳洲发货量" in sheets else []
+        australia = _extract_australia_arrivals(path) if "澳洲预计到达中国锚地量" in sheets else []
+        brazil = _extract_brazil_estimated_arrivals(path) if "巴西发货量" in sheets else []
+        global_points = _extract_global_shipments(path) if "全球铁矿石发运量" in sheets else []
+        inventory = _extract_inventory(path) if sheets.intersection({"粗粉", "块矿", "球团", "精粉"}) else []
         if australia or australia_shipments:
             used["australia"] = True
         if brazil:
@@ -1110,7 +1117,8 @@ def integrate_mysteel_files(file_paths: List[Path]) -> Dict[str, Any]:
         points.extend(australia_shipments)
         points.extend(australia)
         points.extend(brazil)
-        points.extend(_extract_brazil_card_powder_shipments(path))
+        if "巴西发货量" in sheets:
+            points.extend(_extract_brazil_card_powder_shipments(path))
         points.extend(global_points)
         points.extend(inventory)
     for key, label in [

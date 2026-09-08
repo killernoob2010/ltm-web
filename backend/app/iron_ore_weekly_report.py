@@ -26,7 +26,7 @@ from .permissions import require_permission
 TEMPLATE_KEY = "iron_ore_weekly"
 TEMPLATE_VERSION = "V1.0"
 TEMPLATE_NAME = "铁矿石周报（46页基线）"
-RENDERER_VERSION = "iron-ore-weekly-renderer-1"
+RENDERER_VERSION = "iron-ore-weekly-renderer-3"
 RULES_REFERENCE = "docs/2026-09-08-iron-ore-weekly-report-rules.md"
 
 TEMPLATE_CONFIG = {
@@ -144,6 +144,15 @@ def _count_for_week(rows: Iterable[Dict[str, Any]], week_start: str) -> int:
     return sum(1 for row in rows if row.get("week_start") == week_start)
 
 
+def _report_inventory(legacy, detailed):
+    """Use the complete source totals for V2 weeks; retain older V1 history."""
+    totals = [dict(row, metric_type="inventory", display_date=row.get("observed_date"))
+              for row in detailed if row.get("scope_type") == "total"]
+    detailed_weeks = {row["week_start"] for row in totals}
+    return [row for row in legacy if row.get("metric_type") == "inventory"
+            and row.get("week_start") not in detailed_weeks] + totals
+
+
 def _load_report_input(report_week: str) -> Dict[str, Any]:
     week_start, year, week_no = _parse_report_week(report_week)
     current_week = week_start
@@ -159,19 +168,22 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
                ORDER BY week_start, metric_type, source_country, category, product, id""",
             weeks,
         )
-        arrival_actual = _rows(
-            cur,
-            """SELECT * FROM dv_arrival_facts
-               WHERE week_start IN (?, ?) AND arrival_kind = 'actual'
-               ORDER BY week_start, port_name, slice_type, dimension, id""",
-            weeks,
-        )
         history_arrival_actual = _rows(
             cur,
             """SELECT * FROM dv_arrival_facts
-               WHERE arrival_kind = 'actual'
+               WHERE arrival_kind = 'actual' AND week_start <= ?
                ORDER BY week_start, port_name, slice_type, dimension, id""",
+            (current_week,),
         )
+        available_actual_weeks = [
+            row["week_start"] for row in history_arrival_actual
+            if row.get("slice_type") == "country" and row.get("dimension") == "总计"
+            and row.get("value") is not None
+        ]
+        actual_current_week = max(available_actual_weeks, default=current_week)
+        actual_previous_week = (date.fromisoformat(actual_current_week) - timedelta(days=7)).isoformat()
+        arrival_actual = [row for row in history_arrival_actual
+                          if row.get("week_start") in (actual_previous_week, actual_current_week)]
         port_inventory = _week_rows(cur, "dv_port_inventory_facts", weeks)
         inventory_summary = _week_rows(cur, "dv_inventory_summary_facts", weeks)
         inventory_grade = _week_rows(cur, "dv_inventory_grade_facts", weeks)
@@ -179,28 +191,38 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         history_port_inventory = _rows(
             cur,
             """SELECT * FROM dv_port_inventory_facts
+               WHERE week_start <= ?
                ORDER BY week_start, port_name, product, id""",
+            (current_week,),
         )
         history_inventory_summary = _rows(
             cur,
             """SELECT * FROM dv_inventory_summary_facts
+               WHERE week_start <= ?
                ORDER BY week_start, port_name, metric, id""",
+            (current_week,),
         )
         history_inventory_mainstream = _rows(
             cur,
             """SELECT * FROM dv_inventory_mainstream_facts
+               WHERE week_start <= ?
                ORDER BY week_start, port_name, product, id""",
+            (current_week,),
         )
         history_legacy = _rows(
             cur,
             """SELECT * FROM dv_integrated_points
                WHERE metric_type IN ('inventory', 'arrival', 'apparent_demand')
+                 AND week_start <= ?
                ORDER BY week_start, source_country, category, product, id""",
+            (current_week,),
         )
         history_grade = _rows(
             cur,
             """SELECT * FROM dv_inventory_grade_facts
+               WHERE week_start <= ?
                ORDER BY week_start, grade, category, port_name, id""",
+            (current_week,),
         )
         try:
             prices = _rows(
@@ -215,13 +237,16 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         source_batch_ids = sorted({str(row.get("batch_id")) for row in legacy if row.get("batch_id") is not None})
         source_batch_ids.extend(sorted({str(row.get("package_id")) for row in arrival_actual + port_inventory + inventory_grade}))
     input_data = {
+        "renderer_version": RENDERER_VERSION,
         "report_week": f"{year}-W{week_no:02d}",
         "week_start": current_week,
         "previous_week_start": previous_week,
-        "inventory": [row for row in legacy if row.get("metric_type") == "inventory"],
+        "inventory": _report_inventory(legacy, port_inventory),
         "arrival_estimated": [row for row in legacy if row.get("metric_type") == "arrival"],
         "legacy_apparent_demand": [row for row in legacy if row.get("metric_type") == "apparent_demand"],
         "arrival_actual": arrival_actual,
+        "actual_current_week_start": actual_current_week,
+        "actual_previous_week_start": actual_previous_week,
         "history_arrival_actual": history_arrival_actual,
         "port_inventory": port_inventory,
         "inventory_summary": inventory_summary,
@@ -230,7 +255,8 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         "history_port_inventory": history_port_inventory,
         "history_inventory_summary": history_inventory_summary,
         "history_inventory_mainstream": history_inventory_mainstream,
-        "history_inventory": [row for row in history_legacy if row.get("metric_type") == "inventory"],
+        "history_inventory": _report_inventory(history_legacy, history_port_inventory),
+        "history_legacy_inventory": [row for row in history_legacy if row.get("metric_type") == "inventory"],
         "history_grade": history_grade,
         "history_arrival_estimated": [row for row in history_legacy if row.get("metric_type") == "arrival"],
         "history_apparent_demand": [row for row in history_legacy if row.get("metric_type") == "apparent_demand"],
@@ -247,15 +273,18 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
             "dates": _metric_dates(inventory),
         },
         "actual_arrival": {
+            "current_week_start": actual_current_week,
+            "previous_week_start": actual_previous_week,
+            "latest_available": actual_current_week != current_week,
             "current_count": sum(
-                1 for row in actual if row.get("week_start") == current_week
-                and row.get("scope_type") == "port"
+                1 for row in actual if row.get("week_start") == actual_current_week
                 and row.get("slice_type") == "country" and row.get("dimension") == "总计"
+                and row.get("value") is not None
             ),
             "previous_count": sum(
-                1 for row in actual if row.get("week_start") == previous_week
-                and row.get("scope_type") == "port"
+                1 for row in actual if row.get("week_start") == actual_previous_week
                 and row.get("slice_type") == "country" and row.get("dimension") == "总计"
+                and row.get("value") is not None
             ),
             "dates": _metric_dates(actual),
         },
@@ -279,7 +308,10 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
     if not validation["inventory"]["current_count"] or not validation["inventory"]["previous_count"]:
         warnings.append("库存未同时取得本期和上期汇总，无法完成库存周变比较")
     if not validation["actual_arrival"]["current_count"]:
-        warnings.append("实际到港没有报告周记录；保留独立板块并显示缺失，不回填预计到港")
+        warnings.append("实际到港没有可用记录；保留独立板块并显示缺失，不回填预计到港")
+    elif actual_current_week != current_week:
+        actual_iso = date.fromisoformat(actual_current_week).isocalendar()
+        warnings.append(f"实际到港使用最新可用周 {actual_iso[0]}-W{actual_iso[1]:02d}，并非报告周")
     if not validation["prices"]["current_count"]:
         warnings.append("期现价格没有报告周记录；港差/基差板块仅显示可取得数据")
     validation["warnings"] = warnings
@@ -542,14 +574,14 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         except (TypeError, ValueError):
             return None
 
-    def _date_key(row, preferred="week_start"):
-        value = row.get(preferred) or row.get("observed_date") or row.get("display_date")
+    def _date_key(row, preferred="observed_date"):
+        value = row.get(preferred) or row.get("observed_date") or row.get("display_date") or row.get("week_start")
         try:
             return date.fromisoformat(str(value)[:10]) if value else None
         except ValueError:
             return None
 
-    def _rows_series(rows, label_fn, preferred="week_start", filter_fn=None):
+    def _rows_series(rows, label_fn, preferred="observed_date", filter_fn=None):
         output = defaultdict(lambda: defaultdict(float))
         for row in rows or []:
             if filter_fn and not filter_fn(row):
@@ -591,6 +623,10 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         return result
 
     inventory_rows = _inventory_rows(data.get("inventory"))
+    inventory_current_date = max((row.get("observed_date") or row.get("display_date") or current
+                                  for row in inventory_rows if row.get("week_start") == current), default=current)
+    inventory_previous_date = max((row.get("observed_date") or row.get("display_date") or previous
+                                   for row in inventory_rows if row.get("week_start") == previous), default=previous)
     history_inventory_rows = _inventory_rows(data.get("history_inventory") or inventory_rows)
     inventory_total = _change(inventory_rows, "category")
     categories = ["粉矿", "块矿", "球团", "精粉"]
@@ -618,8 +654,13 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
             rows = _arrival_actual_rows(data.get("arrival_actual"), week, "country", "总计", scope="")
         return sum(_number(row.get("value")) or 0 for row in rows) if rows else None
 
-    actual_current = _actual_total(current)
-    actual_previous = _actual_total(previous)
+    actual_current_week = data.get("actual_current_week_start", current)
+    actual_previous_week = data.get("actual_previous_week_start", previous)
+    actual_iso = date.fromisoformat(actual_current_week).isocalendar()
+    actual_previous_iso = date.fromisoformat(actual_previous_week).isocalendar()
+    actual_period = f"{actual_iso[0]}-W{actual_iso[1]:02d} 对 {actual_previous_iso[0]}-W{actual_previous_iso[1]:02d}"
+    actual_current = _actual_total(actual_current_week)
+    actual_previous = _actual_total(actual_previous_week)
 
     def _actual_series(slice_type="country", dimension=None, label_fn=None):
         rows = data.get("history_arrival_actual") or data.get("arrival_actual") or []
@@ -682,37 +723,64 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         )
 
     def _port_series():
-        return _rows_series(history_port_facts, lambda row: row.get("port_name") or "未知")
+        summary = [row for row in data.get("history_inventory_summary", [])
+                   if row.get("scope_type") == "sample" and row.get("metric") == "库存总量"]
+        return _rows_series(summary or history_port_facts, lambda row: row.get("port_name") or "未知")
 
     def _category_series():
-        return _rows_series(history_inventory_rows, lambda row: row.get("category") or "未知")
+        summary = [row for row in data.get("history_inventory_summary", [])
+                   if row.get("scope_type") == "total" and row.get("metric") in categories]
+        return _rows_series(summary, lambda row: row["metric"]) if summary else _rows_series(history_inventory_rows, lambda row: row.get("category") or "未知")
 
     def _mnpj_series(rows):
         names = {"纽曼粉", "麦克粉", "PB粉", "金布巴粉"}
-        output = defaultdict(dict)
+        periods = defaultdict(dict)
         for row in rows:
             if row.get("report_product") not in names or row.get("value") is None:
                 continue
             key = _date_key(row)
-            if key is None:
-                continue
-            bucket = output.setdefault("MNPJ", {})
-            bucket[key] = bucket.get(key, 0.0) + float(row["value"])
-        return dict(output)
+            if key is not None:
+                periods[key][row["report_product"]] = float(row["value"])
+        return {"MNPJ": {day: sum(values.values()) for day, values in periods.items()
+                         if set(values) == names}}
 
     def _grade_series():
         rows = [row for row in data.get("history_grade", []) if row.get("scope_type") == "total" and row.get("category") == "全品种"]
-        return _rows_series(rows, lambda row: row.get("grade") or "未知")
+        result = _rows_series(rows, lambda row: row.get("grade") or "未知")
+        old_high = result.pop("高品（旧三档）", {})
+        new_high = result.get("高品", {})
+        if old_high and new_high:
+            cutover = min(new_high)
+            result["高品"] = {**{day: value for day, value in old_high.items() if day < cutover},
+                              cutover - timedelta(days=1): None, **new_high}
+        elif old_high:
+            result["高品"] = old_high
+        return result
 
     def _mainstream_series():
-        rows = history_inventory_rows
+        rows = data.get("history_legacy_inventory") or history_inventory_rows
+        observed_by_week = {}
+        for row in data.get("history_inventory_summary", []):
+            if row.get("scope_type") == "total" and row.get("metric") == "库存总量":
+                week = row.get("week_start")
+                observed_by_week[week] = max(observed_by_week.get(week, ""), row.get("observed_date") or week)
+        rows = [dict(row, observed_date=observed_by_week.get(row.get("week_start"), row.get("observed_date") or row.get("week_start"))) for row in rows]
         main = _rows_series(rows, lambda row: row.get("mainstream_status") or "非主流")
-        total = _rows_series(rows, lambda row: "总库存")
+        summary = [row for row in data.get("history_inventory_summary", [])
+                   if row.get("scope_type") == "total" and row.get("metric") == "库存总量"]
+        total = _rows_series(summary or rows, lambda row: "总库存")
         if "主流" in main:
             non = {}
             for day, value in total.get("总库存", {}).items():
-                non[day] = value - main.get("主流", {}).get(day, 0.0)
+                if day in main.get("主流", {}):
+                    non[day] = value - main["主流"][day]
             main["非主流"] = non
+        coverage = sorted((_date_key(row), row.get("n")) for row in rows
+                          if row.get("mainstream_status") == "主流" and row.get("n") is not None)
+        for (old_day, old_count), (day, count) in zip(coverage, coverage[1:]):
+            if old_count != count and day is not None:
+                for values in main.values():
+                    values[day - timedelta(days=1)] = None
         return main
 
     def seasonal_chart(label, series_map, x, y, w=244, h=268, note=""):
@@ -763,7 +831,7 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         latest_day = max((day for values in series_map.values() for day in values), default=None)
         if latest_day:
             latest_value = max((values.get(latest_day) for values in series_map.values() if latest_day in values), default=None)
-            text(x, y + h - 35, f"末期 {_fmt(latest_value)} 万吨 | {sum(len(values) for values in series_map.values())} 个观察期", 7.7, gray)
+            text(x, y + h - 35, f"末期 {_fmt(latest_value)} 万吨 | {sum(sum(value is not None for value in values.values()) for values in series_map.values())} 个观察期", 7.7, gray)
         text(x, y + h - 20, note or "横轴：月份；缺口断线；纵轴：万吨", 7.2, gray)
 
     # The report baseline uses 2026 for the current source package.  It is
@@ -793,10 +861,10 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
                 seasonal_chart(label, by_year, margin + index % 2 * 266, 210 + index // 2 * 285, note=note)
 
     # 01 — inventory categories and MNPJ.
-    start("01", "本周库存概览", f"库存 {previous} 对比 {current}；实际到港与旧表需按各自原口径展示")
+    start("01", "本周库存概览", f"库存观测日 {inventory_previous_date} 对比 {inventory_current_date}；实际到港按独立周次展示")
     cards = [
         ("库存总量", _fmt(total_current), f"周变 {_signed(total_current - total_previous)} 万吨"),
-        ("实际到港", _fmt(actual_current) if actual_current is not None else "—", f"周变 {_signed(actual_current - actual_previous) if actual_current is not None and actual_previous is not None else None}"),
+        (f"实际到港 W{actual_iso[1]:02d}", _fmt(actual_current) if actual_current is not None else "—", f"周变 {_signed(actual_current - actual_previous) if actual_current is not None and actual_previous is not None else None}"),
         ("模板/修订", f"{TEMPLATE_VERSION} / R{revision_no}", "数据快照已冻结"),
     ]
     for index, (title, value, sub) in enumerate(cards):
@@ -852,7 +920,7 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
     start("04", "全品种增减排名", "全品种页面只出现一次；MNPJ在此作为粉矿子组合说明")
     rank_items = [(item["label"], item["delta"]) for item in sorted(product_changes, key=lambda item: item["delta"])[:6] + sorted(product_changes, key=lambda item: item["delta"], reverse=True)[:6]]
     bars(rank_items, 148, 260, 250)
-    table(["品种", "上期", "本期", "增减量"], change_rows(product_changes, 14), 446, [170, 115, 115, content_width - 400], 23, 8)
+    table(["品种", "上期", "本期", "增减量"], change_rows(product_changes, 12), 446, [170, 115, 115, content_width - 400], 23, 8)
     mnpj_changes = [item for item in product_changes if item["label"] in {"纽曼粉", "麦克粉", "PB粉", "金布巴粉"}]
     para("MNPJ：上期 %s 万吨，本期 %s 万吨，周变 %s 万吨。" % (_fmt(sum(item["previous"] for item in mnpj_changes)), _fmt(sum(item["current"] for item in mnpj_changes)), _signed(sum(item["delta"] for item in mnpj_changes))), 780, 8.5, gray)
     from . import data_visualization as dv
@@ -878,8 +946,14 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
     bars([(item["label"], item["delta"]) for item in filtered_port_rows], 148, 250, 220)
     port_table_rows = []
     for item in filtered_port_rows:
-        port_table_rows.append([item["label"], _fmt(item["previous"]), _fmt(item["current"]), _signed(item["delta"])])
-    table(["港口", "上期", "本期", "增减量"], port_table_rows, 424, [160, 115, 115, content_width - 390], 23, 8)
+        changes = _change(_inventory_rows([row for row in port_facts if row.get("port_name") == item["label"]]), "report_product")
+        up = max(changes, key=lambda row: row["delta"], default=None)
+        down = min(changes, key=lambda row: row["delta"], default=None)
+        rate = f"{item['delta'] / item['previous'] * 100:+.2f}%" if abs(item["previous"]) > .01 else "微量基数"
+        port_table_rows.append([item["label"], _fmt(item["current"]), _signed(item["delta"]), rate,
+                                up["label"] if up and up["delta"] > 0 else "—",
+                                down["label"] if down and down["delta"] < 0 else "—"])
+    table(["港口", "本期", "净变化", "变化率", "最大累库品种", "最大去库品种"], port_table_rows, 424, [48, 67, 60, 64, 136, content_width - 375], 23, 7.2)
     para("港口总量来自港口×品种明细汇总；逐港页面再拆分品种、形态、品位和主流属性。南通、福州不在重点展示范围，原表数据仍保留。", 760, 8.7, gray)
     port_history = _port_series()
     season_page("05", "重点港口总库存季节性", displayed_ports, port_history, "13个重点港口，每港一图；总库存绝对水平，不细分品种", 4)
@@ -927,7 +1001,7 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         aliases = {"连云港": {"连云港", "连云"}, "日照": {"日照", "日照港"}}
         wanted_ports = aliases.get(port, {port, f"{port}港"})
         candidates = [row for row in price_rows if _short_port(row.get("port")) in {_short_port(item) for item in wanted_ports} and row.get("product") == product and int(row.get("business_week") or -1) == week_no]
-        return candidates[0] if candidates else None
+        return max(candidates, key=lambda row: str(row.get("business_date") or "")) if candidates else None
 
     def _basis(row):
         if not row:
@@ -1005,7 +1079,7 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         now_total, old_total = _port_total_value(port, current), _port_total_value(port, previous)
         text(margin, 145, f"本期 {_fmt(now_total)}    上期 {_fmt(old_total)}    净变化 {_signed(now_total - old_total) if now_total is not None and old_total is not None else '—'}", 13, navy, True)
         current_port_rows = [row for row in port_facts if row.get("port_name") == port]
-        port_product_rows = _change(current_port_rows, "product")
+        port_product_rows = _change(_inventory_rows(current_port_rows), "report_product")
         top_rows = change_rows(port_product_rows, 8)
         top_labels = {row["label"] for row in sorted(port_product_rows, key=lambda item: (abs(item["delta"]), item["label"]), reverse=True)[:8]}
         remainder = [row for row in port_product_rows if row["label"] not in top_labels]
@@ -1027,19 +1101,25 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         mnpj_new = sum(mnpj_values_new) if all(value is not None for value in mnpj_values_new) else None
         shape_rows.append(["MNPJ（粉矿子组合）", _fmt(mnpj_old), _fmt(mnpj_new), _signed(mnpj_new - mnpj_old) if mnpj_old is not None and mnpj_new is not None else "—"])
         table(["分类", "上期", "本期", "增减量"], shape_rows, 470, [170, 115, 115, content_width - 400], 23, 8)
-        text(margin, 641, "品位与主流范围", 10.5, navy, True)
+        text(margin, 633, "品位与主流范围", 10.5, navy, True)
         grade_table = []
         for grade in grade_labels:
             old_value, new_value = _port_grade_value(port, grade, previous), _port_grade_value(port, grade, current)
             grade_table.append([grade, _fmt(old_value), _fmt(new_value), _signed(new_value - old_value) if old_value is not None and new_value is not None else "—"])
-        table(["分档", "上期", "本期", "增减量"], grade_table, 660, [170, 115, 115, content_width - 400], 20, 7.7)
+        old_main = sum(_number(row.get("value")) or 0 for row in current_port_rows if row.get("week_start") == previous and row.get("mainstream_status") == "主流")
+        new_main = sum(_number(row.get("value")) or 0 for row in current_port_rows if row.get("week_start") == current and row.get("mainstream_status") == "主流")
+        grade_table.append(["主流", _fmt(old_main), _fmt(new_main), _signed(new_main - old_main)])
+        old_nonmain = old_total - old_main if old_total is not None else None
+        new_nonmain = now_total - new_main if now_total is not None else None
+        grade_table.append(["非主流", _fmt(old_nonmain), _fmt(new_nonmain), _signed(new_nonmain - old_nonmain) if old_nonmain is not None and new_nonmain is not None else "—"])
+        table(["分档／范围", "上期", "本期", "增减量"], grade_table, 649, [170, 115, 115, content_width - 400], 18, 7.7)
 
     # 06 — actual arrival, estimated arrival and legacy apparent demand.
-    start("06", "实际到港统计｜报告周对照", "来源方47港实际统计；实际观测日可能晚于库存报告周，页面保留真实周次")
+    start("06", "实际到港统计｜最新可用周对照", f"{actual_period}；来源方47港实际统计，保留真实周次")
     actual_country = []
     for dimension in ["总计", "澳大利亚", "巴西", "南非", "印度"]:
-        old_value = _actual_dimension_total(previous, "country", dimension)
-        new_value = _actual_dimension_total(current, "country", dimension)
+        old_value = _actual_dimension_total(actual_previous_week, "country", dimension)
+        new_value = _actual_dimension_total(actual_current_week, "country", dimension)
         if old_value is not None or new_value is not None:
             actual_country.append([dimension, _fmt(old_value), _fmt(new_value), _signed(new_value - old_value) if old_value is not None and new_value is not None else "—"])
     table(["来源", "上期", "本期", "增减量"], actual_country, 151, [155, 105, 105, content_width - 365], 27, 8.5)
@@ -1049,31 +1129,31 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
         para(f"47港实际到港本期 {_fmt(actual_current)} 万吨，周变 {_signed(actual_current - actual_previous) if actual_previous is not None else '—'} 万吨。该数值来自来源方到达统计，不等同卸货入库或钢厂实际消耗。", 430, 10)
     port_arrival_changes = []
     for row in data.get("arrival_actual", []):
-        if row.get("slice_type") == "country" and row.get("dimension") == "总计" and row.get("scope_type") == "port" and row.get("value") is not None and row.get("week_start") == current:
-            old = next((item.get("value") for item in data.get("arrival_actual", []) if item.get("slice_type") == "country" and item.get("dimension") == "总计" and item.get("scope_type") == "port" and item.get("port_name") == row.get("port_name") and item.get("week_start") == previous), None)
+        if row.get("slice_type") == "country" and row.get("dimension") == "总计" and row.get("scope_type") == "port" and row.get("value") is not None and row.get("week_start") == actual_current_week:
+            old = next((item.get("value") for item in data.get("arrival_actual", []) if item.get("slice_type") == "country" and item.get("dimension") == "总计" and item.get("scope_type") == "port" and item.get("port_name") == row.get("port_name") and item.get("week_start") == actual_previous_week), None)
             if old is not None:
                 port_arrival_changes.append((row.get("port_name") or "未知", float(row["value"]) - float(old)))
     port_arrival_changes.sort(key=lambda item: abs(item[1]), reverse=True)
     text(margin, 525, "到港增减较大的港口（绝对变化前6）", 11, navy, True)
-    bars(port_arrival_changes[:6], 550, 145, 180)
+    bars(port_arrival_changes[:6], 550, 145, 260)
     para("国家、品种、货种品位是同一47港到港总量的不同切片，不把三张表相加；45港、26港合计不混入47港总计。", 735, 8.8, gray)
     actual_history = _actual_series()
     season_page("06", "实际到港｜近期走势", ["47港到港"], actual_history, "当前已入库的实际到港历史按月份定位；没有多年序列时标注近期走势", 1)
 
-    start("06", "实际到港结构｜品种与形态", "47港实际到港；品种未知单列；库存四档与到港货种品位不直接互换")
+    start("06", "实际到港结构｜品种与形态", f"{actual_period}；47港实际到港；品种未知单列")
     product_rows = []
     actual_product_dimensions = sorted({row.get("dimension") for row in data.get("arrival_actual", []) if row.get("slice_type") == "product" and row.get("dimension") and row.get("dimension") != "总计"})
     for dimension in actual_product_dimensions:
-        old_value = _actual_dimension_total(previous, "product", dimension)
-        new_value = _actual_dimension_total(current, "product", dimension)
+        old_value = _actual_dimension_total(actual_previous_week, "product", dimension)
+        new_value = _actual_dimension_total(actual_current_week, "product", dimension)
         if old_value is not None or new_value is not None:
             product_rows.append((dimension, old_value, new_value, new_value - old_value if old_value is not None and new_value is not None else None))
     product_rows.sort(key=lambda item: abs(item[3] or 0), reverse=True)
     table(["品种（变化前10）", "上期", "本期", "增减量"], [[name, _fmt(old), _fmt(new), _signed(delta)] for name, old, new, delta in product_rows[:10]], 151, [155, 105, 105, content_width - 365], 25, 8)
     shape_arrival = []
     for dimension in ["粉矿 汇总", "块矿 汇总", "球团 汇总", "精粉 汇总", "未知 汇总"]:
-        old_value = _actual_dimension_total(previous, "form", dimension)
-        new_value = _actual_dimension_total(current, "form", dimension)
+        old_value = _actual_dimension_total(actual_previous_week, "form", dimension)
+        new_value = _actual_dimension_total(actual_current_week, "form", dimension)
         if old_value is not None or new_value is not None:
             shape_arrival.append([dimension.replace(" 汇总", ""), _fmt(old_value), _fmt(new_value), _signed(new_value - old_value) if old_value is not None and new_value is not None else "—"])
     table(["货种形态", "上期", "本期", "增减量"], shape_arrival, 480, [155, 105, 105, content_width - 365], 25, 8)
@@ -1093,7 +1173,12 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
     else:
         para("当前报告周没有旧表需记录；不使用实际到港事实重新计算旧表需。", 560, 10, gray)
     para("旧表需仍沿用预计/估算到港＋上周库存－本周库存的原系统路径；实际到港只作为独立事实展示。", 735, 8.8, gray)
-    estimated_history = _rows_series(data.get("history_arrival_estimated"), lambda row: row.get("source_country") or "未知")
+    def _estimated_label(row):
+        country = row.get("source_country") or "未知"
+        historical = "历史" in str(row.get("source_section") or "")
+        return country + ("历史估算" if historical else "来源预计" if country == "澳洲" else "当前估算")
+
+    estimated_history = _rows_series(data.get("history_arrival_estimated"), _estimated_label)
     season_page("06", "预计／估算到港｜历史与近期走势", sorted(estimated_history), estimated_history, "澳洲来源预计与巴西卡粉估算分别记录；历史来源规则变化处断线", 1)
 
     start("06", "系统估算表需｜变化组成", "表需＝预计/估算到港＋库存减少项；不把实际到港代入旧公式")
@@ -1105,23 +1190,24 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
             composition_rows.append([source + "表需", _fmt(demand_item["previous"]), _fmt(demand_item["current"]), _signed(demand_item["delta"])])
         if arrival_item:
             composition_rows.append([source + "预计/估算到港", _fmt(arrival_item["previous"]), _fmt(arrival_item["current"]), _signed(arrival_item["delta"])])
+        if arrival_item and demand_item:
+            old_reduction = demand_item["previous"] - arrival_item["previous"]
+            new_reduction = demand_item["current"] - arrival_item["current"]
+            composition_rows.append([source + "库存减少项", _fmt(old_reduction), _fmt(new_reduction), _signed(new_reduction - old_reduction)])
     table(["指标", "上期", "本期", "增减量"], composition_rows[:10], 151, [190, 110, 110, content_width - 410], 26, 8.3)
-    para("到港变化和库存减少项是表需变化的组成，不能单独把任一项当作钢厂实际消耗。", 500, 10.5)
-    demand_history = _rows_series(data.get("history_apparent_demand"), lambda row: row.get("source_country") or "未知")
-    if demand_history:
-        text(margin, 580, "历史表需覆盖", 11, navy, True)
-        coverage_rows = [[label, str(len(values)), str(min(values).isoformat()), str(max(values).isoformat())] for label, values in sorted(demand_history.items())]
-        table(["来源", "观察期数", "起始", "末期"], coverage_rows[:8], 606, [180, 110, 130, content_width - 420], 23, 8)
-    else:
-        para("当前快照没有旧表需历史序列。", 600, 10, gray)
+    para("到港变化和库存减少项是表需变化的组成，不能单独把任一项当作钢厂实际消耗。", 385, 10)
+    text(margin, 444, "表需变化较大的品种", 11, navy, True)
+    demand_products = _change(data.get("legacy_apparent_demand"), "product")
+    table(["品种", "上期", "本期", "变化"], change_rows(demand_products, 8), 467, [180, 110, 110, content_width - 400], 24, 8)
+    para("按同一国家、品种和形态匹配连续两期库存；沿用已有预计／估算到港结果，不使用47港实际到港替换。", 725, 9, gray)
 
     # 07 — definitions and data boundaries.
     start("07", "数据口径与阅读说明", "按业务周阅读；不同范围和日期的指标不直接相加推算消耗")
     definition_rows = [
-        ["库存及品种结构", "原表15个样本港", f"{current}／{previous}", "库存时点统计"],
+        ["库存及品种结构", "原表15个样本港", f"{inventory_current_date}／{inventory_previous_date}", "库存时点统计"],
         ["重点港口展示", "13港；沿江3港", f"{current}／{previous}", "不含南通、福州"],
         ["基差与港差", "期现可比报价组合", "价格周次", "基差折标；港差湿吨"],
-        ["实际到港", "全国47港", "来源实际周", "到达统计，非卸货入库"],
+        ["实际到港", "全国47港", actual_period, "到达统计，非卸货入库"],
         ["预计／估算到港", "澳洲来源预计＋巴西卡粉", f"{current}／{previous}", "来源预计／发运推算"],
         ["系统估算表需", "原系统可计算品种", f"{current}／{previous}", "旧公式保留"],
     ]

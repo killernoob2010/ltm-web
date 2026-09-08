@@ -94,3 +94,84 @@ def test_report_generation_is_idempotent_and_writes_versioned_pdf(tmp_path, monk
     assert first["revision_no"] == 1
     assert first["status"] == "succeeded"
     assert first["file_path"].endswith("模板V1.0_R1.pdf")
+
+
+def test_actual_arrival_uses_latest_available_week_without_future_data(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.iron_ore_weekly_report import _load_report_input
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "data" / "app.db")
+    db.init_db()
+    with db.connect() as conn:
+        cur = conn.cursor()
+        for week, observed, value in [
+            ("2026-08-17", "2026-08-23", 2717.4745),
+            ("2026-08-24", "2026-08-30", 1951.7687),
+            ("2026-09-07", "2026-09-13", 9999),
+        ]:
+            db._exec(cur, """INSERT INTO dv_arrival_facts
+                (package_id, arrival_kind, method, observed_date, week_start,
+                 port_name, scope_type, slice_type, dimension, value,
+                 value_status, unit, source_file, source_sheet, mapping_version)
+                VALUES (?, 'actual', 'reported_47_port', ?, ?, '47港',
+                        'total', 'country', '总计', ?, 'numeric', '万吨',
+                        'actual.xlsx', '国家', 'v1')""", (week, observed, week, value))
+    loaded = _load_report_input("2026-W36")
+    actual = loaded["validation"]["actual_arrival"]
+    assert actual["current_week_start"] == "2026-08-24"
+    assert actual["previous_week_start"] == "2026-08-17"
+    assert actual["current_count"] == actual["previous_count"] == 1
+    assert actual["latest_available"] is True
+    assert {r["value"] for r in loaded["input"]["arrival_actual"]} == {2717.4745, 1951.7687}
+    assert all(r["week_start"] <= "2026-08-31" for r in loaded["input"]["history_arrival_actual"])
+
+
+def test_report_inventory_uses_complete_v2_totals_without_changing_legacy(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.iron_ore_weekly_report import _load_report_input
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "data" / "app.db")
+    db.init_db()
+    for week in ("2026-08-24", "2026-08-31"):
+        _seed_legacy(db, week, 10)
+        with db.connect() as conn:
+            cur = conn.cursor()
+            for scope, value in (("total", 12), ("sample", 12)):
+                db._exec(cur, """INSERT INTO dv_port_inventory_facts
+                    (package_id, observed_date, week_start, scope_type, product, category,
+                     source_country, value, value_status, unit, source_file, source_sheet, mapping_version)
+                    VALUES ('v2', ?, ?, ?, 'PB粉', '粉矿', '澳洲', ?, 'numeric', '万吨', 'source.xlsx', '粗粉', 'v1')""",
+                    (week, week, scope, value))
+    loaded = _load_report_input("2026-W36")
+    assert [r["value"] for r in loaded["input"]["inventory"]] == [12, 12]
+    assert [r["value"] for r in loaded["input"]["history_inventory"]] == [12, 12]
+    with db.connect() as conn:
+        assert [r["value"] for r in conn.execute("SELECT value FROM dv_integrated_points")] == [10, 10]
+
+
+def test_historical_report_does_not_include_later_inventory_or_estimates(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.iron_ore_weekly_report import _load_report_input
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "data" / "app.db")
+    db.init_db()
+    for week in ("2026-08-24", "2026-08-31", "2026-09-07"):
+        for metric in ("inventory", "arrival", "apparent_demand"):
+            _seed_legacy(db, week, 10, metric=metric)
+        with db.connect() as conn:
+            db._exec(conn.cursor(), """INSERT INTO dv_port_inventory_facts
+                (package_id, observed_date, week_start, scope_type, product, category,
+                 source_country, value, value_status, unit, source_file, source_sheet, mapping_version)
+                VALUES ('v2', ?, ?, 'total', 'PB粉', '粉矿', '澳洲', 12, 'numeric',
+                        '万吨', 'source.xlsx', '粗粉', 'v1')""", (week, week))
+    data = _load_report_input("2026-W36")["input"]
+    for key in ("history_inventory", "history_port_inventory", "history_legacy_inventory",
+                "history_arrival_estimated", "history_apparent_demand"):
+        assert data[key]
+        assert all(row["week_start"] <= "2026-08-31" for row in data[key]), key

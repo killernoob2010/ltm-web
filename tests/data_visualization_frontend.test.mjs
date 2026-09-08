@@ -125,7 +125,7 @@ test("weekly report page keeps readiness visible when history loading fails", ()
 });
 
 test("weekly report frontend fix invalidates the cached application script", () => {
-  assert.match(indexHtml, /weekly-report=20260908-fix/);
+  assert.match(indexHtml, /weekly-report=20260908-data-fix/);
 });
 
 test("sidebar groups put data visualization before admin", () => {
