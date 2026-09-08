@@ -125,7 +125,7 @@ test("weekly report page keeps readiness visible when history loading fails", ()
 });
 
 test("weekly report frontend fix invalidates the cached application script", () => {
-  assert.match(indexHtml, /weekly-report=20260908-report-queue/);
+  assert.match(indexHtml, /weekly-report=20260908-history-v2/);
 });
 
 test("sidebar groups put data visualization before admin", () => {
@@ -305,4 +305,22 @@ test("weekly readiness ignores an older week response arriving last", async () =
   pending[0]({ report_week: "2026-W37" });
   await old;
   assert.deepEqual(rendered, ["2026-W36"]);
+});
+
+test("V2 historical detail-only uploads can be confirmed but empty uploads cannot", async () => {
+  const source = appJs.slice(appJs.indexOf('dvImportFile.addEventListener("change"'), appJs.indexOf('async function pollDVIntegratedImportJob('));
+  let handler;
+  const file = {files: [{name: "2017Q2.xlsx"}], addEventListener: (_event, callback) => { handler = callback; }};
+  const content = {}, button = {}, preview = {summary: {total_points: 0, inventory_port_product_count: 3724}, errors: []};
+  new Function("dvImportFile", "dvState", "dvPreviewContent", "state", "fetch", "dvCommitImportBtn", source)(file, {}, content, {}, async () => ({ok: true, json: async () => preview}), button);
+  await handler();
+  assert.equal(button.disabled, false);
+  assert.match(content.innerHTML, /V2 明细记录: 3724/);
+  preview.errors = [{row: 2, message: "invalid"}];
+  await handler();
+  assert.equal(button.disabled, true);
+  preview.errors = [];
+  preview.summary.inventory_port_product_count = 0;
+  await handler();
+  assert.equal(button.disabled, true);
 });
