@@ -7,10 +7,12 @@ the service never asks an online model to invent a conclusion.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
 import uuid
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -26,7 +28,7 @@ from .permissions import require_permission
 TEMPLATE_KEY = "iron_ore_weekly"
 TEMPLATE_VERSION = "V1.0"
 TEMPLATE_NAME = "铁矿石周报（46页基线）"
-RENDERER_VERSION = "iron-ore-weekly-renderer-4"
+RENDERER_VERSION = "iron-ore-weekly-renderer-5"
 RULES_REFERENCE = "docs/2026-09-08-iron-ore-weekly-report-rules.md"
 
 TEMPLATE_CONFIG = {
@@ -66,6 +68,25 @@ def _require_report_edit(user: dict) -> None:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _snapshot_json(value: Any) -> str:
+    # Stream the complete canonical snapshot into a compressed JSON envelope.
+    # This avoids several simultaneous copies of years of source facts in RAM.
+    compressor = zlib.compressobj()
+    compressed = bytearray()
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    for chunk in encoder.iterencode(value):
+        compressed.extend(compressor.compress(chunk.encode("utf-8")))
+    compressed.extend(compressor.flush())
+    return _canonical_json({"encoding": "zlib-base64-v1", "data": base64.b64encode(compressed).decode("ascii")})
+
+
+def _decode_snapshot_json(value: str) -> Any:
+    stored = json.loads(value)
+    if stored.get("encoding") == "zlib-base64-v1":
+        return json.loads(zlib.decompress(base64.b64decode(stored["data"])))
+    return stored
 
 
 def register_builtin_templates() -> Dict[str, Any]:
@@ -170,8 +191,10 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         )
         history_arrival_actual = _rows(
             cur,
-            """SELECT * FROM dv_arrival_facts
+            """SELECT id, package_id, week_start, observed_date, arrival_kind, scope_type,
+                         port_name, slice_type, dimension, value FROM dv_arrival_facts
                WHERE arrival_kind = 'actual' AND week_start <= ?
+                 AND slice_type = 'country' AND dimension = '总计'
                ORDER BY week_start, port_name, slice_type, dimension, id""",
             (current_week,),
         )
@@ -182,8 +205,14 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         ]
         actual_current_week = max(available_actual_weeks, default=current_week)
         actual_previous_week = (date.fromisoformat(actual_current_week) - timedelta(days=7)).isoformat()
-        arrival_actual = [row for row in history_arrival_actual
-                          if row.get("week_start") in (actual_previous_week, actual_current_week)]
+        arrival_actual = _rows(
+            cur,
+            """SELECT id, package_id, week_start, observed_date, arrival_kind, scope_type,
+                         port_name, slice_type, dimension, value FROM dv_arrival_facts
+               WHERE arrival_kind = 'actual' AND week_start IN (?, ?)
+               ORDER BY week_start, port_name, slice_type, dimension, id""",
+            (actual_previous_week, actual_current_week),
+        )
         port_inventory = _week_rows(cur, "dv_port_inventory_facts", weeks)
         inventory_summary = _week_rows(cur, "dv_inventory_summary_facts", weeks)
         inventory_grade = _week_rows(cur, "dv_inventory_grade_facts", weeks)
@@ -204,10 +233,21 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         )
         history_legacy = _rows(
             cur,
-            """SELECT * FROM dv_integrated_points
+            """SELECT id, batch_id, week_start, display_date, metric_type, source_country,
+                         product, category, mainstream_status, value FROM dv_integrated_points
                WHERE metric_type IN ('inventory', 'arrival', 'apparent_demand')
                  AND week_start <= ?
                ORDER BY week_start, source_country, category, product, id""",
+            (current_week,),
+        )
+        history_legacy_inventory = _rows(
+            cur,
+            """SELECT week_start, MAX(display_date) AS display_date, mainstream_status,
+                      SUM(value) AS value, COUNT(*) AS n
+               FROM dv_integrated_points
+               WHERE metric_type = 'inventory' AND week_start <= ?
+               GROUP BY week_start, mainstream_status
+               ORDER BY week_start, mainstream_status""",
             (current_week,),
         )
         history_grade = _rows(
@@ -249,7 +289,7 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
         "history_inventory_summary": history_inventory_summary,
         "history_inventory_mainstream": [],
         "history_inventory": _report_inventory(history_legacy, history_port_inventory),
-        "history_legacy_inventory": [row for row in history_legacy if row.get("metric_type") == "inventory"],
+        "history_legacy_inventory": history_legacy_inventory,
         "history_grade": history_grade,
         "history_arrival_estimated": [row for row in history_legacy if row.get("metric_type") == "arrival"],
         "history_apparent_demand": [row for row in history_legacy if row.get("metric_type") == "apparent_demand"],
@@ -311,7 +351,11 @@ def _load_report_input(report_week: str) -> Dict[str, Any]:
     validation["ready"] = bool(
         validation["inventory"]["current_count"] and validation["inventory"]["previous_count"]
     )
-    input_hash = hashlib.sha256(_canonical_json(input_data).encode("utf-8")).hexdigest()
+    hasher = hashlib.sha256()
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    for chunk in encoder.iterencode(input_data):
+        hasher.update(chunk.encode("utf-8"))
+    input_hash = hasher.hexdigest()
     return {
         "report_week": input_data["report_week"],
         "week_start": current_week,
@@ -344,7 +388,7 @@ def build_report_snapshot(report_week: str, template_id: Optional[int] = None, c
                    (report_week, input_sha256, input_json, validation_json, source_batch_ids, created_by)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (
-                    loaded["report_week"], loaded["input_sha256"], _canonical_json(loaded["input"]),
+                    loaded["report_week"], loaded["input_sha256"], _snapshot_json(loaded["input"]),
                     _canonical_json(loaded["validation"]), _canonical_json(loaded["source_batch_ids"]), created_by,
                 ),
             )
@@ -424,7 +468,10 @@ def _register_pdf_fonts() -> tuple[str, str]:
                 return "IronOreCJK", "IronOreCJKB"
             except Exception:
                 continue
-    return "Helvetica", "Helvetica-Bold"
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    return "STSong-Light", "STSong-Light"
 
 
 def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -> None:
@@ -1282,6 +1329,8 @@ def generate_report(report_week: str, template_version: str = TEMPLATE_VERSION, 
                 "INSERT INTO dv_report_artifacts (run_id, file_path, sha256, file_size) VALUES (?, ?, ?, ?)",
                 (run_id, str(output_path), digest, len(content)),
             )
+            db._exec(cur, "INSERT INTO dv_report_file_contents (run_id, content) VALUES (?, ?)"
+                     + (" RETURNING run_id AS id" if db._is_pg() else ""), (run_id, content))
             row = db._exec(
                 cur,
                 "SELECT r.*, a.file_path, a.sha256, a.file_size FROM dv_report_runs r JOIN dv_report_artifacts a ON a.run_id = r.id WHERE r.id = ?",
@@ -1367,12 +1416,24 @@ async def report_download(run_id: int, user=Depends(_report_user)):
         cur = conn.cursor()
         row = db._exec(
             cur,
-            """SELECT a.file_path, r.report_week, r.template_version, r.revision_no
+            """SELECT a.file_path, a.sha256, r.report_week, r.template_version, r.revision_no
                FROM dv_report_artifacts a JOIN dv_report_runs r ON r.id = a.run_id
                WHERE a.run_id = ?""",
             (run_id,),
         ).fetchone()
-    if not row or not row["file_path"] or not Path(row["file_path"]).exists():
+    if not row:
         raise HTTPException(status_code=404, detail="周报文件不存在")
     filename = f"铁矿石周报_{row['report_week']}_模板{row['template_version']}_R{row['revision_no']}.pdf"
-    return FileResponse(row["file_path"], media_type="application/pdf", filename=filename)
+    path = Path(row["file_path"]) if row["file_path"] else db.DATA_DIR / "iron_ore_reports" / filename
+    if not path.is_file():
+        with db.connect() as conn:
+            saved = db._exec(conn.cursor(), "SELECT content FROM dv_report_file_contents WHERE run_id = ?", (run_id,)).fetchone()
+        if not saved:
+            raise HTTPException(status_code=404, detail="周报文件不存在")
+        content = bytes(saved["content"])
+        if hashlib.sha256(content).hexdigest() != row["sha256"]:
+            raise HTTPException(status_code=500, detail="周报存档校验失败")
+        path = db.DATA_DIR / "iron_ore_reports" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    return FileResponse(path, media_type="application/pdf", filename=filename)

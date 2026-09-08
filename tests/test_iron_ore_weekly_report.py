@@ -175,3 +175,59 @@ def test_historical_report_does_not_include_later_inventory_or_estimates(tmp_pat
                 "history_arrival_estimated", "history_apparent_demand"):
         assert data[key]
         assert all(row["week_start"] <= "2026-08-31" for row in data[key]), key
+
+
+def test_historical_mainstream_snapshot_keeps_membership_counts(tmp_path, monkeypatch):
+    from backend.app import db
+    from backend.app.iron_ore_weekly_report import _load_report_input
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setattr(db, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data' / 'app.db')
+    db.init_db()
+    _seed_legacy(db, '2026-08-24', 10, product='PB粉')
+    _seed_legacy(db, '2026-08-24', 20, product='麦克粉')
+    _seed_legacy(db, '2026-08-31', 15, product='PB粉')
+    rows = _load_report_input('2026-W36')['input']['history_legacy_inventory']
+    assert [(r['week_start'], r['value'], r['n']) for r in rows] == [('2026-08-24', 30, 2), ('2026-08-31', 15, 1)]
+
+
+def test_report_download_survives_loss_of_temporary_files(tmp_path, monkeypatch):
+    import asyncio
+    from pathlib import Path
+    from backend.app import db
+    from backend.app import iron_ore_weekly_report as report
+    monkeypatch.delenv('DATABASE_URL', raising=False)
+    monkeypatch.setattr(db, 'DATA_DIR', tmp_path / 'data')
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data' / 'app.db')
+    monkeypatch.setattr(report, '_require_report_view', lambda user: None)
+    db.init_db()
+    _seed_legacy(db, '2026-08-24', 10)
+    _seed_legacy(db, '2026-08-31', 15)
+    generated = report.generate_report('2026-W36')
+    path = Path(generated['file_path'])
+    original = path.read_bytes()
+    path.unlink()
+    response = asyncio.run(report.report_download(generated['run_id'], user={}))
+    assert Path(response.path).read_bytes() == original
+
+
+def test_report_font_supports_chinese_without_macos_fonts(monkeypatch):
+    from pathlib import Path
+    from reportlab.pdfbase import pdfmetrics
+    from backend.app.iron_ore_weekly_report import _register_pdf_fonts
+    monkeypatch.setattr(Path, 'exists', lambda self: False)
+    regular, bold = _register_pdf_fonts()
+    assert regular == bold == 'STSong-Light'
+    assert pdfmetrics.stringWidth('铁矿石周报', regular, 10) > 0
+
+
+def test_compressed_snapshot_preserves_all_data_and_reads_legacy_json():
+    import hashlib
+    from backend.app.iron_ore_weekly_report import _canonical_json, _snapshot_json, _decode_snapshot_json
+    data = {"inventory": [{"product": "铁矿石", "value": 123.456789, "missing": None}] * 1000}
+    original = _canonical_json(data)
+    stored = _snapshot_json(data)
+    assert len(stored) < len(original) / 10
+    assert _decode_snapshot_json(stored) == data
+    assert _decode_snapshot_json(original) == data
+    assert hashlib.sha256(_canonical_json(_decode_snapshot_json(stored)).encode('utf8')).digest() == hashlib.sha256(original.encode('utf8')).digest()
