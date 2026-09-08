@@ -403,7 +403,7 @@ def test_create_user_uses_username_temporary_password_and_permission_snapshot(tm
     assert main.login(main.LoginRequest(username="zhangsan", password="zhangsan"))["user"]["name"] == "张三"
     listed = next(item for item in main.list_users(user=admin_user())["users"] if item["id"] == result["id"])
     assert listed["permission_summary"]["enabled"] > 0
-    assert listed["permission_summary"]["sensitive"] == 0
+    assert listed["permission_summary"]["sensitive"] == 1
     configurable = main.get_user_permissions(result["id"], user=admin_user())["permissions"]
     assert {item["module_code"] for item in configurable} == permissions.ACTIVE_BUSINESS_MODULES
 

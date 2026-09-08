@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import math
 import os
@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional, Protocol, Union
 SH_JUNNENG_RULE_VERSION = "sh_junneng_v1"
 OPTION_RISK_FREE_RATE = 0.015
 TQSDK_FETCH_TIMEOUT_SECONDS = 5
+TQSDK_KLINE_FETCH_TIMEOUT_SECONDS = 25
 _DCE_OPTION_CONTRACT_RE = re.compile(
     r"^(?P<product>[a-z]+)(?P<year>\d{2})(?P<month>\d{2})-"
     r"(?P<option_class>c|p)-(?P<strike>\d+(?:\.\d+)?)$",
@@ -86,6 +87,23 @@ def select_valuation_price(
     return None, "unavailable", "unavailable"
 
 
+def select_live_trade_price(
+    snapshot: QuoteSnapshot,
+) -> tuple[Optional[float], str, str]:
+    """Select only the contract's latest trade for live position valuation.
+
+    Fact-position floating PnL must never be inferred from a quote midpoint or
+    a settlement reference when the feed has no current last trade.
+    """
+    if snapshot.expired:
+        return None, "expired", "expired"
+    last_price = _valid_price(snapshot.last_price)
+    if last_price is not None:
+        status = "stale" if snapshot.market_data_status in {"stale", "provider_error"} else "live"
+        return last_price, "last_trade", status
+    return None, "unavailable", "unavailable"
+
+
 def _as_date(value: Union[str, date]) -> date:
     if isinstance(value, date):
         return value
@@ -111,6 +129,26 @@ def calculate_position_floating_pnl(
         difference * float(remaining_quantity) * float(multiplier)
         - float(remaining_open_fee or 0),
         2,
+    )
+
+
+def calculate_live_position_floating_pnl(
+    *,
+    open_price: float,
+    market_price: float,
+    direction: str,
+    remaining_quantity: float,
+    multiplier: float,
+    remaining_open_fee: float = 0,
+) -> float:
+    """Calculate live fact-position PnL without realized-cost adjustments."""
+    return calculate_position_floating_pnl(
+        open_price=open_price,
+        market_price=market_price,
+        direction=direction,
+        remaining_quantity=remaining_quantity,
+        multiplier=multiplier,
+        remaining_open_fee=0,
     )
 
 
@@ -421,6 +459,88 @@ def _tqsdk_symbol(request: QuoteRequest) -> str:
     return f"{exchange}.{contract}" if exchange else contract
 
 
+def _frame_value(frame: Any, column: str, index: int) -> Any:
+    values = frame[column]
+    iloc = getattr(values, "iloc", None)
+    return iloc[index] if iloc is not None else values[index]
+
+
+def normalize_kline_rows(
+    frame: Any,
+    *,
+    requested_symbol: str,
+) -> list[dict[str, Any]]:
+    required = {"datetime", "open", "high", "low", "close", "volume"}
+    if frame is None or any(column not in frame for column in required):
+        return []
+    rows: list[dict[str, Any]] = []
+    beijing = timezone(timedelta(hours=8))
+    for index in range(len(frame["datetime"])):
+        try:
+            timestamp_nano = int(_frame_value(frame, "datetime", index))
+            open_price = float(_frame_value(frame, "open", index))
+            high_price = float(_frame_value(frame, "high", index))
+            low_price = float(_frame_value(frame, "low", index))
+            close_price = float(_frame_value(frame, "close", index))
+            volume = float(_frame_value(frame, "volume", index))
+        except (TypeError, ValueError, OverflowError, KeyError, IndexError):
+            continue
+        numbers = (open_price, high_price, low_price, close_price, volume)
+        if timestamp_nano <= 0 or not all(math.isfinite(value) for value in numbers):
+            continue
+        if volume < 0:
+            continue
+        actual_symbol = requested_symbol
+        if "symbol" in frame:
+            candidate = str(_frame_value(frame, "symbol", index) or "").strip()
+            if candidate and candidate.lower() != "nan":
+                actual_symbol = candidate
+        rows.append({
+            "datetime": datetime.fromtimestamp(
+                timestamp_nano / 1_000_000_000,
+                beijing,
+            ).isoformat(),
+            "datetime_nano": timestamp_nano,
+            "symbol": actual_symbol,
+            "open": open_price,
+            "high": high_price,
+            "low": low_price,
+            "close": close_price,
+            "volume": volume,
+        })
+    return rows
+
+
+def normalize_main_contract_mapping(
+    frame: Any,
+    *,
+    requested_symbol: str,
+) -> list[dict[str, str]]:
+    if frame is None or "date" not in frame or requested_symbol not in frame:
+        return []
+    mapping: list[dict[str, str]] = []
+    previous = ""
+    for index in range(len(frame["date"])):
+        actual_symbol = str(
+            _frame_value(frame, requested_symbol, index) or ""
+        ).strip()
+        if not actual_symbol or actual_symbol.lower() == "nan" or actual_symbol == previous:
+            continue
+        raw_date = _frame_value(frame, "date", index)
+        try:
+            effective_date = raw_date.date().isoformat()
+        except AttributeError:
+            effective_date = str(raw_date)[:10]
+        if len(effective_date) != 10:
+            continue
+        mapping.append({
+            "effective_date": effective_date,
+            "symbol": actual_symbol,
+        })
+        previous = actual_symbol
+    return mapping
+
+
 class TqSdkQuoteProvider:
     """One market-data session without a live brokerage account or order calls."""
 
@@ -582,6 +702,52 @@ class TqSdkQuoteProvider:
             )
         return results
 
+    def fetch_klines(
+        self,
+        symbol: str,
+        duration_seconds: int,
+        data_length: int,
+    ) -> dict[str, Any]:
+        future = self._executor.submit(
+            self._fetch_klines,
+            symbol,
+            duration_seconds,
+            data_length,
+        )
+        try:
+            return future.result(timeout=TQSDK_KLINE_FETCH_TIMEOUT_SECONDS)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise RuntimeError("TqSdk kline refresh timed out") from exc
+
+    def _fetch_klines(
+        self,
+        symbol: str,
+        duration_seconds: int,
+        data_length: int,
+    ) -> dict[str, Any]:
+        frame = self._api.get_kline_serial(
+            symbol,
+            duration_seconds,
+            data_length=data_length,
+        )
+        deadline = time.time() + 15
+        self._api.wait_update(deadline=min(deadline, time.time() + 1))
+        rows = normalize_kline_rows(frame, requested_symbol=symbol)
+        while not rows and time.time() < deadline:
+            if not self._api.wait_update(deadline=deadline):
+                break
+            rows = normalize_kline_rows(frame, requested_symbol=symbol)
+        mapping_frame = self._api.query_his_cont_quotes(
+            symbol,
+            n=min(max(data_length, 200), 2_000),
+        )
+        mapping = normalize_main_contract_mapping(
+            mapping_frame,
+            requested_symbol=symbol,
+        )
+        return {"bars": rows, "main_contract_mapping": mapping}
+
     def close(self) -> None:
         try:
             self._executor.submit(self._api.close).result()
@@ -596,6 +762,7 @@ class MarketDataService:
         provider_factory: Optional[Callable[[], QuoteProvider]] = None,
         provider_retry_seconds: float = 30,
         ttl_seconds: float = 10,
+        stale_ttl_seconds: float = 60,
     ):
         self.provider = provider
         self.provider_factory = provider_factory
@@ -605,8 +772,10 @@ class MarketDataService:
             "" if provider is not None else "天勤行情认证未配置"
         )
         self._next_provider_retry = 0.0
-        self.ttl_seconds = ttl_seconds
+        self.ttl_seconds = max(float(ttl_seconds), 0)
+        self.stale_ttl_seconds = max(float(stale_ttl_seconds), 0)
         self._cache: dict[str, tuple[float, QuoteSnapshot]] = {}
+        self._last_good: dict[str, tuple[float, QuoteSnapshot]] = {}
         self._lock = threading.Lock()
         self._fetch_lock = threading.Lock()
 
@@ -655,10 +824,29 @@ class MarketDataService:
             with self._lock:
                 for request in missing:
                     snapshot = fetched.get(request.contract)
-                    if snapshot is not None:
+                    last_price = (
+                        _valid_price(snapshot.last_price)
+                        if snapshot is not None and not snapshot.expired
+                        else None
+                    )
+                    if last_price is not None:
                         snapshot.market_data_status = "live"
                         snapshot.market_data_message = ""
+                        self._last_good[request.contract] = (
+                            now + self.stale_ttl_seconds,
+                            replace(snapshot),
+                        )
                     else:
+                        previous = self._last_good.get(request.contract)
+                        if previous and previous[0] > now:
+                            snapshot = replace(
+                                previous[1],
+                                market_data_status="stale",
+                                market_data_message="行情读取失败，沿用上次行情",
+                            )
+                        elif previous:
+                            self._last_good.pop(request.contract, None)
+                    if snapshot is None:
                         snapshot = QuoteSnapshot(
                             settlement_price=request.settlement_price,
                             source=(
@@ -676,6 +864,19 @@ class MarketDataService:
                     )
                     result[request.contract] = snapshot
             return result
+
+    def get_klines(
+        self,
+        symbol: str,
+        duration_seconds: int,
+        data_length: int,
+    ) -> dict[str, Any]:
+        with self._fetch_lock:
+            self._ensure_provider(time.monotonic())
+            fetch_klines = getattr(self.provider, "fetch_klines", None)
+            if not callable(fetch_klines):
+                raise RuntimeError("TqSdk market data is unavailable")
+            return fetch_klines(symbol, duration_seconds, data_length)
 
     def close(self) -> None:
         if self.provider is not None:
@@ -705,6 +906,19 @@ def get_quote_snapshots(
             if _market_data_service is None:
                 _market_data_service = _default_market_data_service()
     return _market_data_service.get_quotes(requests)
+
+
+def get_kline_data(
+    symbol: str,
+    duration_seconds: int,
+    data_length: int,
+) -> dict[str, Any]:
+    global _market_data_service
+    if _market_data_service is None:
+        with _service_lock:
+            if _market_data_service is None:
+                _market_data_service = _default_market_data_service()
+    return _market_data_service.get_klines(symbol, duration_seconds, data_length)
 
 
 def close_market_data_service() -> None:

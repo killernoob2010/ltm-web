@@ -16,6 +16,8 @@ from backend.app.trading_valuation import (
     calculate_position_floating_pnl,
     calculate_statement_option_metrics,
     calculate_sh_junneng_settlement,
+    calculate_live_position_floating_pnl,
+    select_live_trade_price,
     select_valuation_price,
 )
 
@@ -128,6 +130,42 @@ def test_junneng_loss_still_charges_interest_without_profit_sharing():
 )
 def test_valuation_price_priority(snapshot, expected):
     assert select_valuation_price(snapshot) == expected
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "expected"),
+    [
+        (
+            QuoteSnapshot(last_price=8.2, bid_price=8.0, ask_price=8.4, settlement_price=7.9),
+            (8.2, "last_trade", "live"),
+        ),
+        (
+            QuoteSnapshot(last_price=None, bid_price=8.0, ask_price=8.4, settlement_price=7.9),
+            (None, "unavailable", "unavailable"),
+        ),
+        (
+            QuoteSnapshot(last_price=None, settlement_price=7.9),
+            (None, "unavailable", "unavailable"),
+        ),
+        (
+            QuoteSnapshot(last_price=8.2, expired=True),
+            (None, "expired", "expired"),
+        ),
+    ],
+)
+def test_live_trade_price_only_accepts_a_current_last_trade(snapshot, expected):
+    assert select_live_trade_price(snapshot) == expected
+
+
+def test_live_position_floating_pnl_does_not_include_open_fee():
+    assert calculate_live_position_floating_pnl(
+        open_price=100,
+        market_price=110,
+        direction="买",
+        remaining_quantity=2,
+        multiplier=10,
+        remaining_open_fee=999,
+    ) == 200
 
 
 def test_option_position_valuation_scales_greeks_to_position_exposure():
@@ -387,9 +425,52 @@ def test_market_data_service_retries_provider_initialization():
     assert attempts == 2
 
 
+def test_market_data_service_keeps_last_good_quote_when_refresh_fails():
+    class FlakyProvider:
+        calls = 0
+
+        def fetch(self, requests):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    request.contract: QuoteSnapshot(
+                        last_price=12.5,
+                        market_time="2026-09-08T09:30:00+08:00",
+                    )
+                    for request in requests
+                }
+            raise RuntimeError("temporary market outage")
+
+        def close(self):
+            pass
+
+    provider = FlakyProvider()
+    service = MarketDataService(
+        provider=provider,
+        ttl_seconds=0,
+        stale_ttl_seconds=30,
+    )
+    request = QuoteRequest(contract="rb2610", exchange="SHFE")
+
+    first = service.get_quotes([request])["rb2610"]
+    second = service.get_quotes([request])["rb2610"]
+
+    assert first.last_price == 12.5
+    assert second.last_price == 12.5
+    assert second.market_data_status == "stale"
+    assert second.market_data_message == "行情读取失败，沿用上次行情"
+    assert select_live_trade_price(second) == (12.5, "last_trade", "stale")
+
+
 def test_tqsdk_provider_contains_no_live_trading_account_or_order_operations():
     source = inspect.getsource(TqSdkQuoteProvider)
-    for forbidden in ("TqAccount", "insert_order", "cancel_order"):
+    for forbidden in (
+        "TqAccount",
+        "get_account",
+        "get_position",
+        "insert_order",
+        "cancel_order",
+    ):
         assert forbidden not in source
 
 

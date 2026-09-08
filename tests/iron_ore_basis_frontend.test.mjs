@@ -48,7 +48,9 @@ test("basis pages refresh the latest stored data date on every activation", () =
   assert.match(basisJs, /displayLatestDate\.textContent = "最新数据日期：" \+ \(filters\.latest_data_date \|\| "暂无数据"\)/);
   assert.doesNotMatch(basisJs, /optimalDate\.textContent = "数据截至 "/);
   assert.doesNotMatch(indexHtml, /id="ironOreBasisOptimalDate"/);
-  assert.doesNotMatch(indexHtml, /异常数据|同步异常|失败次数/);
+  const basisDisplay = indexHtml.match(/<section id="ironOreBasisDisplayView"[\s\S]*?(?=<section|$)/);
+  assert.ok(basisDisplay);
+  assert.doesNotMatch(basisDisplay[0], /异常数据|同步异常|失败次数/);
 });
 
 test("basis management uses the shared 20 50 100 server pagination", () => {

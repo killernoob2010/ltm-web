@@ -14,6 +14,8 @@ RESOURCE_MODULES = {
     "data_visualization.integrated_points": "data_visualization_integration",
     "order_finance.records": "order_finance_progress",
     "order_finance.capital": "order_finance_capital",
+    "spot_ledger.records": "spot_ledger",
+    "spot_ledger.export": "spot_ledger",
     "trading.overview": "trading_overview",
     "trading.facts": "trading_positions",
     "trading.junneng": "trading_sh_junneng",
@@ -21,6 +23,7 @@ RESOURCE_MODULES = {
     "trading.export": "trading_export",
     "trading.imports": "trading_positions",
     "trading.config": "trading_positions",
+    "trading.collector": "trading_collector",
     "sh_junneng.trades": "sh_junneng",
     "mid_event.monitor": "mid_event_monitor",
     "platts_index.data": "platts_index_monitor",
@@ -40,7 +43,7 @@ GUEST_PERMISSIONS = {
 VIEW_ACTIONS = {"view", "detail"}
 EDIT_ACTIONS = {"create", "edit"}
 SENSITIVE_ACTIONS = {"delete", "import", "export", "manage"}
-ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status"}
+ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status", "trading.collector"}
 
 DEPARTMENTS = ("贸易处", "期货组", "财企处", "资金处", "管理部门", "公司领导")
 USER_ROLES = ("用户", "领导", "管理员")
@@ -60,12 +63,15 @@ ACTIVE_BUSINESS_MODULES = {
     "data_visualization_chart",
     "order_finance_progress",
     "order_finance_capital",
+    "spot_ledger",
     "trading_overview",
     "trading_positions",
     "trading_sh_junneng",
     "trading_options",
     "trading_export",
 }
+PILOT_MODULES = set()
+PERMISSION_MANAGED_MODULES = ACTIVE_BUSINESS_MODULES | PILOT_MODULES
 INFO_WARNING_MODULES = {
     "info_summary",
     "platts_index_monitor",
@@ -76,6 +82,7 @@ DEPARTMENT_MODULES = {
     "贸易处": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
         "data_visualization_integration", "data_visualization_data", "data_visualization_chart",
+        "spot_ledger",
     },
     "期货组": {
         "info_summary", "platts_index_monitor", "risk_alert", "mid_event_monitor",
@@ -110,6 +117,8 @@ def default_permission_levels(department: str, role: str) -> dict[str, str]:
         return levels
     for code in DEPARTMENT_MODULES.get(department, set()):
         levels[code] = "operate"
+    if department == "贸易处" and role == "用户":
+        levels["spot_ledger"] = "sensitive"
     if department == "期货组":
         for code in INFO_WARNING_MODULES:
             levels[code] = "sensitive"

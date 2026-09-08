@@ -1,0 +1,666 @@
+from __future__ import annotations
+
+import asyncio
+import io
+import os
+from pathlib import Path
+import re
+import sys
+
+import pytest
+from fastapi import HTTPException
+from openpyxl import load_workbook
+from pydantic import ValidationError
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from app import db
+
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "spot_ledger_sales_contract_fixture.json"
+
+
+@pytest.fixture
+def ledger_context(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "spot-ledger-api.db")
+    db.init_db()
+    from app.spot_ledger_sync import FixtureSalesContractSource, apply_full_scan
+
+    apply_full_scan(FixtureSalesContractSource(FIXTURE_PATH).fetch_full_scan(), "2026-08-24T09:00+08:00")
+    with db.connect() as conn:
+        admin = dict(conn.execute("SELECT * FROM users WHERE role = '管理员' ORDER BY id LIMIT 1").fetchone())
+        trade = db._exec(
+            conn.cursor(),
+            "INSERT INTO users (name, username, department, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            ("贸易测试", "trade-test", "贸易处", db.password_hash("pass"), "用户"),
+        )
+        trade_id = trade.lastrowid
+        db._exec(
+            conn.cursor(),
+            "INSERT INTO module_permissions (user_id, module_code, can_view, can_edit, can_sensitive) VALUES (?, ?, 1, 1, 0)",
+            (trade_id, "spot_ledger"),
+        )
+        trade_user = dict(conn.execute("SELECT * FROM users WHERE id = ?", (trade_id,)).fetchone())
+    return admin, trade_user
+
+
+def test_records_support_combined_filters_and_expose_all_field_definitions(ledger_context):
+    from app.spot_ledger import FIELD_CODES, get_records, field_definitions
+
+    admin, _ = ledger_context
+    result = get_records(
+        sales_group="山东组", profit_group="唐山组", sales_type="B09", product_name="铁矿石",
+        port="日照港", operation_title="操作抬头A", supplier="供应商A", customer="客户C",
+        contract_number="C-102", user=admin,
+    )
+    assert [row["source_detail_id"] for row in result["records"]] == ["D1004"]
+    assert result["count"] == 1
+    assert {"B05", "B06", "B07", "B09"} <= set(result["sales_type_options"])
+    assert [field["code"] for field in field_definitions(user=admin)["fields"]] == list(FIELD_CODES)
+
+
+def test_record_pages_are_server_bounded_and_return_only_list_projection(ledger_context):
+    from app.spot_ledger import get_records
+
+    admin, _ = ledger_context
+    first = get_records(limit=2, offset=0, user=admin)
+    second = get_records(limit=2, offset=2, user=admin)
+
+    assert len(first["records"]) == 2
+    assert len(second["records"]) == 2
+    assert first["count"] == second["count"]
+    assert {row["record_id"] for row in first["records"]}.isdisjoint(
+        row["record_id"] for row in second["records"]
+    )
+    assert {"record_id", "AD", "E", "AP", "D", "U", "H", "I", "AB", "L", "X", "supplement_status", "sync_status", "is_land_goods"} <= set(first["records"][0])
+    assert "C" not in first["records"][0]
+    assert "missing_fields" not in first["records"][0]
+    assert "source_payload_json" not in first["records"][0]
+    assert "field_definitions" not in first
+
+
+def test_record_detail_returns_all_business_fields_without_source_payload(ledger_context):
+    from app.spot_ledger import FIELD_CODES, get_record
+
+    admin, _ = ledger_context
+    result = get_record("spot:D1001", user=admin)
+
+    assert set(FIELD_CODES) <= set(result["record"])
+    assert "source_payload_json" not in result["record"]
+
+
+def test_backfill_snapshot_is_admin_only_current_scope_and_omits_payload(ledger_context):
+    from app.spot_ledger import get_backfill_snapshot
+
+    admin, trade_user = ledger_context
+    snapshot = get_backfill_snapshot(user=admin)
+
+    assert snapshot["count"] == len(snapshot["records"])
+    assert snapshot["records"]
+    assert all(row["U"] >= "2026-01-01" for row in snapshot["records"])
+    assert {"record_id", "AD", "H", "U", "L", "X", "Z", "K", "D"} <= set(snapshot["records"][0])
+    assert all("source_payload_json" not in row for row in snapshot["records"])
+    with pytest.raises(HTTPException) as denied:
+        get_backfill_snapshot(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_sales_type_snapshot_is_admin_only_and_not_excel_scoped(ledger_context):
+    from app.spot_ledger import get_source_sales_type_snapshot
+
+    admin, trade_user = ledger_context
+    snapshot = get_source_sales_type_snapshot(user=admin)
+
+    assert snapshot["count"] == len(snapshot["records"])
+    assert {"record_id", "source_detail_id", "D"} <= set(snapshot["records"][0])
+    assert all(set(row) == {"record_id", "source_detail_id", "D"} for row in snapshot["records"])
+    with pytest.raises(HTTPException) as denied:
+        get_source_sales_type_snapshot(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_sales_type_backfill_uses_complete_trade_source_labels_and_expected_values(ledger_context):
+    from app.spot_ledger import (
+        SourceSalesTypeBackfillRequest,
+        get_record,
+        source_sales_type_backfill,
+    )
+
+    admin, _ = ledger_context
+    preview = source_sales_type_backfill(
+        SourceSalesTypeBackfillRequest(
+            rows=[
+                {"source_detail_id": "D1001", "business_category": "贸易-港口现货-市场加价-B07", "expected_value": "B07"},
+                {"source_detail_id": "D1002", "business_category": "B06", "expected_value": "B07"},
+                {"source_detail_id": "missing", "business_category": "贸易-港口现货-背对背-B06", "expected_value": ""},
+            ],
+            apply=False,
+        ),
+        user=admin,
+    )
+
+    assert preview["matched"] == 1
+    assert preview["to_update"] == 1
+    assert preview["invalid"] == 1
+    assert preview["unmatched"] == 1
+    assert preview["updated"] == 0
+
+    applied = source_sales_type_backfill(
+        SourceSalesTypeBackfillRequest(
+            rows=[
+                {"source_detail_id": "D1001", "business_category": "贸易-港口现货-市场加价-B07", "expected_value": "B07"},
+            ],
+            apply=True,
+        ),
+        user=admin,
+    )
+
+    assert applied["updated"] == 1
+    assert get_record("spot:D1001", user=admin)["record"]["D"] == "贸易-港口现货-市场加价-B07"
+
+
+def test_source_sales_type_backfill_rejects_optimistic_value_conflict(ledger_context):
+    from app.spot_ledger import SourceSalesTypeBackfillRequest, source_sales_type_backfill
+
+    admin, _ = ledger_context
+    result = source_sales_type_backfill(
+        SourceSalesTypeBackfillRequest(
+            rows=[
+                {
+                    "source_detail_id": "D1001",
+                    "business_category": "贸易-港口现货-市场加价-B07",
+                    "expected_value": "已经变化",
+                }
+            ],
+            apply=True,
+        ),
+        user=admin,
+    )
+
+    assert result["conflicts"] == 1
+    assert result["updated"] == 0
+
+
+def test_patch_record_honors_expected_values_for_backfill_race_safety(ledger_context):
+    from app.spot_ledger import SpotLedgerPatch, get_record, patch_record
+
+    admin, _ = ledger_context
+    current = get_record("spot:D1001", user=admin)["record"]["K"]
+    expected = "不匹配的并发值" if current != "不匹配的并发值" else "另一个并发值"
+
+    with pytest.raises(HTTPException) as conflict:
+        patch_record(
+            "spot:D1001",
+            SpotLedgerPatch(values={"K": "不应写入"}, expected_values={"K": expected}),
+            user=admin,
+        )
+    assert conflict.value.status_code == 409
+
+
+def test_closed_state_filter_uses_source_settlement_state_instead_of_ledger_eligibility(ledger_context):
+    from app.spot_ledger import get_records
+
+    admin, _ = ledger_context
+    closed = get_records(closed_state="已结案", user=admin)["records"]
+    open_records = get_records(closed_state="未结案", user=admin)["records"]
+
+    assert [row["source_detail_id"] for row in closed] == ["D1004"]
+    assert "D1004" not in {row["source_detail_id"] for row in open_records}
+    assert "D1001" in {row["source_detail_id"] for row in open_records}
+
+
+def test_pending_and_sync_error_views_are_explicit(ledger_context):
+    from app.spot_ledger import get_pending, get_sync_errors
+
+    admin, _ = ledger_context
+    pending = get_pending(user=admin)
+    errors = get_sync_errors(user=admin)
+    assert any(row["source_detail_id"] == "D1004" for row in pending["records"])
+    assert any(row["source_detail_id"] == "D1009" for row in errors["records"])
+    assert any(error["type"] == "conversion_mapping" for error in errors["records"][0]["sync_error_summary"])
+
+
+def test_quality_worklists_exclude_pre_2026_records_but_normal_list_keeps_history(ledger_context):
+    from app.spot_ledger import get_pending, get_records, get_sync_errors
+
+    admin, _ = ledger_context
+    with db.connect() as conn:
+        conn.execute(
+            'UPDATE spot_ledger_records SET "U" = ?, supplement_status = ?, sync_status = ?, sync_error_summary = ? WHERE record_id = ?',
+            ("2025-12-31", "待补录", "异常", '[{"field":"Q"}]', "spot:D1001"),
+        )
+
+    pending = get_pending(user=admin)
+    errors = get_sync_errors(user=admin)
+    assert "D1001" not in {row["source_detail_id"] for row in pending["records"]}
+    assert "D1001" not in {row["source_detail_id"] for row in errors["records"]}
+    historical = next(row for row in get_records(user=admin)["records"] if row["source_detail_id"] == "D1001")
+    assert historical["supplement_status"] == "历史范围外"
+    assert historical["sync_status"] == "历史范围外"
+    assert historical["sync_error_summary"] == []
+
+
+def test_sync_error_view_returns_only_latest_compact_run(ledger_context):
+    from app.spot_ledger import get_sync_errors
+    from app.spot_ledger_sync import FixtureSalesContractSource, apply_full_scan
+
+    admin, _ = ledger_context
+    apply_full_scan(FixtureSalesContractSource(FIXTURE_PATH).fetch_full_scan(), "2026-08-24T10:00+08:00")
+
+    runs = get_sync_errors(limit=1, user=admin)["runs"]
+    assert len(runs) == 1
+    assert runs[0]["slot_key"] == "2026-08-24T10:00+08:00"
+    assert runs[0]["error_count"] > 0
+    assert "error_summary" not in runs[0]
+
+
+def test_pending_and_sync_error_counts_are_not_capped_by_view_page_size(ledger_context, monkeypatch):
+    from app import spot_ledger
+
+    admin, _ = ledger_context
+    requested = []
+
+    def fake_list(params, *, user=None, include_inactive=False, list_projection=False):
+        requested.append(dict(params))
+        return [{"record_id": "visible-row"}]
+
+    monkeypatch.setattr(spot_ledger, "list_records", fake_list)
+    monkeypatch.setattr(spot_ledger, "count_records", lambda params, *, user=None, include_inactive=False: 1460)
+
+    pending = spot_ledger.get_pending(user=admin)
+    errors = spot_ledger.get_sync_errors(user=admin)
+
+    assert pending["count"] == 1460
+    assert errors["count"] == 1460
+    assert requested == [
+        {"supplement_status": "待补录", "limit": 20, "offset": 0},
+        {"sync_error": "true", "limit": 20, "offset": 0},
+    ]
+
+
+def test_source_readiness_requires_administrator_role(ledger_context):
+    from app.spot_ledger import source_readiness_view
+
+    _, trade_user = ledger_context
+    with pytest.raises(HTTPException) as denied:
+        source_readiness_view(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_readiness_returns_only_official_json_schema_metadata(ledger_context, monkeypatch):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_readiness_view
+
+    admin, _ = ledger_context
+    probe = {
+        "ok": True,
+        "source_mode": "official_json",
+        "http_status": 200,
+        "response_code": "200",
+        "schema_paths": ["code", "data.rows[]", "data.rows[].saleContractId"],
+        "detail_response_code": "200",
+        "detail_schema_paths": ["code", "data.saleContractMxList[]"],
+    }
+    monkeypatch.setattr(sync, "probe_official_sales_contract_api", lambda: probe)
+
+    assert source_readiness_view(user=admin) == probe
+
+
+@pytest.mark.parametrize(
+    ("source_error", "expected_detail"),
+    [
+        pytest.param(
+            lambda: __import__("app.spot_ledger_sync", fromlist=["SalesContractSourceError"]).SalesContractSourceError(
+                "auth_unavailable",
+                "personal-password bearer-token source-response",
+                stage="login_page_http",
+                http_status=403,
+            ),
+            {"code": "auth_unavailable", "stage": "login_page_http", "http_status": 403},
+            id="known-source-error",
+        ),
+        pytest.param(
+            lambda: RuntimeError("personal-password bearer-token source-response"),
+            {"code": "source_probe_failed"},
+            id="unexpected-error",
+        ),
+    ],
+)
+def test_source_readiness_redacts_source_errors(ledger_context, monkeypatch, source_error, expected_detail):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_readiness_view
+
+    admin, _ = ledger_context
+
+    def fail_probe():
+        raise source_error()
+
+    monkeypatch.setattr(sync, "probe_official_sales_contract_api", fail_probe)
+
+    with pytest.raises(HTTPException) as failed:
+        source_readiness_view(user=admin)
+    assert failed.value.status_code == 503
+    assert failed.value.detail == expected_detail
+    assert "personal-password" not in str(failed.value)
+    assert "bearer-token" not in str(failed.value)
+
+
+def test_source_dry_run_requires_administrator_role(ledger_context):
+    from app.spot_ledger import source_dry_run_view
+
+    _, trade_user = ledger_context
+    with pytest.raises(HTTPException) as denied:
+        source_dry_run_view(user=trade_user)
+    assert denied.value.status_code == 403
+
+
+def test_source_dry_run_returns_only_aggregate_result(ledger_context, monkeypatch):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_dry_run_view
+
+    admin, _ = ledger_context
+    aggregate = {
+        "ok": True,
+        "source_mode": "official_json",
+        "page_count": 2,
+        "counts": {"active_contract_count": 12, "eligible_record_count": 7},
+        "field_coverage": {"AD": {"filled_count": 7, "total_count": 7}},
+        "scan_error_types": {},
+        "record_error_types": {},
+    }
+    monkeypatch.setattr(sync, "run_official_source_dry_run", lambda: aggregate)
+
+    assert source_dry_run_view(user=admin) == aggregate
+
+
+def test_source_scope_readiness_returns_only_aggregate_result(ledger_context, monkeypatch):
+    from app import spot_ledger_sync as sync
+    from app.spot_ledger import source_scope_readiness_view
+
+    admin, _ = ledger_context
+    aggregate = {
+        "ok": True,
+        "source_mode": "official_json",
+        "page_count": 1,
+        "counts": {"in_scope_demand_count": 8, "active_contract_count": 1},
+        "error_types": {},
+    }
+    monkeypatch.setattr(sync, "run_official_contract_scope_dry_run", lambda: aggregate)
+
+    assert source_scope_readiness_view(user=admin) == aggregate
+
+
+def test_manual_edit_requires_sensitive_permission_and_cannot_change_system_field(ledger_context):
+    from app.spot_ledger import SpotLedgerPatch, patch_record
+
+    admin, trade_user = ledger_context
+    with pytest.raises(HTTPException) as denied:
+        patch_record("spot:D1001", SpotLedgerPatch(values={"C": "自主建仓"}), user=trade_user)
+    assert denied.value.status_code == 403
+    updated = patch_record(
+        "spot:D1001",
+        SpotLedgerPatch(values={"C": "自主建仓", "N": 0, "O": -1, "Y": 0, "AM": "人工补录"}),
+        user=admin,
+    )
+    assert updated["record"]["C"] == "自主建仓"
+    assert updated["record"]["O"] == -1
+    with pytest.raises(HTTPException) as readonly:
+        patch_record("spot:D1001", SpotLedgerPatch(values={"AD": "不能改合同号"}), user=admin)
+    assert readonly.value.status_code == 400
+
+
+def test_legacy_system_fallback_rejects_excel_sales_type_writes(ledger_context):
+    from app.spot_ledger import SpotLedgerSystemFallbackPatch, patch_system_fallback
+
+    admin, _ = ledger_context
+    with pytest.raises(HTTPException) as rejected:
+        patch_system_fallback(
+            "spot:D1001",
+            SpotLedgerSystemFallbackPatch(
+                values={"D": "贸易-代理落地-B09"},
+                expected_values={"D": "B07"},
+            ),
+            user=admin,
+        )
+    assert rejected.value.status_code == 410
+
+
+def test_strategy_hedging_requires_complete_open_close_and_rejects_partial_close(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging
+
+    admin, _ = ledger_context
+    payload = StrategicHedgingIn(
+        group_name="大客户组", account="模拟账户", contract="I2609", open_direction="多",
+        opened_at="2026-08-24 09:00:00", open_quantity=10, quantity_unit="吨",
+        open_price=800, price_currency="元/吨", closed_at="2026-08-25 09:00:00",
+        close_quantity=10, close_price=820, remark="本地 fixture 手工记录",
+    )
+    created = create_strategic_hedging(payload, user=admin)
+    assert created["record"]["strategic_status"] == "已平仓"
+    partial = payload.model_copy(update={"close_quantity": 5})
+    with pytest.raises(HTTPException) as invalid:
+        create_strategic_hedging(partial, user=admin)
+    assert invalid.value.status_code == 400
+
+
+def test_strategy_insert_uses_null_for_non_applicable_numeric_fields(ledger_context, monkeypatch):
+    from app import spot_ledger
+
+    admin, _ = ledger_context
+    payload = spot_ledger.StrategicHedgingIn(
+        group_name="大客户组", account="宏源", contract="I2609", open_direction="多",
+        opened_at="2026-08-24 09:00:00", open_quantity=10, quantity_unit="吨",
+        open_price=800, price_currency="元/吨",
+    )
+    captured = {}
+    original_insert = spot_ledger._execute_insert
+
+    def recording_insert(cur, sql, params):
+        captured.update(sql=sql, params=params)
+        return original_insert(cur, sql, params)
+
+    monkeypatch.setattr(spot_ledger, "_execute_insert", recording_insert)
+    created = spot_ledger.create_strategic_hedging(payload, user=admin)
+
+    match = re.search(r"INSERT INTO spot_ledger_records \((?P<columns>.*?)\) VALUES", captured["sql"], re.S)
+    assert match
+    columns = [item.strip().strip('"') for item in match.group("columns").split(",")]
+    insert_values = dict(zip(columns, captured["params"]))
+    assert all(insert_values[code] is None for code in spot_ledger.NUMERIC_FIELDS)
+    assert created["record"]["strategic_status"] == "未平仓"
+
+
+def _strategy_payload(**updates):
+    values = {
+        "group_name": "大客户组",
+        "account": "宏源",
+        "contract": "I2609",
+        "open_direction": "多",
+        "opened_at": "2026-08-24 09:00:00",
+        "open_quantity": 10,
+        "quantity_unit": "吨",
+        "open_price": 800,
+        "price_currency": "元/吨",
+    }
+    values.update(updates)
+    return values
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("group_name", "不存在组"),
+        ("open_direction", "平仓"),
+        ("quantity_unit", "手"),
+        ("account", "   "),
+        ("contract", "\t"),
+        ("opened_at", "  "),
+        ("price_currency", "\n"),
+    ],
+)
+def test_strategy_input_rejects_invalid_or_whitespace_values(field, value):
+    with pytest.raises(ValidationError):
+        from app.spot_ledger import StrategicHedgingIn
+
+        StrategicHedgingIn(**_strategy_payload(**{field: value}))
+
+
+def test_strategy_input_trims_text_and_allows_custom_account():
+    from app.spot_ledger import StrategicHedgingIn
+
+    payload = StrategicHedgingIn(**_strategy_payload(account=" 财达 ", contract=" I2609 ", remark=" 备注 "))
+
+    assert payload.account == "财达"
+    assert payload.contract == "I2609"
+    assert payload.remark == "备注"
+
+
+def test_strategy_input_rejects_missing_open_price():
+    from app.spot_ledger import StrategicHedgingIn
+
+    with pytest.raises(ValidationError):
+        StrategicHedgingIn(**_strategy_payload(open_price=None))
+
+
+def test_strategy_record_round_trips_strategy_fields_without_polluting_spot_fields(ledger_context):
+    from app.spot_ledger import NUMERIC_FIELDS, StrategicHedgingIn, create_strategic_hedging, get_record
+
+    admin, _ = ledger_context
+    payload = StrategicHedgingIn(**_strategy_payload(
+        account="财达", contract="I2609-C-800", open_direction="空", open_quantity=12.5,
+        opened_at="2026-08-24 09:00:00", remark="战略专用备注",
+    ))
+    created = create_strategic_hedging(payload, user=admin)
+    record = get_record(created["record"]["record_id"], user=admin)["record"]
+
+    assert record["record_source_type"] == "战略套保"
+    assert record["strategic_group"] == "大客户组"
+    assert record["strategic_account"] == "财达"
+    assert record["strategic_contract"] == "I2609-C-800"
+    assert record["strategic_open_direction"] == "空"
+    assert record["strategic_open_quantity"] == 12.5
+    assert record["strategic_quantity_unit"] == "吨"
+    assert record["strategic_open_price"] == 800
+    assert record["strategic_price_currency"] == "元/吨"
+    assert record["strategic_remark"] == "战略专用备注"
+    assert record["strategic_status"] == "未平仓"
+    assert all(record[code] is None for code in NUMERIC_FIELDS)
+
+
+def test_strategy_records_are_listed_with_a_minimal_strategy_projection(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging, get_records
+
+    admin, _ = ledger_context
+    created = create_strategic_hedging(
+        StrategicHedgingIn(**_strategy_payload(account="财达", contract="I2609-C-800", open_quantity=12.5)),
+        user=admin,
+    )
+    result = get_records(limit=100, offset=0, user=admin)
+    strategy = next(row for row in result["records"] if row["record_id"] == created["record"]["record_id"])
+
+    assert strategy["record_source_type"] == "战略套保"
+    assert strategy["strategic_group"] == "大客户组"
+    assert strategy["strategic_contract"] == "I2609-C-800"
+    assert strategy["strategic_opened_at"] == "2026-08-24 09:00:00"
+    assert strategy["strategic_open_quantity"] == 12.5
+    assert strategy["strategic_status"] == "未平仓"
+
+
+def test_fully_closed_strategy_list_projection_includes_close_quantity_and_status(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging, get_records
+
+    admin, _ = ledger_context
+    created = create_strategic_hedging(
+        StrategicHedgingIn(**_strategy_payload(
+            contract="I2609-C-800", closed_at="2026-08-25 09:00:00", close_quantity=10, close_price=820,
+        )),
+        user=admin,
+    )
+    result = get_records(limit=100, offset=0, user=admin)
+    strategy = next(row for row in result["records"] if row["record_id"] == created["record"]["record_id"])
+
+    assert strategy["strategic_close_quantity"] == 10
+    assert strategy["strategic_status"] == "已平仓"
+
+
+def test_strategy_list_and_count_use_opened_date_for_date_filters(ledger_context):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging, get_records
+
+    admin, _ = ledger_context
+    created = create_strategic_hedging(
+        StrategicHedgingIn(**_strategy_payload(contract="I2609-C-800", opened_at="2026-08-24 09:00:00")),
+        user=admin,
+    )
+    result = get_records(from_date="2026-08-01", to_date="2026-08-31", limit=100, offset=0, user=admin)
+
+    assert any(row["record_id"] == created["record"]["record_id"] for row in result["records"])
+    assert result["count"] == len(result["records"])
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"closed_at": "2026-08-25 09:00:00"},
+        {"close_quantity": 10},
+        {"close_price": 820},
+    ],
+)
+def test_strategy_rejects_incomplete_close_fields(ledger_context, updates):
+    from app.spot_ledger import StrategicHedgingIn, create_strategic_hedging
+
+    admin, _ = ledger_context
+    with pytest.raises(HTTPException) as invalid:
+        create_strategic_hedging(StrategicHedgingIn(**_strategy_payload(**updates)), user=admin)
+    assert invalid.value.status_code == 400
+
+
+def test_export_defaults_to_a_to_ay_and_adds_technical_key_only_when_requested(ledger_context):
+    from app.spot_ledger import export_records
+
+    admin, _ = ledger_context
+
+    async def read_response(response):
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    default_bytes = asyncio.run(read_response(export_records(user=admin)))
+    technical_bytes = asyncio.run(read_response(export_records(include_technical_key=True, user=admin)))
+    default_headers = list(load_workbook(io.BytesIO(default_bytes), read_only=True).active.iter_rows(values_only=True))[0]
+    technical_headers = list(load_workbook(io.BytesIO(technical_bytes), read_only=True).active.iter_rows(values_only=True))[0]
+    assert len(default_headers) == 51
+    assert "销售合同商品明细 ID" not in default_headers
+    assert len(technical_headers) == 52
+    assert technical_headers[-1] == "销售合同商品明细 ID"
+
+
+def test_export_requests_the_complete_supported_result_set(ledger_context, monkeypatch):
+    from app import spot_ledger
+
+    admin, _ = ledger_context
+    captured = {}
+
+    def fake_list(params, *, user=None, include_inactive=False):
+        captured.update(params)
+        return []
+
+    monkeypatch.setattr(spot_ledger, "list_records", fake_list)
+    spot_ledger.export_records(user=admin)
+
+    assert captured["limit"] == 5000
+
+
+def test_spot_ledger_routes_are_registered_in_main_app():
+    from app.main import app
+
+    paths = {route.path for route in app.routes}
+    assert "/api/spot-ledger/records" in paths
+    assert "/api/spot-ledger/export" in paths
+    assert "/api/spot-ledger/strategic-hedging" in paths
+    assert "/api/spot-ledger/source-readiness" in paths
+    assert "/api/spot-ledger/source-dry-run" in paths
+    assert "/api/spot-ledger/source-report-dry-run" in paths
+    assert "/api/spot-ledger/source-scope-readiness" in paths
+    assert "/api/spot-ledger/source-sales-type-snapshot" in paths
+    assert "/api/spot-ledger/source-sales-type-backfill" in paths
+    assert not any(path.endswith("/sync-now") for path in paths)

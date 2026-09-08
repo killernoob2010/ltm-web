@@ -39,13 +39,30 @@ test("settlement import uses one txt file with automatic daily or monthly detect
 test("whole trades can be classified and business close relationships can be rematched", () => {
   assert.match(tradingJs, /归属设置在完整开仓成交；平仓和到期了结按开平分摊自动继承/);
   assert.match(tradingJs, /business-assignments\/batch-confirm/);
-  assert.match(tradingJs, /business-closes\/\$\{closeId\}\/preview/);
+  assert.match(tradingJs, /business-close-groups\/\$\{closeId\}/);
   assert.match(tradingJs, /restore-default/);
   assert.match(tradingJs, /事实层不变/);
 });
 
-test("pending calculations and reserved export are visible in the first version", () => {
-  assert.match(tradingJs, /待计算/);
+test("junneng rematch uses the existing drawer for an open-by-close quantity matrix", () => {
+  assert.match(tradingJs, /data-rematch-id/);
+  assert.match(tradingJs, /tm-rematch-matrix/);
+  assert.match(tradingJs, /原始碎片/);
+  assert.match(tradingJs, /data-rematch-open/);
+  assert.match(tradingJs, /data-rematch-close/);
+  assert.match(tradingJs, /平仓列必须完整分配/);
+  assert.match(tradingJs, /事实平仓盈亏保持不变/);
+  assert.match(tradingJs, /确认批量调整/);
+  assert.match(tradingJs, /恢复本组默认关系/);
+  assert.match(css, /\.tm-drawer\.tm-rematch-wide/);
+  assert.match(css, /\.tm-rematch-matrix/);
+  assert.doesNotMatch(html, /开平关系模拟器/);
+});
+
+test("live position valuation and reserved export are visible", () => {
+  assert.match(tradingJs, /行情加载中/);
+  assert.match(tradingJs, /暂无行情/);
+  assert.match(tradingJs, /浮动盈亏/);
   assert.match(tradingJs, /功能暂未开放/);
   assert.match(tradingJs, /本期不生成真实文件，功能位置按原型保留/);
   assert.match(css, /\.tm-pending/);
@@ -98,6 +115,14 @@ test("fact tabs cache by filters without prefetching sibling tabs", () => {
   assert.doesNotMatch(tradingJs, /function prefetchFactTabs/);
   assert.match(tradingJs, /function invalidateFactCache/);
   assert.match(tradingJs + css, /tm-table-loading/);
+});
+
+test("fact request failures replace the permanent loader with a retry state", () => {
+  assert.match(tradingJs, /function renderFactLoadError/);
+  assert.match(tradingJs, /交易记录读取失败，请重试/);
+  assert.match(tradingJs, /id="tmFactRetry"/);
+  assert.match(css, /\.tm-table-error/);
+  assert.match(html, /trading_management\.js\?v=20260908-live-pnl-v3/);
 });
 
 test("fact filters preserve their visible values after rerender", () => {
@@ -269,4 +294,54 @@ test("visible business position pages refresh quotes every fifteen seconds", () 
   assert.match(tradingJs, /deactivate\(\)/);
   assert.match(tradingJs, /MutationObserver/);
   assert.match(tradingJs, /tradingManagementPage/);
+});
+
+test("fact quote refresh keeps the last successful valuation visible", () => {
+  assert.match(tradingJs, /function preserveFactValuation/);
+  assert.match(tradingJs, /行情更新失败，沿用上次行情/);
+  assert.match(tradingJs, /factCache\.get\(requestKey\)/);
+  assert.match(tradingJs, /loadFactData\("positions", \{ refresh: true \}\)/);
+});
+
+test("fact tabs refresh their server facts while the page stays open", () => {
+  assert.match(tradingJs, /FACT_QUOTE_REFRESH_MS\s*=\s*10000/);
+  assert.match(tradingJs, /loadFactData\(tm\.factsTab, \{ refresh: true \}\)/);
+  assert.doesNotMatch(tradingJs, /tm\.factsTab !== "positions" \|\| document\.visibilityState/);
+});
+
+test("unavailable quote rows expose the provider reason", () => {
+  assert.match(tradingJs, /market_data_message/);
+  assert.match(tradingJs, /行情源不可用/);
+});
+
+test("fact quote refresh does not reuse pnl when the effective position changed", () => {
+  assert.match(tradingJs, /positionStateChanged/);
+  assert.match(tradingJs, /quantity/);
+  assert.match(tradingJs, /average_price/);
+  assert.match(tradingJs, /positionStateChanged\(previous, current\)/);
+});
+
+test("effective facts expose status filters, source labels, and live valuation metadata", () => {
+  assert.match(tradingJs, /factStatus/);
+  assert.match(tradingJs, /id="tmFactStatus"/);
+  assert.match(tradingJs, /fact_status/);
+  for (const label of ["临时", "结算确认", "来源", "最新成交价", "浮动盈亏", "数据截至"]) {
+    assert.match(tradingJs, new RegExp(label));
+  }
+  assert.doesNotMatch(
+    tradingJs.match(/positions:\s*\[\[[\s\S]*?\],\n\s+closes:/)?.[0] || "",
+    /formation_method|形成方式/,
+  );
+  assert.match(tradingJs, /settlement_confirmed/);
+  assert.match(tradingJs, /provisional/);
+  assert.match(tradingJs, /freshness_status/);
+  assert.match(tradingJs, /baseline_snapshot_date/);
+  assert.match(tradingJs, /facts\/positions\/valuation/);
+});
+
+test("provisional facts cannot enter business classification controls", () => {
+  assert.match(tradingJs, /row\.can_classify/);
+  assert.match(tradingJs, /结算确认后可归类/);
+  assert.match(tradingJs, /row\.open_close === "开仓" && row\.can_classify/);
+  assert.match(tradingJs, /can_classify/);
 });

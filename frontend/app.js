@@ -99,6 +99,8 @@ function setHidden(selector, hidden) {
 }
 
 function applyUiPermissions() {
+  ["#spotLedgerExportBtn", "#spotLedgerStrategyBtn", "#spotLedgerEditBtn"].forEach(selector => setHidden(selector, !canModuleSensitive("spot_ledger")));
+  ["#collectorPairingBtn", "#collectorReconcileBtn", "#collectorAccountId"].forEach(selector => setHidden(selector, !canModuleSensitive("trading_collector")));
   const guest = isGuest();
   const canUseRiskAlerts = canUseRiskAlertWorkspace();
   setHidden("#notificationBtn", guest);
@@ -133,6 +135,8 @@ const midEventPage = document.querySelector("#midEventPage");
 const shJunnengPage = document.querySelector("#shJunnengPage");
 const riskAlertPage = document.querySelector("#riskAlertPage");
 const userManagementPage = document.querySelector("#userManagementPage");
+const tradingCollectorPage = document.querySelector("#tradingCollectorPage");
+const spotLedgerPage = document.querySelector("#spotLedgerPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
@@ -496,7 +500,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvDataPage, dvChartPage, tradingManagementPage, tradingCollectorPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -571,6 +575,16 @@ async function activateModule(code, subName, subView = "") {
   if (code === "user_management") {
     showOnly(userManagementPage);
     await loadUserManagement();
+    return;
+  }
+  if (code === "trading_collector") {
+    showOnly(tradingCollectorPage);
+    await window.TradingCollector.activate({ canManage: canModuleSensitive("trading_collector") });
+    return;
+  }
+  if (code === "spot_ledger") {
+    showOnly(spotLedgerPage);
+    await window.SpotLedger.activate({api, token: state.token, canSensitive: canModuleSensitive("spot_ledger")});
     return;
   }
   if (code === "order_finance_progress") {

@@ -21,6 +21,8 @@ from openpyxl import load_workbook
 from pydantic import BaseModel
 
 from . import db
+from . import trading_collector_reconciliation as collector_reconciliation
+from . import trading_effective_facts
 from .permissions import require_permission
 from .trading_settlement import parse_settlement_statement
 from .trading_overview import (
@@ -34,10 +36,12 @@ from .trading_valuation import (
     SH_JUNNENG_RULE_VERSION,
     calculate_option_display_greeks,
     calculate_option_position_valuation,
+    calculate_live_position_floating_pnl,
     calculate_position_floating_pnl,
     calculate_statement_option_metrics,
     calculate_sh_junneng_settlement,
     get_quote_snapshots,
+    select_live_trade_price,
     select_valuation_price,
 )
 
@@ -93,6 +97,15 @@ def _number(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
         return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return default
+
+
+def _seconds_precision(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) >= 19 and text[4] == "-" and text[7] == "-":
+        return text[:19].replace("T", " ")
+    return text.split(".", 1)[0]
 
 
 def _is_date_marker(value: Any) -> bool:
@@ -1165,7 +1178,9 @@ def confirm_settlement_import(
                     row["exchange"], row["contract"], row["asset_type"], row["side"],
                     row["open_close_raw"], row["open_close"], row["quantity"], row["price"],
                     row["turnover"], row["fee"], row["hedge_flag"],
-                    row["premium_cashflow"], is_current,
+                    row["premium_cashflow"], row.get("transaction_no"),
+                    collector_reconciliation.normalize_transaction_no(row.get("transaction_no")),
+                    is_current,
                 )
             )
         if trade_values:
@@ -1175,9 +1190,9 @@ def confirm_settlement_import(
                 INSERT INTO trading_trade_facts
                     (identity_id, batch_id, source_row_id, trade_date, trade_time, exchange,
                      contract, asset_type, side, open_close_raw, open_close, quantity, price,
-                     turnover, fee, hedge_flag, premium_cashflow, is_current,
-                     verification_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
+                     turnover, fee, hedge_flag, premium_cashflow, transaction_no,
+                     normalized_transaction_no, is_current, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file_imported')
                 """,
                 trade_values,
             )
@@ -1392,6 +1407,17 @@ def confirm_settlement_import(
             """,
             (actor, preview_batch_id),
         )
+        transaction_numbers_backfilled = collector_reconciliation.backfill_settlement_transaction_numbers(
+            cur, account_id=batch["account_id"]
+        )
+        monthly_finalization = {"retired": 0, "audited": 0}
+        if batch["statement_type"] == "monthly":
+            monthly_finalization = collector_reconciliation.finalize_lower_priority_monthly_trades(
+                cur, preview_batch_id
+            )
+        reconciliation_summary = collector_reconciliation.reconcile_intraday_fills_for_batch(
+            cur, preview_batch_id, actor
+        )
         conn.commit()
     return {
         "batch_id": preview_batch_id,
@@ -1399,6 +1425,9 @@ def confirm_settlement_import(
         "counts": statement["counts"],
         "monthly_replacements": replacements if batch["statement_type"] == "monthly" else 0,
         "differences": differences,
+        "transaction_numbers_backfilled": transaction_numbers_backfilled,
+        "monthly_finalization": monthly_finalization,
+        "reconciliation": reconciliation_summary.to_dict(),
     }
 
 
@@ -1964,6 +1993,7 @@ class FactFilters:
     start_date: str = ""
     end_date: str = ""
     classification: str = ""
+    fact_status: str = ""
     business_type: str = ""
     page: int = 1
     page_size: int = 20
@@ -1973,7 +2003,24 @@ class FactFilters:
             raise ValueError("每页条数只允许 20、50、100")
         if self.business_type not in {"", *BUSINESS_TYPES}:
             raise ValueError("未知业务类型")
+        if self.fact_status not in trading_effective_facts.FACT_STATUSES:
+            raise ValueError("事实状态无效")
         self.page = max(1, self.page)
+
+
+def _effective_fact_filters(filters: FactFilters) -> trading_effective_facts.EffectiveFactFilters:
+    return trading_effective_facts.EffectiveFactFilters(
+        contract=filters.contract,
+        direction=filters.direction,
+        asset_type=filters.asset_type,
+        open_close=filters.open_close,
+        classification=filters.classification,
+        fact_status=filters.fact_status,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+        page=filters.page,
+        page_size=filters.page_size,
+    )
 
 
 def _page_result(items: list[dict[str, Any]], summary: dict[str, Any], filters: FactFilters, data_status: str = "ok") -> dict[str, Any]:
@@ -2190,93 +2237,15 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.cursor()
         if view == "trades":
-            return _query_trade_rows_paged(cur, filters)
+            return trading_effective_facts.query_effective_trades(
+                cur, _effective_fact_filters(filters)
+            )
         if view == "closes":
             return _query_close_rows_paged(cur, filters)
         if view == "positions":
-            snapshot_date = filters.end_date
-            if not snapshot_date:
-                row = db._exec(
-                    cur,
-                    """
-                    SELECT MAX(ps.snapshot_date) AS d
-                    FROM trading_position_snapshots ps
-                    JOIN trading_import_batches b ON b.id = ps.batch_id
-                    WHERE b.status = 'active' AND ps.is_current = 1
-                    """,
-                ).fetchone()
-                snapshot_date = row["d"] if row else None
-            rows = db._exec(
-                cur,
-                """
-                SELECT ps.* FROM trading_position_snapshots ps
-                JOIN trading_import_batches b ON b.id = ps.batch_id
-                WHERE b.status = 'active' AND ps.is_current = 1 AND ps.snapshot_date = ?
-                ORDER BY ps.contract, ps.direction, ps.id
-                """,
-                (snapshot_date,),
-            ).fetchall() if snapshot_date else []
-            grouped_positions: dict[tuple[str, str, str], dict[str, Any]] = {}
-            for raw_row in rows:
-                row = dict(raw_row)
-                key = (row["contract"], row["direction"], row["asset_type"])
-                group = grouped_positions.get(key)
-                if not group:
-                    group = dict(row)
-                    group["quantity"] = 0.0
-                    group["margin"] = 0.0
-                    group["weighted_price"] = 0.0
-                    group["source_record_count"] = 0
-                    grouped_positions[key] = group
-                quantity = float(row["quantity"] or 0)
-                group["quantity"] += quantity
-                group["margin"] += float(row["margin"] or 0)
-                group["weighted_price"] += float(row["average_price"] or 0) * quantity
-                group["source_record_count"] += 1
-            items = list(grouped_positions.values())
-            for item in items:
-                item["average_price"] = item.pop("weighted_price") / item["quantity"] if item["quantity"] else 0
-            assignment_rows = db._exec(
-                cur,
-                """
-                SELECT tf.contract, tf.side AS direction, tf.asset_type,
-                       ba.business_type, st.name AS strategy,
-                       CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
-                FROM trading_trade_facts tf
-                JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
-                LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-                LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
-                WHERE tf.is_current = 1 AND tf.open_close = '开仓'
-                """,
-            ).fetchall()
-            assignments: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-            for assignment in assignment_rows:
-                item = dict(assignment)
-                assignments.setdefault((item["contract"], item["direction"], item["asset_type"]), []).append(item)
-            for item in items:
-                related = assignments.get((item["contract"], item["direction"], item["asset_type"]), [])
-                classified = [row for row in related if row["assignment_status"] == "classified"]
-                item["assignment_status"] = "classified" if related and len(classified) == len(related) else "unclassified"
-                item["business_type"] = classified[0]["business_type"] if classified and len({row["business_type"] for row in classified}) == 1 else None
-                item["strategy"] = classified[0]["strategy"] if classified and len({row["strategy"] for row in classified}) == 1 else None
-            if filters.contract:
-                items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
-            if filters.direction:
-                items = [row for row in items if row["direction"] == filters.direction]
-            if filters.asset_type:
-                items = [row for row in items if row["asset_type"] == filters.asset_type]
-            if filters.classification == "classified":
-                items = [row for row in items if row["assignment_status"] == "classified"]
-            elif filters.classification == "unclassified":
-                items = [row for row in items if row["assignment_status"] == "unclassified"]
-            summary = {
-                "record_count": len(items),
-                "source_record_count": sum(int(row.get("source_record_count") or 0) for row in items),
-                "quantity": sum(float(row["quantity"]) for row in items),
-                "margin": sum(float(row["margin"] or 0) for row in items),
-            }
-            status = "ok" if items else "no_position_snapshot"
-            return _page_result(items, summary, filters, status)
+            return trading_effective_facts.query_effective_positions(
+                cur, _effective_fact_filters(filters)
+            )
         if view == "closes":
             rows = db._exec(
                 cur,
@@ -2419,39 +2388,158 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
         return _page_result(items, summary, filters)
 
 
+def _active_contract_spec_multipliers(cur) -> dict[tuple[str, str, str], float]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT exchange, product_code, asset_type, contract_multiplier
+        FROM trading_contract_specs
+        WHERE is_active = 1
+        """,
+    ).fetchall()
+    result: dict[tuple[str, str, str], float] = {}
+    for row in rows:
+        try:
+            multiplier = float(row["contract_multiplier"])
+        except (TypeError, ValueError):
+            continue
+        if multiplier <= 0:
+            continue
+        result[
+            (
+                str(row["exchange"] or "").strip().lower(),
+                str(row["product_code"] or "").strip().lower(),
+                str(row["asset_type"] or "").strip().lower(),
+            )
+        ] = multiplier
+    return result
+
+
+def query_fact_position_valuation(filters: FactFilters) -> dict[str, Any]:
+    """Attach strict latest-trade valuation to the effective position view.
+
+    The effective facts query remains independent from the market-data call so
+    the page can render positions before the read-only quote session returns.
+    """
+    with db.connect() as conn:
+        cur = conn.cursor()
+        result = trading_effective_facts.query_effective_positions(
+            cur,
+            _effective_fact_filters(filters),
+            include_all_items=True,
+        )
+        all_items = result.pop("all_items", [])
+        spec_multipliers = _active_contract_spec_multipliers(cur)
+
+    unique_requests: dict[str, QuoteRequest] = {}
+    for item in all_items:
+        contract = str(item.get("contract") or "").strip()
+        if not contract or contract in unique_requests:
+            continue
+        unique_requests[contract] = QuoteRequest(
+            contract=contract,
+            exchange=str(item.get("exchange") or ""),
+            asset_type=str(item.get("asset_type") or ""),
+        )
+    quotes = get_quote_snapshots(list(unique_requests.values())) if unique_requests else {}
+
+    for item in all_items:
+        contract = str(item.get("contract") or "").strip()
+        quote = quotes.get(contract, QuoteSnapshot())
+        valuation_price, valuation_source, valuation_status = select_live_trade_price(quote)
+        exchange = str(item.get("exchange") or "").strip().lower()
+        asset_type = str(item.get("asset_type") or "").strip().lower()
+        try:
+            multiplier = float(quote.multiplier) if quote.multiplier is not None and float(quote.multiplier) > 0 else None
+        except (TypeError, ValueError):
+            multiplier = None
+        if multiplier is None:
+            multiplier = spec_multipliers.get((exchange, _product_code(contract), asset_type))
+        item.update(
+            {
+                "market_price": quote.last_price if valuation_price is not None else None,
+                "valuation_price": valuation_price,
+                "valuation_source": valuation_source,
+                "market_time": _seconds_precision(quote.market_time),
+                "valuation_status": valuation_status,
+                "market_data_status": quote.market_data_status,
+                "market_data_message": quote.market_data_message,
+                "floating_pnl": None,
+                "floating_pnl_status": valuation_status,
+                "contract_multiplier": multiplier,
+                "valuation_message": (
+                    "合约已到期"
+                    if valuation_status == "expired"
+                    else f"行情源不可用：{quote.market_data_message}"
+                    if valuation_price is None and quote.market_data_message
+                    else "暂无最新成交价"
+                    if valuation_price is None
+                    else ""
+                ),
+            }
+        )
+        if valuation_price is None:
+            continue
+        try:
+            average_raw = item.get("average_price")
+            quantity_raw = item.get("quantity")
+            average_price = float(average_raw) if average_raw is not None else None
+            quantity = float(quantity_raw) if quantity_raw is not None else None
+        except (TypeError, ValueError):
+            average_price = None
+            quantity = None
+        if average_price is None or quantity is None or quantity <= 0 or multiplier is None:
+            item["valuation_status"] = "unavailable"
+            item["floating_pnl_status"] = "unavailable"
+            item["valuation_message"] = "缺少持仓成本或合约乘数"
+            continue
+        item["floating_pnl"] = calculate_live_position_floating_pnl(
+            open_price=average_price,
+            market_price=valuation_price,
+            direction=str(item.get("direction") or ""),
+            remaining_quantity=quantity,
+            multiplier=multiplier,
+        )
+        item["floating_pnl_status"] = (
+            "stale" if valuation_status == "stale" else "live"
+        )
+
+    values = [
+        float(item["floating_pnl"])
+        for item in all_items
+        if item.get("floating_pnl") is not None
+    ]
+    statuses = [str(item.get("floating_pnl_status") or "unavailable") for item in all_items]
+    value_statuses = {status for status in statuses if status in {"live", "stale"}}
+    result["summary"].update(
+        {
+            "floating_pnl": sum(values) if values else None,
+            "floating_pnl_status": (
+                "live"
+                if statuses and all(status == "live" for status in statuses)
+                else "stale"
+                if statuses
+                and value_statuses
+                and value_statuses <= {"live", "stale"}
+                and all(status in {"live", "stale"} for status in statuses)
+                and "stale" in value_statuses
+                else "partial"
+                if values
+                else "unavailable"
+            ),
+            "valuation_count": len(values),
+            "valuation_total_count": len(all_items),
+        }
+    )
+    return result
+
+
 def query_trade_selection_identities(filters: FactFilters) -> dict[str, Any]:
     """返回当前筛选口径下的全部成交标识，避免前端逐页拉取完整行数据。"""
     with db.connect() as conn:
-        rows = db._exec(
-            conn.cursor(),
-            """
-            SELECT tf.identity_id, tf.contract, tf.side, tf.asset_type,
-                   tf.open_close, tf.trade_date,
-                   CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END AS assignment_status
-            FROM trading_trade_facts tf
-            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
-            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
-            WHERE tf.is_current = 1 AND tf.open_close = '开仓'
-            ORDER BY tf.trade_date DESC, tf.id DESC
-            """,
-        ).fetchall()
-    items = [dict(row) for row in rows]
-    if filters.contract:
-        items = [row for row in items if filters.contract.lower() in row["contract"].lower()]
-    if filters.direction:
-        items = [row for row in items if row["side"] == filters.direction]
-    if filters.asset_type:
-        items = [row for row in items if row["asset_type"] == filters.asset_type]
-    if filters.open_close:
-        items = [row for row in items if row["open_close"] == filters.open_close]
-    if filters.start_date:
-        items = [row for row in items if row["trade_date"] >= filters.start_date]
-    if filters.end_date:
-        items = [row for row in items if row["trade_date"] <= filters.end_date]
-    if filters.classification in {"classified", "unclassified"}:
-        items = [row for row in items if row["assignment_status"] == filters.classification]
-    identity_ids = [int(row["identity_id"]) for row in items]
-    return {"identity_ids": identity_ids, "total_items": len(identity_ids)}
+        return trading_effective_facts.query_effective_trade_selection_ids(
+            conn.cursor(), _effective_fact_filters(filters)
+        )
 
 
 def _build_business_type_overview(filters: FactFilters) -> dict[str, Any]:
@@ -2677,6 +2765,7 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
         open_close=filters.open_close,
         start_date=filters.start_date,
         end_date=filters.end_date,
+        fact_status="settlement_confirmed",
         page=1,
         page_size=100,
     ))
@@ -2694,6 +2783,7 @@ def build_overview(filters: FactFilters) -> dict[str, Any]:
         direction=filters.direction,
         asset_type=filters.asset_type,
         end_date=filters.end_date,
+        fact_status="settlement_confirmed",
         page=1,
         page_size=100,
     ))
@@ -2790,6 +2880,26 @@ class RematchConfirmIn(BaseModel):
 
 class RestoreDefaultIn(BaseModel):
     allocation_version: int
+    reason: str = "恢复事实层默认开平关系"
+
+
+class BatchRematchPreviewIn(BaseModel):
+    start_date: str = ""
+    end_date: str = ""
+    versions: dict[str, int]
+    targets: dict[str, dict[str, float]]
+
+
+class BatchRematchConfirmIn(BaseModel):
+    preview_token: str
+    versions: dict[str, int]
+    reason: str = ""
+
+
+class BatchRestoreDefaultIn(BaseModel):
+    start_date: str = ""
+    end_date: str = ""
+    versions: dict[str, int]
     reason: str = "恢复事实层默认开平关系"
 
 
@@ -3719,6 +3829,561 @@ def _current_allocation_version(cur, close_identity_id: int) -> int:
     return int(row["v"] or 0)
 
 
+def _pool_price(value: Any) -> str:
+    number = float(value or 0)
+    return str(int(number)) if number.is_integer() else format(number, ".10g")
+
+
+def _open_pool_id(row: dict[str, Any]) -> str:
+    return "open|{}|{}|{}|{}|{}".format(
+        row["trade_date"], _pool_price(row["price"]), row["business_subject_id"],
+        row["business_type"], row["strategy_id"] or 0,
+    )
+
+
+def _close_pool_id(row: dict[str, Any]) -> str:
+    return "close|{}|{}".format(row["close_date"], _pool_price(row["close_price"]))
+
+
+def get_business_rematch_group(
+    close_identity_id: int,
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    with db.connect() as conn:
+        cur = conn.cursor()
+        entry = db._exec(
+            cur,
+            """
+            SELECT cf.*, fi.account_id
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE cf.identity_id = ?
+            """,
+            (close_identity_id,),
+        ).fetchone()
+        if not entry:
+            raise ValueError("平仓事实不存在或不是有效版本")
+        start_date = start_date or f"{entry['close_date'][:6]}01"
+        end_date = end_date or f"{entry['close_date'][:6]}31"
+        if start_date > end_date or not (start_date <= entry["close_date"] <= end_date):
+            raise ValueError("调整日期范围必须包含当前平仓记录")
+        config_rows = db._exec(
+            cur,
+            """
+            SELECT DISTINCT ba.business_subject_id, ba.business_type, ba.strategy_id,
+                   s.name AS business_subject, st.name AS strategy
+            FROM trading_business_close_allocations a
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+            JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+            WHERE a.close_identity_id = ?
+            """,
+            (close_identity_id,),
+        ).fetchall()
+        if len(config_rows) != 1:
+            raise ValueError("当前平仓记录的业务归属或策略不唯一，不能批量调整")
+        config = dict(config_rows[0])
+        close_rows = [dict(row) for row in db._exec(
+            cur,
+            """
+            SELECT cf.*, fi.account_id
+            FROM trading_close_facts cf
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE fi.account_id = ? AND cf.contract = ? AND cf.open_side = ?
+              AND cf.close_date >= ? AND cf.close_date <= ?
+            ORDER BY cf.close_date, cf.close_price, cf.identity_id
+            """,
+            (entry["account_id"], entry["contract"], entry["open_side"], start_date, end_date),
+        ).fetchall()]
+        close_ids = {row["identity_id"] for row in close_rows}
+        allocation_rows = [dict(row) for row in db._exec(
+            cur,
+            """
+            SELECT a.*, ba.business_subject_id, ba.business_type, ba.strategy_id
+            FROM trading_business_close_allocations a
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = a.open_trade_identity_id
+            JOIN trading_close_facts cf ON cf.identity_id = a.close_identity_id
+            JOIN trading_import_batches b ON b.id = cf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            WHERE fi.account_id = ? AND cf.contract = ? AND cf.open_side = ?
+            """,
+            (entry["account_id"], entry["contract"], entry["open_side"]),
+        ).fetchall()]
+        fact_default_rows = [dict(row) for row in db._exec(
+            cur,
+            """
+            SELECT fa.close_identity_id, fa.open_trade_identity_id, fa.matched_quantity,
+                   tf.price AS open_price, cf.close_price,
+                   ba.business_subject_id, ba.business_type, ba.strategy_id
+            FROM trading_fact_close_allocations fa
+            JOIN trading_close_facts cf ON cf.identity_id = fa.close_identity_id
+            JOIN trading_import_batches cb ON cb.id = cf.batch_id AND cb.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = cf.identity_id
+            JOIN trading_trade_facts tf ON tf.identity_id = fa.open_trade_identity_id
+            JOIN trading_import_batches tb ON tb.id = tf.batch_id AND tb.status = 'active'
+            LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = fa.open_trade_identity_id
+            WHERE fi.account_id = ? AND cf.contract = ? AND cf.open_side = ?
+              AND cf.close_date >= ? AND cf.close_date <= ?
+            """,
+            (entry["account_id"], entry["contract"], entry["open_side"], start_date, end_date),
+        ).fetchall()]
+        multiplier_row = db._exec(
+            cur,
+            """
+            SELECT contract_multiplier FROM trading_contract_specs
+            WHERE LOWER(exchange) = LOWER(?) AND LOWER(product_code) = ?
+              AND asset_type = ? AND is_active = 1
+            ORDER BY id LIMIT 1
+            """,
+            (entry["exchange"], _product_code(entry["contract"]), entry["asset_type"]),
+        ).fetchone()
+        matching_config = lambda row: (
+            row["business_subject_id"] == config["business_subject_id"]
+            and row["business_type"] == config["business_type"]
+            and (row["strategy_id"] or 0) == (config["strategy_id"] or 0)
+        )
+        group_close_ids = set()
+        for row in close_rows:
+            current = [item for item in allocation_rows if item["close_identity_id"] == row["identity_id"]]
+            if current and all(matching_config(item) for item in current):
+                group_close_ids.add(row["identity_id"])
+                continue
+            defaults = [item for item in fact_default_rows if item["close_identity_id"] == row["identity_id"]]
+            if (
+                not current
+                and defaults
+                and all(matching_config(item) for item in defaults)
+                and abs(sum(float(item["matched_quantity"]) for item in defaults) - float(row["quantity"])) <= 1e-9
+            ):
+                group_close_ids.add(row["identity_id"])
+                for item in defaults:
+                    allocation_rows.append({
+                        **item,
+                        "source": "fact_default",
+                        "allocation_version": 0,
+                        "business_pnl": calculate_business_pnl(
+                            float(item["open_price"]), float(item["close_price"]), entry["open_side"],
+                            float(item["matched_quantity"]), float(multiplier_row["contract_multiplier"]) if multiplier_row else 0,
+                        ),
+                    })
+        close_rows = [row for row in close_rows if row["identity_id"] in group_close_ids]
+        close_ids = set(group_close_ids)
+        if close_identity_id not in close_ids:
+            raise ValueError("当前平仓记录不属于可调整的同业务范围")
+        max_close_date = max(row["close_date"] for row in close_rows)
+        open_rows = [dict(row) for row in db._exec(
+            cur,
+            """
+            SELECT tf.*, ba.business_subject_id, ba.business_type, ba.strategy_id,
+                   s.name AS business_subject, st.name AS strategy
+            FROM trading_trade_facts tf
+            JOIN trading_import_batches b ON b.id = tf.batch_id AND b.status = 'active'
+            JOIN trading_fact_identities fi ON fi.id = tf.identity_id
+            JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
+            JOIN trading_business_subjects s ON s.id = ba.business_subject_id
+            LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
+            WHERE fi.account_id = ? AND tf.contract = ? AND tf.side = ?
+              AND tf.open_close = '开仓' AND tf.trade_date <= ?
+              AND ba.business_subject_id = ? AND ba.business_type = ?
+              AND COALESCE(ba.strategy_id, 0) = ?
+            ORDER BY tf.trade_date, tf.trade_time, tf.identity_id
+            """,
+            (
+                entry["account_id"], entry["contract"], entry["open_side"], max_close_date,
+                config["business_subject_id"], config["business_type"], config["strategy_id"] or 0,
+            ),
+        ).fetchall()]
+
+    open_by_identity = {row["identity_id"]: row for row in open_rows}
+    open_pools: dict[str, dict[str, Any]] = {}
+    outside_allocated: dict[int, float] = {}
+    for allocation in allocation_rows:
+        if allocation["open_trade_identity_id"] not in open_by_identity or allocation["close_identity_id"] in close_ids:
+            continue
+        outside_allocated[allocation["open_trade_identity_id"]] = outside_allocated.get(allocation["open_trade_identity_id"], 0) + float(allocation["matched_quantity"])
+    for row in open_rows:
+        pool_id = _open_pool_id(row)
+        pool = open_pools.setdefault(pool_id, {
+            "id": pool_id,
+            "open_date": row["trade_date"],
+            "price": float(row["price"]),
+            "quantity": 0.0,
+            "available_quantity": 0.0,
+            "business_subject": row["business_subject"],
+            "business_type": row["business_type"],
+            "strategy": row["strategy"],
+            "fragments": [],
+        })
+        quantity = float(row["quantity"])
+        pool["quantity"] += quantity
+        pool["available_quantity"] += max(0.0, quantity - outside_allocated.get(row["identity_id"], 0))
+        fragment_available = max(0.0, quantity - outside_allocated.get(row["identity_id"], 0))
+        pool["fragments"].append({
+            "identity_id": row["identity_id"], "trade_date": row["trade_date"],
+            "trade_time": row["trade_time"], "quantity": quantity,
+            "available_quantity": fragment_available, "price": float(row["price"]),
+        })
+    current_group_open_ids = {
+        allocation["open_trade_identity_id"]
+        for allocation in allocation_rows
+        if allocation["close_identity_id"] in close_ids and matching_config(allocation)
+    }
+    open_pools = {
+        pool_id: pool for pool_id, pool in open_pools.items()
+        if pool["available_quantity"] > 1e-9
+        or any(fragment["identity_id"] in current_group_open_ids for fragment in pool["fragments"])
+    }
+    open_by_identity = {
+        fragment["identity_id"]: open_by_identity[fragment["identity_id"]]
+        for pool in open_pools.values() for fragment in pool["fragments"]
+    }
+    close_pools: dict[str, dict[str, Any]] = {}
+    close_by_identity = {}
+    for row in close_rows:
+        pool_id = _close_pool_id(row)
+        close_by_identity[row["identity_id"]] = pool_id
+        pool = close_pools.setdefault(pool_id, {
+            "id": pool_id, "close_date": row["close_date"], "price": float(row["close_price"]),
+            "quantity": 0.0, "fragments": [],
+        })
+        quantity = float(row["quantity"])
+        pool["quantity"] += quantity
+        pool["fragments"].append({"identity_id": row["identity_id"], "quantity": quantity})
+    matrix = {pool_id: {} for pool_id in open_pools}
+    business_pnl = 0.0
+    for allocation in allocation_rows:
+        if allocation["close_identity_id"] not in close_ids or not matching_config(allocation):
+            continue
+        open_row = open_by_identity.get(allocation["open_trade_identity_id"])
+        if not open_row:
+            continue
+        open_pool_id = _open_pool_id(open_row)
+        close_pool_id = close_by_identity[allocation["close_identity_id"]]
+        matrix[open_pool_id][close_pool_id] = matrix[open_pool_id].get(close_pool_id, 0) + float(allocation["matched_quantity"])
+        business_pnl += float(allocation["business_pnl"] or 0)
+    versions = {
+        str(row["identity_id"]): max(
+            [int(item["allocation_version"]) for item in allocation_rows if item["close_identity_id"] == row["identity_id"]] or [0]
+        )
+        for row in close_rows
+    }
+    return {
+        "scope": {
+            "account_id": entry["account_id"], "contract": entry["contract"], "direction": entry["open_side"],
+            "start_date": start_date, "end_date": end_date,
+            "business_subject": config["business_subject"], "business_type": config["business_type"],
+            "strategy": config["strategy"], "quantity": sum(pool["quantity"] for pool in close_pools.values()),
+        },
+        "open_pools": list(open_pools.values()),
+        "close_pools": list(close_pools.values()),
+        "matrix": matrix,
+        "versions": versions,
+        "fact_pnl": sum(float(row["fact_close_pnl"] or 0) for row in close_rows),
+        "business_pnl": business_pnl,
+    }
+
+
+def _validate_business_batch_targets(
+    group: dict[str, Any],
+    targets: dict[str, dict[str, float]],
+    versions: dict[str, int],
+) -> dict[str, dict[str, float]]:
+    if {str(key): int(value) for key, value in versions.items()} != group["versions"]:
+        raise ValueError("业务开平数据已变化，请刷新后重试")
+    open_pools = {pool["id"]: pool for pool in group["open_pools"]}
+    close_pools = {pool["id"]: pool for pool in group["close_pools"]}
+    normalized = {pool_id: {} for pool_id in open_pools}
+    close_totals = {pool_id: 0.0 for pool_id in close_pools}
+    for open_pool_id, raw_values in targets.items():
+        if open_pool_id not in open_pools:
+            raise ValueError("存在不属于当前调整范围的开仓数量池")
+        row_total = 0.0
+        for close_pool_id, raw_quantity in raw_values.items():
+            if close_pool_id not in close_pools:
+                raise ValueError("存在不属于当前调整范围的平仓数量池")
+            quantity = float(raw_quantity or 0)
+            if quantity < -1e-9:
+                raise ValueError("调整手数不能为负数")
+            if quantity <= 1e-9:
+                continue
+            if open_pools[open_pool_id]["open_date"] > close_pools[close_pool_id]["close_date"]:
+                raise ValueError("开仓日期不能晚于平仓日期")
+            normalized[open_pool_id][close_pool_id] = quantity
+            row_total += quantity
+            close_totals[close_pool_id] += quantity
+        if row_total > float(open_pools[open_pool_id]["available_quantity"]) + 1e-9:
+            raise ValueError(
+                f"{open_pools[open_pool_id]['open_date']} / {_pool_price(open_pools[open_pool_id]['price'])} "
+                f"最多可分配 {_pool_price(open_pools[open_pool_id]['available_quantity'])} 手"
+            )
+    for close_pool_id, pool in close_pools.items():
+        required = float(pool["quantity"])
+        if abs(close_totals[close_pool_id] - required) > 1e-9:
+            raise ValueError(
+                f"{pool['close_date']} / {_pool_price(pool['price'])} 必须分配 {_pool_price(required)} 手，"
+                f"当前为 {_pool_price(close_totals[close_pool_id])} 手"
+            )
+    return normalized
+
+
+def _business_batch_multiplier(group: dict[str, Any]) -> float:
+    with db.connect() as conn:
+        row = db._exec(
+            conn.cursor(),
+            """
+            SELECT contract_multiplier FROM trading_contract_specs
+            WHERE LOWER(product_code) = ? AND asset_type = 'future' AND is_active = 1
+            ORDER BY id LIMIT 1
+            """,
+            (_product_code(group["scope"]["contract"]),),
+        ).fetchone()
+    if not row:
+        raise ValueError("合约参数待核验")
+    return float(row["contract_multiplier"])
+
+
+def preview_business_batch_rematch(
+    close_identity_id: int,
+    targets: dict[str, dict[str, float]],
+    versions: dict[str, int],
+    start_date: str = "",
+    end_date: str = "",
+) -> dict[str, Any]:
+    group = get_business_rematch_group(close_identity_id, start_date, end_date)
+    normalized = _validate_business_batch_targets(group, targets, versions)
+    multiplier = _business_batch_multiplier(group)
+    open_pools = {pool["id"]: pool for pool in group["open_pools"]}
+    close_pools = {pool["id"]: pool for pool in group["close_pools"]}
+    after_business_pnl = sum(
+        calculate_business_pnl(
+            float(open_pools[open_pool_id]["price"]), float(close_pools[close_pool_id]["price"]),
+            group["scope"]["direction"], quantity, multiplier,
+        )
+        for open_pool_id, values in normalized.items()
+        for close_pool_id, quantity in values.items()
+    )
+    remaining_positions = [
+        {
+            "open_pool_id": pool_id,
+            "open_date": pool["open_date"],
+            "price": pool["price"],
+            "remaining_quantity": max(0.0, float(pool["available_quantity"]) - sum(normalized[pool_id].values())),
+        }
+        for pool_id, pool in open_pools.items()
+        if float(pool["available_quantity"]) - sum(normalized[pool_id].values()) > 1e-9
+    ]
+    token = uuid.uuid4().hex
+    payload = {
+        "kind": "business_batch_rematch",
+        "close_identity_id": close_identity_id,
+        "start_date": group["scope"]["start_date"],
+        "end_date": group["scope"]["end_date"],
+        "versions": group["versions"],
+        "targets": normalized,
+        "before_business_pnl": group["business_pnl"],
+        "after_business_pnl": after_business_pnl,
+        "fact_pnl": group["fact_pnl"],
+    }
+    _REMATCH_PREVIEWS[token] = payload
+    return {
+        "preview_token": token,
+        "before_business_pnl": group["business_pnl"],
+        "after_business_pnl": after_business_pnl,
+        "fact_pnl_before": group["fact_pnl"],
+        "fact_pnl_after": group["fact_pnl"],
+        "unallocated_close_quantity": 0.0,
+        "remaining_positions": remaining_positions,
+        "targets": normalized,
+    }
+
+
+def _split_business_batch_targets(
+    group: dict[str, Any],
+    targets: dict[str, dict[str, float]],
+) -> list[dict[str, Any]]:
+    open_remaining = {
+        fragment["identity_id"]: float(fragment["available_quantity"])
+        for pool in group["open_pools"] for fragment in pool["fragments"]
+    }
+    close_remaining = {
+        fragment["identity_id"]: float(fragment["quantity"])
+        for pool in group["close_pools"] for fragment in pool["fragments"]
+    }
+    open_pools = {pool["id"]: pool for pool in group["open_pools"]}
+    close_pools = {pool["id"]: pool for pool in group["close_pools"]}
+    edges = []
+    for open_pool_id, values in targets.items():
+        open_fragments = open_pools[open_pool_id]["fragments"]
+        for close_pool_id, target_quantity in values.items():
+            close_fragments = close_pools[close_pool_id]["fragments"]
+            quantity_left = float(target_quantity)
+            for close_fragment in close_fragments:
+                if quantity_left <= 1e-9:
+                    break
+                close_id = close_fragment["identity_id"]
+                for open_fragment in open_fragments:
+                    if quantity_left <= 1e-9 or close_remaining[close_id] <= 1e-9:
+                        break
+                    open_id = open_fragment["identity_id"]
+                    allocated = min(quantity_left, close_remaining[close_id], open_remaining[open_id])
+                    if allocated <= 1e-9:
+                        continue
+                    edges.append({
+                        "close_identity_id": close_id,
+                        "open_trade_identity_id": open_id,
+                        "matched_quantity": allocated,
+                        "open_price": float(open_pools[open_pool_id]["price"]),
+                        "close_price": float(close_pools[close_pool_id]["price"]),
+                    })
+                    quantity_left -= allocated
+                    close_remaining[close_id] -= allocated
+                    open_remaining[open_id] -= allocated
+            if quantity_left > 1e-9:
+                raise ValueError("批量关系无法拆分到原始成交事实")
+    if any(quantity > 1e-9 for quantity in close_remaining.values()):
+        raise ValueError("仍有平仓事实未完整分配")
+    return edges
+
+
+def _apply_business_batch_edges(
+    close_identity_id: int,
+    group: dict[str, Any],
+    edges: list[dict[str, Any]],
+    versions: dict[str, int],
+    actor: str,
+    reason: str,
+    source: str,
+) -> dict[str, Any]:
+    close_ids = {fragment["identity_id"] for pool in group["close_pools"] for fragment in pool["fragments"]}
+    multiplier = _business_batch_multiplier(group)
+    group_id = uuid.uuid4().hex
+    with db.connect() as conn:
+        cur = conn.cursor()
+        current_versions = {str(close_id): _current_allocation_version(cur, close_id) for close_id in close_ids}
+        if current_versions != {str(key): int(value) for key, value in versions.items()}:
+            raise ValueError("业务开平数据已变化，请刷新后重试")
+        before_by_close = {
+            close_id: [dict(row) for row in db._exec(
+                cur,
+                "SELECT * FROM trading_business_close_allocations WHERE close_identity_id = ? ORDER BY id",
+                (close_id,),
+            ).fetchall()]
+            for close_id in close_ids
+        }
+        placeholders = ",".join("?" for _ in close_ids)
+        db._exec(cur, f"DELETE FROM trading_business_close_allocations WHERE close_identity_id IN ({placeholders})", tuple(close_ids))
+        after_by_close = {close_id: [] for close_id in close_ids}
+        for edge in edges:
+            close_id = edge["close_identity_id"]
+            pnl = calculate_business_pnl(
+                edge["open_price"], edge["close_price"], group["scope"]["direction"],
+                edge["matched_quantity"], multiplier,
+            )
+            new_version = int(versions[str(close_id)]) + 1
+            allocation_id = db._last_insert_id(
+                cur,
+                """
+                INSERT INTO trading_business_close_allocations
+                    (close_identity_id, open_trade_identity_id, matched_quantity, source,
+                     override_group_id, business_pnl, rule_version, allocation_version, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    close_id, edge["open_trade_identity_id"], edge["matched_quantity"], source,
+                    group_id, pnl, "business-batch-v1", new_version, actor, actor,
+                ),
+            )
+            after_by_close[close_id].append({"id": allocation_id, **edge, "business_pnl": pnl})
+        for close_id in close_ids:
+            before_pnl = sum(float(row["business_pnl"] or 0) for row in before_by_close[close_id])
+            after_pnl = sum(float(row["business_pnl"] or 0) for row in after_by_close[close_id])
+            db._exec(
+                cur,
+                """
+                INSERT INTO trading_business_allocation_audit
+                    (override_group_id, close_identity_id, before_allocations, after_allocations,
+                     before_business_pnl, after_business_pnl, reason, operated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    group_id, close_id, json.dumps(before_by_close[close_id], ensure_ascii=False),
+                    json.dumps(after_by_close[close_id], ensure_ascii=False), before_pnl, after_pnl,
+                    reason or None, actor,
+                ),
+            )
+        conn.commit()
+    return get_business_rematch_group(
+        close_identity_id, group["scope"]["start_date"], group["scope"]["end_date"]
+    )
+
+
+def confirm_business_batch_rematch(
+    close_identity_id: int,
+    preview_token: str,
+    versions: dict[str, int],
+    actor: str,
+    reason: str = "",
+) -> dict[str, Any]:
+    payload = _REMATCH_PREVIEWS.pop(preview_token, None)
+    if not payload or payload.get("kind") != "business_batch_rematch" or payload["close_identity_id"] != close_identity_id:
+        raise ValueError("重配预览已失效，请重新预览")
+    if payload["versions"] != {str(key): int(value) for key, value in versions.items()}:
+        raise ValueError("业务开平数据已变化，请刷新后重试")
+    group = get_business_rematch_group(close_identity_id, payload["start_date"], payload["end_date"])
+    targets = _validate_business_batch_targets(group, payload["targets"], versions)
+    edges = _split_business_batch_targets(group, targets)
+    return _apply_business_batch_edges(close_identity_id, group, edges, versions, actor, reason, "manual_override")
+
+
+def restore_default_business_batch(
+    close_identity_id: int,
+    versions: dict[str, int],
+    actor: str,
+    start_date: str = "",
+    end_date: str = "",
+    reason: str = "恢复事实层默认开平关系",
+) -> dict[str, Any]:
+    group = get_business_rematch_group(close_identity_id, start_date, end_date)
+    if group["versions"] != {str(key): int(value) for key, value in versions.items()}:
+        raise ValueError("业务开平数据已变化，请刷新后重试")
+    close_ids = {fragment["identity_id"] for pool in group["close_pools"] for fragment in pool["fragments"]}
+    open_by_identity = {
+        fragment["identity_id"]: (pool, fragment)
+        for pool in group["open_pools"] for fragment in pool["fragments"]
+    }
+    close_by_identity = {
+        fragment["identity_id"]: pool
+        for pool in group["close_pools"] for fragment in pool["fragments"]
+    }
+    placeholders = ",".join("?" for _ in close_ids)
+    with db.connect() as conn:
+        rows = [dict(row) for row in db._exec(
+            conn.cursor(),
+            f"SELECT * FROM trading_fact_close_allocations WHERE close_identity_id IN ({placeholders}) ORDER BY id",
+            tuple(close_ids),
+        ).fetchall()]
+    edges = []
+    for row in rows:
+        open_info = open_by_identity.get(row["open_trade_identity_id"])
+        close_pool = close_by_identity.get(row["close_identity_id"])
+        if not open_info or not close_pool:
+            raise ValueError("事实默认关系超出当前业务调整范围")
+        edges.append({
+            "close_identity_id": row["close_identity_id"],
+            "open_trade_identity_id": row["open_trade_identity_id"],
+            "matched_quantity": float(row["matched_quantity"]),
+            "open_price": float(open_info[0]["price"]),
+            "close_price": float(close_pool["price"]),
+        })
+    expected = sum(pool["quantity"] for pool in group["close_pools"])
+    if abs(sum(edge["matched_quantity"] for edge in edges) - expected) > 1e-9:
+        raise ValueError("没有完整可恢复的事实层默认开平关系")
+    return _apply_business_batch_edges(close_identity_id, group, edges, versions, actor, reason, "fact_default")
+
+
 def list_business_close_candidates(close_identity_id: int) -> list[dict[str, Any]]:
     with db.connect() as conn:
         cur = conn.cursor()
@@ -4209,6 +4874,7 @@ def _api_filters(
     start_date: str = "",
     end_date: str = "",
     classification: str = "",
+    fact_status: str = "",
     business_type: str = "",
     page: int = 1,
     page_size: int = 20,
@@ -4216,6 +4882,7 @@ def _api_filters(
     return FactFilters(
         contract=contract, direction=direction, asset_type=asset_type, open_close=open_close,
         start_date=start_date, end_date=end_date, classification=classification,
+        fact_status=fact_status,
         business_type=business_type, page=page, page_size=page_size,
     )
 
@@ -4275,6 +4942,15 @@ def get_trading_positions(
     user=Depends(trading_management_current_user),
 ):
     return _get_trading_facts("positions", filters, user)
+
+
+@router.get("/facts/positions/valuation")
+def get_trading_position_valuation(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.facts", "view")
+    return query_fact_position_valuation(filters)
 
 
 @router.get("/facts/closes")
@@ -4448,6 +5124,66 @@ def get_option_business_rows(
     user=Depends(trading_management_current_user),
 ):
     return _get_business_rows("options", tab, filters, user)
+
+
+@router.get("/business-close-groups/{close_identity_id}")
+def get_batch_rematch_group(
+    close_identity_id: int,
+    start_date: str = "",
+    end_date: str = "",
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return get_business_rematch_group(close_identity_id, start_date, end_date)
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-close-groups/{close_identity_id}/preview")
+def post_batch_rematch_preview(
+    close_identity_id: int,
+    payload: BatchRematchPreviewIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return preview_business_batch_rematch(
+            close_identity_id, payload.targets, payload.versions, payload.start_date, payload.end_date,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-close-groups/{close_identity_id}/confirm")
+def post_batch_rematch_confirm(
+    close_identity_id: int,
+    payload: BatchRematchConfirmIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return confirm_business_batch_rematch(
+            close_identity_id, payload.preview_token, payload.versions, _actor(user), payload.reason,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+
+
+@router.post("/business-close-groups/{close_identity_id}/restore-default")
+def post_batch_restore_default(
+    close_identity_id: int,
+    payload: BatchRestoreDefaultIn,
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.config", "edit")
+    try:
+        return restore_default_business_batch(
+            close_identity_id, payload.versions, _actor(user), payload.start_date,
+            payload.end_date, payload.reason,
+        )
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
 
 
 @router.get("/business-closes/{close_identity_id}/candidates")

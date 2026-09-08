@@ -32,6 +32,7 @@ from . import db
 from .permissions import (
     ACTIVE_BUSINESS_MODULES,
     DEPARTMENTS,
+    PERMISSION_MANAGED_MODULES,
     RETIRED_MODULE_CODES,
     USER_ROLES,
     default_permission_levels,
@@ -58,6 +59,7 @@ from .info_summary_backfill import (
 from .iron_ore_basis_snapshot_sync import start_iron_ore_basis_sync_scheduler
 from .monitoring import get_monitoring_status, start_monitoring_loop
 from .order_finance_snapshot_sync import start_order_finance_sync_scheduler
+from .spot_ledger_sync import start_spot_ledger_sync_scheduler
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
@@ -67,7 +69,10 @@ from . import (
     order_finance,
     order_finance_snapshot_sync,
     platts_index,
+    spot_ledger,
     trading_management,
+    trading_collector,
+    trading_collector_replication,
     trading_valuation,
 )
 
@@ -101,6 +106,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+INDEX_CACHE_CONTROL = "no-store"
+STATIC_CACHE_CONTROL = "no-cache, must-revalidate"
+
 
 @app.middleware("http")
 async def api_performance_log(request: Request, call_next):
@@ -118,6 +126,10 @@ async def api_performance_log(request: Request, call_next):
             "response_size_approx": response.headers.get("content-length"),
         }
         print(json.dumps(log, ensure_ascii=False))
+    if request.url.path == "/":
+        response.headers["Cache-Control"] = INDEX_CACHE_CONTROL
+    elif request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = STATIC_CACHE_CONTROL
     response.headers["x-request-id"] = request_id
     return response
 
@@ -132,9 +144,12 @@ app.include_router(data_visualization.router, prefix="/api")
 app.include_router(iron_ore_basis.router, prefix="/api")
 app.include_router(iron_ore_basis_snapshot_sync.router, prefix="/api")
 app.include_router(order_finance.router, prefix="/api")
+app.include_router(spot_ledger.router, prefix="/api")
 app.include_router(order_finance_snapshot_sync.router, prefix="/api")
 app.include_router(platts_index.router, prefix="/api")
 app.include_router(trading_management.router, prefix="/api/trading-management")
+app.include_router(trading_collector.router, prefix="/api")
+app.include_router(trading_collector_replication.router)
 
 
 class LoginRequest(BaseModel):
@@ -1316,6 +1331,8 @@ def startup() -> None:
         try:
             start_iron_ore_basis_sync_scheduler()
             start_order_finance_sync_scheduler()
+            start_spot_ledger_sync_scheduler()
+            trading_collector_replication.start_scheduler()
         except Exception as exc:
             print(f"[startup] data synchronization startup skipped: {exc}")
 
@@ -1497,7 +1514,11 @@ def me(user=Depends(current_user)):
 
 @app.get("/api/auth/modules")
 def modules(user=Depends(current_user)):
-    module_rows = [row for row in db.MODULES if row[1] not in RETIRED_MODULE_CODES]
+    module_rows = [
+        row
+        for row in db.MODULES
+        if row[1] not in RETIRED_MODULE_CODES
+    ]
     if user["role"] == "管理员":
         visible = {
             code: {"can_view": True, "can_edit": True, "can_sensitive": True}
@@ -3186,6 +3207,8 @@ def _final_permission_levels(department: str, role: str, overrides: Optional[lis
             raise HTTPException(status_code=400, detail="权限模块或级别无效")
         if role == "领导" and PERMISSION_LEVEL_RANK[level] < PERMISSION_LEVEL_RANK[levels[code]]:
             continue
+        if department == "贸易处" and role == "用户" and code == "spot_ledger":
+            continue
         levels[code] = level
     return levels
 
@@ -3256,9 +3279,9 @@ def preview_user(payload: UserPreviewIn, user=Depends(current_user)):
         "temporary_password": password_policy["temporary_password"],
         "password_rule": password_policy["password_rule"],
         "username_available": duplicate is None,
-        "default_permissions": {code: level for code, level in default_levels.items() if code in ACTIVE_BUSINESS_MODULES},
-        "final_permissions": {code: level for code, level in final_levels.items() if code in ACTIVE_BUSINESS_MODULES},
-        "changes": [item for item in changes if item["module_code"] in ACTIVE_BUSINESS_MODULES],
+        "default_permissions": {code: level for code, level in default_levels.items() if code in PERMISSION_MANAGED_MODULES},
+        "final_permissions": {code: level for code, level in final_levels.items() if code in PERMISSION_MANAGED_MODULES},
+        "changes": [item for item in changes if item["module_code"] in PERMISSION_MANAGED_MODULES],
     }
 
 
@@ -3529,7 +3552,7 @@ def get_user_permissions(user_id: int, user=Depends(current_user)):
         "permissions": [
             {"module_code": row["module_code"], "level": _permission_level(dict(row))}
             for row in rows
-            if row["module_code"] in ACTIVE_BUSINESS_MODULES
+            if row["module_code"] in PERMISSION_MANAGED_MODULES
         ]
     }
 
