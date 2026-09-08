@@ -124,6 +124,10 @@ test("weekly report page keeps readiness visible when history loading fails", ()
   assert.match(appJs, /数据检查失败，请重试/);
 });
 
+test("weekly report frontend fix invalidates the cached application script", () => {
+  assert.match(indexHtml, /weekly-report=20260908-fix/);
+});
+
 test("sidebar groups put data visualization before admin", () => {
   assert.ok(dbPy.indexOf('("数据可视化管理", "data_visualization_integration"') < dbPy.indexOf('("后台管理", "user_management"'));
 });
