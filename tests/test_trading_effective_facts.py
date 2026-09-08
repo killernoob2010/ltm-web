@@ -816,6 +816,90 @@ def test_management_query_fact_rows_uses_effective_position_projection(tmp_path,
     assert result["items"][0]["quantity"] == 2
 
 
+def test_fact_position_valuation_uses_latest_trade_price_for_provisional_rows(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 2, 700)],
+    )
+    insert_wh6_fill(
+        account,
+        event_key="tradeid:live-valuation",
+        trade_id="live-valuation",
+        trade_date="2026-09-01",
+        contract="i2609",
+        asset_type="future",
+        quantity=1,
+        price="730",
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            request.contract: trading_management.QuoteSnapshot(
+                last_price=750,
+                settlement_price=680,
+                multiplier=100,
+                market_time="2026-09-01T09:05:00+08:00",
+                market_data_status="live",
+            )
+            for request in requests
+        },
+    )
+
+    result = trading_management.query_fact_position_valuation(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    row = result["items"][0]
+    assert row["fact_status"] == "provisional"
+    assert row["quantity"] == 3
+    assert row["average_price"] == pytest.approx(710)
+    assert row["valuation_price"] == 750
+    assert row["valuation_source"] == "last_trade"
+    assert row["market_time"] == "2026-09-01 09:05:00"
+    assert row["floating_pnl"] == pytest.approx(12000)
+    assert result["summary"]["floating_pnl"] == pytest.approx(12000)
+    assert result["summary"]["floating_pnl_status"] == "live"
+
+
+def test_fact_position_valuation_does_not_fallback_to_quotes_or_settlement(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    account = account_id()
+    _insert_settlement_position_batch(
+        account,
+        "20260831",
+        [_baseline_row("i2609", "买", 1, 700)],
+    )
+    monkeypatch.setattr(
+        trading_management,
+        "get_quote_snapshots",
+        lambda requests: {
+            request.contract: trading_management.QuoteSnapshot(
+                bid_price=749,
+                ask_price=751,
+                settlement_price=680,
+                multiplier=100,
+                market_data_status="provider_error",
+            )
+            for request in requests
+        },
+    )
+
+    result = trading_management.query_fact_position_valuation(
+        trading_management.FactFilters(page=1, page_size=20)
+    )
+
+    row = result["items"][0]
+    assert row["valuation_price"] is None
+    assert row["floating_pnl"] is None
+    assert row["valuation_status"] == "unavailable"
+    assert result["summary"]["floating_pnl"] is None
+    assert result["summary"]["floating_pnl_status"] == "unavailable"
+
+
 def test_overview_excludes_provisional_trade_facts_from_formal_totals(tmp_path, monkeypatch):
     use_temp_db(tmp_path, monkeypatch)
     account = account_id()

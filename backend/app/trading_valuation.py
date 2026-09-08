@@ -87,6 +87,22 @@ def select_valuation_price(
     return None, "unavailable", "unavailable"
 
 
+def select_live_trade_price(
+    snapshot: QuoteSnapshot,
+) -> tuple[Optional[float], str, str]:
+    """Select only the contract's latest trade for live position valuation.
+
+    Fact-position floating PnL must never be inferred from a quote midpoint or
+    a settlement reference when the feed has no current last trade.
+    """
+    if snapshot.expired:
+        return None, "expired", "expired"
+    last_price = _valid_price(snapshot.last_price)
+    if last_price is not None:
+        return last_price, "last_trade", "live"
+    return None, "unavailable", "unavailable"
+
+
 def _as_date(value: Union[str, date]) -> date:
     if isinstance(value, date):
         return value
@@ -112,6 +128,26 @@ def calculate_position_floating_pnl(
         difference * float(remaining_quantity) * float(multiplier)
         - float(remaining_open_fee or 0),
         2,
+    )
+
+
+def calculate_live_position_floating_pnl(
+    *,
+    open_price: float,
+    market_price: float,
+    direction: str,
+    remaining_quantity: float,
+    multiplier: float,
+    remaining_open_fee: float = 0,
+) -> float:
+    """Calculate live fact-position PnL without realized-cost adjustments."""
+    return calculate_position_floating_pnl(
+        open_price=open_price,
+        market_price=market_price,
+        direction=direction,
+        remaining_quantity=remaining_quantity,
+        multiplier=multiplier,
+        remaining_open_fee=0,
     )
 
 

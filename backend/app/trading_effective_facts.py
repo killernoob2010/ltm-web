@@ -1161,6 +1161,7 @@ def _position_result(
     formation_method: str,
     freshness: Mapping[str, Any],
     warnings: Iterable[str],
+    include_all_items: bool = False,
 ) -> Dict[str, Any]:
     filtered = _filter_position_items(items, filters)
     filtered.sort(key=lambda item: (str(item.get("contract") or ""), str(item.get("direction") or "")))
@@ -1171,7 +1172,7 @@ def _position_result(
     visible = filtered[offset:offset + filters.page_size]
     provisional_count = sum(item["fact_status"] == "provisional" for item in filtered)
     settlement_count = sum(item["fact_status"] == "settlement_confirmed" for item in filtered)
-    return {
+    result = {
         "items": visible,
         "summary": {
             "record_count": total,
@@ -1197,6 +1198,9 @@ def _position_result(
         "risk_eligible": False,
         "warnings": list(warnings),
     }
+    if include_all_items:
+        result["all_items"] = filtered
+    return result
 
 
 def query_effective_positions(
@@ -1204,6 +1208,7 @@ def query_effective_positions(
     filters: EffectiveFactFilters,
     *,
     now: Any = None,
+    include_all_items: bool = False,
 ) -> Dict[str, Any]:
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -1231,6 +1236,7 @@ def query_effective_positions(
             formation_method="settlement_snapshot",
             freshness=freshness,
             warnings=[],
+            include_all_items=include_all_items,
         )
 
     all_items = []
@@ -1292,6 +1298,7 @@ def query_effective_positions(
             formation_method="",
             freshness=freshness,
             warnings=warnings or ["缺少最近一次结算确认持仓基线"],
+            include_all_items=include_all_items,
         )
     all_items = _group_position_items(all_items)
     if "conflict" in freshness_statuses:
@@ -1314,4 +1321,5 @@ def query_effective_positions(
         formation_method=overall_method,
         freshness=freshness,
         warnings=warnings,
+        include_all_items=include_all_items,
     )

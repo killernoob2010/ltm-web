@@ -1439,6 +1439,7 @@ def test_fact_api_routes_are_registered():
     assert {
         "/overview",
         "/facts/positions",
+        "/facts/positions/valuation",
         "/facts/closes",
         "/facts/trades",
         "/facts/trades/selection-identities",

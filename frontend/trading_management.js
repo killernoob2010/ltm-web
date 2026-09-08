@@ -55,8 +55,11 @@
   const factRequests = new Map();
   let factCacheVersion = 0;
   const BUSINESS_QUOTE_REFRESH_MS = 15000;
+  const FACT_QUOTE_REFRESH_MS = 15000;
   let businessQuoteRefreshTimer = null;
   let businessQuoteRefreshInFlight = false;
+  let factQuoteRefreshTimer = null;
+  let factQuoteRefreshInFlight = false;
   let businessVisibilityObserver = null;
   let overviewLoader = null;
 
@@ -311,8 +314,8 @@
     return params.toString();
   }
 
-  function factCacheKey(tab, page = tm.page) {
-    return JSON.stringify([factCacheVersion, tab, tm.query, tm.assetType, tm.side, tm.openClose, tm.classification, tm.factStatus, tm.dateFrom, tm.dateTo, page, tm.pageSize]);
+  function factCacheKey(tab, page = tm.page, pageSize = tm.pageSize) {
+    return JSON.stringify([factCacheVersion, tab, tm.query, tm.assetType, tm.side, tm.openClose, tm.classification, tm.factStatus, tm.dateFrom, tm.dateTo, page, pageSize]);
   }
 
   function invalidateFactCache() {
@@ -322,7 +325,7 @@
   }
 
   async function loadFactData(tab, { page = tm.page, pageSize = tm.pageSize, refresh = false } = {}) {
-    const key = JSON.stringify([factCacheKey(tab, page), pageSize]);
+    const key = factCacheKey(tab, page, pageSize);
     if (!refresh && factCache.has(key)) return factCache.get(key);
     if (factRequests.has(key)) return factRequests.get(key);
     const request = api(`/api/trading-management/facts/${tab}?${factQuery(page,pageSize)}`)
@@ -340,9 +343,16 @@
   }
 
   function filterSummary(summary) {
+    const floatingValue = summary.floating_pnl_status === "loading"
+      ? "行情加载中"
+      : summary.floating_pnl != null
+      ? money(summary.floating_pnl)
+      : summary.floating_pnl_status === "unavailable"
+      ? "暂无行情"
+      : "—";
     const items = tm.factsTab === "closes"
       ? [["记录数",summary.record_count],["了结手数",summary.settlement_quantity],["成交平仓手数",summary.transaction_close_quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl]]
-      : [["记录数",summary.record_count],["手数",summary.quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl],["保证金",summary.margin],["浮动盈亏","待计算"]];
+      : [["记录数",summary.record_count],["手数",summary.quantity],["手续费",summary.fee],["平仓盈亏",summary.fact_close_pnl],["保证金",summary.margin],["浮动盈亏",floatingValue]];
     return `<div class="tm-filter-summary">${items.map(([label,value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? num(value) : esc(value ?? "—")}</strong></div>`).join("")}</div>`;
   }
 
@@ -375,7 +385,16 @@
       const freshness = FRESHNESS_LABELS[data.freshness_status] || data.freshness_status || "不可用";
       const baseline = data.baseline_snapshot_date ? `结算基线 ${factDateValue(data.baseline_snapshot_date)}` : "无结算基线";
       const asOf = data.as_of_time ? `数据截至 ${String(data.as_of_time).replace("T", " ")}` : "数据截至 —";
-      return `<div class="tm-fact-notice"><span class="tm-tag ${data.freshness_status === "current" ? "blue" : "amber"}>新鲜度：${esc(freshness)}</span><span class="tm-tag">${esc(baseline)}</span><span class="tm-tag">${esc(asOf)}</span>${data.warnings?.length ? `<span class="tm-subtle">${esc(data.warnings[0])}</span>` : ""}</div>`;
+      const valuation = data.summary?.floating_pnl_status === "live"
+        ? "浮盈已按最新成交价更新"
+        : data.summary?.floating_pnl_status === "partial"
+        ? "部分持仓暂无最新成交价"
+        : data.summary?.floating_pnl_status === "loading"
+        ? "正在读取最新成交价"
+        : data.summary?.floating_pnl_status === "unavailable"
+        ? "暂无可用最新成交价"
+        : "浮盈等待行情";
+      return `<div class="tm-fact-notice"><span class="tm-tag ${data.freshness_status === "current" ? "blue" : "amber"}">新鲜度：${esc(freshness)}</span><span class="tm-tag">${esc(baseline)}</span><span class="tm-tag">${esc(asOf)}</span><span class="tm-tag ${data.summary?.floating_pnl_status === "live" ? "blue" : "amber"}">${esc(valuation)}</span>${data.warnings?.length ? `<span class="tm-subtle">${esc(data.warnings[0])}</span>` : ""}</div>`;
     }
     if (data.summary?.contains_provisional) {
       return `<div class="tm-fact-notice"><span class="tm-tag amber">当前筛选含 ${num(data.summary.provisional_count)} 条临时事实</span><span class="tm-subtle">临时事实不进入业务归属和正式盈亏</span></div>`;
@@ -384,7 +403,7 @@
   }
 
   const FACT_COLUMNS = {
-    positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["fact_status","事实状态"],["source_label","来源"],["formation_method","形成方式"],["assignment","业务类型 / 策略"],["source_record_count","聚合记录"],["pending","浮动盈亏"]],
+    positions: [["snapshot_date","快照日"],["contract","合约"],["asset_type","资产类型"],["direction","方向"],["quantity","手数"],["average_price","持仓均价"],["margin","保证金"],["fact_status","事实状态"],["source_label","来源"],["assignment","业务类型 / 策略"],["source_record_count","聚合记录"],["valuation_price","最新成交价"],["floating_pnl","浮动盈亏"]],
     closes: [["close_date","平仓日"],["settlement_type","了结类型"],["contract","合约"],["asset_type","资产类型"],["open_side","方向"],["quantity","手数"],["open_price","开仓价"],["close_price","平仓价"],["fact_close_pnl","平仓盈亏"],["matched_fee","手续费"],["assignment","业务类型 / 策略"]],
     trades: [["trade_date","成交日"],["contract","合约"],["asset_type","资产类型"],["side","方向"],["open_close","开平"],["quantity","手数"],["price","成交价"],["fee","手续费"],["fact_close_pnl","平仓盈亏"],["fact_status","事实状态"],["source_label","来源"],["assignment","业务类型 / 策略"]],
   };
@@ -402,6 +421,13 @@
     }
     if (key === "valuation_source") return esc(valuationSource(row[key]));
     if (key === "valuation_status" || key === "floating_pnl_status") return esc(valuationStatus(row[key]));
+    if (key === "valuation_price" && row.valuation_status === "loading") return '<span class="tm-tag">行情加载中</span>';
+    if (key === "valuation_price" && row.valuation_price == null && row.valuation_status === "expired") return '<span class="tm-tag amber">已到期</span>';
+    if (key === "valuation_price" && row.valuation_price == null && row.valuation_status === "unavailable") return '<span class="tm-tag amber">暂无行情</span>';
+    if (key === "floating_pnl" && row.floating_pnl_status === "loading") return '<span class="tm-tag">行情加载中</span>';
+    if (key === "floating_pnl" && row.floating_pnl == null && row.floating_pnl_status === "expired") return '<span class="tm-tag amber">已到期</span>';
+    if (key === "floating_pnl" && row.floating_pnl == null && row.floating_pnl_status === "unavailable") return `<span class="tm-tag amber">${esc(row.valuation_message || "暂无行情")}</span>`;
+    if (key === "floating_pnl" && row.floating_pnl != null && row.floating_pnl_status === "live") return money(row.floating_pnl);
     if (["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","business_pnl","matched_quantity","market_price","valuation_price","underlying_price","iv","floating_pnl","delta_exposure","gamma_exposure","theta_exposure","vega_exposure","net_close_pnl","fund_interest","settlement_80","settlement_20","allocated_open_fee","allocated_close_fee","settlement_open_price","settlement_fee"].includes(key)) return num(row[key]);
     if (key === "asset_type") return row[key] === "option" ? "期权" : "期货";
     if (key === "business_type") return row.assignment_status === "classified" && row[key] ? `<span class="tm-tag blue">${esc(businessType(row[key]))}</span>` : '<span class="tm-tag amber">待确认</span>';
@@ -411,7 +437,7 @@
   function factTable(items) {
     const columns = FACT_COLUMNS[tm.factsTab];
     const selectable = tm.factsTab === "trades" && tm.permissions.canEdit;
-    return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td>${row.open_close === "开仓" && row.can_classify && row.identity_id != null ? `<input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}>` : row.open_close === "开仓" ? '<span class="tm-tag amber">结算确认后可归类</span>' : "继承"}</td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${(selectable ? 1 : 0) + columns.length + 1}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
+    return `<div class="tm-table-wrap"><table><thead><tr>${selectable ? "<th></th>" : ""}${columns.map(([,label]) => `<th>${label}</th>`).join("")}<th></th></tr></thead><tbody>${items.length ? items.map((row) => `<tr>${selectable ? `<td>${row.open_close === "开仓" && row.can_classify && row.identity_id != null ? `<input type="checkbox" data-select-row="${row.identity_id}" ${tm.selected.has(row.identity_id) ? "checked" : ""}>` : row.open_close === "开仓" ? '<span class="tm-tag amber">结算确认后可归类</span>' : "继承"}</td>` : ""}${columns.map(([key]) => `<td class="${["quantity","average_price","margin","open_price","close_price","fact_close_pnl","matched_fee","price","fee","valuation_price","floating_pnl"].includes(key) ? "tm-numeric" : key === "contract" ? "tm-contract" : ""}">${valueCell(row,key)}</td>`).join("")}<td><button class="tm-row-button" data-detail='${esc(JSON.stringify(row))}'>详情 →</button></td></tr>`).join("") : `<tr><td colspan="${(selectable ? 1 : 0) + columns.length + 1}" class="tm-empty-state">暂无数据</td></tr>`}</tbody></table></div>`;
   }
 
   function renderFactLoadError(error) {
@@ -432,8 +458,73 @@
     return `<div class="tm-pagination"><span>共 ${data.total_items} 条</span><label>每页<select id="${prefix}PageSize">${[20,50,100].map((size) => `<option value="${size}" ${Number(data.page_size) === size ? "selected" : ""}>${size}</option>`).join("")}</select>条</label><button id="${prefix}Prev" ${data.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${data.page} / ${data.total_pages} 页</span><button id="${prefix}Next" ${data.page >= data.total_pages ? "disabled" : ""}>下一页</button></div>`;
   }
 
+  function factValuationKey() {
+    return factCacheKey("positions", tm.page, tm.pageSize);
+  }
+
+  function withFactValuationLoading(data) {
+    if (tm.factsTab !== "positions") return data;
+    return {
+      ...data,
+      summary: { ...data.summary, floating_pnl: null, floating_pnl_status: "loading" },
+      items: data.items.map((row) => ({
+        ...row,
+        valuation_status: "loading",
+        floating_pnl_status: "loading",
+      })),
+    };
+  }
+
+  function positionRowKey(row) {
+    return row.position_key || `${row.exchange || ""}:${row.contract || ""}:${row.asset_type || ""}:${row.direction || ""}`;
+  }
+
+  function mergeFactValuation(base, valuation) {
+    const values = new Map((valuation.items || []).map((row) => [positionRowKey(row), row]));
+    return {
+      ...base,
+      summary: { ...base.summary, ...valuation.summary },
+      items: base.items.map((row) => ({ ...row, ...(values.get(positionRowKey(row)) || {}) })),
+    };
+  }
+
+  async function loadFactValuation(base) {
+    if (tm.factsTab !== "positions") return;
+    const requestKey = factValuationKey();
+    try {
+      const valuation = await api(`/api/trading-management/facts/positions/valuation?${factQuery(tm.page, tm.pageSize)}`);
+      if (requestKey !== factValuationKey() || tm.factsTab !== "positions" || factCache.get(requestKey) !== base) return;
+      const merged = mergeFactValuation(base, valuation);
+      factCache.set(requestKey, merged);
+      renderFactContent(merged, { requestValuation: false });
+    } catch (error) {
+      if (requestKey !== factValuationKey() || tm.factsTab !== "positions" || factCache.get(requestKey) !== base) return;
+      const failed = {
+        ...base,
+        summary: { ...base.summary, floating_pnl: null, floating_pnl_status: "unavailable" },
+        items: base.items.map((row) => ({
+          ...row,
+          valuation_status: "unavailable",
+          floating_pnl_status: "unavailable",
+          market_data_message: error.message || "行情读取失败",
+        })),
+      };
+      factCache.set(requestKey, failed);
+      renderFactContent(failed, { requestValuation: false });
+      showToast(`实时行情读取失败：${error.message || "暂无行情"}`);
+    }
+  }
+
+  function renderFactContent(data, { requestValuation = true } = {}) {
+    const displayData = requestValuation ? withFactValuationLoading(data) : data;
+    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条开仓`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页开仓</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选开仓</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
+    $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${factDataNotice(displayData)}${filterSummary(displayData.summary)}${selection}${factTable(displayData.items)}${pagination(displayData)}</section>`;
+    wireFactActions(displayData);
+    if (requestValuation && tm.factsTab === "positions") loadFactValuation(data).catch(showError);
+  }
+
   async function renderPositionsView() {
-    const cached = factCache.get(factCacheKey(tm.factsTab));
+    const cached = factCache.get(factCacheKey(tm.factsTab, tm.page, tm.pageSize));
     if (!cached) {
       $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><span class="tm-tag blue">统一事实层</span></div>${filters(tm.factsTab === "trades")}<div class="tm-table-loading"><span class="spinner"></span><span>正在读取${tm.factsTab === "positions" ? "持仓" : tm.factsTab === "closes" ? "平仓" : "交易"}记录…</span></div></section>`;
     }
@@ -444,14 +535,15 @@
       renderFactLoadError(error);
       return;
     }
-    const selection = tm.factsTab === "trades" && tm.permissions.canEdit ? `<div class="tm-selection-bar"><span>${tm.selectionBusy ? "正在选择全部筛选结果…" : `已选择 ${tm.selected.size} 条开仓`}</span><button id="tmSelectPage" ${tm.selectionBusy ? "disabled" : ""}>选择当前页开仓</button><button id="tmSelectFiltered" ${tm.selectionBusy ? "disabled" : ""}>选择全部筛选开仓</button><button id="tmClearSelection" ${tm.selectionBusy ? "disabled" : ""}>清空选择</button><button id="tmClassify" class="tm-primary-button" ${tm.selected.size && !tm.selectionBusy ? "" : "disabled"}>业务归属</button></div>` : "";
-    $("#tmPositionsView").innerHTML = `<section class="tm-panel"><div class="tm-section-header"><div>${factTabs()}</div><div class="tm-toolbar">${tm.permissions.canSensitive ? '<button id="tmImportButton" class="tm-secondary-button">导入结算单</button>' : ""}<span class="tm-tag blue">统一事实层</span></div></div>${filters(tm.factsTab === "trades")}${factDataNotice(data)}${filterSummary(data.summary)}${selection}${factTable(data.items)}${pagination(data)}</section>`;
-    wireFactActions(data);
+    const valuationReady = tm.factsTab !== "positions" || Object.prototype.hasOwnProperty.call(data.summary || {}, "valuation_count");
+    renderFactContent(data, { requestValuation: !valuationReady });
+    if (tm.factsTab === "positions") startFactQuoteRefresh();
+    else stopFactQuoteRefresh();
   }
 
   function wireFactActions(data) {
     const resetSelectionForFilter = () => { tm.selected.clear(); tm.page = 1; };
-    document.querySelectorAll("[data-fact-tab]").forEach((button) => button.addEventListener("click", () => { tm.factsTab = button.dataset.factTab; tm.page = 1; renderPositionsView().catch(showError); }));
+    document.querySelectorAll("[data-fact-tab]").forEach((button) => button.addEventListener("click", () => { stopFactQuoteRefresh(); tm.factsTab = button.dataset.factTab; tm.page = 1; renderPositionsView().catch(showError); }));
     $("#tmSearchApply")?.addEventListener("click", () => { tm.query = $("#tmSearch").value.trim(); resetSelectionForFilter(); renderPositionsView().catch(showError); });
     [["#tmAssetType","assetType"],["#tmSide","side"],["#tmOpenClose","openClose"],["#tmClassification","classification"],["#tmFactStatus","factStatus"]].forEach(([selector,key]) => $(selector)?.addEventListener("change", (event) => { tm[key] = event.target.value; resetSelectionForFilter(); renderPositionsView().catch(showError); }));
     $("#tmDateFrom")?.addEventListener("change", (event) => { tm.dateFrom = event.target.value.replaceAll("-",""); resetSelectionForFilter(); renderPositionsView().catch(showError); });
@@ -696,6 +788,35 @@
     businessQuoteRefreshTimer = null;
   }
 
+  function stopFactQuoteRefresh() {
+    if (factQuoteRefreshTimer) window.clearInterval(factQuoteRefreshTimer);
+    factQuoteRefreshTimer = null;
+  }
+
+  async function refreshFactQuotes() {
+    if (tm.view !== "positions" || tm.factsTab !== "positions") return;
+    const data = await loadFactData("positions", { refresh: true });
+    if (tm.view !== "positions" || tm.factsTab !== "positions") return;
+    factCache.set(factValuationKey(), data);
+    renderFactContent(data);
+  }
+
+  function startFactQuoteRefresh() {
+    stopFactQuoteRefresh();
+    if (tm.view !== "positions" || tm.factsTab !== "positions" || document.visibilityState !== "visible" || $("#tradingManagementPage").classList.contains("hidden")) return;
+    factQuoteRefreshTimer = window.setInterval(async () => {
+      if (document.visibilityState !== "visible" || tm.view !== "positions" || tm.factsTab !== "positions" || factQuoteRefreshInFlight) return;
+      factQuoteRefreshInFlight = true;
+      try {
+        await refreshFactQuotes();
+      } catch (error) {
+        showError(error);
+      } finally {
+        factQuoteRefreshInFlight = false;
+      }
+    }, FACT_QUOTE_REFRESH_MS);
+  }
+
   function startBusinessQuoteRefresh() {
     stopBusinessQuoteRefresh();
     const tabKey = tm.view === "junneng" ? "junnengTab" : "optionsTab";
@@ -858,25 +979,35 @@
     $("#tmDataInfoButton").addEventListener("click", () => openDrawer("数据说明","当前系统口径",`<div class="tm-quality-list">${qualityRow("数据来源","交易所日结单或月结单 TXT","事实层")}${qualityRow("重叠规则","月结优先，保留来源与差异审计","自动去重")}${qualityRow("业务归属","独立业务层，不改事实","可调整")}${qualityRow("真实交易操作","系统严格禁止","只读")}</div>`));
     document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") startBusinessQuoteRefresh();
-      else stopBusinessQuoteRefresh();
+      if (document.visibilityState === "visible") {
+        startBusinessQuoteRefresh();
+        startFactQuoteRefresh();
+      } else {
+        stopBusinessQuoteRefresh();
+        stopFactQuoteRefresh();
+      }
     });
     businessVisibilityObserver = new MutationObserver(() => {
-      if ($("#tradingManagementPage").classList.contains("hidden")) stopBusinessQuoteRefresh();
+      if ($("#tradingManagementPage").classList.contains("hidden")) {
+        stopBusinessQuoteRefresh();
+        stopFactQuoteRefresh();
+      }
     });
     businessVisibilityObserver.observe($("#tradingManagementPage"), { attributes: true, attributeFilter: ["class"] });
   }
 
   window.TradingManagement = {
     async activate(moduleCode, permissions) {
-      bind(); stopBusinessQuoteRefresh(); tm.moduleCode = moduleCode; tm.permissions = permissions;
+      bind(); stopBusinessQuoteRefresh(); stopFactQuoteRefresh(); tm.moduleCode = moduleCode; tm.permissions = permissions;
       const [title,subtitle,view] = VIEW_COPY[moduleCode]; tm.view = view;
       $("#tmPageTitle").textContent = title; $("#tmPageSubtitle").textContent = subtitle;
       $("#tmAccountFilter").classList.toggle("hidden", view !== "overview");
-      await ensureConfig(); await refresh();
+      if (view === "positions") await refresh();
+      else { await ensureConfig(); await refresh(); }
     },
     deactivate() {
       stopBusinessQuoteRefresh();
+      stopFactQuoteRefresh();
     },
   };
 })();

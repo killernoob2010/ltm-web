@@ -36,10 +36,12 @@ from .trading_valuation import (
     SH_JUNNENG_RULE_VERSION,
     calculate_option_display_greeks,
     calculate_option_position_valuation,
+    calculate_live_position_floating_pnl,
     calculate_position_floating_pnl,
     calculate_statement_option_metrics,
     calculate_sh_junneng_settlement,
     get_quote_snapshots,
+    select_live_trade_price,
     select_valuation_price,
 )
 
@@ -95,6 +97,15 @@ def _number(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
         return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return default
+
+
+def _seconds_precision(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) >= 19 and text[4] == "-" and text[7] == "-":
+        return text[:19].replace("T", " ")
+    return text.split(".", 1)[0]
 
 
 def _is_date_marker(value: Any) -> bool:
@@ -2375,6 +2386,141 @@ def query_fact_rows(view: str, filters: FactFilters) -> dict[str, Any]:
             "fact_close_pnl": sum(float(row["fact_close_pnl"] or 0) for row in items),
         }
         return _page_result(items, summary, filters)
+
+
+def _active_contract_spec_multipliers(cur) -> dict[tuple[str, str, str], float]:
+    rows = db._exec(
+        cur,
+        """
+        SELECT exchange, product_code, asset_type, contract_multiplier
+        FROM trading_contract_specs
+        WHERE is_active = 1
+        """,
+    ).fetchall()
+    result: dict[tuple[str, str, str], float] = {}
+    for row in rows:
+        try:
+            multiplier = float(row["contract_multiplier"])
+        except (TypeError, ValueError):
+            continue
+        if multiplier <= 0:
+            continue
+        result[
+            (
+                str(row["exchange"] or "").strip().lower(),
+                str(row["product_code"] or "").strip().lower(),
+                str(row["asset_type"] or "").strip().lower(),
+            )
+        ] = multiplier
+    return result
+
+
+def query_fact_position_valuation(filters: FactFilters) -> dict[str, Any]:
+    """Attach strict latest-trade valuation to the effective position view.
+
+    The effective facts query remains independent from the market-data call so
+    the page can render positions before the read-only quote session returns.
+    """
+    with db.connect() as conn:
+        cur = conn.cursor()
+        result = trading_effective_facts.query_effective_positions(
+            cur,
+            _effective_fact_filters(filters),
+            include_all_items=True,
+        )
+        all_items = result.pop("all_items", [])
+        spec_multipliers = _active_contract_spec_multipliers(cur)
+
+    unique_requests: dict[str, QuoteRequest] = {}
+    for item in all_items:
+        contract = str(item.get("contract") or "").strip()
+        if not contract or contract in unique_requests:
+            continue
+        unique_requests[contract] = QuoteRequest(
+            contract=contract,
+            exchange=str(item.get("exchange") or ""),
+            asset_type=str(item.get("asset_type") or ""),
+        )
+    quotes = get_quote_snapshots(list(unique_requests.values())) if unique_requests else {}
+
+    for item in all_items:
+        contract = str(item.get("contract") or "").strip()
+        quote = quotes.get(contract, QuoteSnapshot())
+        valuation_price, valuation_source, valuation_status = select_live_trade_price(quote)
+        exchange = str(item.get("exchange") or "").strip().lower()
+        asset_type = str(item.get("asset_type") or "").strip().lower()
+        try:
+            multiplier = float(quote.multiplier) if quote.multiplier is not None and float(quote.multiplier) > 0 else None
+        except (TypeError, ValueError):
+            multiplier = None
+        if multiplier is None:
+            multiplier = spec_multipliers.get((exchange, _product_code(contract), asset_type))
+        item.update(
+            {
+                "market_price": quote.last_price if valuation_price is not None else None,
+                "valuation_price": valuation_price,
+                "valuation_source": valuation_source,
+                "market_time": _seconds_precision(quote.market_time),
+                "valuation_status": valuation_status,
+                "market_data_status": quote.market_data_status,
+                "market_data_message": quote.market_data_message,
+                "floating_pnl": None,
+                "floating_pnl_status": valuation_status,
+                "contract_multiplier": multiplier,
+                "valuation_message": (
+                    "合约已到期"
+                    if valuation_status == "expired"
+                    else "暂无最新成交价"
+                    if valuation_price is None
+                    else ""
+                ),
+            }
+        )
+        if valuation_price is None:
+            continue
+        try:
+            average_raw = item.get("average_price")
+            quantity_raw = item.get("quantity")
+            average_price = float(average_raw) if average_raw is not None else None
+            quantity = float(quantity_raw) if quantity_raw is not None else None
+        except (TypeError, ValueError):
+            average_price = None
+            quantity = None
+        if average_price is None or quantity is None or quantity <= 0 or multiplier is None:
+            item["valuation_status"] = "unavailable"
+            item["floating_pnl_status"] = "unavailable"
+            item["valuation_message"] = "缺少持仓成本或合约乘数"
+            continue
+        item["floating_pnl"] = calculate_live_position_floating_pnl(
+            open_price=average_price,
+            market_price=valuation_price,
+            direction=str(item.get("direction") or ""),
+            remaining_quantity=quantity,
+            multiplier=multiplier,
+        )
+        item["floating_pnl_status"] = "live"
+
+    values = [
+        float(item["floating_pnl"])
+        for item in all_items
+        if item.get("floating_pnl") is not None
+    ]
+    statuses = [str(item.get("floating_pnl_status") or "unavailable") for item in all_items]
+    result["summary"].update(
+        {
+            "floating_pnl": sum(values) if values else None,
+            "floating_pnl_status": (
+                "live"
+                if statuses and all(status == "live" for status in statuses)
+                else "partial"
+                if values
+                else "unavailable"
+            ),
+            "valuation_count": len(values),
+            "valuation_total_count": len(all_items),
+        }
+    )
+    return result
 
 
 def query_trade_selection_identities(filters: FactFilters) -> dict[str, Any]:
@@ -4785,6 +4931,15 @@ def get_trading_positions(
     user=Depends(trading_management_current_user),
 ):
     return _get_trading_facts("positions", filters, user)
+
+
+@router.get("/facts/positions/valuation")
+def get_trading_position_valuation(
+    filters: FactFilters = Depends(_api_filters),
+    user=Depends(trading_management_current_user),
+):
+    require_permission(user, "trading.facts", "view")
+    return query_fact_position_valuation(filters)
 
 
 @router.get("/facts/closes")

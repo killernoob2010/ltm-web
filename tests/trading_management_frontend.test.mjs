@@ -59,8 +59,10 @@ test("junneng rematch uses the existing drawer for an open-by-close quantity mat
   assert.doesNotMatch(html, /开平关系模拟器/);
 });
 
-test("pending calculations and reserved export are visible in the first version", () => {
-  assert.match(tradingJs, /待计算/);
+test("live position valuation and reserved export are visible", () => {
+  assert.match(tradingJs, /行情加载中/);
+  assert.match(tradingJs, /暂无行情/);
+  assert.match(tradingJs, /浮动盈亏/);
   assert.match(tradingJs, /功能暂未开放/);
   assert.match(tradingJs, /本期不生成真实文件，功能位置按原型保留/);
   assert.match(css, /\.tm-pending/);
@@ -120,8 +122,7 @@ test("fact request failures replace the permanent loader with a retry state", ()
   assert.match(tradingJs, /交易记录读取失败，请重试/);
   assert.match(tradingJs, /id="tmFactRetry"/);
   assert.match(css, /\.tm-table-error/);
-  assert.match(html, /trading_management\.css\?v=20260907-trade-load-v1/);
-  assert.match(html, /trading_management\.js\?v=20260907-trade-load-v1/);
+  assert.match(html, /trading_management\.js\?v=20260908-live-pnl-v1/);
 });
 
 test("fact filters preserve their visible values after rerender", () => {
@@ -295,17 +296,22 @@ test("visible business position pages refresh quotes every fifteen seconds", () 
   assert.match(tradingJs, /tradingManagementPage/);
 });
 
-test("effective facts expose status filters, source labels, and freshness metadata", () => {
+test("effective facts expose status filters, source labels, and live valuation metadata", () => {
   assert.match(tradingJs, /factStatus/);
   assert.match(tradingJs, /id="tmFactStatus"/);
   assert.match(tradingJs, /fact_status/);
-  for (const label of ["临时", "结算确认", "来源", "形成方式", "数据截至"]) {
+  for (const label of ["临时", "结算确认", "来源", "最新成交价", "浮动盈亏", "数据截至"]) {
     assert.match(tradingJs, new RegExp(label));
   }
+  assert.doesNotMatch(
+    tradingJs.match(/positions:\s*\[\[[\s\S]*?\],\n\s+closes:/)?.[0] || "",
+    /formation_method|形成方式/,
+  );
   assert.match(tradingJs, /settlement_confirmed/);
   assert.match(tradingJs, /provisional/);
   assert.match(tradingJs, /freshness_status/);
   assert.match(tradingJs, /baseline_snapshot_date/);
+  assert.match(tradingJs, /facts\/positions\/valuation/);
 });
 
 test("provisional facts cannot enter business classification controls", () => {

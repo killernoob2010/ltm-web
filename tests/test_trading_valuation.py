@@ -16,6 +16,8 @@ from backend.app.trading_valuation import (
     calculate_position_floating_pnl,
     calculate_statement_option_metrics,
     calculate_sh_junneng_settlement,
+    calculate_live_position_floating_pnl,
+    select_live_trade_price,
     select_valuation_price,
 )
 
@@ -128,6 +130,42 @@ def test_junneng_loss_still_charges_interest_without_profit_sharing():
 )
 def test_valuation_price_priority(snapshot, expected):
     assert select_valuation_price(snapshot) == expected
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "expected"),
+    [
+        (
+            QuoteSnapshot(last_price=8.2, bid_price=8.0, ask_price=8.4, settlement_price=7.9),
+            (8.2, "last_trade", "live"),
+        ),
+        (
+            QuoteSnapshot(last_price=None, bid_price=8.0, ask_price=8.4, settlement_price=7.9),
+            (None, "unavailable", "unavailable"),
+        ),
+        (
+            QuoteSnapshot(last_price=None, settlement_price=7.9),
+            (None, "unavailable", "unavailable"),
+        ),
+        (
+            QuoteSnapshot(last_price=8.2, expired=True),
+            (None, "expired", "expired"),
+        ),
+    ],
+)
+def test_live_trade_price_only_accepts_a_current_last_trade(snapshot, expected):
+    assert select_live_trade_price(snapshot) == expected
+
+
+def test_live_position_floating_pnl_does_not_include_open_fee():
+    assert calculate_live_position_floating_pnl(
+        open_price=100,
+        market_price=110,
+        direction="买",
+        remaining_quantity=2,
+        multiplier=10,
+        remaining_open_fee=999,
+    ) == 200
 
 
 def test_option_position_valuation_scales_greeks_to_position_exposure():

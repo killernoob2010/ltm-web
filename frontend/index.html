@@ -6,7 +6,7 @@
     <title>轻量化交易管理系统 Web</title>
     <link rel="stylesheet" href="/static/styles.css?v=risk-alert-summary-layout-20260717&of=order-vessel-r1-mail-risk-20260810a&platts=styles-v14&lifecycle=20260814-order-lifecycle-fidelity-performance-v8&upload-count=20260813&spot-ledger=source-fields-20260905&workspace-layout=20260904b" />
     <link rel="stylesheet" href="/static/trading_management.css?v=20260907-trade-load-v1" />
-    <link rel="stylesheet" href="/static/trading_collector.css?v=20260906-position-diagnostics-v1" />
+    <link rel="stylesheet" href="/static/trading_collector.css?v=20260908-admin-lite-v1" />
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
     <link rel="stylesheet" href="/static/closing_review_agent.css?v=closing-review-agent-v1" />
   </head>
@@ -446,22 +446,18 @@
             <div id="collectorPolicyRanges" class="collector-summary-list"></div>
           </section>
           <section class="panel">
-            <div class="panel-head"><h2>最新盘中期权成交（临时事实）</h2><span id="collectorFillCount"></span></div>
+            <div class="panel-head"><h2>最新盘中成交（临时事实）</h2><span id="collectorFillCount"></span></div>
             <div class="table-wrap"><table class="collector-device-table">
               <thead><tr><th>交易日</th><th>时间</th><th>交易所</th><th>合约</th><th>买卖</th><th>开平</th><th>手数</th><th>成交价</th><th>状态</th></tr></thead>
               <tbody id="collectorFillsTable"></tbody>
             </table></div>
             <div id="collectorFillPagination" class="collector-pagination"></div>
           </section>
-          <section class="panel" id="collectorOptionVolume">
-            <div class="panel-head"><h2>当日期权成交量（已成交手数）</h2><span id="collectorOptionVolumeTotal">0 手</span></div>
-            <div id="collectorOptionVolumeSummary" class="collector-summary-list"></div>
-          </section>
-          <section class="panel" id="collectorCurrentPositions">
-            <div class="panel-head"><h2>最新采集持仓快照诊断</h2><span id="collectorPositionCount"></span></div>
-            <p id="collectorPositionStatus" class="collector-data-status" aria-live="polite">待加载</p>
+          <details class="panel collector-position-details" id="collectorCurrentPositions">
+            <summary class="panel-head"><h2>最新采集持仓快照诊断</h2><span id="collectorPositionCount">按需查看</span></summary>
+            <p id="collectorPositionStatus" class="collector-data-status" aria-live="polite">展开后读取</p>
             <div id="collectorPositionDiagnostics" class="collector-position-diagnostics"></div>
-          </section>
+          </details>
         </section>
 
         <section id="closingReviewAgentPage" class="page hidden closing-review-agent-page">
@@ -1705,13 +1701,13 @@
     <div id="tmToast" class="tm-toast hidden" role="status"></div>
 
     <script src="/static/trading_overview_state.js?v=20260722a"></script>
-    <script src="/static/trading_management.js?v=20260907-trade-load-v1"></script>
+    <script src="/static/trading_management.js?v=20260908-live-pnl-v1"></script>
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
     <script src="/static/spot_ledger.js?v=spot-ledger-strategic-save-20260907"></script>
     <script src="/static/closing_review_agent.js?v=closing-review-agent-v1"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-vessel-r1-mail-risk-20260810a&info=default-contract-year-20260806&platts=v14&lifecycle=20260815-order-lifecycle-fidelity-performance-v10&upload-count=20260813&collector=20260903a&password-dialog=20260904a&cache=20260815-order-lifecycle-fidelity-performance-v10"></script>
-    <script src="/static/trading_collector.js?v=20260906-position-diagnostics-v1"></script>
+    <script src="/static/trading_collector.js?v=20260908-admin-lite-v1"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
   </body>
 </html>

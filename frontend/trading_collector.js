@@ -1,6 +1,6 @@
 /* WH6 collector administration and provisional-fill read-only view. */
 (function () {
-  const state = { initialized: false, canManage: false, accountId: "", fillPage: 1, fillPageSize: 20 };
+  const state = { initialized: false, canManage: false, accountId: "", fillPage: 1, fillPageSize: 20, positionLoaded: false };
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
   const statusLabel = (value) => ({
@@ -17,7 +17,7 @@
   function renderCollectionPolicy(policy) {
     const environment = String(policy.environment || "").toLowerCase();
     $("#collectorPolicyEnvironment").textContent = environmentLabel(environment);
-    $("#collectorPolicyStatus").textContent = `历史起点：${policy.history_start_date || "—"}｜当前交易日：${policy.current_trade_date || "—"}｜策略修订：${policy.policy_revision || "—"}`;
+    $("#collectorPolicyStatus").textContent = `采集起点：${policy.history_start_date || "—"}｜当前交易日：${policy.current_trade_date || "—"}`;
     const closed = (policy.closed_ranges || []).map((item) => `${esc(item.range_start)} 至 ${esc(item.range_end)}（月结已覆盖）`);
     const uploadable = (policy.upload_ranges || []).map((item) => `${esc(item.range_start)} 至 ${esc(item.range_end)}（允许上传）`);
     const items = [
@@ -39,7 +39,13 @@
     const accounts = (config.accounts || []).filter((item) => item.account_code === "hongyuan_futures");
     select.innerHTML = accounts.map((item) => `<option value="${esc(item.id)}">${esc(item.masked_name || item.display_name || item.account_code)}</option>`).join("");
     state.accountId = select.value || "";
-    select.onchange = () => { state.accountId = select.value; loadData().catch((error) => setStatus(`加载失败：${error.message}`)); };
+    select.onchange = () => {
+      state.accountId = select.value;
+      state.positionLoaded = false;
+      const details = $("#collectorCurrentPositions");
+      if (details?.open) loadCurrentPositions().catch((error) => setStatus(`快照诊断加载失败：${error.message}`));
+      loadData().catch((error) => setStatus(`加载失败：${error.message}`));
+    };
   }
 
   function renderDevices(items) {
@@ -99,23 +105,6 @@
     renderFillPagination(data);
   }
 
-  function renderOptionVolume(data) {
-    const total = Number(data.total_quantity || 0);
-    $("#collectorOptionVolumeTotal").textContent = `${total} 手`;
-    const groups = [
-      ["按合约", data.by_contract],
-      ["按买卖", data.by_side],
-      ["按开平", data.by_open_close],
-      ["按 Call/Put", data.by_option_kind],
-    ];
-    $("#collectorOptionVolumeSummary").innerHTML = groups.map(([title, values]) => {
-      const entries = Object.entries(values || {});
-      return `<div class="collector-summary-group"><strong>${esc(title)}</strong>${entries.length
-        ? entries.map(([key, value]) => `<span>${esc(key)}：${esc(value)} 手</span>`).join("")
-        : `<span>暂无</span>`}</div>`;
-    }).join("");
-  }
-
   function renderCurrentPositions(data) {
     const items = data.items || [];
     $("#collectorPositionCount").textContent = `共 ${items.length} 条`;
@@ -139,6 +128,15 @@
     $("#collectorPositionDiagnostics").innerHTML = diagnostics.map(([label, value]) => `<div class="collector-position-diagnostic"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
   }
 
+  async function loadCurrentPositions() {
+    if (!state.accountId) return;
+    const status = $("#collectorPositionStatus");
+    if (status) status.textContent = "正在读取快照诊断…";
+    const data = await api(`/api/trading-collector/positions/current?account_id=${encodeURIComponent(state.accountId)}`);
+    renderCurrentPositions(data);
+    state.positionLoaded = true;
+  }
+
   async function loadFills() {
     if (!state.accountId) return;
     const fills = await api(`/api/trading-collector/fills?account_id=${encodeURIComponent(state.accountId)}&page=${state.fillPage}&page_size=${state.fillPageSize}`);
@@ -147,15 +145,11 @@
 
   async function loadSummaryData() {
     if (!state.accountId) return;
-    const [devices, optionVolume, currentPositions, collectionPolicy] = await Promise.all([
+    const [devices, collectionPolicy] = await Promise.all([
       api(`/api/trading-collector/admin/devices?account_id=${encodeURIComponent(state.accountId)}`),
-      api(`/api/trading-collector/option-volume?account_id=${encodeURIComponent(state.accountId)}`),
-      api(`/api/trading-collector/positions/current?account_id=${encodeURIComponent(state.accountId)}`),
       api(`/api/trading-collector/admin/collection-policy?account_id=${encodeURIComponent(state.accountId)}`),
     ]);
     renderDevices(devices.items || []);
-    renderOptionVolume(optionVolume);
-    renderCurrentPositions(currentPositions);
     renderCollectionPolicy(collectionPolicy);
   }
 
@@ -203,6 +197,10 @@
     if (!state.initialized) {
       $("#collectorPairingBtn").addEventListener("click", issuePairingCode);
       $("#collectorReconcileBtn").addEventListener("click", reconcileExistingFills);
+      const details = $("#collectorCurrentPositions");
+      details?.addEventListener("toggle", () => {
+        if (details.open && !state.positionLoaded) loadCurrentPositions().catch((error) => setStatus(`快照诊断加载失败：${error.message}`));
+      });
       state.initialized = true;
     }
     try {

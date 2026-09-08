@@ -26,13 +26,16 @@ test("collector page only permits pairing and revocation administration", () => 
   assert.match(css, /collector-device-table/);
 });
 
-test("collector page renders option volume and current position states", () => {
-  assert.match(html, /collectorOptionVolume/);
+test("collector page keeps the admin view focused and defers snapshot diagnostics", () => {
+  assert.doesNotMatch(html, /collectorOptionVolume/);
   assert.match(html, /collectorCurrentPositions/);
-  assert.match(collectorJs, new RegExp("/api/trading-collector/option-volume"));
+  assert.doesNotMatch(collectorJs, new RegExp("/api/trading-collector/option-volume"));
   assert.match(collectorJs, new RegExp("/api/trading-collector/positions/current"));
-  assert.match(collectorJs, /renderOptionVolume/);
+  assert.doesNotMatch(collectorJs, /renderOptionVolume/);
   assert.match(collectorJs, /renderCurrentPositions/);
+  assert.match(html, /<details[^>]*id="collectorCurrentPositions"/);
+  assert.match(collectorJs, /loadCurrentPositions/);
+  assert.match(collectorJs, /addEventListener\("toggle"/);
   assert.match(collectorJs, /持仓数据可能已过期/);
   assert.match(collectorJs, /多设备持仓不一致/);
   assert.match(html, /最新采集持仓快照诊断/);
