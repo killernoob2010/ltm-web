@@ -484,6 +484,24 @@
 
   const FACT_VALUATION_FIELDS = ["market_price", "valuation_price", "valuation_source", "market_time", "valuation_status", "market_data_status", "market_data_message", "floating_pnl", "floating_pnl_status", "contract_multiplier", "valuation_message"];
 
+  function positionStateChanged(previous, current) {
+    if (!previous || !current) return true;
+    for (const field of ["quantity", "average_price"]) {
+      const before = previous[field];
+      const after = current[field];
+      if (before == null || after == null) {
+        if (before !== after) return true;
+        continue;
+      }
+      if (!Number.isFinite(Number(before)) || !Number.isFinite(Number(after))) {
+        if (String(before) !== String(after)) return true;
+        continue;
+      }
+      if (Math.abs(Number(before) - Number(after)) > 1e-9) return true;
+    }
+    return false;
+  }
+
   function preserveFactValuation(base, previous, { stale = false, message = "行情更新失败，沿用上次行情" } = {}) {
     if (!previous || !Object.prototype.hasOwnProperty.call(previous.summary || {}, "valuation_count")) return base;
     const previousRows = new Map((previous.items || []).map((row) => [positionRowKey(row), row]));
@@ -514,9 +532,22 @@
   function mergeFactValuation(base, valuation) {
     const previousRows = new Map((base.items || []).map((row) => [positionRowKey(row), row]));
     let preservedPrevious = false;
+    let positionChangedWithoutValuation = false;
     const items = (valuation.items || []).map((current) => {
       const previous = previousRows.get(positionRowKey(current));
       if (current.floating_pnl == null && previous?.floating_pnl != null) {
+        if (positionStateChanged(previous, current)) {
+          positionChangedWithoutValuation = true;
+          return {
+            ...current,
+            valuation_status: "unavailable",
+            floating_pnl_status: "unavailable",
+            market_data_status: "unavailable",
+            market_data_message: "持仓已更新，等待最新行情",
+            valuation_message: "持仓已更新，等待最新行情",
+            floating_pnl: null,
+          };
+        }
         preservedPrevious = true;
         return {
           ...current,
@@ -536,7 +567,7 @@
       return current;
     });
     const summary = { ...base.summary, ...valuation.summary };
-    if (preservedPrevious && base.summary?.floating_pnl != null) {
+    if (preservedPrevious && !positionChangedWithoutValuation && base.summary?.floating_pnl != null) {
       summary.floating_pnl = base.summary.floating_pnl;
       summary.floating_pnl_status = "stale";
       ["valuation_count", "valuation_total_count"].forEach((field) => {

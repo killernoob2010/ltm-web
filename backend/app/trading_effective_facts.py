@@ -163,13 +163,33 @@ def _group_position_items(items: Iterable[Mapping[str, Any]]) -> List[Dict[str, 
     )
 
 
+def _fill_order_key(row: Mapping[str, Any]) -> tuple[str, int, str, int]:
+    """Order fills by exchange session within the stored business date.
+
+    WH6 stores night-session fills under the business date used by the
+    statement, while the clock time is still 21:00 or later.  Sorting only by
+    the clock therefore puts the day session before the preceding night
+    session and can make a valid close look like an over-close.
+    """
+    trade_date = _date_key(row.get("trade_date"))
+    trade_time = str(row.get("trade_time") or "").strip()
+    is_night = trade_time >= "21:00:00" or trade_time < "05:00:00"
+    session_order = 0 if is_night else 1
+    try:
+        row_id = int(row.get("id") or 0)
+    except (TypeError, ValueError):
+        row_id = 0
+    return trade_date, session_order, trade_time, row_id
+
+
 def _position_projection_error(
     baseline_rows: Iterable[Mapping[str, Any]], warning: str
 ) -> Dict[str, Any]:
-    items = list(_baseline_position_items(baseline_rows).values())
+    reference_items = list(_baseline_position_items(baseline_rows).values())
     return {
         "status": "projection_error",
-        "items": items,
+        "items": [],
+        "reference_items": reference_items,
         "warnings": [warning],
     }
 
@@ -183,11 +203,7 @@ def infer_positions_from_fills(
     positions = _baseline_position_items(baseline)
     ordered_fills = sorted(
         list(fills),
-        key=lambda row: (
-            _date_key(row.get("trade_date")),
-            str(row.get("trade_time") or ""),
-            int(row.get("id") or 0),
-        ),
+        key=_fill_order_key,
     )
     changed_keys: set[tuple[str, str, str, str]] = set()
     for fill in ordered_fills:
@@ -1177,8 +1193,16 @@ def _position_result(
         "summary": {
             "record_count": total,
             "source_record_count": sum(int(item.get("source_record_count") or 0) for item in filtered),
-            "quantity": sum(float(item.get("quantity") or 0) for item in filtered),
-            "margin": sum(float(item.get("margin") or 0) for item in filtered if item.get("margin") is not None),
+            "quantity": (
+                sum(float(item.get("quantity") or 0) for item in filtered)
+                if data_status == "ok"
+                else None
+            ),
+            "margin": (
+                sum(float(item.get("margin") or 0) for item in filtered if item.get("margin") is not None)
+                if data_status == "ok"
+                else None
+            ),
             "provisional_count": provisional_count,
             "settlement_confirmed_count": settlement_count,
             "contains_provisional": provisional_count > 0,
@@ -1190,7 +1214,14 @@ def _position_result(
         "data_status": data_status,
         "baseline_snapshot_date": baseline_snapshot_date,
         "formation_method": formation_method,
-        "fact_status": "provisional" if provisional_count else "settlement_confirmed",
+        "fact_status": (
+            "provisional"
+            if provisional_count
+            else "settlement_confirmed"
+            if data_status == "ok"
+            else "unavailable"
+        ),
+        "position_status": "current" if data_status == "ok" else "unavailable",
         "as_of_time": freshness.get("as_of_time"),
         "freshness_status": freshness.get("freshness_status"),
         "collector_last_seen_at": freshness.get("collector_last_seen_at"),

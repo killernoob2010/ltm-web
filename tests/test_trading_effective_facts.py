@@ -272,11 +272,21 @@ def _baseline_row(contract, direction, quantity, average_price, *, margin=100):
     }
 
 
-def _fill(fill_id, contract, side, open_close, quantity, price, *, trade_date="20260901"):
+def _fill(
+    fill_id,
+    contract,
+    side,
+    open_close,
+    quantity,
+    price,
+    *,
+    trade_date="20260901",
+    trade_time=None,
+):
     return {
         "id": fill_id,
         "trade_date": trade_date,
-        "trade_time": f"09:00:{fill_id:02d}",
+        "trade_time": trade_time or f"09:00:{fill_id:02d}",
         "exchange": "DCE",
         "contract": contract,
         "asset_type": "future",
@@ -452,7 +462,8 @@ def test_infer_positions_returns_projection_error_without_clipping_negative_quan
     )
 
     assert result["status"] == "projection_error"
-    assert result["items"][0]["quantity"] == 1
+    assert result["items"] == []
+    assert result["reference_items"][0]["quantity"] == 1
     assert result["warnings"]
 
 
@@ -464,6 +475,35 @@ def test_infer_positions_rejects_incomplete_fill_without_guessing():
 
     assert result["status"] == "projection_error"
     assert "价格" in result["warnings"][0]
+
+
+def test_infer_positions_orders_night_session_before_day_session_on_same_trade_date():
+    result = trading_effective_facts.infer_positions_from_fills(
+        [],
+        [
+            _fill(
+                1,
+                "i2609",
+                "买",
+                "开",
+                1,
+                700,
+                trade_time="21:30:00",
+            ),
+            _fill(
+                2,
+                "i2609",
+                "卖",
+                "平",
+                1,
+                710,
+                trade_time="09:30:00",
+            ),
+        ],
+    )
+
+    assert result["status"] == "ok"
+    assert result["items"] == []
 
 
 def test_effective_positions_use_latest_settlement_baseline_and_provisional_fills(tmp_path, monkeypatch):
@@ -714,7 +754,9 @@ def test_overclose_returns_projection_error_and_confirmed_baseline(tmp_path, mon
         )
 
     assert result["data_status"] == "projection_error"
-    assert result["items"][0]["quantity"] == 1
+    assert result["items"] == []
+    assert result["summary"]["quantity"] is None
+    assert result["position_status"] == "unavailable"
     assert result["warnings"]
 
 

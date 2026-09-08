@@ -303,6 +303,13 @@ test("fact quote refresh keeps the last successful valuation visible", () => {
   assert.doesNotMatch(tradingJs, /loadFactData\("positions", \{ refresh: true \}\)/);
 });
 
+test("fact quote refresh does not reuse pnl when the effective position changed", () => {
+  assert.match(tradingJs, /positionStateChanged/);
+  assert.match(tradingJs, /quantity/);
+  assert.match(tradingJs, /average_price/);
+  assert.match(tradingJs, /positionStateChanged\(previous, current\)/);
+});
+
 test("effective facts expose status filters, source labels, and live valuation metadata", () => {
   assert.match(tradingJs, /factStatus/);
   assert.match(tradingJs, /id="tmFactStatus"/);
