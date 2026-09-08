@@ -4035,9 +4035,11 @@ dvImportFile.addEventListener("change", async function() {
 
     var summary = preview.summary || {};
     var errors = preview.errors || [];
+    var detailCount = ["inventory_port_product_count", "inventory_mainstream_count", "inventory_summary_count", "inventory_grade_count", "arrival_actual_count", "arrival_estimated_count"].reduce(function(total, key) { return total + Number(summary[key] || 0); }, 0);
     var html = '<div class="dv-preview-stats">';
     html += '<div>文件: ' + file.name + '</div>';
     html += '<div>数据点总数: ' + (summary.total_points || 0) + '</div>';
+    if (detailCount) html += '<div>V2 明细记录: ' + detailCount + '</div>';
     html += '<div>库存: ' + (summary.inventory_count || 0) + ' | 发运: ' + (summary.shipment_count || 0) + ' | 到港: ' + (summary.arrival_count || 0) + ' | 表需: ' + (summary.apparent_demand_count || 0) + '</div>';
     html += '<div>品种数: ' + (summary.product_count || 0) + ' | 种类数: ' + (summary.category_count || 0) + ' | 来源/国家数: ' + (summary.country_count || 0) + '</div>';
     html += '<div>周数: ' + (summary.week_count || 0) + ' | 空值数: ' + (summary.null_count || 0) + '</div>';
@@ -4054,7 +4056,7 @@ dvImportFile.addEventListener("change", async function() {
     }
     html += '</div>';
     dvPreviewContent.innerHTML = html;
-    dvCommitImportBtn.disabled = (summary.total_points || 0) === 0;
+    dvCommitImportBtn.disabled = errors.length > 0 || ((summary.total_points || 0) + detailCount) === 0;
   } catch (err) {
     dvPreviewContent.innerHTML = '<div class="error-cell">解析失败: ' + err.message + '</div>';
     dvCommitImportBtn.disabled = true;
