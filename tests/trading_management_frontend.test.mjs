@@ -122,7 +122,7 @@ test("fact request failures replace the permanent loader with a retry state", ()
   assert.match(tradingJs, /交易记录读取失败，请重试/);
   assert.match(tradingJs, /id="tmFactRetry"/);
   assert.match(css, /\.tm-table-error/);
-  assert.match(html, /trading_management\.js\?v=20260908-live-pnl-v1/);
+  assert.match(html, /trading_management\.js\?v=20260908-live-pnl-v2/);
 });
 
 test("fact filters preserve their visible values after rerender", () => {
