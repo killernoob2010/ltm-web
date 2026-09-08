@@ -2988,12 +2988,21 @@ async def integration_export(package_id: Optional[str] = Query(default=None), us
             cur = conn.cursor()
             row = db._exec(
                 cur,
-                "SELECT output_path FROM dv_source_packages WHERE package_id = ?",
+                "SELECT output_path, output_sha256 FROM dv_source_packages WHERE package_id = ?",
                 (package_id,),
             ).fetchone()
-        if not row or not row["output_path"] or not Path(row["output_path"]).exists():
+        if not row:
             raise HTTPException(status_code=404, detail="整合包不存在或文件已失效")
-        content = Path(row["output_path"]).read_bytes()
+        if row["output_path"] and Path(row["output_path"]).is_file():
+            content = Path(row["output_path"]).read_bytes()
+        else:
+            with db.connect() as conn:
+                saved = db._exec(conn.cursor(), "SELECT content FROM dv_source_package_contents WHERE package_id = ?", (package_id,)).fetchone()
+            if not saved:
+                raise HTTPException(status_code=404, detail="整合包不存在或文件已失效")
+            content = bytes(saved["content"])
+        if hashlib.sha256(content).hexdigest() != row["output_sha256"]:
+            raise HTTPException(status_code=500, detail="整合包存档校验失败")
         filename = f"iron_ore_integrated_v2_{package_id}.xlsx"
     else:
         content = build_integrated_workbook_bytes()
