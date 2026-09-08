@@ -118,6 +118,12 @@ test("weekly report page exposes template version, readiness and PDF controls", 
   assert.match(appJs, /V1\.0/);
 });
 
+test("weekly report page keeps readiness visible when history loading fails", () => {
+  assert.match(appJs, /Promise\.allSettled\(\[checkDVReportReadiness\(\), loadDVReportHistory\(\)\]\)/);
+  assert.match(appJs, /历史报告加载失败/);
+  assert.match(appJs, /数据检查失败，请重试/);
+});
+
 test("sidebar groups put data visualization before admin", () => {
   assert.ok(dbPy.indexOf('("数据可视化管理", "data_visualization_integration"') < dbPy.indexOf('("后台管理", "user_management"'));
 });
