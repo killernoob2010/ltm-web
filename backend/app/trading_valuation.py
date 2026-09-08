@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import math
+import logging
 import os
 import re
 import threading
@@ -788,7 +789,11 @@ class MarketDataService:
             return
         try:
             self.provider = self.provider_factory()
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Market data provider initialization failed: type=%s elapsed_seconds=%.2f",
+                type(exc).__name__, time.monotonic() - now,
+            )
             self.provider_status = "provider_error"
             self.provider_message = "天勤行情连接失败，系统将自动重试"
             self._next_provider_retry = now + self.provider_retry_seconds
