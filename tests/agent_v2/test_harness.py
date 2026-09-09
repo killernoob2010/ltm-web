@@ -38,6 +38,12 @@ class CatalogMCP(FakeMCP):
         return {"tools": [{"name": "describe_capabilities", "inputSchema": {"type": "object"}}]}
 
 
+class SlowMCP(FakeMCP):
+    async def call_tool(self, name, args, grant):
+        await asyncio.sleep(0.2)
+        return await super().call_tool(name, args, grant)
+
+
 @pytest.mark.asyncio
 async def test_budget_stops_repeated_tool_requests(queued):
     task = store.claim_next("harness-worker")
@@ -74,3 +80,19 @@ async def test_harness_uses_live_mcp_catalog_when_available(queued):
     with __import__("app").db.connect() as conn:
         event = conn.execute("SELECT kind FROM agent_v2_events WHERE task_id=? AND kind='tool_catalog'", (task,)).fetchone()
     assert event is not None
+
+
+@pytest.mark.asyncio
+async def test_harness_stops_a_slow_tool_at_the_task_deadline(queued):
+    task = store.claim_next("deadline-worker")
+    deps = harness.RuntimeDeps(
+        store,
+        KnowledgeModel(),
+        SlowMCP(),
+        worker_id="deadline-worker",
+        limits=harness.RuntimeLimits(deadline_seconds=0.02, model_timeout_seconds=0.01, tool_timeout_seconds=0.02),
+    )
+
+    result = await harness.run_task(task, deps)
+
+    assert result.status in {"partial", "temporarily_unavailable"}

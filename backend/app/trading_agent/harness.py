@@ -1,6 +1,6 @@
 """Bounded, auditable model/tool loop shared by Web and WeCom workers."""
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 import json
 import time
@@ -12,12 +12,25 @@ from .model import ModelError, RetryableModelError
 
 
 @dataclass(frozen=True)
+class RuntimeLimits:
+    """Per-task limits; values are configurable for controlled environments."""
+
+    max_tools: int = 8
+    max_search: int = 2
+    max_models: int = 6
+    deadline_seconds: float = 90.0
+    model_timeout_seconds: float = 15.0
+    tool_timeout_seconds: float = 15.0
+
+
+@dataclass(frozen=True)
 class RuntimeDeps:
     store: Any
     model: Any
     mcp: Any
     clock: Any = time.monotonic
     worker_id: str = "agent-v2"
+    limits: RuntimeLimits = field(default_factory=RuntimeLimits)
 
 
 @dataclass
@@ -36,6 +49,24 @@ class Budget:
 
 async def _await(value):
     return await value if inspect.isawaitable(value) else value
+
+
+class ExecutionDeadline(TimeoutError):
+    """The task's total wall-clock budget has expired."""
+
+
+async def _bounded_call(factory, *, clock, started, total_seconds, call_seconds):
+    """Run an async or sync-compatible call without exceeding task time."""
+    remaining = float(total_seconds) - (clock() - started)
+    if remaining <= 0:
+        raise ExecutionDeadline()
+    try:
+        value = factory()
+        return await asyncio.wait_for(
+            _await(value), timeout=min(float(call_seconds), remaining)
+        )
+    except asyncio.TimeoutError as exc:
+        raise ExecutionDeadline() from exc
 
 
 async def _model_call(model, messages, schemas, timeout):
@@ -127,7 +158,12 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         return final
     grant = None
     started = deps.clock()
-    budget = Budget()
+    budget = Budget(
+        max_tools=deps.limits.max_tools,
+        max_search=deps.limits.max_search,
+        max_models=deps.limits.max_models,
+        deadline_seconds=deps.limits.deadline_seconds,
+    )
     final = None
     try:
         try:
@@ -143,8 +179,20 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             budget.tool_calls += 1
             deps.store.record_usage(task_id, tool_calls=1)
             try:
-                live_tools = await _await(deps.mcp.list_tools(grant))
+                live_tools = await _bounded_call(
+                    lambda: deps.mcp.list_tools(grant),
+                    clock=deps.clock,
+                    started=started,
+                    total_seconds=budget.deadline_seconds,
+                    call_seconds=deps.limits.tool_timeout_seconds,
+                )
                 deps.store.append_event(principal, "tool_catalog", status="complete")
+            except ExecutionDeadline:
+                final = _fallback("partial", "本次分析达到时间上限，未能读取完整工具目录。")
+                rendered = answer.render_answer(principal, final, deps.store)
+                deps.store.finish(task_id, deps.worker_id, "partial", rendered,
+                                  structured_payload=_draft_payload(final))
+                return final
             except Exception as exc:
                 deps.store.append_event(principal, "tool_error", error_code=type(exc).__name__)
                 final = _fallback("temporarily_unavailable", "当前工具目录暂时不可用，未执行任何业务查询；请稍后重试。")
@@ -156,10 +204,22 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         budget.tool_calls += 1
         deps.store.record_usage(task_id, tool_calls=1)
         try:
-            capability = await _await(deps.mcp.call_tool("describe_capabilities", {}, grant))
+            capability = await _bounded_call(
+                lambda: deps.mcp.call_tool("describe_capabilities", {}, grant),
+                clock=deps.clock,
+                started=started,
+                total_seconds=budget.deadline_seconds,
+                call_seconds=deps.limits.tool_timeout_seconds,
+            )
             deps.store.append_event(principal, "tool", tool_name="describe_capabilities",
                                     result_ref=getattr(capability, "result_ref", None),
                                     status=getattr(capability, "status", None))
+        except ExecutionDeadline:
+            final = _fallback("partial", "本次分析达到时间上限，未能读取当前能力目录。")
+            rendered = answer.render_answer(principal, final, deps.store)
+            deps.store.finish(task_id, deps.worker_id, "partial", rendered,
+                              structured_payload=_draft_payload(final))
+            return final
         except Exception as exc:
             deps.store.append_event(principal, "tool_error", tool_name="describe_capabilities",
                                     error_code=type(exc).__name__)
@@ -179,7 +239,22 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             budget.model_calls += 1
             deps.store.record_usage(task_id, model_calls=1)
             try:
-                turn = await _model_call(deps.model, messages, schemas, min(15, budget.deadline_seconds - (deps.clock() - started)))
+                turn = await _bounded_call(
+                    lambda: _model_call(
+                        deps.model,
+                        messages,
+                        schemas,
+                        min(deps.limits.model_timeout_seconds,
+                            budget.deadline_seconds - (deps.clock() - started)),
+                    ),
+                    clock=deps.clock,
+                    started=started,
+                    total_seconds=budget.deadline_seconds,
+                    call_seconds=deps.limits.model_timeout_seconds,
+                )
+            except ExecutionDeadline:
+                final = _fallback("partial", "本次分析达到时间上限，已停止继续请求。")
+                break
             except RetryableModelError as exc:
                 # One bounded repair/retry is represented by the next model budget slot.
                 messages.append({"role":"system","content":"工具或模型暂时不可用，请在现有证据基础上给出部分答案，并明确缺失。"})
@@ -203,10 +278,21 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         budget.search_calls += 1
                     deps.store.record_usage(task_id, tool_calls=1, search_calls=1 if call.name == "search_public" else 0)
                     try:
-                        envelope = await _await(deps.mcp.call_tool(call.name, call.arguments, grant))
+                        envelope = await _bounded_call(
+                            lambda: deps.mcp.call_tool(call.name, call.arguments, grant),
+                            clock=deps.clock,
+                            started=started,
+                            total_seconds=budget.deadline_seconds,
+                            call_seconds=deps.limits.tool_timeout_seconds,
+                        )
                         deps.store.append_event(principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         messages.append({"role":"tool","tool_call_id":call.id,"content":prompts.project_tool_result(envelope)})
+                    except ExecutionDeadline:
+                        final = _fallback("partial", "本次分析达到时间上限，已停止继续调用工具。")
+                        messages.append({"role":"tool","tool_call_id":call.id,
+                                         "content":json.dumps({"status":"partial","error":"任务时间已用尽"}, ensure_ascii=False)})
+                        break
                     except Exception as exc:
                         deps.store.append_event(principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=type(exc).__name__)
                         messages.append({"role":"tool","tool_call_id":call.id,"content":json.dumps({"status":"temporarily_unavailable","error":"工具暂时不可用"},ensure_ascii=False)})

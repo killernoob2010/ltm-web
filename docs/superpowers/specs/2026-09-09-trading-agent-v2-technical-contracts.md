@@ -1,6 +1,8 @@
 # 交易 Agent V2 技术合同
 
-日期：2026-09-09。状态：T0–T10 已在隔离分支完成本地实现与回归；Staging 迁移、真实模型、企微和线上验证仍待 T11。配套 [业务设计](2026-09-09-trading-agent-v2-upgrade-design.md) 与 [实施计划](../plans/2026-09-09-trading-agent-v2-implementation.md)。本文件细化已确认需求，不扩大账户、群、业务模块或交易权限。
+> 2026-09-09 V2.1 修订：已确认复用现有 Render 付费实例。部署、依赖、运行保护和后续验收以[新版方案](2026-09-09-trading-agent-v2-shared-render-design.md)为准；本文其他业务与接口合同保留。旧 T11 的另找常驻主机安排已被替代；本地同实例适配已完成，Staging 迁移和真实联调仍待执行。
+
+日期：2026-09-09。状态：T0–T10 及 V2.1 S1–S3 已在隔离分支完成本地实现与回归；Staging 迁移、真实模型、企微和线上验证仍待 S4–S7。配套 [业务设计](2026-09-09-trading-agent-v2-upgrade-design.md) 与 [实施计划](../plans/2026-09-09-trading-agent-v2-implementation.md)。本文件细化已确认需求，不扩大账户、群、业务模块或交易权限。
 
 ## 1. 技术选择与运行拓扑
 
@@ -10,7 +12,7 @@
 - 使用 Streamable HTTP 的结构化工具结果；服务端无跨用户 session 状态，授权依据每次请求的执行令牌，绝不把 MCP session id 当身份。Host 仅允许 loopback，拒绝非允许 Origin；不启用浏览器 CORS。
 - 首版是第一方内部 MCP，采用下面定义的短期执行令牌；不声称实现第三方 OAuth 自动接入。未来远程开放需要单独实现 MCP HTTP 授权、TLS、受众校验和客户端验收。
 - 全量有效持仓的取数、行情、Greeks 与聚合在业务服务中完成，MCP 仅适配；不改变期权台账页面及归类流程。
-- Agent 运行环境独立 requirements，不升级现有 Web 运行依赖。候选 Python 3.12、`mcp==2.2.0`、`wecom-aibot-python-sdk==1.0.2`；原 requirements 依赖一并解析锁定。元数据已核对，兼容安装与 import 仍是 T0 实际门槛。
+- Agent 保留独立 requirements 输入供本地或独立 worker 使用；复用 Render 服务时，根目录 `requirements.txt` 显式加入 `mcp==2.2.0` 和 `wecom-aibot-python-sdk==1.0.2`，与 Web 在同一构建环境验证兼容，不静默升级 Web 框架。候选 Python 3.12；元数据已核对，实际构建与 import 仍是 T0 实际门槛。
 - DeepSeek 沿用 `deepseek-v4-flash` 单模型，Chat Completions，自定义工具调用；首版显式关闭 thinking，避免隐藏推理跨进程持久化要求。不得自动切换模型。未通过真实 smoke 则不能交付。
 - 公开检索适配首选 Brave Web Search；只是技术默认，不代表用户已购买或有额度。无已授权 key 时相关链路保持未验收，不购买、不改用抓取搜索结果页冒充 API。
 

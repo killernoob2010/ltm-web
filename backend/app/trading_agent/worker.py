@@ -5,7 +5,7 @@ from typing import Any
 
 import uvicorn
 
-from . import harness, mcp_client, mcp_server, model, store
+from . import harness, mcp_client, mcp_server, model, resources, store
 
 
 async def worker_once(deps: harness.RuntimeDeps):
@@ -37,10 +37,19 @@ async def worker_once(deps: harness.RuntimeDeps):
         await asyncio.gather(renew_task, return_exceptions=True)
 
 
-async def worker_loop(deps: harness.RuntimeDeps, *, stop_event: asyncio.Event | None = None, idle_seconds=1):
+async def worker_loop(deps: harness.RuntimeDeps, *, stop_event: asyncio.Event | None = None,
+                      idle_seconds=1, resource_guard=None):
     stop_event = stop_event or asyncio.Event()
     deps.store.recover_interrupted()
     while not stop_event.is_set():
+        if resource_guard is not None:
+            decision = resource_guard.admit()
+            if not decision.allowed:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=idle_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                continue
         result = await worker_once(deps)
         if result is None:
             try:
@@ -74,7 +83,7 @@ async def worker_main():
             await wecom_client.connect()
         async with mcp_client.MCPToolClient() as mcp:
             deps = harness.RuntimeDeps(store=store, model=model.DeepSeekModel(), mcp=mcp, worker_id=os.environ.get("AGENT_V2_WORKER_ID", "agent-v2"))
-            await worker_loop(deps)
+            await worker_loop(deps, resource_guard=resources.default_resource_guard())
     finally:
         if wecom_client is not None:
             wecom_client.disconnect()

@@ -1,6 +1,7 @@
 """Persistent bounded tasks and immutable evidence with explicit ownership."""
 import hashlib
 import json
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -16,8 +17,15 @@ class RequestConflict(ValueError):
     pass
 
 
+class QueueFull(RuntimeError):
+    pass
+
+
 class ResultExpired(LookupError):
     pass
+
+
+QUEUE_LOCK_KEY = 641_219_587
 
 
 def now():
@@ -46,6 +54,39 @@ def _transaction(conn):
         conn.execute("BEGIN IMMEDIATE")
 
 
+def _env_number(name, default, cast):
+    try:
+        return max(0, cast(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _queue_limit():
+    return _env_number("AGENT_V2_MAX_QUEUED_TASKS", 3, int)
+
+
+def _queue_timeout_seconds():
+    return _env_number("AGENT_V2_QUEUE_TIMEOUT_SECONDS", 120, float)
+
+
+def _expire_queued(cur, timestamp=None):
+    timestamp = timestamp or now()
+    cutoff = stamp(timestamp - timedelta(seconds=_queue_timeout_seconds()))
+    rows = db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE state='queued' AND created_at<=?", (cutoff,)).fetchall()
+    for row in rows:
+        task_id = int(row["task_id"])
+        finished = stamp(timestamp)
+        _terminal(cur, task_id, "failed", finished, "queue_timeout")
+        task = db._exec(cur, "SELECT conversation_id FROM closing_review_tasks WHERE id=?", (task_id,)).fetchone()
+        if task:
+            db._exec(cur, """INSERT INTO closing_review_messages
+                (conversation_id,task_id,role,message_type,content,status,created_at)
+                VALUES (?,?,'assistant','error',?,'active',?)""",
+                (task["conversation_id"], task_id,
+                 f"排队等待超过 {_queue_timeout_seconds():g} 秒，本次任务已结束，请重新提问。", finished))
+    return len(rows)
+
+
 def enqueue(user, conversation_id, request_id, text, channel):
     request_id = str(UUID(str(request_id)))
     if not isinstance(text, str) or not text.strip() or len(text) > 2000:
@@ -56,6 +97,9 @@ def enqueue(user, conversation_id, request_id, text, channel):
     with db.connect() as conn:
         _transaction(conn)
         cur = conn.cursor()
+        if db._is_pg():
+            # Serialize the small admission check across Web requests.
+            db._exec(cur, "SELECT pg_advisory_xact_lock(?)", (QUEUE_LOCK_KEY,))
         # Same unique key as claim_user_task, but message + V2 run must commit together.
         db._exec(cur, """INSERT OR IGNORE INTO closing_review_tasks
             (user_id,conversation_id,client_request_id,task_kind,state,created_at)
@@ -73,6 +117,10 @@ def enqueue(user, conversation_id, request_id, text, channel):
             if existing["request_hash"] != request_hash:
                 raise RequestConflict("请求编号已被其他问题使用")
             return task_id
+        _expire_queued(cur, datetime.fromisoformat(timestamp))
+        queued = db._exec(cur, "SELECT COUNT(*) AS count FROM agent_v2_runs WHERE state='queued'").fetchone()
+        if int(queued["count"]) >= _queue_limit():
+            raise QueueFull("当前 Agent 排队已满，请稍后重试")
         _exec_no_return(cur, """INSERT INTO agent_v2_runs
             (task_id,execution_id,user_id,channel,account_scope_json,request_hash,state,created_at)
             VALUES (?,?,?,?,?,?,'queued',?)""",
@@ -93,6 +141,7 @@ def claim_next(worker_id):
     with db.connect() as conn:
         _transaction(conn)
         cur = conn.cursor()
+        _expire_queued(cur, timestamp)
         suffix = " FOR UPDATE SKIP LOCKED" if db._is_pg() else ""
         row = db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE state='queued' ORDER BY created_at,task_id LIMIT 1" + suffix).fetchone()
         if not row:

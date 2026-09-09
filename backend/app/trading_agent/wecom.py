@@ -16,6 +16,7 @@ from time import monotonic
 from typing import Any, Awaitable, Callable
 from uuid import UUID, uuid4, uuid5
 
+from .. import db
 from . import store
 
 BOT_NAMESPACE = UUID("2f0d1a74-8ec6-4af9-b5d9-7f1e2b4d95d7")
@@ -36,20 +37,63 @@ _PENDING: dict[int, PendingDelivery] = {}
 
 
 class BotLease:
-    """Host-local advisory lease so one worker owns a bot connection at a time."""
+    """Own one bot connection using a DB session lock in cloud deployments.
+
+    SQLite/local development keeps the file lock fallback.  PostgreSQL uses a
+    dedicated pooled connection for the lifetime of the lease, because an
+    advisory lock is released as soon as that session is returned to the pool.
+    """
 
     def __init__(self, bot_id: str, *, path: str | None = None):
         if not isinstance(bot_id, str) or not bot_id.strip():
             raise ValueError("企微机器人编号不能为空")
+        self.bot_id = bot_id.strip()
         digest = hashlib.sha256(bot_id.strip().encode("utf-8")).hexdigest()[:24]
         root = os.environ.get("AGENT_V2_LOCK_DIR", tempfile.gettempdir())
         self.path = path or os.path.join(root, f"hongyuan-agent-v2-wecom-{digest}.lock")
         self._handle = None
+        self._db_context = None
+        self._db_connection = None
+        self._db_key = None
         self._locked = False
+
+    def _advisory_key(self) -> int:
+        scope = os.environ.get("AGENT_V2_ENV", "unknown").strip() or "unknown"
+        raw = hashlib.sha256(f"hongyuan-agent-v2:{scope}:{self.bot_id}".encode("utf-8")).digest()
+        # PostgreSQL's one-key advisory lock accepts a signed BIGINT.
+        return int.from_bytes(raw[:8], "big", signed=False) & ((1 << 63) - 1)
 
     def acquire(self):
         if self._locked:
             return self
+        if db._is_pg():
+            context = db.connect()
+            connection = context.__enter__()
+            key = self._advisory_key()
+            try:
+                row = db._exec(
+                    connection.cursor(),
+                    "SELECT pg_try_advisory_lock(?) AS locked",
+                    (key,),
+                ).fetchone()
+                locked = row.get("locked") if hasattr(row, "get") else row[0]
+                if not locked:
+                    raise RuntimeError("企微机器人已被其他 Agent worker 占用")
+                self._db_context = context
+                self._db_connection = connection
+                self._db_key = key
+                self._locked = True
+                return self
+            except Exception as exc:
+                try:
+                    context.__exit__(type(exc), exc, exc.__traceback__)
+                finally:
+                    self._db_context = None
+                    self._db_connection = None
+                    self._db_key = None
+                if isinstance(exc, RuntimeError):
+                    raise
+                raise RuntimeError("企微机器人租约不可用") from exc
         try:
             import fcntl
         except ImportError:  # pragma: no cover - the supported worker hosts are POSIX.
@@ -69,6 +113,17 @@ class BotLease:
             raise RuntimeError("企微机器人已被其他 Agent worker 占用") from exc
 
     def release(self) -> None:
+        if self._db_context is not None:
+            context, connection, key = self._db_context, self._db_connection, self._db_key
+            self._db_context = None
+            self._db_connection = None
+            self._db_key = None
+            try:
+                db._exec(connection.cursor(), "SELECT pg_advisory_unlock(?) AS unlocked", (key,))
+            finally:
+                context.__exit__(None, None, None)
+                self._locked = False
+            return
         if not self._handle:
             return
         try:

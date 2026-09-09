@@ -3,6 +3,7 @@ import pytest
 
 from app.trading_agent import harness, store, worker
 from app.trading_agent.model import ModelTurn
+from app.trading_agent.resources import AdmissionDecision, ResourceSnapshot
 from test_harness import KnowledgeModel, FakeMCP
 from test_store import queued
 
@@ -26,3 +27,19 @@ async def test_worker_loop_can_stop_without_importing_main(queued):
     deps = harness.RuntimeDeps(store=store, model=KnowledgeModel(), mcp=FakeMCP(), worker_id="worker-loop")
     await worker.worker_loop(deps, stop_event=stop)
     assert ("app.main" in sys.modules) is was_loaded
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_does_not_claim_when_resource_guard_blocks(queued):
+    stop = asyncio.Event()
+
+    class DenyGuard:
+        def admit(self):
+            stop.set()
+            return AdmissionDecision(False, "resource_pressure", ResourceSnapshot(0.80, 0.10, "test"))
+
+    deps = harness.RuntimeDeps(store, KnowledgeModel(), FakeMCP(), worker_id="guard-worker")
+    await worker.worker_loop(deps, stop_event=stop, resource_guard=DenyGuard())
+
+    with __import__("app").db.connect() as conn:
+        assert conn.execute("SELECT state FROM agent_v2_runs WHERE task_id=?", (queued[2],)).fetchone()[0] == "queued"
