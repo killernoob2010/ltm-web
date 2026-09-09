@@ -129,7 +129,8 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     status = "complete" if valid and all(m.status=="complete" for m in metrics.values()) and not warnings else "partial" if valid else "waiting_for_data"
     metadata = {"as_of":query.as_of.model_dump(mode="json"),"valuation_basis":"historical_unavailable" if historical else "latest_trade",
         "assignment_basis":"unavailable" if historical else "current","data_status":raw["data_status"],"quote_times":quote_times,
-        "selection":query.model_dump(mode="json",exclude={"as_of"})}
+        "selection":query.model_dump(mode="json",exclude={"as_of"}),
+        "provenance":raw.get("provenance") or {"data_as_of":None,"precision":None,"source_observations":[]}}
     return _persist(principal,rows,"positions",status=status,warnings=warnings,metrics=metrics,metadata=metadata)
 
 

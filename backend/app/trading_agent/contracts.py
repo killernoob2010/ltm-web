@@ -105,6 +105,7 @@ class StoredResult(StrictModel):
     rows: list[dict]
     owner_user_id: int
     conversation_id: int
+    parent_ref: UUID | None = None
     expires_at: datetime
 
 

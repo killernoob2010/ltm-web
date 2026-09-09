@@ -80,3 +80,20 @@
 - 最新全部 Agent 回归 93 passed，4项依赖弃用警告；这不是最终业务回答通过。最后一次真实答案仍因顶层多余 evidence_refs 等错误被拒绝，不能称作已可用。
 - 本轮累计费用按高于已核对官方价格的单价作保守估算，上限约0.621元（包含0.02元连接测试预留）；不是账单精确扣费。预算包装器每次发送前预留输入字节上界与输出上限，最多1元；本轮停止进一步付费调用，剩余额度未使用。
 - 下一步先用已保留的脱敏失败结构改进最终答案合同反馈和确定性复测，再评估剩余额度内的实时联调；另需云端同实例时延、实时行情/Greeks、企微和联网验证。Production 未改动，无任何交易动作。
+
+- 发布回读：0504e2f 在 Render Staging 为 Live，网站登录入口及标题正常；Agent仍关闭，未完成登录后的业务问答验收。临时key/原始草稿已删除，本地恢复实例已停止；云端本轮唯一残留过期测试任务已通过既有恢复规则收敛。
+
+## C0 设计收口（2026-09-09）
+
+- 只读核对了 effective facts、Agent facts、公开研究、答案渲染和 44+12 题库，形成 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-c0-design-closeout.md`；本阶段没有调用真实模型、联网、写 Staging/Production 或修改业务代码。
+- 来源时点结论：结算快照只有业务观察日，WH6 有单快照 `snapshot_timestamp`，推导持仓混合多个来源；`captured_at` 是读取保存时间，当前 effective-facts 的 `as_of_time` 是查询时钟，不能称为数据截至时间。整体混源时 `data_as_of` 必须保持 `null`，另给分源覆盖和新鲜度。
+- 公开来源结论：`search_public`/`read_public` 已有结果引用和父结果，但最终答案仍跳过 URL，且 `store.load_result` 尚未以当前 `task_id` 强制绑定；C1 需新增 `public_search_ref`/`public_read_ref` 解析和任务/父链校验，不能靠关键词黑名单宣称解决推论语义。
+- Eval 结论：44 个 regression（37 个 fixture 标签）和 12 个 holdout 只有问题、工具白名单和 oracle 字段，没有数据快照、哈希、工具回放或数值预期；继续保持 definition-only，C1 先冻结脱敏 fixture 和 oracle，再申请真实模型验收。
+- C1 最小顺序已在 C0 记录中固定为 provenance、公开引用、Eval fixture、真实 smoke；任何新权限、底层事实算法、秘密或付费边界均停回主 Agent。当前不宣布业务 Agent 可用。
+
+## C1 本地最小实现（2026-09-09）
+
+- 来源观察：effective facts 现在为持仓结果提供 `provenance.source_observations`，区分 `settlement`、`wh6`、`derived` 和 `unknown`，保留业务观察日、WH6 快照采集时间、事实状态和新鲜度；混合来源仍保持 `ToolEnvelope.data_as_of=null`，没有拿查询时间或备份时间补造截至时间。
+- 公开证据：答案校验支持 `research_uuid#/sources/index`（搜索摘要）和 `public_read_uuid#/payload/text`（正文读取），拒绝直接 URL；正文引用必须有当前任务内的搜索父结果，当前任务之外的同会话结果不能复用。提示同步了新引用协议。
+- 回归：`./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q` 为 126 passed、4 个依赖弃用警告；effective facts 与 Agent scope 定向回归 38 passed；compileall 和 `git diff --check` 通过。
+- 未做：没有创建真实 Eval fixture、没有调用 DeepSeek/Brave/企微、没有修改 Staging/Production 或数据库迁移。C1-EVAL-FIXTURES 仍需先确定可回放数据与冻结 oracle；C1-REAL-SMOKE 需要另行确认付费 API 和网页验收边界。

@@ -80,3 +80,44 @@ def test_capture_does_not_infer_data_as_of_from_capture_time(queued, monkeypatch
     result = facts.capture_positions(principal, FactQuery(), lambda reqs: {})
     assert result.captured_at == fixed
     assert result.data_as_of is None
+
+
+def test_capture_exposes_wh6_source_observation_without_calling_it_global_as_of(queued):
+    principal, result = capture(queued, 1)
+    provenance = result.payload["provenance"]
+    assert result.data_as_of is None
+    assert provenance["data_as_of"] is None
+    assert provenance["precision"] is None
+    assert provenance["source_observations"] == [{
+        "source_kind": "wh6",
+        "source_label": "WH6完整快照",
+        "observed_at": "2026-09-02T09:00:00+08:00",
+        "coverage_date_start": "2026-09-02",
+        "coverage_date_end": "2026-09-02",
+        "row_count": 1,
+        "fact_status": "provisional",
+        "freshness_status": "stale",
+        "environment": "unknown",
+    }]
+
+
+def test_historical_settlement_provenance_keeps_date_precision(queued):
+    from test_trading_effective_facts import _baseline_row, _insert_settlement_position_batch
+
+    task = store.claim_next("historical-provenance-worker")
+    principal = store.principal_for_task(task)
+    _insert_settlement_position_batch(
+        principal.account_ids[0], "20260831",
+        rows=[_baseline_row("i2609", "买", 2, 700)],
+    )
+    result = facts.capture_positions(
+        principal,
+        FactQuery(as_of={"mode": "settlement_date", "date": "2026-08-31"}),
+        lambda reqs: {},
+    )
+    provenance = result.payload["provenance"]
+    assert result.data_as_of is None
+    assert provenance["source_observations"][0]["source_kind"] == "settlement"
+    assert provenance["source_observations"][0]["coverage_date_start"] == "2026-08-31"
+    assert provenance["source_observations"][0]["coverage_date_end"] == "2026-08-31"
+    assert provenance["source_observations"][0]["observed_at"] is None

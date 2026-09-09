@@ -48,6 +48,8 @@ _FACT_REF = re.compile(
     r"|/payload/groups/[0-9]{1,3}/metrics/[A-Za-z][A-Za-z0-9_]*"
     r")\}\}"
 )
+_PUBLIC_SOURCE_REF = re.compile(r"^([0-9a-fA-F-]{36})#/sources/([0-9]{1,3})$")
+_PUBLIC_READ_REF = re.compile(r"^([0-9a-fA-F-]{36})#/payload/text$")
 _DATE_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:19|20)\d{2}(?:[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?)?(?![A-Za-z0-9])")
 _DATETIME_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])(?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?"
@@ -170,7 +172,7 @@ def _load_metric(principal, store, ref: str, metric_path: str, *, issue_path="/f
     except (TypeError, ValueError):
         raise InvalidEvidence("证据引用不可用", code="invalid_reference", path=issue_path) from None
     try:
-        saved = store.load_result(principal, result_ref)
+        saved = store.load_result(principal, result_ref, require_current_task=True)
     except (HTTPException, ResultExpired):
         raise InvalidEvidence("证据引用不存在、越权或已过期", code="reference_unavailable", path=issue_path) from None
     if metric_path.startswith("/metrics/"):
@@ -197,6 +199,43 @@ def _load_metric(principal, store, ref: str, metric_path: str, *, issue_path="/f
     if metric.value is None or metric.status not in {"complete", "partial"}:
         raise InvalidEvidence("证据引用的指标当前不可用", code="metric_unavailable", path=metric_path)
     return metric
+
+
+def _load_public_reference(principal, store, ref: str, *, issue_path: str) -> None:
+    source_match = _PUBLIC_SOURCE_REF.fullmatch(ref)
+    read_match = _PUBLIC_READ_REF.fullmatch(ref)
+    if not source_match and not read_match:
+        raise InvalidEvidence("公开来源引用格式无效", code="invalid_reference", path=issue_path)
+    try:
+        result_ref = UUID(source_match.group(1) if source_match else read_match.group(1))
+        saved = store.load_result(principal, result_ref, require_current_task=True)
+    except (TypeError, ValueError):
+        raise InvalidEvidence("公开来源引用格式无效", code="invalid_reference", path=issue_path) from None
+    except (HTTPException, ResultExpired):
+        raise InvalidEvidence("公开来源引用不存在、越权或已过期", code="reference_unavailable", path=issue_path) from None
+    payload = saved.envelope.payload if isinstance(saved.envelope.payload, dict) else {}
+    if source_match:
+        if payload.get("kind") != "research":
+            raise InvalidEvidence("公开来源引用类型不匹配", code="invalid_reference", path=issue_path)
+        try:
+            index = int(source_match.group(2))
+            source = payload.get("sources", [])[index]
+        except (IndexError, TypeError, ValueError):
+            source = None
+        if not isinstance(source, dict) or source.get("source_ref") != ref:
+            raise InvalidEvidence("公开来源引用不存在", code="reference_unavailable", path=issue_path)
+        return
+    if payload.get("kind") != "public_read" or not str(payload.get("text") or "").strip():
+        raise InvalidEvidence("公开正文引用不可用", code="reference_unavailable", path=issue_path)
+    source_ref = payload.get("source_ref")
+    if not isinstance(source_ref, str) or not _PUBLIC_SOURCE_REF.fullmatch(source_ref):
+        raise InvalidEvidence("公开正文来源登记不完整", code="invalid_reference", path=issue_path)
+    if saved.parent_ref is None:
+        raise InvalidEvidence("公开正文缺少搜索结果父引用", code="reference_unavailable", path=issue_path)
+    parent_ref = f"{saved.parent_ref}#/sources/{int(source_ref.rsplit('/', 1)[-1])}"
+    if parent_ref != source_ref:
+        raise InvalidEvidence("公开正文来源父引用不匹配", code="reference_unavailable", path=issue_path)
+    _load_public_reference(principal, store, source_ref, issue_path=issue_path)
 
 
 def _resolve(text: str, principal, store):
@@ -229,6 +268,9 @@ def render_answer(principal, draft: AnswerDraft | str | dict[str, Any], store) -
         references.extend((ref, "/paragraphs/evidence_refs") for ref in paragraph.evidence_refs)
     for ref, path in references:
         if ref.startswith("http://") or ref.startswith("https://"):
+            raise InvalidEvidence("公开来源必须使用本任务登记的来源引用", code="invalid_reference", path=path)
+        if path != "/fact_refs" and (_PUBLIC_SOURCE_REF.fullmatch(ref) or _PUBLIC_READ_REF.fullmatch(ref)):
+            _load_public_reference(principal, store, ref, issue_path=path)
             continue
         if "#/" not in ref:
             raise InvalidEvidence("证据引用格式无效", code="invalid_reference", path=path)

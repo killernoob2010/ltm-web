@@ -214,7 +214,7 @@ def save_result(principal, envelope: ToolEnvelope, rows, *, kind="positions", pa
     if len(rows) > 20000:
         raise ValueError("limit_exceeded")
     if parent_ref:
-        load_result(principal, parent_ref)
+        load_result(principal, parent_ref, require_current_task=True)
     ref = result_ref or uuid4()
     frozen = envelope.model_copy(deep=True, update={"result_ref": ref,
         "snapshot_ref": ref if kind=="positions" and not parent_ref else envelope.snapshot_ref})
@@ -234,11 +234,17 @@ def save_result(principal, envelope: ToolEnvelope, rows, *, kind="positions", pa
     return ref
 
 
-def load_result(principal, ref):
+def load_result(principal, ref, *, require_current_task=False):
     authorize(principal, "trading.facts")
     with db.connect() as conn:
-        row = db._exec(conn.cursor(), "SELECT * FROM agent_v2_results WHERE id=? AND user_id=? AND conversation_id=?",
-            (str(UUID(str(ref))),principal.user_id,principal.conversation_id)).fetchone()
+        cur = conn.cursor()
+        params = [str(UUID(str(ref))), principal.user_id, principal.conversation_id]
+        task_clause = ""
+        if require_current_task:
+            task_clause = " AND task_id=?"
+            params.append(_active_run(cur, principal))
+        row = db._exec(cur, "SELECT * FROM agent_v2_results WHERE id=? AND user_id=? AND conversation_id=?" + task_clause,
+            tuple(params)).fetchone()
     if not row:
         raise HTTPException(404, "结果不存在")
     if datetime.fromisoformat(row["expires_at"]) <= now():
@@ -247,7 +253,9 @@ def load_result(principal, ref):
     if digest(row["payload_json"]) != row["source_hash"]:
         raise ValueError("evidence_integrity_error")
     return StoredResult(ref=ref,envelope=payload["envelope"],rows=payload["rows"],
-        owner_user_id=principal.user_id,conversation_id=principal.conversation_id,expires_at=row["expires_at"])
+        owner_user_id=principal.user_id,conversation_id=principal.conversation_id,
+        parent_ref=UUID(str(row["parent_ref"])) if row["parent_ref"] else None,
+        expires_at=row["expires_at"])
 
 
 def _terminal(cur, task_id, state, timestamp, error=None):
