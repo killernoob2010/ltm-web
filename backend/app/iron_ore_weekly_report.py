@@ -30,7 +30,7 @@ from .permissions import require_permission
 TEMPLATE_KEY = "iron_ore_weekly"
 TEMPLATE_VERSION = "V1.0"
 TEMPLATE_NAME = "铁矿石周报（46页基线）"
-RENDERER_VERSION = "iron-ore-weekly-renderer-6"
+RENDERER_VERSION = "iron-ore-weekly-renderer-7"
 RULES_REFERENCE = "docs/2026-09-08-iron-ore-weekly-report-rules.md"
 
 TEMPLATE_CONFIG = {
@@ -1189,9 +1189,9 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
     actual_history = _actual_series()
     season_page("06", "实际到港｜近期走势", ["47港到港"], actual_history, "当前已入库的实际到港历史按月份定位；没有多年序列时标注近期走势", 1)
 
-    start("06", "实际到港结构｜品种与形态", f"{actual_period}；47港实际到港；品种未知单列")
+    start("06", "实际到港结构｜品种与形态", f"{actual_period}；47港实际到港；仅列已识别品种和形态")
     product_rows = []
-    actual_product_dimensions = sorted({row.get("dimension") for row in data.get("arrival_actual", []) if row.get("slice_type") == "product" and row.get("dimension") and row.get("dimension") != "总计"})
+    actual_product_dimensions = sorted({row.get("dimension") for row in data.get("arrival_actual", []) if row.get("slice_type") == "product" and row.get("dimension") and row.get("dimension") not in {"总计", "未知"}})
     for dimension in actual_product_dimensions:
         old_value = _actual_dimension_total(actual_previous_week, "product", dimension)
         new_value = _actual_dimension_total(actual_current_week, "product", dimension)
@@ -1200,15 +1200,12 @@ def _render_pdf(snapshot: Dict[str, Any], output_path: Path, revision_no: int) -
     product_rows.sort(key=lambda item: abs(item[3] or 0), reverse=True)
     table(["品种（变化前10）", "上期", "本期", "增减量"], [[name, _fmt(old), _fmt(new), _signed(delta)] for name, old, new, delta in product_rows[:10]], 151, [155, 105, 105, content_width - 365], 25, 8)
     shape_arrival = []
-    for dimension in ["粉矿 汇总", "块矿 汇总", "球团 汇总", "精粉 汇总", "未知 汇总"]:
+    for dimension in ["粉矿 汇总", "块矿 汇总", "球团 汇总", "精粉 汇总"]:
         old_value = _actual_dimension_total(actual_previous_week, "form", dimension)
         new_value = _actual_dimension_total(actual_current_week, "form", dimension)
         if old_value is not None or new_value is not None:
             shape_arrival.append([dimension.replace(" 汇总", ""), _fmt(old_value), _fmt(new_value), _signed(new_value - old_value) if old_value is not None and new_value is not None else "—"])
     table(["货种形态", "上期", "本期", "增减量"], shape_arrival, 480, [155, 105, 105, content_width - 365], 25, 8)
-    unknown = next((item for item in product_rows if item[0] == "未知"), None)
-    if unknown and actual_previous:
-        para(f"未知品种占比：上期 {_fmt((unknown[1] or 0) / actual_previous * 100)}%，本期 {_fmt((unknown[2] or 0) / (actual_current or 1) * 100)}%；未知不归入非主流，也不按比例分摊。", 650, 9)
     para("两期都有数值才计算变化；空白不补0。到港货种品位沿用来源方分档，与库存四档不是同一分类。", 735, 8.8, gray)
 
     estimated_changes = _change(data.get("arrival_estimated"), "source_country")
