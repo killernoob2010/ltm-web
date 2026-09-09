@@ -10,5 +10,5 @@
 - 技术合同：`docs/superpowers/specs/2026-09-09-trading-agent-v2-technical-contracts.md`；实施计划：`docs/superpowers/plans/2026-09-09-trading-agent-v2-implementation.md`。
 - 已完成：独立 Python 3.12 worker 依赖；宏源账户 SQL 范围与实时重核权；事实/持仓快照、全量 Greeks、Black76 情景；白名单工具、loopback MCP、DeepSeek 合同、公开搜索出口、有限 Harness、网页 V2 路由和企微本人私聊适配；持久化、幂等、配对码、单主机 bot 锁与证据引用。
 - 本地证据：Agent V2 76 项、既有交易模块合并回归共 298 项、前端 38 项通过；regression 44 例和 holdout 12 例确定性 Eval 均 hard failures=0、min soft score=10、release_pass=true。真实模型/企微未验收。
-- 下一步：进入 T11 前先确认 Staging 备份/恢复核验和 DeepSeek、公开搜索、企微配置；执行六张附表迁移、RLS/grants 回读和固定快照业务核对，再做本人企微双向联调。保持单主 Agent，不重问已确认范围。
+- 下一步：T11 预检确认 `origin/staging` 未变化，但当前没有 Staging 数据库、DeepSeek、公开搜索或企微变量，`render.yaml` 也没有常驻 worker；先确定已批准的 worker 运行位置，并在受控环境准备 Staging 备份/恢复核验和三类服务配置，再执行六张附表迁移、RLS/grants 回读和固定快照业务核对，随后做本人企微双向问答和开放组合问题验收。保持单主 Agent，不重问已确认范围。
 - 禁止：Production、真实交易、自动改归属、凭据回显、任意 SQL、未经核验的新计算方法自动执行。原工作目录存在其他修改，未触碰。

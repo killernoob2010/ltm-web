@@ -10,6 +10,7 @@
 - 回滚：本分支新增实现可回退至 bff68a0；数据库尚无迁移。后续迁移单独备份与验证。
 - 当前阶段：T0–T10 本地实现、回归和结构性 Eval 已完成；T11 需真实 Staging 接入条件。
 - 外部前提：用户已确认试点用户名 wangjingze；获准模型/搜索配置和企微沙盒尚未核验，不影响本地实现。
+- T11 预检（2026-09-09）：fetch 后 `origin/staging` 仍为 e343d765b1e02bf793c5aa942b99cbc5db4ad8db；当前隔离 shell 未注入 Staging 数据库、DeepSeek、Brave 或企微变量，仓库 `render.yaml` 仅定义 Web 服务，尚无常驻 worker 映射；未读取 `.env` 或任何密钥值。
 
 ## 本地验证进度
 
