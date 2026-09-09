@@ -88,6 +88,15 @@ def _display_date(value: object) -> str:
     return reconciliation.compact_trade_date(value) or str(value or "").strip()
 
 
+def _max_source_observation(left: object, right: object) -> Optional[str]:
+    candidates = []
+    for value in (left, right):
+        parsed = _parse_datetime(value)
+        if parsed is not None:
+            candidates.append((parsed, _format_datetime(value)))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
 def _statement_source_type(row: Mapping[str, Any]) -> str:
     statement_type = str(row.get("statement_type") or "").strip().lower()
     if statement_type in {"daily", "monthly"}:
@@ -177,7 +186,73 @@ def _baseline_position_items(baseline_rows: Iterable[Mapping[str, Any]]) -> Dict
         if previous.get("margin") is not None or row.get("margin") is not None:
             previous["margin"] = float(previous.get("margin") or 0) + float(row.get("margin") or 0)
         previous["source_record_count"] = int(previous.get("source_record_count") or 0) + int(row.get("source_record_count") or 0)
+        previous["source_observed_at"] = _max_source_observation(
+            previous.get("source_observed_at"), row.get("source_observed_at")
+        )
     return grouped
+
+
+def _source_kind(item: Mapping[str, Any]) -> str:
+    if str(item.get("formation_method") or "") == "inferred_from_settlement_and_fills":
+        return "derived"
+    source_type = str(item.get("source_type") or "").strip().lower()
+    if source_type in {"daily", "monthly"}:
+        return "settlement"
+    if source_type == "wh6":
+        return "wh6"
+    return "unknown"
+
+
+def _position_provenance(
+    items: Iterable[Mapping[str, Any]], freshness: Mapping[str, Any]
+) -> Dict[str, Any]:
+    grouped: Dict[tuple[str, str, Optional[str]], Dict[str, Any]] = {}
+    for item in items:
+        source_kind = _source_kind(item)
+        source_label = str(item.get("source_label") or "未知来源")
+        observed_at = _format_datetime(item.get("source_observed_at"))
+        key = (source_kind, source_label, observed_at)
+        entry = grouped.setdefault(
+            key,
+            {
+                "source_kind": source_kind,
+                "source_label": source_label,
+                "coverage_dates": set(),
+                "observed_at": observed_at,
+                "row_count": 0,
+                "fact_status": "unknown",
+                "freshness_status": "unknown",
+                "environment": "unknown",
+            },
+        )
+        coverage_date = _date_key(item.get("snapshot_date") or item.get("trade_date"))
+        if coverage_date:
+            entry["coverage_dates"].add(coverage_date)
+        entry["row_count"] += 1
+        if source_kind == "settlement":
+            entry["fact_status"] = "settlement_confirmed"
+        elif source_kind == "derived":
+            entry["fact_status"] = "derived"
+        elif source_kind == "wh6":
+            entry["fact_status"] = "provisional"
+            entry["freshness_status"] = str(freshness.get("freshness_status") or "unknown")
+    observations = []
+    for entry in grouped.values():
+        dates = sorted(entry.pop("coverage_dates"))
+        entry["coverage_date_start"] = dates[0] if dates else None
+        entry["coverage_date_end"] = dates[-1] if dates else None
+        observations.append(entry)
+    observations.sort(key=lambda item: (
+        item["source_kind"], item["source_label"], item.get("observed_at") or "",
+        item.get("coverage_date_start") or "",
+    ))
+    return {
+        "data_as_of": None,
+        "precision": None,
+        "source_observations": observations,
+        "overall_freshness": str(freshness.get("freshness_status") or "unknown"),
+        "reason": "当前结果可能混合业务观察日、WH6采集时间和推导成交，未形成统一来源水位",
+    }
 
 
 def _group_position_items(items: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -279,7 +354,10 @@ def infer_positions_from_fills(
         key=_fill_order_key,
     )
     changed_keys: set[tuple[str, str, str, str]] = set()
+    latest_fill_observed_at: Optional[str] = None
     for fill in ordered_fills:
+        fill_observed_at = _format_datetime(fill.get("trade_timestamp") or fill.get("last_observed_at"))
+        latest_fill_observed_at = _max_source_observation(latest_fill_observed_at, fill_observed_at)
         contract = str(fill.get("contract") or "").strip().lower()
         exchange = str(fill.get("exchange") or "").strip()
         asset_type = str(fill.get("asset_type") or "").strip().lower()
@@ -329,6 +407,7 @@ def infer_positions_from_fills(
                     "formation_method": "inferred_from_settlement_and_fills",
                     "source_type": "wh6",
                     "source_label": SOURCE_LABELS["wh6"],
+                    "source_observed_at": fill_observed_at,
                     "can_classify": False,
                     "assignment_status": "not_applicable",
                     "_lot_order": (
@@ -353,8 +432,11 @@ def infer_positions_from_fills(
                     "floating_pnl": None,
                     "can_classify": False,
                     "assignment_status": "not_applicable",
+                    "source_observed_at": latest_fill_observed_at,
                 }
             )
+            if latest_fill_observed_at:
+                lot["source_observed_at"] = latest_fill_observed_at
     items = _group_position_items(lots)
     for item in items:
         item.pop("_lot_order", None)
@@ -1164,6 +1246,7 @@ def _wh6_snapshot_rows(cur, snapshot: Mapping[str, Any]) -> List[Dict[str, Any]]
                 "snapshot_date": _display_date(snapshot["trade_date"]),
                 "source_type": "wh6",
                 "source_label": "WH6完整快照",
+                "source_observed_at": _format_datetime(snapshot.get("snapshot_timestamp")),
                 "formation_method": "wh6_snapshot",
                 "fact_status": "provisional",
                 "margin": None,
@@ -1271,6 +1354,7 @@ def _position_result(
     visible = filtered[offset:offset + filters.page_size]
     provisional_count = sum(item["fact_status"] == "provisional" for item in filtered)
     settlement_count = sum(item["fact_status"] == "settlement_confirmed" for item in filtered)
+    provenance = _position_provenance(filtered, freshness)
     result = {
         "items": visible,
         "summary": {
@@ -1309,6 +1393,7 @@ def _position_result(
         "freshness_status": freshness.get("freshness_status"),
         "collector_last_seen_at": freshness.get("collector_last_seen_at"),
         "age_seconds": freshness.get("age_seconds"),
+        "provenance": provenance,
         "risk_eligible": False,
         "warnings": list(warnings),
     }

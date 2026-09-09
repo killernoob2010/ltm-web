@@ -34,6 +34,14 @@ def test_prompt_example_is_valid_answer_draft_and_time_semantics_are_explicit():
     assert "工具结果为 partial 时" in prompts.SYSTEM_PROMPT
 
 
+def test_prompt_distinguishes_registered_public_refs_from_urls():
+    messages = prompts.build_messages([], {"tools": []}, user_text="解释公开方法")
+    content = messages[0]["content"]
+    assert "research_uuid#/sources/index" in content
+    assert "public_read_uuid#/payload/text" in content
+    assert "不能直接放 URL" in content
+
+
 def test_projected_tool_result_preserves_unknown_data_as_of():
     captured = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
     envelope = ToolEnvelope(

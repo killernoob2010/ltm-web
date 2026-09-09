@@ -109,3 +109,10 @@
 - 公开来源结论：`search_public`/`read_public` 已有结果引用和父结果，但最终答案仍跳过 URL，且 `store.load_result` 尚未以当前 `task_id` 强制绑定；C1 需新增 `public_search_ref`/`public_read_ref` 解析和任务/父链校验，不能靠关键词黑名单宣称解决推论语义。
 - Eval 结论：44 个 regression（37 个 fixture 标签）和 12 个 holdout 只有问题、工具白名单和 oracle 字段，没有数据快照、哈希、工具回放或数值预期；继续保持 definition-only，C1 先冻结脱敏 fixture 和 oracle，再申请真实模型验收。
 - C1 最小顺序已在 C0 记录中固定为 provenance、公开引用、Eval fixture、真实 smoke；任何新权限、底层事实算法、秘密或付费边界均停回主 Agent。当前不宣布业务 Agent 可用。
+
+## C1 本地最小实现（2026-09-09）
+
+- 来源观察：effective facts 现在为持仓结果提供 `provenance.source_observations`，区分 `settlement`、`wh6`、`derived` 和 `unknown`，保留业务观察日、WH6 快照采集时间、事实状态和新鲜度；混合来源仍保持 `ToolEnvelope.data_as_of=null`，没有拿查询时间或备份时间补造截至时间。
+- 公开证据：答案校验支持 `research_uuid#/sources/index`（搜索摘要）和 `public_read_uuid#/payload/text`（正文读取），拒绝直接 URL；正文引用必须有当前任务内的搜索父结果，当前任务之外的同会话结果不能复用。提示同步了新引用协议。
+- 回归：`./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q` 为 126 passed、4 个依赖弃用警告；effective facts 与 Agent scope 定向回归 38 passed；compileall 和 `git diff --check` 通过。
+- 未做：没有创建真实 Eval fixture、没有调用 DeepSeek/Brave/企微、没有修改 Staging/Production 或数据库迁移。C1-EVAL-FIXTURES 仍需先确定可回放数据与冻结 oracle；C1-REAL-SMOKE 需要另行确认付费 API 和网页验收边界。

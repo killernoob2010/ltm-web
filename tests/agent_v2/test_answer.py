@@ -132,3 +132,60 @@ def test_answer_rejects_missing_metric_and_malformed_placeholder(queued):
             "paragraphs": [{"kind": "knowledge", "text": "{{fact:not-a-uuid#/metrics/quantity}}"}],
         }, store)
     assert malformed.value.issues[0].code == "invalid_reference"
+
+
+def _public_results(principal):
+    from app.trading_agent.contracts import ToolEnvelope
+
+    research_ref = uuid4()
+    source_ref = f"{research_ref}#/sources/0"
+    source = {"title": "Method", "url": "https://example.com/method", "source_ref": source_ref}
+    store.save_result(
+        principal,
+        ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc), calculation_version="research",
+                     payload={"kind": "research", "sources": [source]}),
+        [source], kind="research", result_ref=research_ref,
+    )
+    read_ref = uuid4()
+    store.save_result(
+        principal,
+        ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc), calculation_version="public-read",
+                     payload={"kind": "public_read", "source_ref": source_ref, "text": "公开资料正文"}),
+        [], kind="public_read", parent_ref=research_ref, result_ref=read_ref,
+    )
+    return source_ref, f"{read_ref}#/payload/text"
+
+
+def test_public_evidence_requires_registered_source_or_read_result(queued):
+    task = store.claim_next("public-answer-worker")
+    principal = store.principal_for_task(task)
+    source_ref, read_ref = _public_results(principal)
+    source_draft = {"status": "complete", "paragraphs": [{
+        "kind": "knowledge", "text": "公开资料说明风险方法。", "evidence_refs": [source_ref],
+    }]}
+    read_draft = {"status": "complete", "paragraphs": [{
+        "kind": "knowledge", "text": "正文说明风险方法。", "evidence_refs": [read_ref],
+    }]}
+    assert "公开资料" in answer.render_answer(principal, source_draft, store)
+    assert "正文" in answer.render_answer(principal, read_draft, store)
+    with pytest.raises(answer.InvalidEvidence) as direct_url:
+        answer.render_answer(principal, {"status": "complete", "paragraphs": [{
+            "kind": "knowledge", "text": "资料说明。", "evidence_refs": ["https://example.com/method"],
+        }]}, store)
+    assert direct_url.value.issues[0].code == "invalid_reference"
+
+
+def test_public_evidence_cannot_be_reused_by_a_later_task(queued):
+    uid, cid, _ = queued
+    first_task = store.claim_next("public-answer-first")
+    first_principal = store.principal_for_task(first_task)
+    source_ref, _ = _public_results(first_principal)
+    second_task = store.enqueue({"id": uid}, cid, str(uuid4()), "继续解释", "web")
+    second_task = store.claim_next("public-answer-second")
+    assert second_task is not None
+    second_principal = store.principal_for_task(second_task)
+    with pytest.raises(answer.InvalidEvidence) as caught:
+        answer.render_answer(second_principal, {"status": "complete", "paragraphs": [{
+            "kind": "knowledge", "text": "复用资料。", "evidence_refs": [source_ref],
+        }]}, store)
+    assert caught.value.issues[0].code == "reference_unavailable"

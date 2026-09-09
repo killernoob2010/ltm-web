@@ -35,7 +35,7 @@
 后续来源适配器应为每一组行提供以下最小观察记录，不改持仓计算公式：
 
 ```text
-source_kind: settlement | wh6_live | derived | synthetic | unknown
+source_kind: settlement | wh6 | derived | synthetic | unknown
 source_label: 人类可读来源名
 coverage_date_start / coverage_date_end: 已核验的业务日期范围
 observed_at: 只有来源实际提供时间时才填，精度保留到秒
@@ -113,14 +113,16 @@ failure_classification: fixture | implementation | model | oracle
 
 ## 5. 交给 C1/Luna 的最小实施批次
 
-C0 本身不改代码。获得下一批授权后，按以下顺序拆分，任何一项遇到新架构决定就停在该项：
+C0 本身先完成设计收口；随后在同一非生产工作树执行了前两项最小本地实现。剩余项目按以下顺序拆分，任何一项遇到新架构决定就停在该项：
 
-1. **C1-PROVENANCE**：在 effective facts 到 facts 的边界增加来源观察结构，明确 `as_of_time` 的查询时间语义；对单一 WH6、单一结算和混合推导分别加入 `data_as_of=null/来源水位` 的回归。不得改数量、去重、FIFO、估值或风险公式。
-2. **C1-PUBLIC-REF**：实现 `public_search_ref`/`public_read_ref` 解析，禁止最终答案直挂 URL；补当前任务绑定和同一父结果链检查。先写越权、过期、未登记、搜索摘要冒充正文的失败测试，再改最小实现。
+1. **C1-PROVENANCE（已完成本地最小实现）**：在 effective facts 到 facts 的边界增加来源观察结构，保留 `data_as_of=null` 的保守行为；WH6 记录采集时间，结算记录业务观察日，推导结果标为 `derived`。没有改数量、去重、FIFO、估值或风险公式。
+2. **C1-PUBLIC-REF（已完成本地最小实现）**：实现 `public_search_ref`/`public_read_ref` 解析，禁止最终答案直挂 URL；结果父链和当前任务绑定在答案证据边界校验。搜索摘要与正文引用不能互相冒充。
 3. **C1-EVAL-FIXTURES**：只为第一批最小矩阵建立脱敏、可回放 fixture 和冻结 oracle。建议先覆盖：持仓数量三种问法、无行情浮盈、历史无同期行情、事实加推论、受控坏草稿修复；不把旧备份里的 20/4344 当长期常量。
 4. **C1-REAL-SMOKE**：在固定 fixture 和 Staging 映射核对完成后，再决定是否申请新的付费 API 调用和真实网页验收；记录首次通过、修复通过和最终失败，真实模型未触发修复时不能声称纠错能力已验证。
 
 C1 的停止条件：需要读取秘密、写 Production/正式数据、改变账户权限或交易能力、改变底层事实算法、添加未批准依赖、触发新的付费额度，或无法确定来源时点。此时保留已完成的设计和测试证据，交回主 Agent 决策。
+
+本地实现提交：`0553559` 包含来源观察、公开引用解析、结果父引用和任务绑定回归；尚未推送或部署。具体测试结果记录在执行记录中。
 
 ## 6. C0 验收边界
 
