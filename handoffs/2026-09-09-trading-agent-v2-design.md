@@ -14,4 +14,5 @@
 - V2.1 已确认：复用正式 Render ltm-web 的 1 CPU/2 GB、25 美元/月单实例；测试版 Free。控制台资源核查已完成；同实例监督器、依赖、资源保护、期限/队列控制和 PostgreSQL bot 单主锁已完成本地适配，真实运行未验收。
 - 新总体设计：`docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md`；接续计划：`docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md`，取代旧 T11 默认另找主机安排。
 - 本地证据：目标 Python 回归 220 项、前端回归 38 项通过；运行时包检查、编译和 shell 语法检查通过。真实配置需核对云端，不从本地缺变量推断云端缺失。本人用户名 wangjingze 已确认。
-- 下一步：按新版 S4 核对 Staging 映射，完成备份/恢复核验、六张附表迁移、真实 DeepSeek/企微联调和共载观察。Agent 默认关闭；未修改云配置、数据、费用或部署。
+- S4 只读前置已核对：Render Staging `b2a5ac3` 已成功运行；环境变量名称中没有 Agent、DeepSeek、Brave 或企微配置。Supabase `LTM WEB STAGING` 状态健康，但六张 `agent_v2_*` 附表尚未创建；未读取密钥或业务行。
+- 下一步：先取得本次迁移前的可恢复 Staging 备份并完成恢复核验，再由受保护环境补齐真实服务配置，执行六张附表迁移和权限回读，随后做真实 DeepSeek/企微联调与共载观察。Agent 默认关闭；未修改云配置、数据、费用或 Production。

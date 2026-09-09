@@ -37,6 +37,12 @@
 - 云端竞争与默认值：PostgreSQL 使用专用会话 advisory lock 按环境与 bot 单主占用；SQLite 保留本地文件锁。MCP 可选列表参数统一为空列表，避免模型省略参数时进入无效请求。
 - 新鲜回归：目标 Python 回归 220 项、前端回归 38 项通过；`pip check`、Python 编译、启动脚本语法和差异检查通过。该证据仍限本地/合成数据，未替代 Render、PostgreSQL、DeepSeek 或企微真实验收。
 
+## S4 Staging 只读前置核对（2026-09-09）
+
+- Render `ltm-web-staging` 成功运行 `b2a5ac3`；仅检查环境变量名称，不读取或输出任何值。当前没有 `AGENT_V2_*`、DeepSeek、Brave 或企微接入配置，Agent 默认关闭。
+- Supabase `LTM WEB STAGING` 项目状态为健康；只读表清单确认 `agent_v2_runs`、`agent_v2_results`、`agent_v2_events`、`agent_v2_wecom_bindings`、`agent_v2_pair_codes`、`agent_v2_execution_grants` 均尚未创建。没有读取业务行，也没有执行迁移。
+- 现有历史备份早于本次代码和数据变化，未作为本次迁移前恢复点。六张附表迁移仍需一份当前、可恢复且经过恢复核验的 Staging 备份，以及受保护环境中的真实服务配置。
+
 ## 当前未完成与下一步
 
 - 未执行 Staging 数据库迁移、真实 DeepSeek/Brave 请求或企微常驻连接；没有读取或写入任何真实凭据、业务数据或生产环境。迁移脚本默认为 dry-run，`--apply` 仍要求 Staging 映射、备份及恢复核验凭证。
