@@ -25,3 +25,25 @@ def isolated_agent_test(tmp_path, monkeypatch):
         return original_connect(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", local_only)
+
+
+@pytest.fixture
+def pilot(monkeypatch):
+    from app import db
+
+    db.init_db()
+    monkeypatch.setenv("AGENT_V2_PILOT_USERNAME", "synthetic_pilot")
+    with db.connect() as conn:
+        uid = conn.execute(
+            "INSERT INTO users(name,username,department,password_hash,role) VALUES ('Pilot','synthetic_pilot','期货组','not-a-password','用户')"
+        ).lastrowid
+        for module in ("closing_review_agent", "trading_positions"):
+            conn.execute(
+                "INSERT INTO module_permissions(user_id,module_code,can_view,can_edit) VALUES (?, ?, 1, 0)",
+                (uid, module),
+            )
+        cid = conn.execute(
+            "INSERT INTO closing_review_conversations(user_id,channel,kind,title) VALUES (?,'web','v2_conversation','test')",
+            (uid,),
+        ).lastrowid
+    return uid, cid

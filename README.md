@@ -16,6 +16,11 @@
 - 订单融资管理：从本地订单融资 Excel 台账导入合同、融资、信用证、交单、收汇、还款和额度数据，提供 `订单融资进度` 与 `融资资金监控` 两个页面。
 - 用户与权限管理：独立登录账号、用户/领导/管理员类型、部门默认权限、个人例外、查看/日常/敏感操作分级、自助改密、管理员重置和账号停用。
 - 交易管理：单个期货公司日结/月结 TXT 自动识别、完整预检、重复与版本覆盖、期初持仓连续性、支持账户与日/月/季/自定义范围筛选的只读总览、持仓与交易明细、整笔业务归属、上海钧能台账和全量期权台账。总览“全部”显示事实盈亏，“基础套保 / 战略套保”显示业务归属盈亏；普通平仓、行权、履约和到期放弃统一显示在“平仓记录”并以了结类型区分；行权只关联账单中真实形成的期货开仓，不生成交易。首版浮动盈亏与期权风险指标统一显示“待计算”，汇总与导出保留入口暂不执行导出。
+- 收盘交易复盘 Agent Phase 1（Staging 已部署）：提供固定宏源账户铁矿石期权指定日期的只读摘要接口，按真实月份、Call/Put、买卖方向和行权价区间动态分组，分别返回不扣手续费的真实平仓盈亏与日结算口径持仓浮盈浮亏；日结单优先，只有月结单时明确降级为部分完成。当前仅完成确定性计算底座，尚未形成合格的网页 Agent 测试版；后续统一对话、DeepSeek、推荐问题、自动日常结果、会话隔离和试点权限以 `docs/superpowers/specs/2026-09-03-closing-trading-review-agent-staging-requirements.md` 为准。
+- Trading Agent V2（本地实现，待 Staging 联调）：在既有事实与估值服务之上提供宏源全部期货和期权的开放式只读问答；当前最新持仓、全量成交、已核验平仓、浮盈亏和全量期权 Greeks 通过受限工具/MCP 暴露，风险与公开研究结果保留证据、覆盖率和时点。网页继续复用 Agent 入口，独立 worker 负责 Harness、loopback MCP、DeepSeek 和企微本人私聊；默认不启用、不开放群聊、不执行交易。详细范围、启动条件和未验收项见 `docs/superpowers/specs/2026-09-09-trading-agent-v2-upgrade-design.md`、`docs/superpowers/plans/2026-09-09-trading-agent-v2-implementation.md` 与 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-execution.md`。
+- 贸易台账管理（Staging 已接真实源）：新增“现货业务台账管理”，覆盖说明书定义的 51 个 A:AY 字段、系统同步/人工字段、待补录、同步异常、组合筛选、敏感权限编辑、战略套保全开全平录入、服务端分页和全量 Excel 导出。列表、待补录和同步异常默认每页 20 条，可切换 20/50/100 条并只查询当前页；列表只返回表格摘要，打开单条详情时才读取该记录的完整 51 字段。Render Staging 已通过个人服务账号认证连接正式服务端 JSON 只读接口，并把 7 个销售组内的生效现货销售合同明细同步到独立 Supabase Staging；本地仍使用明确标注的 fixture 验收，不连接真实源。
+- WH6 成交与持仓采集器 V2.1（Staging 开发版）：在全量只读采集、实时优先、本地断网/重启保留和服务端设备绑定基础上，按账户、环境和当前有效完整月结单保护已结算月份；日期晚于服务器当天的有效成交不再被限制。日结/月结按字段优先级协调并保留追加审计，上传按 20 条小批次逐条确认，成交明细支持真正的 20/50/100 服务端分页。客户端版本源固定为 `0.3.2`，每次远程采集前自动上报版本；验证码自动决定测试版或正式版，界面不提供环境地址选择。策略不可用时只继续当前交易日本地排队，历史暂停。跨期组合的真实 WH6 原始编码尚未取得，解析状态保持 `unknown_format`，不凭猜测拆腿或生成夹具。Windows 构建直接输出单个便携 EXE；0.3.2 的 Windows/WH6/Staging 实机验收状态以最新发布记录和交接证据为准。
+- 交易事实与临时持仓统一视图（Staging 开发版）：日结/月结结算单是正式事实来源，月结优先于日结；结算覆盖期内不再展示 WH6 的临时重复事实。结算基线之后尚未被结算覆盖的 WH6 成交以“临时”状态显示，并按成交推算持仓；没有可验证结算值时不伪造保证金和浮动盈亏。交易、持仓页面同时展示事实状态、来源、形成方式和结算基线时间；WH6 采集页保留成交与“最新采集持仓快照诊断”，不再展示第二张当前持仓明细。真实页面、Staging 数据维护和回读证据以最新 `版本更新记录.md` 为准。
 - 铁矿石期现：历史 Excel 作为存量底库，新增 EBC 现货指标与新浪 I0 收盘价 API 增量同步；按版本化业务规则计算并保存精简结果与完整明细。期现数据管理提供只读分页查询，期现数据展示提供独立最优仓单、港口页签和按品种/年份绘制的日度基差图表。
 
 ## 本地运行
@@ -44,6 +49,43 @@ http://127.0.0.1:8000
 ```text
 http://127.0.0.1:8001
 ```
+
+Agent V2 使用独立 worker 环境，避免升级现有 Web 依赖。先在隔离环境安装锁定依赖，再执行本地合同、事实、MCP、Harness、企微适配和前端回归：
+
+```bash
+python3 -m venv .runtime/agent-v2
+.runtime/agent-v2/bin/pip install -r requirements-agent-v2.lock
+.runtime/agent-v2/bin/python -m pytest -q tests/agent_v2
+node --test tests/agent_v2_frontend.test.mjs
+```
+
+附表迁移脚本默认只打印 SQL，不会自动建表；实际 Staging 迁移必须先完成备份和恢复核验，并显式传入 `--apply --environment staging --backup-receipt <receipt.json>`。worker 需要在迁移完成后、配置 `AGENT_V2_ENABLED=true` 时单独启动；模型、公开搜索和企微配置只从受保护的 Staging 环境变量读取，不能写入仓库或日志。当前分支只完成本地实现与合成数据验证，未进行真实模型、企微或生产连接。
+
+WH6 V2.1 的本地回归使用临时 SQLite，不连接云端数据库；完整命令、Staging 备份/迁移和 Windows 实机证据边界见方案 A 计划。协调脚本默认 dry-run，只有在已确认目标环境、备份和数量后才允许显式 `--apply`，本计划不执行 Production：
+
+```bash
+env -u DATABASE_URL python3 -m pytest -q \
+  tests/test_trading_collector_reconciliation.py \
+  tests/test_wh6_collector_migrations.py \
+  tests/test_wh6_collector_policy.py \
+  tests/test_wh6_collector_store.py \
+  tests/test_wh6_collector_scheduler.py \
+  tests/test_wh6_collector_cli.py \
+  tests/test_reconcile_wh6_intraday_script.py
+node --test tests/trading_collector_frontend.test.mjs
+```
+
+现货业务台账的本地同步验收使用 `tests/fixtures/spot_ledger_sales_contract_fixture.json`，覆盖 7 个销售组、数量回退、源系统销售类型原文、跨组标识、待补录和同步异常。销售类型 D 优先取正式源报表“业务类别”完整原文并按销售合同商品明细 ID 回接；报表没有覆盖或只返回代码的合同，改为将需求接口的 `businessType` 精确交给贸易系统自身的 `operation_type` 字典解析，展示该系统当前返回的完整名称。两条链路都不使用 Excel 或本地固定映射，只有贸易系统报表和业务类别字典都无法提供完整名称时才保留代码并标记同步异常。落地货关系只依据完整原文中的“落地”或明确的 B09 系列，不能仅凭基础代码猜测。记录详情保留全部非人工、非技术隐藏字段的位置，源系统空值统一显示为横杠 `—` 并用异常色提示，不把横杠写入数据库。自动同步调度仅在显式设置 `SPOT_LEDGER_AUTO_SYNC_ENABLED=true` 时启动，按北京时间 09:00—18:00 每小时执行；服务在同步时段内启动时只执行最近一个已到小时，不补跑当天此前所有小时，数据库已有同一时段记录时跳过，19:00 后启动不补跑；不提供实时同步或手动立即同步。Staging 当前使用 `SPOT_LEDGER_SOURCE_MODE=official_json` 并启用销售类型原文回接；本地默认不启用。
+
+2026-08-25 经用户授权在已登录浏览器中完成只读认证与接口复核：销售合同列表实际调用 `POST https://tds-api.ejianlong.com/tradeing/saleContract/saleContractList`，返回 200 JSON，并使用 Bearer 认证；统一认证采用登录页公钥 RSA 加密密码、`POST /login/pwd` 返回一次性 code、`GET /login?code=...` 换取 Bearer 令牌，令牌失效后没有独立 refresh token，需重新登录。现货适配器因此支持从服务端 Secret 读取 `SPOT_LEDGER_SOURCE_USERNAME`、`SPOT_LEDGER_SOURCE_PASSWORD`，使用同一内存会话重新登录一次，并且不会记录账号、密码、票据、令牌或源响应。
+
+真实同步的合同、需求、结算和资源主链使用 `tds-api.ejianlong.com` 的服务端 JSON 接口，不复用个人浏览器会话，不复制 Cookie，也不做网页爬虫；销售业务 AF 优先读取聚合报表明确返回的“需求业务员”，报表缺失时才回退已匹配需求详情的 `workManName`，二者冲突时保留报表值并标记同步异常。销售执行 AG 独立读取销售合同详情的 `workManName`，不读取合同创建人。销售类型 D 先读取 `tds-report.ejianlong.com/jmreport/show` 报表“业务类别”完整原文，并以销售合同商品明细 ID 做只读回接；报表未覆盖或只返回代码时，再用需求接口 `businessType` 的精确值查询贸易系统官方 `operation_type` 字典，采用贸易系统前端同源的 `dictLabel`。只有两种正式来源都没有完整名称时才保留代码并标记同步异常，禁止使用 Excel 或本地硬编码猜测名称。源端列表筛选参数不能可靠限制现货和销售组，因此适配器分页读取需求头，在服务端本地按现货和已确认的 7 个销售组筛选，只为命中需求读取关联合同链、销售合同、结算、采购、匹配和资源明细；仅保留状态为 `70/生效` 的销售合同，并优先使用销售合同商品明细 ID。销售类型或需求业务员的两条正式来源都缺失时不软隐藏旧记录，并在对应行标记同步异常。Staging Secret 只保存 `SPOT_LEDGER_SOURCE_USERNAME`、`SPOT_LEDGER_SOURCE_PASSWORD`，代码、日志、接口响应和文档均不得记录其值。
+
+销售价格优先采用源接口明确返回的含税字段 `taxPrice`，没有该字段时才回退 `unitPrice` 或 `price`，不得自行乘税率推算。操作抬头、供应商和商品分类使用版本化显式字典；供应商法定全称现在是 Q 的标准主数据，已确认简称只作为页面展示别名，未命中简称但有完整法定全称不再作为同步异常；商品分类 AU 继续采用系统显式分类字典，Excel 中重复 H 的 AU 不覆盖系统分类。历史工作簿导入会在前 20 行识别真实表头，只处理 U >= 2026-01-01 的记录，并忽略只有预填公式、没有合同/商品/价格/数量业务标识的空行；当前完整 Excel 的回填身份键为 AD/H/U，X/L 数量和 Z 价格只做一致性核对：已核实的 13% 税率表示差异不覆盖系统价格，结算数量差异不覆盖系统数量。唯一身份匹配且 Excel 有值才迁移人工字段或空白 K；销售类型 D 不再读取、补录或覆盖 Excel 值，统一采用贸易系统报表“业务类别”完整原文，报表未覆盖或只提供代码时采用贸易系统 `operation_type` 字典对需求接口代码解析出的完整名称。无法匹配、存在歧义或非空冲突时保持原状，数值字段中的文字说明会跳过而不会写入错误类型。
+
+测试版现货台账的人工字段回填仍使用 `scripts/import_spot_ledger_staging.py`，默认只做 dry-run，要求通过 `STAGING_LEDGER_USERNAME` 和 `STAGING_LEDGER_PASSWORD` 环境变量登录，并且脚本只接受 `https://ltm-web-staging.onrender.com`。`scripts/sync_spot_ledger_sales_types.py` 仅用于报表明细 ID 的一次性核对或回填：脚本在可访问贸易系统的网络中读取完整报表，按销售合同商品明细 ID 生成预览，再通过测试版管理员接口以期望值校验后显式 `--apply` 写入。正常的 `official_json` 自动同步会同时读取贸易系统 `operation_type` 字典补齐报表未覆盖或仅含代码的合同；两条链路都不读取 Excel D，也不内置代码到名称的固定映射。
+
+现货业务台账数据库沿用项目现有 `db.init_db()` 双数据库兼容路径：本地使用 SQLite，Render/Supabase 使用 PostgreSQL 专用的 `TEXT`、`DOUBLE PRECISION` 和幂等 `CREATE TABLE IF NOT EXISTS`。两张台账表只允许服务端 FastAPI 连接访问，PostgreSQL 路径启用 RLS 并撤销 `anon` / `authenticated` 的直接表权限；页面不通过 Supabase Data API 直连。Staging 已写入真实只读源同步结果；系统字段随源刷新，人工字段在重复同步时保留，只有完整成功扫描才允许软隐藏缺失记录。Production 仍未启用该来源或写入该台账，必须单独通过 Gate B。
 
 ## 铁矿石基差 Excel 导入
 

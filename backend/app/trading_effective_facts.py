@@ -102,6 +102,8 @@ def _statement_source_type(row: Mapping[str, Any]) -> str:
 def _position_direction(value: object) -> str:
     text = str(value or "").strip().lower()
     return {
+        "buy": "买",
+        "sell": "卖",
         "long": "买",
         "short": "卖",
         "多": "买",

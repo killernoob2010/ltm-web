@@ -8,7 +8,6 @@ from app import db
 from app.trading_agent import store
 from app.trading_agent.schema import migrate_agent_v2_schema
 from app.trading_agent.contracts import ToolEnvelope
-from test_auth import pilot
 
 
 @pytest.fixture

@@ -2,6 +2,9 @@
   "use strict";
 
   const ENDPOINT = "/api/closing-review-agent";
+  const V2_ENDPOINT = "/api/trading-agent-v2";
+  const legacyConversationEndpoint = `${ENDPOINT}/conversations`;
+  const legacySuggestionsEndpoint = `${ENDPOINT}/suggestions`;
   const state = {
     api: null,
     user: null,
@@ -11,6 +14,7 @@
     bound: false,
     loading: false,
     activation: 0,
+    v2: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -24,6 +28,10 @@
   const newButton = $("closingReviewNewBtn");
   const status = $("closingReviewStatus");
   const scopeNote = $("closingReviewScopeNote");
+
+  function endpoint() {
+    return state.v2 ? V2_ENDPOINT : ENDPOINT;
+  }
 
   function timestampSeconds(value) {
     if (!value) return "";
@@ -180,17 +188,17 @@
   }
 
   async function loadMessages(conversationId, activation) {
-    const data = await state.api(`${ENDPOINT}/conversations/${conversationId}/messages`);
+    const data = await state.api(`${endpoint()}/conversations/${conversationId}/messages`);
     if (activation !== state.activation) return;
     renderMessages(data.items || []);
   }
 
   async function loadConversations(activation) {
-    const data = await state.api(`${ENDPOINT}/conversations`);
+    const data = await state.api(`${endpoint()}/conversations`);
     if (activation !== state.activation) return;
     state.conversations = data.items || [];
     if (!state.conversations.length) {
-      const conversation = await state.api(`${ENDPOINT}/conversations`, {
+      const conversation = await state.api(`${endpoint()}/conversations`, {
         method: "POST",
         body: JSON.stringify({ title: "期权收盘复盘" }),
       });
@@ -204,7 +212,12 @@
   }
 
   async function loadSuggestions(activation) {
-    const data = await state.api(`${ENDPOINT}/suggestions`);
+    if (state.v2) {
+      state.suggestions = [];
+      renderSuggestions();
+      return;
+    }
+    const data = await state.api(state.v2 ? `${V2_ENDPOINT}/suggestions` : legacySuggestionsEndpoint);
     if (activation !== state.activation) return;
     state.suggestions = data.items || [];
     renderSuggestions();
@@ -228,7 +241,7 @@
     state.loading = true;
     newButton.disabled = true;
     try {
-      const conversation = await state.api(`${ENDPOINT}/conversations`, {
+      const conversation = await state.api(`${endpoint()}/conversations`, {
         method: "POST",
         body: JSON.stringify({ title: "期权收盘复盘" }),
       });
@@ -245,6 +258,18 @@
     }
   }
 
+  async function waitForTask(taskId, activation) {
+    const delays = [1000, 2000, 3000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000];
+    for (const delay of delays) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (activation !== state.activation) return;
+      const task = await state.api(`${endpoint()}/tasks/${taskId}`);
+      if (["succeeded", "partial", "failed", "cancelled"].includes(task.state)) return task;
+      setStatus(`正在分析…（${task.state || "处理中"}）`);
+    }
+    throw new Error("分析超过 90 秒，请稍后重试。");
+  }
+
   async function submitMessage({ suggestionId = null } = {}) {
     if (state.loading || !state.conversationId) return;
     const content = input.value.trim();
@@ -257,17 +282,23 @@
     sendButton.disabled = true;
     suggestions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
     setStatus("正在读取确定性复盘结果…");
-    const body = {
-      content: suggestionId ? null : content,
-      suggestion_id: suggestionId,
-      client_request_id: requestId(),
-    };
+    const body = state.v2
+      ? { content, client_request_id: requestId() }
+      : {
+        content: suggestionId ? null : content,
+        suggestion_id: suggestionId,
+        client_request_id: requestId(),
+      };
     try {
-      await state.api(`${ENDPOINT}/conversations/${state.conversationId}/messages`, {
+      const queued = await state.api(`${endpoint()}/conversations/${state.conversationId}/messages`, {
         method: "POST",
         body: JSON.stringify(body),
       });
       input.value = "";
+      if (state.v2 && queued.task_id) {
+        setStatus("已收到问题，正在读取宏源交易事实…");
+        await waitForTask(queued.task_id, state.activation);
+      }
       await loadConversations(state.activation);
       setStatus("");
     } catch (error) {
@@ -301,9 +332,16 @@
     state.user = config.user || null;
     state.activation += 1;
     const activation = state.activation;
+    state.v2 = false;
+    try {
+      const capabilities = await state.api(`${V2_ENDPOINT}/capabilities`);
+      state.v2 = Boolean(capabilities && capabilities.enabled);
+    } catch (error) {
+      state.v2 = false;
+    }
     bind();
     page.classList.remove("hidden");
-    scopeNote.textContent = "宏源账户 · 铁矿石期权 · 仅收盘复盘事实查询";
+    scopeNote.textContent = state.v2 ? "宏源期货 · 全部期货与期权 · 只读开放分析" : "宏源账户 · 铁矿石期权 · 仅收盘复盘事实查询";
     setStatus("正在加载 Agent…");
     try {
       await Promise.all([loadConversations(activation), loadSuggestions(activation)]);

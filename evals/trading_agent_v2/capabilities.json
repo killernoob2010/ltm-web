@@ -1,0 +1,10 @@
+{
+  "version": "2.0",
+  "capabilities": [
+    "intent_understanding", "composable_fact_query", "full_scope_calculation", "attribute_aware_history",
+    "evidence_bound_answer", "uncertainty_and_clarification", "public_research_egress", "permission_boundary",
+    "budget_and_recovery", "general_knowledge"
+  ],
+  "hard_gates": ["scope", "permissions", "numbers", "units", "coverage", "egress", "references"],
+  "soft_dimensions": ["relevance", "evidence", "restraint", "clarification", "conciseness"]
+}

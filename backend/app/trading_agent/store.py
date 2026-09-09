@@ -32,6 +32,15 @@ def digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _exec_no_return(cur, sql, params=()):
+    """Execute adjunct inserts whose primary key is not named ``id``."""
+    if db._is_pg():
+        cur.execute(sql.replace("?", "%s"), params)
+    else:
+        cur.execute(sql, params)
+    return cur
+
+
 def _transaction(conn):
     if not db._is_pg():
         conn.execute("BEGIN IMMEDIATE")
@@ -64,7 +73,7 @@ def enqueue(user, conversation_id, request_id, text, channel):
             if existing["request_hash"] != request_hash:
                 raise RequestConflict("请求编号已被其他问题使用")
             return task_id
-        db._exec(cur, """INSERT INTO agent_v2_runs
+        _exec_no_return(cur, """INSERT INTO agent_v2_runs
             (task_id,execution_id,user_id,channel,account_scope_json,request_hash,state,created_at)
             VALUES (?,?,?,?,?,?,'queued',?)""",
             (task_id, str(principal.execution_id), principal.user_id, channel,
@@ -73,6 +82,9 @@ def enqueue(user, conversation_id, request_id, text, channel):
             (conversation_id,task_id,role,message_type,content,status,created_at)
             VALUES (?,?,'user','text',?,'active',?)""", (conversation_id, task_id, text, timestamp))
         db._exec(cur, "UPDATE closing_review_tasks SET user_message_id=? WHERE id=?", (mid, task_id))
+        db._exec(cur, """UPDATE closing_review_conversations
+            SET last_message_at=?,updated_at=? WHERE id=? AND user_id=? AND status='active'""",
+            (timestamp,timestamp,conversation_id,principal.user_id))
     return task_id
 
 
@@ -129,7 +141,7 @@ def issue_grant(principal):
     with db.connect() as conn:
         cur = conn.cursor()
         task_id = _active_run(cur, principal)
-        db._exec(cur, "INSERT INTO agent_v2_execution_grants(token_hash,task_id,user_id,expires_at) VALUES (?,?,?,?)",
+        _exec_no_return(cur, "INSERT INTO agent_v2_execution_grants(token_hash,task_id,user_id,expires_at) VALUES (?,?,?,?)",
             (digest(token), task_id, principal.user_id, stamp(now()+timedelta(minutes=5))))
     return token
 
@@ -148,14 +160,15 @@ def resolve_grant(token):
     return principal
 
 
-def save_result(principal, envelope: ToolEnvelope, rows, *, kind="positions", parent_ref=None):
+def save_result(principal, envelope: ToolEnvelope, rows, *, kind="positions", parent_ref=None, result_ref=None):
     authorize(principal, "trading.facts")
     if len(rows) > 20000:
         raise ValueError("limit_exceeded")
     if parent_ref:
         load_result(principal, parent_ref)
-    ref = uuid4()
-    frozen = envelope.model_copy(deep=True, update={"result_ref": ref})
+    ref = result_ref or uuid4()
+    frozen = envelope.model_copy(deep=True, update={"result_ref": ref,
+        "snapshot_ref": ref if kind=="positions" and not parent_ref else envelope.snapshot_ref})
     payload = json.dumps({"envelope": frozen.model_dump(mode="json"), "rows": rows}, ensure_ascii=False, allow_nan=False)
     if len(payload.encode("utf-8")) > 10 * 1024 * 1024:
         raise ValueError("limit_exceeded")
@@ -194,23 +207,127 @@ def _terminal(cur, task_id, state, timestamp, error=None):
     db._exec(cur, "UPDATE agent_v2_execution_grants SET revoked_at=? WHERE task_id=? AND revoked_at IS NULL", (timestamp,task_id))
 
 
-def finish(task_id, worker_id, state, answer, error=None):
+def finish(task_id, worker_id, state, answer, error=None, structured_payload=None):
     if state not in {"succeeded", "partial", "failed", "cancelled"}:
         raise ValueError("invalid terminal state")
+    if structured_payload is not None:
+        try:
+            structured_payload = json.dumps(structured_payload, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("structured_payload must be JSON serializable") from exc
     with db.connect() as conn:
         _transaction(conn)
         cur = conn.cursor()
         suffix = " FOR UPDATE" if db._is_pg() else ""
-        row = db._exec(cur, """SELECT t.conversation_id FROM agent_v2_runs r JOIN closing_review_tasks t ON t.id=r.task_id
+        row = db._exec(cur, """SELECT t.conversation_id,r.channel FROM agent_v2_runs r JOIN closing_review_tasks t ON t.id=r.task_id
             WHERE r.task_id=? AND r.lease_owner=? AND r.state='running' AND r.lease_expires_at>?""" + suffix,
             (task_id,worker_id,stamp())).fetchone()
         if not row:
             return False
         timestamp = stamp()
         _terminal(cur,task_id,state,timestamp,error)
-        db._exec(cur, """INSERT INTO closing_review_messages(conversation_id,task_id,role,message_type,content,status,created_at)
-            VALUES (?,?,'assistant',?,?,'active',?)""", (row["conversation_id"],task_id,"error" if state=="failed" else "answer",answer,timestamp))
+        if row["channel"] == "web":
+            db._exec(cur, "UPDATE agent_v2_runs SET delivery_state='delivered' WHERE task_id=?", (task_id,))
+        db._exec(cur, """INSERT INTO closing_review_messages
+            (conversation_id,task_id,role,message_type,content,structured_payload,status,created_at)
+            VALUES (?,?,'assistant',?,?,?,?,?)""", (row["conversation_id"],task_id,
+            "error" if state=="failed" else "answer",answer,structured_payload,"active",timestamp))
+        db._exec(cur, """UPDATE closing_review_conversations
+            SET last_message_at=?,updated_at=? WHERE id=? AND status='active'""",
+            (timestamp,timestamp,row["conversation_id"]))
     return True
+
+
+def mark_delivery(task_id, state, error=None):
+    """Record one final-channel delivery attempt without retrying it implicitly."""
+    if state not in {"pending", "delivered", "delivery_unknown"}:
+        raise ValueError("invalid delivery state")
+    with db.connect() as conn:
+        db._exec(conn.cursor(), """UPDATE agent_v2_runs SET delivery_state=?,last_error=COALESCE(?,last_error)
+            WHERE task_id=? AND state IN ('succeeded','partial','failed','cancelled')""",
+            (state,error,task_id))
+
+
+def task_answer(task_id):
+    """Return the latest final assistant text for a V2 task, without raw tool data."""
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), """SELECT content,structured_payload FROM closing_review_messages
+            WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1""", (task_id,)).fetchone()
+    if not row:
+        return None
+    row = dict(row)
+    payload = None
+    if row.get("structured_payload"):
+        try:
+            payload = json.loads(row["structured_payload"])
+        except (TypeError, ValueError):
+            payload = None
+    return {"content": row.get("content") or "", "structured_payload": payload}
+
+
+def task_status(task_id):
+    """Return terminal/delivery state for one task without exposing its content."""
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), """SELECT t.state,r.delivery_state
+            FROM closing_review_tasks t LEFT JOIN agent_v2_runs r ON r.task_id=t.id
+            WHERE t.id=?""", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def revoke_task_grants(task_id):
+    with db.connect() as conn:
+        db._exec(conn.cursor(), "UPDATE agent_v2_execution_grants SET revoked_at=? WHERE task_id=? AND revoked_at IS NULL", (stamp(), task_id))
+
+
+def task_text(task_id, user_id=None):
+    with db.connect() as conn:
+        params = [task_id]
+        owner = ""
+        if user_id is not None:
+            owner = " AND t.user_id=?"
+            params.append(user_id)
+        row = db._exec(conn.cursor(), """SELECT m.content FROM closing_review_tasks t
+            JOIN closing_review_messages m ON m.id=t.user_message_id
+            WHERE t.id=?""" + owner, tuple(params)).fetchone()
+    return str(row["content"]) if row else ""
+
+
+def task_history(task_id, user_id=None, limit=12):
+    """Read only recent user/assistant text for the task's own conversation."""
+    safe_limit = max(1, min(int(limit or 12), 12))
+    params = [task_id]
+    owner = ""
+    if user_id is not None:
+        owner = " AND t.user_id=?"
+        params.append(user_id)
+    with db.connect() as conn:
+        sql = """SELECT m.role,m.content,m.structured_payload,m.id
+            FROM closing_review_tasks t
+            JOIN closing_review_messages current ON current.id=t.user_message_id
+            JOIN closing_review_messages m ON m.conversation_id=t.conversation_id AND m.id < current.id
+            WHERE t.id=?""" + owner + """ AND m.status='active' AND m.role IN ('user','assistant')
+            ORDER BY m.id DESC LIMIT ?"""
+        rows = db._exec(conn.cursor(), sql, tuple(params + [safe_limit])).fetchall()
+    history = []
+    for row in reversed(rows):
+        if row["role"] == "assistant":
+            try:
+                payload = json.loads(row["structured_payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            refs = payload.get("fact_refs", []) if isinstance(payload, dict) else []
+            status = payload.get("status", "") if isinstance(payload, dict) else ""
+            content = f"上次回答状态：{status}；可追问的证据引用：{json.dumps(refs, ensure_ascii=False)}"
+        else:
+            content = str(row["content"] or "")
+        history.append({"role": row["role"], "content": content})
+    return history
+
+
+def record_usage(task_id, *, model_calls=0, tool_calls=0, search_calls=0):
+    with db.connect() as conn:
+        db._exec(conn.cursor(), """UPDATE agent_v2_runs SET model_calls=model_calls+?, tool_calls=tool_calls+?, search_calls=search_calls+?
+            WHERE task_id=? AND state='running'""", (model_calls, tool_calls, search_calls, task_id))
 
 
 def recover_interrupted():
@@ -221,8 +338,28 @@ def recover_interrupted():
         rows = db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE state='running' AND (lease_expires_at<=? OR deadline_at<=?)" + suffix,
             (stamp(),stamp())).fetchall()
         for row in rows:
-            _terminal(cur,int(row["task_id"]),"failed",stamp(),"interrupted")
+            task_id = int(row["task_id"])
+            _terminal(cur,task_id,"failed",stamp(),"interrupted")
+            task = db._exec(cur, "SELECT conversation_id FROM closing_review_tasks WHERE id=?", (task_id,)).fetchone()
+            if task:
+                timestamp = stamp()
+                db._exec(cur, """INSERT INTO closing_review_messages
+                    (conversation_id,task_id,role,message_type,content,status,created_at)
+                    VALUES (?,?,'assistant','error',?,'active',?)""",
+                    (task["conversation_id"], task_id, "任务因 Agent worker 中断而停止，请重新提问。", timestamp))
+                db._exec(cur, """UPDATE closing_review_conversations SET last_message_at=?,updated_at=?
+                    WHERE id=? AND status='active'""", (timestamp,timestamp,task["conversation_id"]))
     return len(rows)
+
+
+def mark_orphaned_deliveries():
+    """A restart cannot reconstruct a WeCom reply context, so pending answers become unknown."""
+    with db.connect() as conn:
+        cur = db._exec(conn.cursor(), """UPDATE agent_v2_runs SET delivery_state='delivery_unknown',
+            last_error=COALESCE(last_error,'delivery_context_lost')
+            WHERE channel='wecom' AND state IN ('succeeded','partial','failed','cancelled')
+              AND delivery_state='pending'""", ())
+        return cur.rowcount
 
 
 def issue_pair_code(user_id):
@@ -234,7 +371,7 @@ def issue_pair_code(user_id):
         _transaction(conn)
         cur = conn.cursor()
         db._exec(cur, "UPDATE agent_v2_pair_codes SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL", (stamp(),user_id))
-        db._exec(cur, "INSERT INTO agent_v2_pair_codes(code_hash,user_id,expires_at) VALUES (?,?,?)",
+        _exec_no_return(cur, "INSERT INTO agent_v2_pair_codes(code_hash,user_id,expires_at) VALUES (?,?,?)",
             (digest(code),user_id,stamp(now()+timedelta(minutes=10))))
     return code
 
@@ -259,7 +396,7 @@ def consume_pair_code(bot_id, wecom_user_id, code):
         bound = db._exec(cur, "SELECT user_id,wecom_user_id FROM agent_v2_wecom_bindings WHERE bot_id=? AND status='active'", (bot_id,)).fetchall()
         if any(row["user_id"] != user["id"] or row["wecom_user_id"] != wecom_user_id for row in bound):
             return False
-        db._exec(cur, """INSERT INTO agent_v2_wecom_bindings(bot_id,wecom_user_id,user_id,status,created_at)
+        _exec_no_return(cur, """INSERT INTO agent_v2_wecom_bindings(bot_id,wecom_user_id,user_id,status,created_at)
             VALUES (?,?,?,'active',?) ON CONFLICT(bot_id,wecom_user_id)
             DO UPDATE SET status='active',revoked_at=NULL""", (bot_id,wecom_user_id,user["id"],stamp()))
         db._exec(cur, "UPDATE agent_v2_pair_codes SET consumed_at=? WHERE code_hash=?", (stamp(),selected["code_hash"]))

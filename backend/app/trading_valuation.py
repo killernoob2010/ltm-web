@@ -53,6 +53,12 @@ class QuoteSnapshot:
     expired: bool = False
     market_data_status: str = ""
     market_data_message: str = ""
+    strike_price: Optional[float] = None
+    option_class: Optional[str] = None
+    time_to_expiry: Optional[float] = None
+    risk_free_rate: Optional[float] = None
+    greeks_method: Optional[str] = None
+    expiry_source: Optional[str] = None
 
 
 def _valid_price(value: Any) -> Optional[float]:
@@ -664,6 +670,7 @@ class TqSdkQuoteProvider:
             strike_price = _valid_price(getattr(quote, "strike_price", None))
             option_class = str(getattr(quote, "option_class", "") or "").upper()
             metrics: dict[str, Optional[float]] = {}
+            time_to_expiry = None
             if (
                 option_price is not None
                 and underlying_price is not None
@@ -701,6 +708,12 @@ class TqSdkQuoteProvider:
                 vega=metrics.get("vega"),
                 rho=metrics.get("rho"),
                 expired=bool(getattr(quote, "expired", False)),
+                strike_price=strike_price,
+                option_class=option_class or None,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=OPTION_RISK_FREE_RATE if metrics else None,
+                greeks_method="black76" if metrics else None,
+                expiry_source="provider_expire_datetime" if expiry_timestamp is not None else None,
             )
         return results
 

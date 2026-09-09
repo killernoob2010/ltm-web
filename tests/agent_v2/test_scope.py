@@ -57,3 +57,16 @@ def test_legacy_unscoped_call_retains_all_accounts(two_accounts):
     with db.connect() as conn:
         result = query_effective_trades(conn.cursor(), EffectiveFactFilters())
     assert result["summary"]["quantity"] == 64
+
+
+def test_closed_fact_scope_precedes_count_and_sum(two_accounts):
+    from app.trading_management import FactFilters, _query_close_rows_paged
+    own, other = two_accounts
+    with db.connect() as conn:
+        for account, pnl in ((own, 100), (other, 9000)):
+            source = conn.execute("SELECT tf.identity_id,tf.batch_id,tf.source_row_id FROM trading_trade_facts tf JOIN trading_import_batches b ON b.id=tf.batch_id WHERE b.account_id=?", (account,)).fetchone()
+            conn.execute("""INSERT INTO trading_close_facts(identity_id,batch_id,source_row_id,open_date,close_date,exchange,contract,asset_type,open_side,close_side,quantity,open_price,close_price,fact_close_pnl,is_current)
+                VALUES (?,?,?,'20260501','20260510','DCE','i2609','future','买','卖',1,700,710,?,1)""", (*source,pnl))
+        result = _query_close_rows_paged(conn.cursor(),FactFilters(account_ids=(own,),start_date="2026-05-01",end_date="2026-05-31"))
+    assert result["summary"]["fact_close_pnl"] == 100
+    assert result["total_items"] == 1

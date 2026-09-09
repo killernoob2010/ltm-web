@@ -93,6 +93,12 @@ class Shock(StrictModel):
     days_forward: int = Field(default=0, ge=0)
 
 
+class PublicQuery(StrictModel):
+    text: str = Field(min_length=1, max_length=240)
+    freshness: Literal["day", "week", "month", "year", "none"] = "none"
+    approved: Literal[True] = True
+
+
 class StoredResult(StrictModel):
     ref: UUID
     envelope: ToolEnvelope
