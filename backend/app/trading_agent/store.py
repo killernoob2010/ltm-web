@@ -214,7 +214,7 @@ def save_result(principal, envelope: ToolEnvelope, rows, *, kind="positions", pa
     if len(rows) > 20000:
         raise ValueError("limit_exceeded")
     if parent_ref:
-        load_result(principal, parent_ref, require_current_task=True)
+        load_result(principal, parent_ref)
     ref = result_ref or uuid4()
     frozen = envelope.model_copy(deep=True, update={"result_ref": ref,
         "snapshot_ref": ref if kind=="positions" and not parent_ref else envelope.snapshot_ref})

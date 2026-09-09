@@ -189,3 +189,26 @@ def test_public_evidence_cannot_be_reused_by_a_later_task(queued):
             "kind": "knowledge", "text": "复用资料。", "evidence_refs": [source_ref],
         }]}, store)
     assert caught.value.issues[0].code == "reference_unavailable"
+
+
+def test_internal_fact_ref_remains_follow_up_evidence_in_same_conversation(queued):
+    uid, cid, _ = queued
+    first_task = store.claim_next("fact-follow-up-first")
+    first_principal = store.principal_for_task(first_task)
+    fact_ref = store.save_result(
+        first_principal,
+        ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc), calculation_version="t",
+                     metrics={"floating_pnl": MetricValue(value="123.45", unit="CNY", status="complete",
+                                                          covered_rows=1, eligible_rows=1)},
+                     payload={"kind": "positions"}),
+        [],
+    )
+    second_task = store.enqueue({"id": uid}, cid, str(uuid4()), "追问上次数字", "web")
+    second_task = store.claim_next("fact-follow-up-second")
+    assert second_task is not None
+    second_principal = store.principal_for_task(second_task)
+    draft = {"status": "complete", "paragraphs": [{
+        "kind": "fact", "text": f"上次浮盈为 {{{{fact:{fact_ref}#/metrics/floating_pnl}}}}。",
+        "evidence_refs": [f"{fact_ref}#/metrics/floating_pnl"],
+    }]}
+    assert "123.45 CNY" in answer.render_answer(second_principal, draft, store)
