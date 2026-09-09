@@ -67,7 +67,7 @@ flowchart TD
 
 ## 5. 同实例运行与依赖
 
-沿用现有 Web 启动语义；新增小型进程管理入口，启动原 Web 命令和一个 Agent worker。Web 只监听 Render 分配的公网端口，MCP 仅 `127.0.0.1:8766`，企微由 Agent 发起出站长连接。不得在每个 uvicorn worker 或业务调度器内重复启动 Agent，不导入 main.py 来启动工具层。
+沿用现有 Web 启动语义；新增小型进程管理入口，启动原 Web 命令和一个 Agent worker。Render 通过仓库根目录 `.python-version` 固定 Python 3.12，以兼容现有 FastAPI/Starlette 与 Agent 依赖；Web 只监听 Render 分配的公网端口，MCP 仅 `127.0.0.1:8766`，企微由 Agent 发起出站长连接。不得在每个 uvicorn worker 或业务调度器内重复启动 Agent，不导入 main.py 来启动工具层。
 
 本地或独立 worker 环境可以分别安装 Web 和 Agent 的锁定依赖；同实例 Render 服务只有一个构建环境，因此根目录 `requirements.txt` 显式包含 Agent 的两个运行时 pin，并在此环境中验证兼容性。候选沿用 V2 Python 3.12；不得为了 Agent 静默升级 Web 框架。若实际依赖不兼容，停止部署步骤，提交最小替代方案评估，不直接更换生产镜像。
 

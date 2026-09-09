@@ -32,7 +32,7 @@
 
 ## V2.1 同实例本地适配（S1–S3）
 
-- 启动与依赖：`render_start.sh` 进入小型监督器，Web 始终是可用性边界，Agent 仅在 `AGENT_V2_ENABLED=true` 时启动；根 `requirements.txt` 已加入 MCP 2.2.0 与企微 SDK 1.0.2，独立 worker 锁保持可用。
+- 启动与依赖：`render_start.sh` 进入小型监督器，Web 始终是可用性边界，Agent 仅在 `AGENT_V2_ENABLED=true` 时启动；仓库根 `.python-version` 固定 Python 3.12，根 `requirements.txt` 已加入 MCP 2.2.0 与企微 SDK 1.0.2，独立 worker 锁保持可用。
 - 资源与执行：Agent 初始启动/异常退出采用有限退避重启；任务总期限、单次调用期限、工具/搜索/模型预算、队列上限及过期终态已实现。无法读取可靠 cgroup 指标时停止取新任务，压力恢复采用低阈值和稳定窗口。
 - 云端竞争与默认值：PostgreSQL 使用专用会话 advisory lock 按环境与 bot 单主占用；SQLite 保留本地文件锁。MCP 可选列表参数统一为空列表，避免模型省略参数时进入无效请求。
 - 新鲜回归：目标 Python 回归 220 项、前端回归 38 项通过；`pip check`、Python 编译、启动脚本语法和差异检查通过。该证据仍限本地/合成数据，未替代 Render、PostgreSQL、DeepSeek 或企微真实验收。
