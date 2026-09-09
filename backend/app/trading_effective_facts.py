@@ -225,9 +225,14 @@ def _position_provenance(
                 "environment": "unknown",
             },
         )
-        coverage_date = _date_key(item.get("snapshot_date") or item.get("trade_date"))
-        if coverage_date:
-            entry["coverage_dates"].add(coverage_date)
+        for field in ("snapshot_date", "trade_date", "open_date"):
+            coverage_date = _date_key(item.get(field))
+            if coverage_date:
+                entry["coverage_dates"].add(coverage_date)
+        if source_kind == "derived" and observed_at:
+            observed_date = _parse_datetime(observed_at)
+            if observed_date is not None:
+                entry["coverage_dates"].add(observed_date.date().isoformat())
         entry["row_count"] += 1
         if source_kind == "settlement":
             entry["fact_status"] = "settlement_confirmed"

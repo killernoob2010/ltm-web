@@ -121,3 +121,26 @@ def test_historical_settlement_provenance_keeps_date_precision(queued):
     assert provenance["source_observations"][0]["coverage_date_start"] == "2026-08-31"
     assert provenance["source_observations"][0]["coverage_date_end"] == "2026-08-31"
     assert provenance["source_observations"][0]["observed_at"] is None
+
+
+def test_inferred_position_provenance_keeps_baseline_and_fill_dates(queued):
+    from test_trading_collector_reconciliation import insert_wh6_fill
+    from test_trading_effective_facts import _baseline_row, _insert_settlement_position_batch
+
+    task = store.claim_next("derived-provenance-worker")
+    principal = store.principal_for_task(task)
+    _insert_settlement_position_batch(
+        principal.account_ids[0], "20260831",
+        rows=[_baseline_row("i2609", "买", 2, 700)],
+    )
+    insert_wh6_fill(
+        principal.account_ids[0], event_key="derived-1", trade_date="2026-09-01",
+        contract="i2609", asset_type="future", side="买", open_close="开", quantity=1,
+        price="705",
+    )
+    result = facts.capture_positions(principal, FactQuery(), lambda reqs: {})
+    observations = result.payload["provenance"]["source_observations"]
+    assert result.data_as_of is None
+    assert observations[0]["source_kind"] == "derived"
+    assert observations[0]["coverage_date_start"] == "2026-08-31"
+    assert observations[0]["coverage_date_end"] == "2026-09-01"

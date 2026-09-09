@@ -114,5 +114,5 @@
 
 - 来源观察：effective facts 现在为持仓结果提供 `provenance.source_observations`，区分 `settlement`、`wh6`、`derived` 和 `unknown`，保留业务观察日、WH6 快照采集时间、事实状态和新鲜度；混合来源仍保持 `ToolEnvelope.data_as_of=null`，没有拿查询时间或备份时间补造截至时间。
 - 公开证据：答案校验支持 `research_uuid#/sources/index`（搜索摘要）和 `public_read_uuid#/payload/text`（正文读取），拒绝直接 URL；正文引用必须有当前任务内的搜索父结果，当前任务之外的同会话结果不能复用。提示同步了新引用协议。
-- 回归：`./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q` 为 126 passed、4 个依赖弃用警告；effective facts 与 Agent scope 定向回归 38 passed；compileall 和 `git diff --check` 通过。
+- 回归：`./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q` 为 128 passed、4 个依赖弃用警告；effective facts 与 Agent scope 定向回归 38 passed；compileall 和 `git diff --check` 通过。
 - 未做：没有创建真实 Eval fixture、没有调用 DeepSeek/Brave/企微、没有修改 Staging/Production 或数据库迁移。C1-EVAL-FIXTURES 仍需先确定可回放数据与冻结 oracle；C1-REAL-SMOKE 需要另行确认付费 API 和网页验收边界。

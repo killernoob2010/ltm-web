@@ -172,7 +172,7 @@ def _load_metric(principal, store, ref: str, metric_path: str, *, issue_path="/f
     except (TypeError, ValueError):
         raise InvalidEvidence("证据引用不可用", code="invalid_reference", path=issue_path) from None
     try:
-        saved = store.load_result(principal, result_ref, require_current_task=True)
+        saved = store.load_result(principal, result_ref)
     except (HTTPException, ResultExpired):
         raise InvalidEvidence("证据引用不存在、越权或已过期", code="reference_unavailable", path=issue_path) from None
     if metric_path.startswith("/metrics/"):
