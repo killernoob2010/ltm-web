@@ -67,3 +67,12 @@
 - 新增测试先复现进程仅启动 1 次未重试，修复后监督器、资源保护、worker 回归 9 passed。真实共载与数据库恢复验证仍未完成。
 
 - dd39ee6 已部署 Staging Live。现有 Supabase 连接器可核查表结构，但没有备份下载能力；浏览器已主动点击 GitHub 登录，在 Chrome 与 Codex 内均落到未填凭据的 GitHub 登录表单，未发现可复用登录会话。没有读取密码、创建新账号、重置凭据或绕过备份要求。当前下一步需恢复正常控制台登录，检查可用备份入口；现有本地连接非 Staging，禁止用于迁移。
+
+## S4 测试库备份、恢复和迁移通过（2026-09-09）
+- 使用用户保存在受保护本地文件的连接，先校验测试项目映射，再验证连接成功；未显示连接值。
+- 创建 PostgreSQL custom 全库备份，使用导出快照获取 public 106 张表的行数基线；备份大小 57,948,648 字节，记录 SHA-256。恢复到仅本机 Unix socket 可访问的独立 PostgreSQL 17 临时实例，public 全部 106 张业务表行数一致。Supabase 平台管理 schema 已归档，但未在本地重建其托管服务；不把此次核验称作整个 Supabase 平台灾备演练。
+- 六张 Agent 辅助表迁移先在恢复库通过，再使用 scripts/migrate_agent_v2.py 的 staging 映射与已验证 receipt 保护执行云端迁移。云端六表 RLS 开启，anon/authenticated 不能读取；wangjingze 的 Agent、交易事实权限及宏源账户解析通过。迁移没有更改既有业务表。
+- 恢复库真实数据测试：任务入队、领取和持仓快照保存通过，捕获 20 行持仓汇总、4344 手；这是备份时点的本地副本，不能冒充当前实时持仓。行情提供方为空时浮盈亏明确 unavailable，不使用合成价格。
+- 权限、路由、监督器和 worker 定向回归 16 passed；仍没有实际调用 DeepSeek、Brave 或企微，没有开启云端 Agent。真实 DeepSeek 小额测试按项目付费外部操作规则向用户申请最多 1 元已有余额，不充值。
+- 本地受保护证据：.runtime/backups/20260909-175221/{full.dump,manifest.json,receipt.json,restore.log}、.runtime/staging-migration-verification.json、.runtime/restored-agent-flow-check.json；均不提交 Git。
+- 下一步：取得真实 API 测试费用授权后继续模型联调；企微凭据与消息路径尚未接入。代码版本仍为 dd39ee6，Production 未修改。
