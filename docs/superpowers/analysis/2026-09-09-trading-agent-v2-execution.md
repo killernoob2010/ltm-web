@@ -86,7 +86,7 @@
 - B1：run_agent_v2_evals.py 将原“软分固定为满分”的结构检查改为 definition；regression 44/44、holdout 12/12 只代表题库定义完整，不再输出 hard/soft/release 伪评分。
 - B2：新增固定的 synthetic offline-behavior manifest，实际启动白名单 pytest nodeid 并解析 JUnit；本次 8/8 passed，输出 real_model_evaluated=false、release_readiness=not_evaluated。
 - B3：新增捕获时间与未知 data_as_of 分离的回归；没有从查询时间、备份时间或捕获时间伪造数据截至时间。
-- 新鲜本地证据：./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q 为 121 passed、4 个依赖弃用警告；系统 python 命令不可用，项目环境 compileall 与 git diff --check 需在最终审查中单独执行。
+- 新鲜本地证据：./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q 为 121 passed、4 个依赖弃用警告；系统 python 命令不可用，使用项目环境执行 compileall 与 git diff --check 均通过。
 - 本批仍不能证明真实 DeepSeek 最终回答、云端同实例时延、网页登录后问答、企微、联网、实时行情/Greeks 或持续运行。C0 仍需单独收口来源时点、跨段证据及真实行为 Eval；不以 121 项或 8 项合成行为测试宣布业务可用。
 
 ## S4 真实 DeepSeek 有限额联调（2026-09-09）
