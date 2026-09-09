@@ -1,6 +1,6 @@
 # 交易 Agent V2 技术合同
 
-日期：2026-09-09。状态：开发输入文档，未实现或线上验证。配套 [业务设计](2026-09-09-trading-agent-v2-upgrade-design.md) 与 [实施计划](../plans/2026-09-09-trading-agent-v2-implementation.md)。本文件细化已确认需求，不扩大账户、群、业务模块或交易权限。
+日期：2026-09-09。状态：T0–T10 已在隔离分支完成本地实现与回归；Staging 迁移、真实模型、企微和线上验证仍待 T11。配套 [业务设计](2026-09-09-trading-agent-v2-upgrade-design.md) 与 [实施计划](../plans/2026-09-09-trading-agent-v2-implementation.md)。本文件细化已确认需求，不扩大账户、群、业务模块或交易权限。
 
 ## 1. 技术选择与运行拓扑
 

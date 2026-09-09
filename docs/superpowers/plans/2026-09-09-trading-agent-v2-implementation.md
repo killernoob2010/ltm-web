@@ -1,6 +1,6 @@
 # 交易 Agent V2 Implementation Plan
 
-> **执行方式：** 单主 Agent 按 `superpowers:executing-plans` 逐任务执行；用户未授权子 Agent，不使用默认子 Agent 工作流。以下复选框为未来实施步骤，本轮写计划不等于勾选完成。
+> **执行方式：** 单主 Agent 按 `superpowers:executing-plans` 逐任务执行；用户未授权子 Agent，不使用默认子 Agent 工作流。T0–T10 已在隔离分支完成本地实现与回归，以下复选框保留为逐项验收追踪；T11 仍需真实 Staging 条件。
 
 **Goal:** 宏源全量有效持仓、交易和可靠计算通过 MCP 接入 DeepSeek，支持开放查询、公开研究与证据推论，在企微本人私聊完成真实验收。
 
@@ -24,7 +24,7 @@
 
 ## 0. 基线与实施边界
 
-设计代码基线 e343d765b1e02bf793c5aa942b99cbc5db4ad8db，设计分支 codex/agent-v2-design-20260909。本计划编写时尚未执行开发测试。实施前 fetch 并检查最新 origin/staging；把设计提交带入干净实施 worktree，保留原目录所有用户改动。
+设计代码基线 e343d765b1e02bf793c5aa942b99cbc5db4ad8db，设计分支 codex/agent-v2-design-20260909。本计划编写时尚未执行开发测试；当前执行记录见 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-execution.md`。实施前 fetch 并检查最新 origin/staging；把设计提交带入干净实施 worktree，保留原目录所有用户改动。
 
 已有主模块：trading_effective_facts.py、trading_valuation.py、trading_management.py、permissions.py、closing_review_agent.py/store.py/model_gateway.py/scheduler.py、db.py。不得导入 main.py 来取得工具运行环境（其启动会触发调度和初始化）；worker 仅导入明确业务模块。
 

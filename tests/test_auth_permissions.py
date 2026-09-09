@@ -202,6 +202,28 @@ def test_disabled_agent_module_is_hidden_from_navigation(tmp_path, monkeypatch):
     assert "closing_review_agent" not in visible_codes
 
 
+def test_v2_agent_navigation_is_limited_to_configured_pilot(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLOSING_REVIEW_AGENT_ENABLED", "false")
+    monkeypatch.setenv("AGENT_V2_ENABLED", "true")
+    monkeypatch.setenv("AGENT_V2_PILOT_USERNAME", "wangjingze")
+
+    hidden_codes = {
+        item["code"]
+        for group in main.modules(user=admin_user())
+        for item in group["items"]
+    }
+    assert "closing_review_agent" not in hidden_codes
+
+    monkeypatch.setenv("AGENT_V2_PILOT_USERNAME", "admin")
+    visible_codes = {
+        item["code"]
+        for group in main.modules(user=admin_user())
+        for item in group["items"]
+    }
+    assert "closing_review_agent" in visible_codes
+
+
 def test_retired_ledger_modules_are_hidden_and_receive_no_default_permissions():
     retired = {"sh_junneng", "steel_export", "subsidiary_hedging", "option_trading"}
     admin_modules = main.modules(user={"id": 1, "role": "管理员"})

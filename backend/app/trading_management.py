@@ -1997,8 +1997,11 @@ class FactFilters:
     business_type: str = ""
     page: int = 1
     page_size: int = 20
+    account_ids: Optional[tuple[int, ...]] = None
 
     def __post_init__(self):
+        if self.account_ids is not None:
+            trading_effective_facts.EffectiveFactFilters(account_ids=self.account_ids)
         if self.page_size not in {20, 50, 100}:
             raise ValueError("每页条数只允许 20、50、100")
         if self.business_type not in {"", *BUSINESS_TYPES}:
@@ -2010,6 +2013,7 @@ class FactFilters:
 
 def _effective_fact_filters(filters: FactFilters) -> trading_effective_facts.EffectiveFactFilters:
     return trading_effective_facts.EffectiveFactFilters(
+        account_ids=filters.account_ids,
         contract=filters.contract,
         direction=filters.direction,
         asset_type=filters.asset_type,
@@ -2134,6 +2138,10 @@ def _query_trade_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
 def _query_close_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
     where = ["b.status = 'active'", "cf.is_current = 1"]
     params: list[Any] = []
+    if filters.account_ids is not None:
+        scope, scope_params = trading_effective_facts._account_scope("b.account_id", filters.account_ids)
+        where.append(scope.removeprefix(" AND "))
+        params.extend(scope_params)
     if filters.contract:
         where.append("LOWER(cf.contract) LIKE ?")
         params.append(f"%{filters.contract.lower()}%")
@@ -2144,11 +2152,11 @@ def _query_close_rows_paged(cur, filters: FactFilters) -> dict[str, Any]:
         where.append("cf.asset_type = ?")
         params.append(filters.asset_type)
     if filters.start_date:
-        where.append("cf.close_date >= ?")
-        params.append(filters.start_date)
+        where.append("REPLACE(cf.close_date, '-', '') >= ?")
+        params.append(filters.start_date.replace("-", ""))
     if filters.end_date:
-        where.append("cf.close_date <= ?")
-        params.append(filters.end_date)
+        where.append("REPLACE(cf.close_date, '-', '') <= ?")
+        params.append(filters.end_date.replace("-", ""))
     has_allocations = "EXISTS (SELECT 1 FROM trading_business_close_allocations a WHERE a.close_identity_id = cf.identity_id)"
     has_unclassified = "EXISTS (SELECT 1 FROM trading_business_close_allocations a LEFT JOIN trading_business_assignments xba ON xba.trade_identity_id = a.open_trade_identity_id WHERE a.close_identity_id = cf.identity_id AND xba.id IS NULL)"
     if filters.classification == "classified":
