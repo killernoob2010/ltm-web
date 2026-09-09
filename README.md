@@ -4,7 +4,9 @@
 
 ## Agent V2.1 设计入口
 
-已确认复用现有 Render 付费实例；同实例启动、资源保护和恢复适配已在隔离分支完成，尚未推送或部署共用 Staging。见[完整设计](docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md)及[接续实施计划](docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md)。
+已确认复用现有 Render 付费实例；同实例启动、资源保护和恢复适配已部署共用 Staging，Agent 保持关闭，尚待数据库准备和真实联调。见[完整设计](docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md)及[接续实施计划](docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md)。
+
+默认使用系统账号及现有 Agent/交易数据权限，无需设置 `AGENT_V2_PILOT_USERNAME`；仅需要临时限制单用户试点时才设置该可选项。企微用户首次自行绑定系统身份，群聊仍关闭。
 
 ## 当前已实现
 
@@ -21,7 +23,7 @@
 - 用户与权限管理：独立登录账号、用户/领导/管理员类型、部门默认权限、个人例外、查看/日常/敏感操作分级、自助改密、管理员重置和账号停用。
 - 交易管理：单个期货公司日结/月结 TXT 自动识别、完整预检、重复与版本覆盖、期初持仓连续性、支持账户与日/月/季/自定义范围筛选的只读总览、持仓与交易明细、整笔业务归属、上海钧能台账和全量期权台账。总览“全部”显示事实盈亏，“基础套保 / 战略套保”显示业务归属盈亏；普通平仓、行权、履约和到期放弃统一显示在“平仓记录”并以了结类型区分；行权只关联账单中真实形成的期货开仓，不生成交易。首版浮动盈亏与期权风险指标统一显示“待计算”，汇总与导出保留入口暂不执行导出。
 - 收盘交易复盘 Agent Phase 1（Staging 已部署）：提供固定宏源账户铁矿石期权指定日期的只读摘要接口，按真实月份、Call/Put、买卖方向和行权价区间动态分组，分别返回不扣手续费的真实平仓盈亏与日结算口径持仓浮盈浮亏；日结单优先，只有月结单时明确降级为部分完成。当前仅完成确定性计算底座，尚未形成合格的网页 Agent 测试版；后续统一对话、DeepSeek、推荐问题、自动日常结果、会话隔离和试点权限以 `docs/superpowers/specs/2026-09-03-closing-trading-review-agent-staging-requirements.md` 为准。
-- Trading Agent V2（本地适配完成，待 Staging 联调）：在既有事实与估值服务之上提供宏源全部期货和期权的开放式只读问答；当前最新持仓、全量成交、已核验平仓、浮盈亏和全量期权 Greeks 通过受限工具/MCP 暴露，风险与公开研究结果保留证据、覆盖率和时点。网页继续复用 Agent 入口，同实例监督器负责 Web/Agent 进程生命周期，独立 worker 负责 Harness、loopback MCP、DeepSeek 和企微本人私聊；Agent 默认不启用、不开放群聊、不执行交易。详细范围、启动条件和未验收项见 `docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md`、`docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md` 与 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-execution.md`。
+- Trading Agent V2（本地适配完成，待 Staging 联调）：在既有事实与估值服务之上提供宏源全部期货和期权的开放式只读问答；当前最新持仓、全量成交、已核验平仓、浮盈亏和全量期权 Greeks 通过受限工具/MCP 暴露，风险与公开研究结果保留证据、覆盖率和时点。网页继续复用 Agent 入口，同实例监督器负责 Web/Agent 进程生命周期，独立 worker 负责 Harness、loopback MCP、DeepSeek 和已配对用户企微私聊；Agent 默认不启用、不开放群聊、不执行交易。详细范围、启动条件和未验收项见 `docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md`、`docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md` 与 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-execution.md`。
 - 贸易台账管理（Staging 已接真实源）：新增“现货业务台账管理”，覆盖说明书定义的 51 个 A:AY 字段、系统同步/人工字段、待补录、同步异常、组合筛选、敏感权限编辑、战略套保全开全平录入、服务端分页和全量 Excel 导出。列表、待补录和同步异常默认每页 20 条，可切换 20/50/100 条并只查询当前页；列表只返回表格摘要，打开单条详情时才读取该记录的完整 51 字段。Render Staging 已通过个人服务账号认证连接正式服务端 JSON 只读接口，并把 7 个销售组内的生效现货销售合同明细同步到独立 Supabase Staging；本地仍使用明确标注的 fixture 验收，不连接真实源。
 - WH6 成交与持仓采集器 V2.1（Staging 开发版）：在全量只读采集、实时优先、本地断网/重启保留和服务端设备绑定基础上，按账户、环境和当前有效完整月结单保护已结算月份；日期晚于服务器当天的有效成交不再被限制。日结/月结按字段优先级协调并保留追加审计，上传按 20 条小批次逐条确认，成交明细支持真正的 20/50/100 服务端分页。客户端版本源固定为 `0.3.2`，每次远程采集前自动上报版本；验证码自动决定测试版或正式版，界面不提供环境地址选择。策略不可用时只继续当前交易日本地排队，历史暂停。跨期组合的真实 WH6 原始编码尚未取得，解析状态保持 `unknown_format`，不凭猜测拆腿或生成夹具。Windows 构建直接输出单个便携 EXE；0.3.2 的 Windows/WH6/Staging 实机验收状态以最新发布记录和交接证据为准。
 - 交易事实与临时持仓统一视图（Staging 开发版）：日结/月结结算单是正式事实来源，月结优先于日结；结算覆盖期内不再展示 WH6 的临时重复事实。结算基线之后尚未被结算覆盖的 WH6 成交以“临时”状态显示，并按成交推算持仓；没有可验证结算值时不伪造保证金和浮动盈亏。交易、持仓页面同时展示事实状态、来源、形成方式和结算基线时间；WH6 采集页保留成交与“最新采集持仓快照诊断”，不再展示第二张当前持仓明细。真实页面、Staging 数据维护和回读证据以最新 `版本更新记录.md` 为准。

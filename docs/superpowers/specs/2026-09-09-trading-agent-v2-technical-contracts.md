@@ -26,9 +26,9 @@
 
 Harness 生成 256-bit 随机令牌，DB 仅存 SHA-256、execution_id、expires_at（5 分钟）、revoked_at。HTTP Bearer 只传给 loopback MCP，不进模型、日志或消息。每任务结束撤销；各工具重新检查任务状态、权限及令牌。旧令牌不得读取另一个任务/会话的结果。
 
-首轮只允许 AGENT_V2_PILOT_USERNAME 对应本人使用V2网页/企微；其他用户即使有旧Agent权限也不得自动进入V2。
+默认沿用系统登录身份和现有 Agent 权限使用 V2 网页/企微私聊，不要求逐人维护用户名。AGENT_V2_PILOT_USERNAME 为可选试点限制：未设置或留空时不额外限制用户名；显式设置时只允许该账号，但仍必须通过系统权限检查。
 
-网页使用现有登录 session；企微使用 bot_id + from.userid + chattype 绑定本地用户，绝不按显示名匹配。绑定采用一次性流程：已登录且有权限的网页用户请求配对码（10 分钟、最多 5 次失败、DB 仅存 hash），在机器人私聊发送该码完成绑定；绑定操作不调用模型。首轮仅 `AGENT_V2_PILOT_USERNAME` 对应的唯一启用用户可配对。群事件首版拒绝，不注册 group grants；未来明确授权群后才实现群共享范围。
+网页使用现有登录 session；企微使用 bot_id + from.userid + chattype 绑定本地用户，绝不按显示名匹配。绑定采用一次性流程：已登录且有权限的网页用户请求配对码（10 分钟、最多 5 次失败、DB 仅存 hash），在机器人私聊发送该码完成绑定；绑定操作不调用模型。已启用且具有 Agent 权限的系统用户可自行配对；如配置了可选试点用户名，则另外受该限制。群事件首版拒绝，不注册 group grants；未来明确授权群后才实现群共享范围。
 
 ## 3. 公共类型（backend/app/trading_agent/contracts.py）
 
