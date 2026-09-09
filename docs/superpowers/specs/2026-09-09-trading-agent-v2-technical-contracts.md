@@ -117,7 +117,7 @@ Black76 情景重定价只对该方法和输入确实支持的合约启用：冻
 复用 closing_review_conversations/messages/tasks 的归属及消息结构，V2 task_kind='v2_user_message'；不修改旧调度和八类入口语义。新增迁移由 `trading_agent/schema.py:migrate_agent_v2_schema(conn)` 显式执行，禁止在每次请求/工具调用 init_db。
 
 新增表（SQLite TEXT JSON；Postgres 同字段 TEXT，便于沿用 db._exec）：
-- `agent_v2_runs`：task_id PK/FK closing_review_tasks、user_id、channel、request_hash、state、lease_owner、lease_expires_at、deadline_at、model_calls、tool_calls、search_calls、last_error、delivery_state、created_at、finished_at。
+- `agent_v2_runs`：task_id PK/FK closing_review_tasks、execution_id UUID text UNIQUE、user_id、channel、account_scope_json、request_hash、state、lease_owner、lease_expires_at、deadline_at、model_calls、tool_calls、search_calls、last_error、delivery_state、created_at、finished_at。execution_id 与冻结账户范围用于重启后恢复令牌身份，不能根据新权限悄悄扩大原任务范围。
 - `agent_v2_results`：id UUID text PK、task_id FK、user_id、conversation_id、kind、parent_ref、snapshot_ref、payload_json、source_hash、schema_version、calculation_version、created_at、expires_at。外键 parent_ref 允许 null；owner 查询必须有 user_id 和 conversation_id。
 - `agent_v2_events`：id UUID PK、task_id FK、seq、kind、tool_name、argument_hash、result_ref、duration_seconds、status、error_code、created_at；UNIQUE(task_id,seq)。不存原始推理或全量参数。
 - `agent_v2_wecom_bindings`：bot_id、wecom_user_id、user_id、status、created_at、revoked_at；UNIQUE(bot_id,wecom_user_id)，首轮每 bot 仅一个允许试点用户。
