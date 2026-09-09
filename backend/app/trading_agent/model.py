@@ -94,6 +94,8 @@ class DeepSeekModel:
             "tool_choice": "auto",
             "stream": False,
             "thinking": {"type": "disabled"},
+            "response_format": {"type": "json_object"},
+            "max_tokens": 2048,
         }
         try:
             response = self.session.post(

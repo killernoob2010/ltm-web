@@ -17,6 +17,11 @@ _FACT_REF = re.compile(
     r")\}\}"
 )
 _DATE_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:19|20)\d{2}(?:[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?)?(?![A-Za-z0-9])")
+_DATETIME_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?"
+    r"[ T]?(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?"
+    r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?(?![A-Za-z0-9])"
+)
 _BUSINESS_NUMBER = re.compile(
     r"(?<![A-Za-z])(?:[-+]?\d{2,}(?:\.\d+)?|[-+]?\d+\.\d+|[-+]?\d+(?=\s*(?:手|笔|张|合约|元|万元|CNY|%|点)))"
     r"\s*(?:手|笔|张|合约|元|万元|CNY|%|点)?(?![A-Za-z])",
@@ -72,7 +77,7 @@ def _resolve(text: str, principal, store):
 
 def _has_unreferenced_number(text: str) -> bool:
     without_refs = _FACT_REF.sub(" ", text)
-    without_dates = _DATE_TOKEN.sub(" ", without_refs)
+    without_dates = _DATE_TOKEN.sub(" ", _DATETIME_TOKEN.sub(" ", without_refs))
     return bool(_BUSINESS_NUMBER.search(without_dates))
 
 

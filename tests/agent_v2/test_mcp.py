@@ -73,7 +73,11 @@ async def test_mcp_expired_grant_rejects_before_tool(queued):
 
 
 @pytest.mark.asyncio
-async def test_sdk_client_lists_and_calls_only_with_grant(queued):
+async def test_sdk_client_lists_and_calls_only_with_grant(queued, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
     task_id = store.claim_next("mcp-sdk-worker")
     principal = store.principal_for_task(task_id)
     grant = store.issue_grant(principal)
@@ -89,9 +93,50 @@ async def test_sdk_client_lists_and_calls_only_with_grant(queued):
             async with mcp_client.MCPToolClient(f"http://127.0.0.1:{port}/mcp") as client:
                 listed = await client.list_tools(grant)
                 assert any(tool.name == "query_positions" for tool in listed.tools)
+                positions = next(tool for tool in listed.tools if tool.name == "query_positions")
+                assert positions.input_schema["properties"]["as_of_mode"]["enum"] == ["latest", "settlement_date"]
                 envelope = await client.call_tool("describe_capabilities", {}, grant)
                 assert envelope.status == "complete"
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, 5)
+        listener.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_request_does_not_cancel_caller_or_break_client_cleanup(queued, monkeypatch):
+    import time
+    from mcp.shared.exceptions import MCPError
+
+    task_id = store.claim_next('slow-mcp-worker')
+    grant = store.issue_grant(store.principal_for_task(task_id))
+    original = mcp_server.tools.dispatch
+    slow = {'enabled': False}
+
+    def delayed_dispatch(*args, **kwargs):
+        if slow['enabled']:
+            time.sleep(.2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mcp_server.tools, 'dispatch', delayed_dispatch)
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0)); listener.listen(8)
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(mcp_server.build_mcp_app(), log_level='error'))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                await asyncio.sleep(.01)
+            async with mcp_client.MCPToolClient(f'http://127.0.0.1:{port}/mcp', request_timeout_seconds=.08) as client:
+                await client.list_tools(grant)
+                slow['enabled'] = True
+                with pytest.raises(MCPError):
+                    await client.call_tool('describe_capabilities', {}, grant)
+                slow['enabled'] = False
+                envelope = await client.call_tool('describe_capabilities', {}, grant)
+                assert envelope.status == 'complete'
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(serving, 5)
         listener.close()
