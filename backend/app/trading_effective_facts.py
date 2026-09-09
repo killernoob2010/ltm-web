@@ -30,13 +30,27 @@ class EffectiveFactFilters:
     end_date: str = ""
     page: int = 1
     page_size: int = 20
+    account_ids: Optional[tuple[int, ...]] = None
 
     def __post_init__(self) -> None:
+        if self.account_ids is not None:
+            if not self.account_ids:
+                raise PermissionError("无可查询账户")
+            if any(type(value) is not int or value <= 0 for value in self.account_ids):
+                raise ValueError("账户范围无效")
         if self.page_size not in {20, 50, 100}:
             raise ValueError("每页条数只允许 20、50、100")
         if self.fact_status not in FACT_STATUSES:
             raise ValueError("事实状态无效")
         object.__setattr__(self, "page", max(1, int(self.page)))
+
+
+def _account_scope(column: str, account_ids: Optional[tuple[int, ...]]) -> tuple[str, tuple]:
+    if account_ids is None:
+        return "", ()
+    if not account_ids:
+        raise PermissionError("无可查询账户")
+    return f" AND {column} IN ({','.join('?' for _ in account_ids)})", account_ids
 
 
 def _number(value: object) -> Optional[float]:
@@ -608,6 +622,7 @@ def _page_result(items: List[Dict[str, Any]], filters: EffectiveFactFilters) -> 
 
 
 def _ranked_settlement_query(filters: EffectiveFactFilters) -> tuple[str, str, tuple[Any, ...]]:
+    scope, scope_params = _account_scope("b.account_id", filters.account_ids)
     normalized_transaction = (
         "LOWER(TRIM(COALESCE(NULLIF(tf.normalized_transaction_no, ''), "
         "tf.transaction_no, '')))"
@@ -641,11 +656,11 @@ def _ranked_settlement_query(filters: EffectiveFactFilters) -> tuple[str, str, t
                    ) AS effective_rank
             FROM trading_trade_facts tf
             JOIN trading_import_batches b ON b.id = tf.batch_id
-            WHERE b.status = 'active' AND tf.is_current = 1
+            WHERE b.status = 'active' AND tf.is_current = 1{scope}
         )
     """
     conditions = ["effective_rank = 1"]
-    params: List[Any] = []
+    params: List[Any] = list(scope_params)
     if filters.contract:
         conditions.append("LOWER(COALESCE(contract, '')) LIKE ?")
         params.append(f"%{filters.contract.lower()}%")
@@ -670,13 +685,15 @@ def _ranked_settlement_query(filters: EffectiveFactFilters) -> tuple[str, str, t
 def _provisional_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str, Any]]:
     if filters.fact_status == "settlement_confirmed":
         return []
+    scope, params = _account_scope("account_id", filters.account_ids)
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT * FROM trading_intraday_fills
-        WHERE data_status = 'provisional'
+        WHERE data_status = 'provisional'{scope}
         ORDER BY trade_date DESC, trade_time DESC, id DESC
         """,
+        params,
     ).fetchall()
     items: List[Dict[str, Any]] = []
     coverage_caches: Dict[int, reconciliation.ReconciliationLookupCache] = {}
@@ -812,19 +829,22 @@ def _query_effective_trades_paged(cur, filters: EffectiveFactFilters) -> Dict[st
 
 
 def _effective_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str, Any]]:
-    direct_assignments, close_assignments = _assignment_maps(cur)
-    close_pnl = _close_pnl_map(cur)
+    scope, params = _account_scope("b.account_id", filters.account_ids)
     settlement_rows = db._exec(
         cur,
-        """
+        f"""
         SELECT tf.*, b.statement_type, b.source_priority, b.status AS batch_status
              , b.range_start, b.range_end
         FROM trading_trade_facts tf
         JOIN trading_import_batches b ON b.id = tf.batch_id
-        WHERE b.status = 'active' AND tf.is_current = 1
+        WHERE b.status = 'active' AND tf.is_current = 1{scope}
         ORDER BY tf.id DESC
         """,
+        params,
     ).fetchall()
+    identity_ids = [int(row["identity_id"]) for row in settlement_rows]
+    direct_assignments, close_assignments = _assignment_maps(cur, identity_ids)
+    close_pnl = _close_pnl_map(cur, identity_ids)
     settlement_by_key: Dict[tuple[Any, ...], Dict[str, Any]] = {}
     for row in settlement_rows:
         row_dict = dict(row)
@@ -844,13 +864,15 @@ def _effective_trade_items(cur, filters: EffectiveFactFilters) -> List[Dict[str,
         ) > (previous["source_priority"], previous["_sort_id"]):
             settlement_by_key[key] = item
 
+    scope, params = _account_scope("account_id", filters.account_ids)
     provisional_rows = db._exec(
         cur,
-        """
+        f"""
         SELECT * FROM trading_intraday_fills
-        WHERE data_status = 'provisional'
+        WHERE data_status = 'provisional'{scope}
         ORDER BY trade_date DESC, trade_time DESC, id DESC
         """,
+        params,
     ).fetchall()
     items = list(settlement_by_key.values())
     coverage_caches: Dict[int, reconciliation.ReconciliationLookupCache] = {}
@@ -923,10 +945,11 @@ def _format_datetime(value: object) -> Optional[str]:
     return parsed.replace(microsecond=0).isoformat() if parsed else None
 
 
-def _position_assignment_map(cur) -> Dict[tuple[str, str, str], Dict[str, Any]]:
+def _position_assignment_map(cur, account_ids=None) -> Dict[tuple[str, str, str], Dict[str, Any]]:
+    scope, params = _account_scope("b.account_id", account_ids)
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT tf.contract, tf.side, tf.asset_type,
                ba.business_type, s.name AS business_subject, st.name AS strategy,
                CASE WHEN ba.id IS NULL THEN 'unclassified' ELSE 'classified' END
@@ -936,8 +959,9 @@ def _position_assignment_map(cur) -> Dict[tuple[str, str, str], Dict[str, Any]]:
         LEFT JOIN trading_business_assignments ba ON ba.trade_identity_id = tf.identity_id
         LEFT JOIN trading_business_subjects s ON s.id = ba.business_subject_id
         LEFT JOIN trading_strategies st ON st.id = ba.strategy_id
-        WHERE tf.is_current = 1 AND tf.open_close = '开仓'
+        WHERE tf.is_current = 1 AND tf.open_close = '开仓'{scope}
         """,
+        params,
     ).fetchall()
     grouped: Dict[tuple[str, str, str], List[Dict[str, Any]]] = {}
     for row in rows:
@@ -971,16 +995,18 @@ def _position_assignment_map(cur) -> Dict[tuple[str, str, str], Dict[str, Any]]:
     return assignments
 
 
-def _active_position_batches(cur, end_date: str = "") -> Dict[int, Dict[str, Any]]:
+def _active_position_batches(cur, end_date: str = "", account_ids=None) -> Dict[int, Dict[str, Any]]:
+    scope, params = _account_scope("account_id", account_ids)
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT id, account_id, range_start, range_end, position_snapshot_date,
                position_count, status, statement_type, source_priority
         FROM trading_import_batches
-        WHERE status = 'active' AND position_snapshot_date IS NOT NULL
+        WHERE status = 'active' AND position_snapshot_date IS NOT NULL{scope}
         ORDER BY id DESC
         """,
+        params,
     ).fetchall()
     selected: Dict[int, Dict[str, Any]] = {}
     target = _date_key(end_date) if end_date else ""
@@ -1060,19 +1086,21 @@ def _position_baseline_rows(
     return result
 
 
-def _position_account_ids(cur) -> List[int]:
+def _position_account_ids(cur, account_ids=None) -> List[int]:
+    scope, params = _account_scope("account_id", account_ids)
     rows = db._exec(
         cur,
-        """
+        f"""
         SELECT account_id FROM trading_import_batches
-        WHERE status = 'active' AND position_snapshot_date IS NOT NULL
+        WHERE status = 'active' AND position_snapshot_date IS NOT NULL{scope}
         UNION
         SELECT account_id FROM trading_intraday_position_snapshots
-        WHERE complete IS TRUE
+        WHERE complete IS TRUE{scope}
         UNION
         SELECT account_id FROM trading_intraday_fills
-        WHERE data_status = 'provisional'
+        WHERE data_status = 'provisional'{scope}
         """,
+        params * 3,
     ).fetchall()
     return sorted({int(row["account_id"]) for row in rows if row["account_id"] is not None})
 
@@ -1298,8 +1326,8 @@ def query_effective_positions(
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     current = current.replace(microsecond=0)
-    baseline_batches = _active_position_batches(cur, filters.end_date)
-    assignment_map = _position_assignment_map(cur)
+    baseline_batches = _active_position_batches(cur, filters.end_date, filters.account_ids)
+    assignment_map = _position_assignment_map(cur, filters.account_ids)
     if filters.end_date:
         all_items: List[Dict[str, Any]] = []
         for batch in baseline_batches.values():
@@ -1331,7 +1359,7 @@ def query_effective_positions(
     freshness_statuses: List[str] = []
     latest_last_seen: Optional[str] = None
     latest_age: Optional[int] = None
-    account_ids = _position_account_ids(cur)
+    account_ids = _position_account_ids(cur, filters.account_ids)
     unavailable_accounts = 0
     for account_id in account_ids:
         batch = baseline_batches.get(account_id)

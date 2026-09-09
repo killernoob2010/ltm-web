@@ -1,0 +1,4 @@
+# Separate worker environment; do not install into the Web service environment.
+-r requirements.txt
+mcp==2.2.0
+wecom-aibot-python-sdk==1.0.2
