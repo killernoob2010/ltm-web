@@ -140,7 +140,7 @@ class ProcessSupervisor:
     def _spawn(self, name: str, command: Sequence[str]):
         self._log(f"启动 {name} 进程")
         process = self._popen(list(command), env=os.environ.copy())
-        self._children[name] = process
+        self._children[name.lower()] = process
         return process
 
     def _stop_child(self, process) -> None:
