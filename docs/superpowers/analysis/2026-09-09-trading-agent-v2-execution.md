@@ -124,3 +124,10 @@
 - 新鲜验证：fixture replay 5/5；Agent V2 测试 133 passed（4 个依赖弃用警告）；effective facts 与 scope 定向回归 38 passed；题库 definition regression 44/44、holdout 12/12；offline behavior 8/8；compileall 与 `git diff --check` 通过。
 - 本阶段仍只证明本地确定性边界和可重复夹具，不证明真实 DeepSeek 语言回答、Brave 联网、Staging 网页问答、企微、实时行情/Greeks 或持续运行；`real_model_evaluated=false`、`release_readiness=not_evaluated`。
 - 下一步可评估 C1-REAL-SMOKE，但必须单独确认剩余付费 API 额度、Staging 网页验收和是否启用真实搜索；在此之前不恢复付费调用、不打开云端 Agent。
+
+## 完整本地回归与费用边界（2026-09-09）
+
+- 前端行为测试 196/196 通过。完整 Python 测试集为 1,196 通过、1 失败、14 个子测试通过；唯一失败是既有 `tests/test_spot_ledger_sync.py::test_official_json_source_marks_duplicate_goods_match_as_ambiguous`，在 `origin/staging` 基线 0504e2f 上单独复现相同结果。本轮 Agent V2 diff 未触及 spot ledger 模块，因此该问题单独列为既有项目发布阻断项，不归因于 Agent V2。
+- Agent V2 定向套件、fixture replay、题库 definition、offline behavior 和 facts/scope 定向回归仍全部通过；本轮候选没有新的 Agent 代码失败。
+- 本地和前端测试费用为 0。历史受控 DeepSeek 联调记录为 18 次模型调用、102,365 tokens，保守实际费用约 0.620335 元；当次预留上限合计约 2.713625 元。真实模型测试必须按固定上限执行，Brave 与企微不纳入第一批付费 smoke。
+- 当前不自动恢复付费调用。若继续 C1-REAL-SMOKE，建议先用 5 个冻结场景及 3 个同义问法，设置最多 3 元的本轮费用闸门；通过后再依据实际用量决定是否运行 44+12 题真实模型集。任何金额上限需要在执行前明确。
