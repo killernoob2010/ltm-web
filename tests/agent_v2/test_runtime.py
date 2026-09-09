@@ -71,3 +71,46 @@ def test_supervisor_retries_an_agent_start_failure_without_taking_web_down():
 
     assert supervisor.run() == 0
     assert attempts == {"web": 1, "agent": 3}
+
+
+def test_supervisor_restarts_exited_agents_then_preserves_web_at_retry_limit():
+    from app.trading_agent.runtime import ProcessSupervisor
+
+    class Process:
+        def __init__(self, exited=False):
+            self.exited = exited
+            self.terminated = False
+
+        def poll(self):
+            return 1 if self.exited or self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    web = Process()
+    attempts = []
+    iterations = []
+    supervisor = None
+
+    def popen(command, env):
+        if command[-1] == "backend.app.trading_agent.worker":
+            attempts.append(1)
+            return Process(exited=True)
+        return web
+
+    def sleep(_):
+        assert not web.terminated
+        iterations.append(1)
+        if len(iterations) == 6:
+            supervisor.request_stop()
+
+    supervisor = ProcessSupervisor(
+        SupervisorConfig(agent_enabled=True, web_port="8000", max_agent_restarts=2, poll_seconds=0, restart_delays=(0,)),
+        popen=popen, sleep=sleep, clock=lambda: 0.0, log=lambda _: None,
+    )
+    assert supervisor.run() == 0
+    assert len(attempts) == 3  # Initial start and two bounded restarts.
+    assert web.terminated

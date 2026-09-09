@@ -51,3 +51,11 @@
 - 自动化证据：新增测试先复现未配置用户名时工具拒绝 503、Web 拒绝 404；修复后权限/Web/企微/菜单回归 47 passed，7 项依赖弃用警告；编译及 git diff --check 通过。两个早期测试命令选到 Python 3.9/缺 pytest 的运行时，已切回本项目 .runtime/agent-v2 Python 3.12 完成回归。
 - 云配置证据：在测试服务 Environment UI 添加并回读 DEEPSEEK_API_BASE=https://api.deepseek.com、DEEPSEEK_MODEL=deepseek-v4-flash、AGENT_V2_ENV=staging、AGENT_V2_ENABLED=false、AGENT_V2_WECOM_ENABLED=false，使用 Save only；不配置可选试点用户名，不访问现有密钥值。下一次 Staging 部署加载以上配置。
 - 发布前检查：AUTH-02 与 CONFIG-02 的修改均在批准范围，权限数据/业务计算/数据库/生产未变更；真实多用户与模型验收仍未完成，不据此开启 Agent。
+
+- 发布回读：8646ab5 在 ltm-web-staging 为 Live；登录页、标题、静态脚本 URL 已回读，未进行登录业务验收。完成 AUTH-02 代码/自动化与 CONFIG-02 非密钥配置，下一步用户直接配置 DeepSeek key，我方继续数据库准备和真实联调。
+
+## S4 接入检查续行（2026-09-09）
+- 用户已保存 DeepSeek key。Render 测试服务 UI 确认 DEEPSEEK_API_KEY 名称存在，8646ab5 为 Live；不打开密钥值，不据此声称真实 API 调用通过。
+- Supabase 工具确认测试项目 ACTIVE_HEALTHY；六张 agent_v2 附表仍不存在。当前受控本地 DATABASE_URL 不匹配测试项目，未用于连接、备份或迁移；不输出连接值。
+- S1 修复：发现进程登记使用 Agent 大写、退出检测使用 agent 小写，导致已启动后退出的 worker 不重启。范围限 runtime.py 键名归一化和退出后有界重启行为测试，不改业务、数据库、启用开关或预算。回滚点 d004022。
+- 新增测试先复现进程仅启动 1 次未重试，修复后监督器、资源保护、worker 回归 9 passed。真实共载与数据库恢复验证仍未完成。
