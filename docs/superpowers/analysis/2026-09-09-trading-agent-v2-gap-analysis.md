@@ -52,3 +52,10 @@
 可复用的数据及计算代码已足够支撑 V2 详细设计；主要新增为受控工具适配、字段语义、执行循环、公开研究与数据出口、企微及 Eval。不能仅接上 MCP 就宣称全部分析可用。
 
 当前无需用户再确认组别或风险阈值；不补造标签、不预设风险等级。账户运行配置或计算覆盖存在真实阻塞时，再提出具体问题。
+
+## 6. 技术合同补充盘点
+
+- `permissions.get_data_scope_filter` 当前返回all，EffectiveFactFilters尚无account_ids；T1必须补SQL级宏源范围，不能仅复用模块权限。
+- `main.py` Agent菜单当前受V1开关控制；T9补V2开关及试点过滤，防止新API已可用但页面无入口。
+- 新增query_close_facts/summarize_facts保留平仓盈亏与灵活成交统计能力；仅新增持仓工具不足以覆盖原能力。
+- 本轮已核对官方DeepSeek工具调用、MCP Python SDK和企业微信Python SDK；只读PyPI元数据，不代表安装兼容、现有key、配对或常驻环境已就绪。详见技术合同第10节。
