@@ -10,6 +10,7 @@ from .. import db
 from ..trading_management import trading_management_current_user
 from ..permissions import require_permission
 from . import catalog, store, tools
+from .auth import pilot_allows_user
 from .contracts import StrictModel
 
 router = APIRouter(prefix="/trading-agent-v2")
@@ -33,7 +34,7 @@ def is_enabled() -> bool:
 def _require(user: dict, *, schema=False):
     if not is_enabled():
         raise HTTPException(404, "Trading Agent V2 未启用")
-    if str(user.get("username") or "") != os.environ.get("AGENT_V2_PILOT_USERNAME", "wangjingze"):
+    if not pilot_allows_user(user):
         raise HTTPException(404, "Trading Agent V2 不可用")
     require_permission(user, "closing_review.agent", "view")
     if schema:

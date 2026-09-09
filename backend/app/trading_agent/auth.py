@@ -15,15 +15,18 @@ def require_account_scope(filters: EffectiveFactFilters) -> tuple[int, ...]:
     return filters.account_ids
 
 
-def _live_user(user_id: int) -> dict:
+def pilot_allows_user(user: dict) -> bool:
+    """Optional rollout restriction; application permissions remain mandatory."""
     pilot = os.environ.get("AGENT_V2_PILOT_USERNAME", "").strip()
-    if not pilot:
-        raise HTTPException(503, "尚未配置试点用户")
+    return not pilot or str(user.get("username") or "") == pilot
+
+
+def _live_user(user_id: int) -> dict:
     with db.connect() as conn:
         rows = db._exec(conn.cursor(),
-            "SELECT id, username, role, status FROM users WHERE username = ? AND status = '启用'",
-            (pilot,)).fetchall()
-    if len(rows) != 1 or int(rows[0]["id"]) != user_id:
+            "SELECT id, username, role, status FROM users WHERE id = ? AND status = '启用'",
+            (user_id,)).fetchall()
+    if len(rows) != 1 or not pilot_allows_user(dict(rows[0])):
         raise HTTPException(403, "没有访问权限")
     return dict(rows[0])
 

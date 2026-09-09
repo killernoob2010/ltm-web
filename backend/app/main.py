@@ -1552,8 +1552,7 @@ def me(user=Depends(current_user)):
 def modules(user=Depends(current_user)):
     v2_agent_visible = (
         trading_agent_v2_routes.is_enabled()
-        and str(user.get("username") or "")
-        == os.environ.get("AGENT_V2_PILOT_USERNAME", "wangjingze")
+        and trading_agent_v2_routes.pilot_allows_user(user)
     )
     module_rows = [
         row

@@ -47,3 +47,13 @@
 
 - 未执行 Staging 数据库迁移、真实 DeepSeek/Brave 请求或企微常驻连接；没有读取或写入任何真实凭据、业务数据或生产环境。迁移脚本默认为 dry-run，`--apply` 仍要求 Staging 映射、备份及恢复核验凭证。
 - 需要进入 S4 时，先在 Staging 核对数据库映射并完成六张附表迁移和 RLS/grants 回读，再做固定快照核对、本人企微双向问答、至少一条开放组合问题和一条联网推论，最后再按现有发布流程观察共载。生产、群开放和第三方 Agent 仍不在本轮范围。
+
+## 配置与访问范围修订（2026-09-09，用户已授权）
+
+- AUTH-02 / Gate A：取消必须逐人填写试点用户名，默认沿用系统账号和现有 Agent/交易数据权限；保留可选单用户试点开关供回退。范围仅菜单、V2 Web 入口和工具身份复验，以及对应测试与配置文档，不修改业务计算、用户权限数据或群授权。
+- CONFIG-02：仅为 Render ltm-web-staging 添加非密钥基础配置，Agent 与企微开关保持关闭；API key 由用户直接配置，不新增付费服务、不修改 Production。
+- 验收：未配置名字时多名有权限用户可进入，各自会话隔离；无权限/停用用户拒绝；显式试点配置仍有效。定向权限、Web、企微回归；云端回读配置名称和已知非密钥值。真实问答仍受数据库迁移和密钥未配置限制。
+- 回滚点：07bf339；下一步先复现未配置名字被拒绝，再修复并验证、部署测试版。
+- 自动化证据：新增测试先复现未配置用户名时工具拒绝 503、Web 拒绝 404；修复后权限/Web/企微/菜单回归 47 passed，7 项依赖弃用警告；编译及 git diff --check 通过。两个早期测试命令选到 Python 3.9/缺 pytest 的运行时，已切回本项目 .runtime/agent-v2 Python 3.12 完成回归。
+- 云配置证据：在测试服务 Environment UI 添加并回读 DEEPSEEK_API_BASE=https://api.deepseek.com、DEEPSEEK_MODEL=deepseek-v4-flash、AGENT_V2_ENV=staging、AGENT_V2_ENABLED=false、AGENT_V2_WECOM_ENABLED=false，使用 Save only；不配置可选试点用户名，不访问现有密钥值。下一次 Staging 部署加载以上配置。
+- 发布前检查：AUTH-02 与 CONFIG-02 的修改均在批准范围，权限数据/业务计算/数据库/生产未变更；真实多用户与模型验收仍未完成，不据此开启 Agent。

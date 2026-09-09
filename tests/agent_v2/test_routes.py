@@ -48,3 +48,14 @@ def test_message_contract_rejects_unknown_fields_and_pair_code_is_not_cached(rou
     pair = client.post("/trading-agent-v2/wecom/pair-code")
     assert pair.status_code == 200
     assert pair.headers["cache-control"] == "no-store"
+
+
+def test_web_and_pairing_use_system_permission_without_named_pilot(route_client, monkeypatch):
+    client, uid = route_client
+    monkeypatch.delenv("AGENT_V2_PILOT_USERNAME", raising=False)
+    assert client.get("/trading-agent-v2/capabilities").status_code == 200
+    assert client.post("/trading-agent-v2/wecom/pair-code").status_code == 200
+    with db.connect() as conn:
+        conn.execute("UPDATE module_permissions SET can_view=0 WHERE user_id=? AND module_code='closing_review_agent'", (uid,))
+    assert client.get("/trading-agent-v2/capabilities").status_code == 403
+    assert client.post("/trading-agent-v2/wecom/pair-code").status_code == 403

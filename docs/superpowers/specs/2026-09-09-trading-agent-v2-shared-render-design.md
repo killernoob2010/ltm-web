@@ -4,7 +4,9 @@
 
 ## 1. 决策与文档关系
 
-首期复用正式系统现有 Render `ltm-web` 付费实例，在同一个服务容器内运行 Web 和独立 Agent 后台进程。DeepSeek 通过 API 提供模型能力，企微为本人使用入口，MCP 连接受限业务工具。暂不新建付费 Worker、不升配、不增加实例。
+首期复用正式系统现有 Render `ltm-web` 付费实例，在同一个服务容器内运行 Web 和独立 Agent 后台进程。DeepSeek 通过 API 提供模型能力，企微为已配对系统用户的私聊入口，MCP 连接受限业务工具。暂不新建付费 Worker、不升配、不增加实例。
+
+访问范围修订：按用户最新要求，默认取消用户名白名单，沿用系统启用账号、Agent 权限和交易数据权限。企微每位用户首次自行绑定系统身份，无需管理员逐个添加环境变量；群共享访问另行实现。生产启用范围仍在发布时确认。
 
 本文件是 V2.1 总体设计入口，替代旧文档中“另找常驻主机”作为默认上线路径的安排。原 [V2 业务设计](2026-09-09-trading-agent-v2-upgrade-design.md) 的范围、数据口径和通用 Eval 要求，以及 [技术合同](2026-09-09-trading-agent-v2-technical-contracts.md) 的工具 Schema、权限、持久化和模型协议继续有效；涉及部署拓扑、依赖安装、资源保护、验收顺序时以本文为准。[新版实施计划](../plans/2026-09-09-trading-agent-v2-shared-render-implementation.md) 接续原 T0–T10，不把本地测试等同于真实接入完成。
 
@@ -40,7 +42,7 @@
 
 ```mermaid
 flowchart TD
-    U[本人企微私聊] --> A
+    U[已授权用户企微私聊] --> A
     W[现有网页入口] --> Q
     subgraph R[现有 Render ltm-web：1 CPU / 2 GB]
       S[启动与进程管理] --> WEB[Web 进程]
