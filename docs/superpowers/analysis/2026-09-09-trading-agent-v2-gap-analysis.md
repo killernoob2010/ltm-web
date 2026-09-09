@@ -10,7 +10,8 @@
 | 最新有效持仓 | 同文件：query_effective_positions、infer_positions_from_fills | 结算基线、后续成交与 FIFO 已有实现；不是任意历史时点查询承诺 |
 | 浮盈亏 | `backend/app/trading_valuation.py`：calculate_live_position_floating_pnl | 与可含剩余开仓费用的另一估值函数有区别，适配器须复用正确路径 |
 | 单合约及持仓 Greeks | 同文件：calculate_black76_option_metrics、calculate_option_position_valuation、calculate_option_display_greeks | 已有单位指标、数量乘数加权敞口及展示转换；不能混用 |
-| 页面持仓估值 | `backend/app/trading_management.py`：/facts/positions/valuation、Greeks exposure 汇总 | 真实 Agent 接入前固定样本回读，确认账户、最新持仓及所有品种覆盖 |
+| 全量事实持仓估值 | `backend/app/trading_management.py`：query_fact_position_valuation、/facts/positions/valuation | 已接统一有效持仓与浮盈亏；该路径尚未输出完整 Greeks |
+| 已归类期权持仓估值 | 同文件：业务 positions 路径筛选 assignment_status == classified，调用 calculate_option_position_valuation | 有 Greeks 汇总，但不是全量 WH＋结算有效持仓风险结果，不能直接作为 V2 全量数据源 |
 | 原 Agent 会话与幂等 | `backend/app/closing_review_agent.py`：process_message；closing_review_agent_store.py | 可复用存储思想，需核实 V2 数据结构兼容性 |
 | 模型网关 | `backend/app/closing_review_model_gateway.py` | 当前 resolve_intent，不是自由工具执行循环 |
 | 日常摘要及调度 | closing_trading_review.py、closing_review_scheduler.py | 保持已有确定性任务，不扩大通知 |
@@ -27,12 +28,15 @@
 8. **MCP/企微/搜索**：本次对 backend/app 与 requirements 的定向搜索未发现相关接入证据；按新增适配规划，不推断仓库外没有其他服务。
 9. **工具循环和推论**：旧网关、投影器、固定模板需增加兼容的 V2 路径；不删除原标准流程与测试。
 10. **授权与数据出口**：新增企微身份映射、群共享范围、搜索脱敏出口、DeepSeek 最小上下文和缓存权限隔离。
+11. **全量 Greeks 前置服务**：将全量有效持仓接入已有计算函数，未归类不能遗漏；来源协调与去重沿用事实层，已平仓交易不计当前敞口。只补共享业务计算链路，不要求先改造期权台账页面或录入归类功能。用户已确认此修订。
+12. **Eval 结构**：以 Agent＋Harness 通用能力矩阵为主线，工具正确性和端到端答案共同验收。业务示例仅作测试载体，不固定题目、措辞或工具调用序列；加入新组合、留出问题、异常变体和实际使用回归。用户已确认此修订。
 
 ## 3. 实施前工程核验清单
 
 - 宏源唯一账户映射及现有有效权限如何在工具服务中执行。
 - 最新持仓+估值同口径固定样本，全量行数、合计和缺行情状态。
 - 实际合约清单对应到期、乘数、行情及 Greeks 覆盖；不为通过测试改数据。
+- 对比未归类及已归类期权在统一全量结果中的覆盖，核对当前持仓数量、方向与敞口；同一输入下旧计算与新服务公式一致，不继承旧台账的子集范围。
 - 是否已有可调用情景重定价入口；本次仅确认基础定价函数，未确认业务情景工具。
 - 企微身份绑定与消息通道、模型工具调用、MCP 连接及公开检索供应商的当前官方合同；实施时再核验，不依据记忆写 API。
 - 旧权限、幂等、标准回答、调度的回归影响。
@@ -41,7 +45,7 @@
 
 `tests/test_trading_valuation.py` 包含单合约样本、持仓加权、卖方符号、展示单位、同快照行情案例；`tests/test_trading_effective_facts.py` 覆盖持仓推算；`tests/test_trading_management.py` 包含期权估值；`tests/test_closing_review_*` 包含原 Agent 相关回归。
 
-本轮未运行测试，不宣称这些测试当前通过。下一阶段选择对应固定样本与新增 Eval，并以真实工具、真实模型及企微路径补齐验收。
+本轮未运行测试，不宣称这些测试当前通过。下一阶段选择对应固定样本与通用能力 Eval，并以真实工具、真实模型及企微路径补齐验收。现有 Greeks 等业务测试不代替通用 Agent＋Harness 评估，通用执行通过也不代替计算和业务结果正确性。
 
 ## 5. 结论与本轮边界
 
