@@ -101,3 +101,11 @@
 - 下一步先用已保留的脱敏失败结构改进最终答案合同反馈和确定性复测，再评估剩余额度内的实时联调；另需云端同实例时延、实时行情/Greeks、企微和联网验证。Production 未改动，无任何交易动作。
 
 - 发布回读：0504e2f 在 Render Staging 为 Live，网站登录入口及标题正常；Agent仍关闭，未完成登录后的业务问答验收。临时key/原始草稿已删除，本地恢复实例已停止；云端本轮唯一残留过期测试任务已通过既有恢复规则收敛。
+
+## C0 设计收口（2026-09-09）
+
+- 只读核对了 effective facts、Agent facts、公开研究、答案渲染和 44+12 题库，形成 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-c0-design-closeout.md`；本阶段没有调用真实模型、联网、写 Staging/Production 或修改业务代码。
+- 来源时点结论：结算快照只有业务观察日，WH6 有单快照 `snapshot_timestamp`，推导持仓混合多个来源；`captured_at` 是读取保存时间，当前 effective-facts 的 `as_of_time` 是查询时钟，不能称为数据截至时间。整体混源时 `data_as_of` 必须保持 `null`，另给分源覆盖和新鲜度。
+- 公开来源结论：`search_public`/`read_public` 已有结果引用和父结果，但最终答案仍跳过 URL，且 `store.load_result` 尚未以当前 `task_id` 强制绑定；C1 需新增 `public_search_ref`/`public_read_ref` 解析和任务/父链校验，不能靠关键词黑名单宣称解决推论语义。
+- Eval 结论：44 个 regression（37 个 fixture 标签）和 12 个 holdout 只有问题、工具白名单和 oracle 字段，没有数据快照、哈希、工具回放或数值预期；继续保持 definition-only，C1 先冻结脱敏 fixture 和 oracle，再申请真实模型验收。
+- C1 最小顺序已在 C0 记录中固定为 provenance、公开引用、Eval fixture、真实 smoke；任何新权限、底层事实算法、秘密或付费边界均停回主 Agent。当前不宣布业务 Agent 可用。

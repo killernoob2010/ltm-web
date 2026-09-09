@@ -4,7 +4,7 @@
 - A/B 本地修复已完成：答案校验返回安全 code/path/message；一次有限纠错保留失败草稿但不持久化；修复回合不调用新工具；存储/内部异常不伪装成模型格式错误；内部引用路径统一核验；Eval 分为 definition 与 synthetic offline-behavior。
 - 新鲜证据：./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q 为 121 passed、4 个依赖弃用警告；题库 definition regression 44/44、holdout 12/12；offline-behavior 8/8 passed，real_model_evaluated=false、release_readiness=not_evaluated。
 - 业务证据边界：以上均为本地合成/受控行为，不能证明真实 DeepSeek 最终问答、当前实时持仓、云端同实例时延、网页登录后业务问答、企微、联网、真实行情/Greeks 或持续运行。
-- 已知限制：来源 data_as_of、备份与实时的统一水位仍需 C0 设计；推论段落跨证据约束和公开来源登记尚未完成；旧 44+12 题尚未送入真实模型。
-- 默认下一步：先做 C0 三项设计收口（来源时点、跨段证据/公开来源、真实行为 Eval），再由主 Agent决定是否申请新的 Staging/真实模型验收。不得自动恢复付费调用、开启 Agent、推送或进入 Production。
+- 已知限制：C0 已确认混合来源不能生成统一 data_as_of；来源观察结构、公开引用任务绑定和跨段落推论检查尚未实现；旧 44+12 题尚未送入真实模型。
+- 默认下一步：C0 三项设计收口已完成，见 `docs/superpowers/analysis/2026-09-09-trading-agent-v2-c0-design-closeout.md`；下一步只能在确认来源字段最小实现、公开引用任务绑定和冻结 fixture 后进入 C1。不得自动恢复付费调用、开启 Agent、推送或进入 Production。
 - 关键文件：docs/superpowers/plans/2026-09-09-agent-v2-luna-repair-taskbook.md、docs/superpowers/analysis/2026-09-09-trading-agent-v2-execution.md、evals/trading_agent_v2/README.md。
 - 禁止：读取或输出 .runtime 凭据；改 Production/正式交易数据；执行任何真实交易或资金操作；把本批离线通过包装成 Agent 已可用。
