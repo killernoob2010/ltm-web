@@ -77,7 +77,20 @@
 - 本地受保护证据：.runtime/backups/20260909-175221/{full.dump,manifest.json,receipt.json,restore.log}、.runtime/staging-migration-verification.json、.runtime/restored-agent-flow-check.json；均不提交 Git。
 - 下一步：取得真实 API 测试费用授权后继续模型联调；企微凭据与消息路径尚未接入。代码版本仍为 dd39ee6，Production 未修改。
 
+## A/B 本地答案纠错与 Eval 修复（2026-09-09）
+
+- 按 docs/superpowers/plans/2026-09-09-agent-v2-luna-repair-taskbook.md 执行 A、B 批，工作树为 agent-v2-design-20260909，本地提交 5ad33cb；未推送、未部署、未付费、未操作 Production，Agent/企微开关未改变。
+- A1/A4：answer.py 新增受控 AnswerIssue/AnswerValidationError，限制输入长度，拒绝重复字段、NaN/Infinity、代码围栏和额外字段；校验错误只返回固定 code/path/message，不回显模型输入。内部事实引用统一限制为已登记的两种指标路径；越权、过期、无效指标和残留占位符不交付。原有授权引用、日期时刻和业务数字规则保留。
+- A2：prompts.py 新增单次修复消息构造，失败草稿仅作为 assistant 消息保留且长度受限，具体校验问题作为安全 system 反馈；提示明确 captured_at 不是 data_as_of，未知截至时间不得补造。
+- A3：harness.py 只对预期答案校验错误进行一次修复机会；修复回合不执行新工具，修复耗尽、超时或模型失败均以部分完成收尾；存储和意外运行时异常不会伪装成答案格式错误。答案校验失败时不写入原始草稿或内部异常。
+- B1：run_agent_v2_evals.py 将原“软分固定为满分”的结构检查改为 definition；regression 44/44、holdout 12/12 只代表题库定义完整，不再输出 hard/soft/release 伪评分。
+- B2：新增固定的 synthetic offline-behavior manifest，实际启动白名单 pytest nodeid 并解析 JUnit；本次 8/8 passed，输出 real_model_evaluated=false、release_readiness=not_evaluated。
+- B3：新增捕获时间与未知 data_as_of 分离的回归；没有从查询时间、备份时间或捕获时间伪造数据截至时间。
+- 新鲜本地证据：./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q 为 121 passed、4 个依赖弃用警告；系统 python 命令不可用，项目环境 compileall 与 git diff --check 需在最终审查中单独执行。
+- 本批仍不能证明真实 DeepSeek 最终回答、云端同实例时延、网页登录后问答、企微、联网、实时行情/Greeks 或持续运行。C0 仍需单独收口来源时点、跨段证据及真实行为 Eval；不以 121 项或 8 项合成行为测试宣布业务可用。
+
 ## S4 真实 DeepSeek 有限额联调（2026-09-09）
+
 - 用户明确允许本轮使用最多 1 元已有 API 余额，不充值/订阅。通过已登录 Render 页面复制测试服务模型 key，仅存放 .runtime 临时保护文件，不输出、不提交；测试结束删除临时 key。云端 Agent 与企微开关仍关闭。
 - 首次真实模型连接成功，响应“连接成功”，用量 13 tokens。随后真实 DeepSeek + loopback MCP + Staging 查询失败；本机至远端的一次完整持仓快照耗时实测 46 秒，超过15秒工具期限。不得归因为云端同实例运行同样耗时，也未直接扩大生产超时。
 - 已修复确认问题：MCP 客户端不再继承系统代理；请求超时交由 MCP SDK 管理，HTTP 流不以15秒读取超时取消调用方，AsyncExitStack 统一清理。新增无效代理与慢工具后仍可复用会话的真实本地 MCP 测试。
