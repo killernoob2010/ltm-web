@@ -1,5 +1,40 @@
+const AUTH_TOKEN_STORAGE_KEY = "ltm.auth.token";
+
+function readStoredAuthToken() {
+  try {
+    return typeof sessionStorage === "undefined" ? "" : sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storeAuthToken(token) {
+  try {
+    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Private browsing or a restricted storage context should not block login.
+  }
+}
+
+function clearStoredAuthToken() {
+  try {
+    if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    // Private browsing or a restricted storage context should not block logout.
+  }
+}
+
+function persistAuthPayload(payload) {
+  const guest = payload?.user?.role === "guest" || payload?.user?.is_guest;
+  if (guest || !payload?.token) {
+    clearStoredAuthToken();
+    return;
+  }
+  storeAuthToken(payload.token);
+}
+
 const state = {
-  token: "",
+  token: readStoredAuthToken(),
   user: null,
   modules: [],
   activeModule: "info_summary",
@@ -751,7 +786,6 @@ async function activateModule(code, subName, subView = "") {
 }
 
 async function bootstrap() {
-  localStorage.removeItem("token");
   if (!state.token) {
     showLogin();
     return;
@@ -761,7 +795,7 @@ async function bootstrap() {
     state.modules = await api("/api/auth/modules");
     installOrderVesselOverviewModule();
   } catch {
-    localStorage.removeItem("token");
+    clearStoredAuthToken();
     state.token = "";
     showLogin();
     return;
@@ -2024,6 +2058,7 @@ loginForm.addEventListener("submit", async (event) => {
       }),
     });
     state.token = payload.token;
+    persistAuthPayload(payload);
     await bootstrap();
   } catch (error) {
     loginError.textContent = error.message;
@@ -2038,6 +2073,7 @@ guestLoginBtn.addEventListener("click", async () => {
   try {
     const payload = await api("/api/auth/guest-login", { method: "POST" });
     state.token = payload.token;
+    persistAuthPayload(payload);
     await bootstrap();
   } catch (error) {
     loginError.textContent = error.message;
@@ -2048,7 +2084,7 @@ guestLoginBtn.addEventListener("click", async () => {
 
 document.querySelector("#logoutBtn").addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST" }).catch(() => {});
-  localStorage.removeItem("token");
+  clearStoredAuthToken();
   state.token = "";
   stopAlertNotifications();
   showLogin();

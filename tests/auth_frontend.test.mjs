@@ -16,6 +16,10 @@ test("login page exposes real guest login without prefilled admin credentials", 
   assert.match(appJs, /currentUser\.textContent = isGuest\(\) \? "访客"/);
   assert.doesNotMatch(appJs, /localStorage\.getItem\("token"\)/);
   assert.doesNotMatch(appJs, /localStorage\.setItem\("token"/);
+  assert.match(appJs, /const AUTH_TOKEN_STORAGE_KEY = "ltm\.auth\.token"/);
+  assert.match(appJs, /sessionStorage\.getItem\(AUTH_TOKEN_STORAGE_KEY\)/);
+  assert.match(appJs, /sessionStorage\.setItem\(AUTH_TOKEN_STORAGE_KEY/);
+  assert.match(appJs, /sessionStorage\.removeItem\(AUTH_TOKEN_STORAGE_KEY\)/);
 });
 
 test("user management exposes account lifecycle permission levels and password self-service", () => {
