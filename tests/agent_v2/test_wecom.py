@@ -83,3 +83,55 @@ def test_bot_lease_prevents_two_workers_from_sharing_one_connection(tmp_path):
         first.release()
     second.acquire()
     second.release()
+
+
+def test_bot_lease_uses_postgres_session_advisory_lock(monkeypatch):
+    calls = []
+    held = set()
+
+    class Cursor:
+        def __init__(self):
+            self.row = None
+
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+            key = params[0]
+            if "pg_try_advisory_lock" in sql:
+                self.row = {"locked": key not in held}
+                if self.row["locked"]:
+                    held.add(key)
+            elif "pg_advisory_unlock" in sql:
+                held.discard(key)
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    class Context:
+        def __init__(self):
+            self.connection = Connection()
+
+        def __enter__(self):
+            return self.connection
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(wecom.db, "_is_pg", lambda: True)
+    monkeypatch.setattr(wecom.db, "connect", lambda: Context())
+    first = wecom.BotLease("synthetic-bot")
+    second = wecom.BotLease("synthetic-bot")
+
+    first.acquire()
+    with pytest.raises(RuntimeError):
+        second.acquire()
+    first.release()
+    second.acquire()
+    second.release()
+
+    sql = [entry[0] for entry in calls]
+    assert any("pg_try_advisory_lock" in statement for statement in sql)
+    assert any("pg_advisory_unlock" in statement for statement in sql)

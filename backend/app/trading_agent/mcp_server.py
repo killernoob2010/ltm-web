@@ -99,15 +99,15 @@ def build_mcp_server() -> MCPServer:
 
     def query_trade_facts(start_date: str, end_date: str, asset_type: str = "all", contracts: list[str] | None = None,
                           direction: str = "all", classification: str = "all") -> tools.ToolResponse:
-        return _response("query_trade_facts", locals())
+        return _response("query_trade_facts", {**locals(), "contracts": contracts or []})
 
     def query_close_facts(start_date: str, end_date: str, asset_type: str = "all", contracts: list[str] | None = None,
                           direction: str = "all", classification: str = "all") -> tools.ToolResponse:
-        return _response("query_close_facts", locals())
+        return _response("query_close_facts", {**locals(), "contracts": contracts or []})
 
     def query_positions(as_of_mode: str = "latest", as_of_date: str | None = None, asset_type: str = "all",
                         contracts: list[str] | None = None, direction: str = "all", classification: str = "all") -> tools.ToolResponse:
-        return _response("query_positions", locals())
+        return _response("query_positions", {**locals(), "contracts": contracts or []})
 
     def summarize_positions(result_ref: str, group_by: list[str], metrics: list[str], order_by: str | None = None,
                             descending: bool = True) -> tools.ToolResponse:
@@ -118,7 +118,7 @@ def build_mcp_server() -> MCPServer:
         return _response("summarize_facts", locals())
 
     def read_result_page(result_ref: str, page: int, page_size: int = 20, fields: list[str] | None = None) -> tools.ToolResponse:
-        return _response("read_result_page", locals())
+        return _response("read_result_page", {**locals(), "fields": fields or []})
 
     def compare_results(left_ref: str, right_ref: str, metrics: list[str]) -> tools.ToolResponse:
         return _response("compare_results", locals())

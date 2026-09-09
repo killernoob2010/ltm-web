@@ -8,9 +8,9 @@
 - 验收：底层事实/估值回归、账户隔离、真实本地 MCP、持久任务及预算、通用能力 Eval；真实模型和企微另需实际接入证据。
 - 排除：生产发布、生产数据、实际交易、期权台账页面重构、群开放、付费购买、其他内部业务模块。
 - 回滚：本分支新增实现可回退至 bff68a0；数据库尚无迁移。后续迁移单独备份与验证。
-- 当前阶段：T0–T10 本地实现、回归和结构性 Eval 已完成；T11 需真实 Staging 接入条件。
+- 当前阶段：T0–T10 本地实现、回归和结构性 Eval，以及 V2.1 S1–S3 的同实例本地适配已完成；S4–S7 需真实 Staging 接入条件。
 - 外部前提：用户已确认试点用户名 wangjingze；获准模型/搜索配置和企微沙盒尚未核验，不影响本地实现。
-- T11 预检（2026-09-09）：fetch 后 `origin/staging` 仍为 e343d765b1e02bf793c5aa942b99cbc5db4ad8db；当前隔离 shell 未注入 Staging 数据库、DeepSeek、Brave 或企微变量，仓库 `render.yaml` 仅定义 Web 服务，尚无常驻 worker 映射；未读取 `.env` 或任何密钥值。
+- T11 预检（2026-09-09）：fetch 后 `origin/staging` 仍为 e343d765b1e02bf793c5aa942b99cbc5db4ad8db；当前隔离 shell 未注入 Staging 数据库、DeepSeek、Brave 或企微变量，仓库 `render.yaml` 仍只声明 Web 服务，Agent 由 `render_start.sh` 的同实例监督器按开关启动；未读取 `.env` 或任何密钥值。
 
 ## 本地验证进度
 
@@ -30,7 +30,14 @@
 - T9 已完成本地边界：网页 V2 能力探测失败自动回退 V1；企微首版只接受已配对本人私聊文本，配对码一次性且不写业务聊天，重复消息不重放终态答案；官方 SDK 连接由独立 worker 管理，加入单主机 bot 锁，SDK 自带断线重连。群、图片、附件和主动群推送仍关闭。
 - T10 已完成结构性门禁：回归 44 例、留出 12 例，每项通用能力均有覆盖；确定性套件 regression 与 holdout 均为 hard failures=0、min soft score=10、release_pass=true。该套件验证合同和门禁，不等同真实 DeepSeek/企微答案验收。
 
+## V2.1 同实例本地适配（S1–S3）
+
+- 启动与依赖：`render_start.sh` 进入小型监督器，Web 始终是可用性边界，Agent 仅在 `AGENT_V2_ENABLED=true` 时启动；根 `requirements.txt` 已加入 MCP 2.2.0 与企微 SDK 1.0.2，独立 worker 锁保持可用。
+- 资源与执行：Agent 初始启动/异常退出采用有限退避重启；任务总期限、单次调用期限、工具/搜索/模型预算、队列上限及过期终态已实现。无法读取可靠 cgroup 指标时停止取新任务，压力恢复采用低阈值和稳定窗口。
+- 云端竞争与默认值：PostgreSQL 使用专用会话 advisory lock 按环境与 bot 单主占用；SQLite 保留本地文件锁。MCP 可选列表参数统一为空列表，避免模型省略参数时进入无效请求。
+- 新鲜回归：目标 Python 回归 220 项、前端回归 38 项通过；`pip check`、Python 编译、启动脚本语法和差异检查通过。该证据仍限本地/合成数据，未替代 Render、PostgreSQL、DeepSeek 或企微真实验收。
+
 ## 当前未完成与下一步
 
 - 未执行 Staging 数据库迁移、真实 DeepSeek/Brave 请求或企微常驻连接；没有读取或写入任何真实凭据、业务数据或生产环境。迁移脚本默认为 dry-run，`--apply` 仍要求 Staging 映射、备份及恢复核验凭证。
-- 需要进入 T11 时，先在 Staging 完成六张附表迁移和 RLS/grants 回读，再做固定快照核对、本人企微双向问答、至少一条开放组合问题和一条联网推论，最后再按现有发布流程推送 Staging。生产、群开放和第三方 Agent 仍不在本轮范围。
+- 需要进入 S4 时，先在 Staging 核对数据库映射并完成六张附表迁移和 RLS/grants 回读，再做固定快照核对、本人企微双向问答、至少一条开放组合问题和一条联网推论，最后再按现有发布流程观察共载。生产、群开放和第三方 Agent 仍不在本轮范围。

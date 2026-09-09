@@ -1,4 +1,6 @@
-# Separate worker environment; do not install into the Web service environment.
+# Local/standalone worker lock input.  The shared Render service installs the
+# two Agent runtime pins in requirements.txt as well, because Web and Agent
+# intentionally run in one service environment there.
 -r requirements.txt
 mcp==2.2.0
 wecom-aibot-python-sdk==1.0.2

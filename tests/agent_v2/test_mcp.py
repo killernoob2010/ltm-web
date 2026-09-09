@@ -16,6 +16,22 @@ def test_mcp_accepts_bracketed_ipv6_loopback_host_only():
     assert mcp_server._loopback_host("127.0.0.2:8766") is False
 
 
+def test_mcp_wrappers_normalize_omitted_optional_lists(monkeypatch):
+    captured = []
+
+    def response(name, args):
+        captured.append((name, args))
+        return mcp_server.tools.ToolResponse(status="complete", data={})
+
+    monkeypatch.setattr(mcp_server, "_response", response)
+    server = mcp_server.build_mcp_server()
+    server._tool_manager._tools["query_positions"].fn()
+    server._tool_manager._tools["query_trade_facts"].fn("2026-01-01", "2026-01-02")
+
+    assert captured[0][1]["contracts"] == []
+    assert captured[1][1]["contracts"] == []
+
+
 @pytest.mark.asyncio
 async def test_mcp_loopback_requires_live_grant_and_calls_describe(queued):
     task_id = store.claim_next("mcp-worker")

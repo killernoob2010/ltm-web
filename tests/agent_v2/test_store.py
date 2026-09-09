@@ -97,3 +97,22 @@ def test_foreign_conversation_cannot_read_result(queued):
     with pytest.raises(HTTPException) as error:
         store.load_result(replace(principal, conversation_id=other_cid), ref)
     assert error.value.status_code == 404
+
+
+def test_queue_admission_caps_pending_tasks(queued):
+    uid, cid, _ = queued
+    store.enqueue({"id": uid}, cid, str(uuid4()), "第二个问题", "web")
+    store.enqueue({"id": uid}, cid, str(uuid4()), "第三个问题", "web")
+
+    with pytest.raises(store.QueueFull):
+        store.enqueue({"id": uid}, cid, str(uuid4()), "第四个问题", "web")
+
+
+def test_expired_queued_tasks_are_failed_instead_of_claimed(queued):
+    task = queued[2]
+    with db.connect() as conn:
+        conn.execute("UPDATE agent_v2_runs SET created_at='2000-01-01T00:00:00+00:00' WHERE task_id=?", (task,))
+
+    assert store.claim_next("expiry-worker") is None
+    with db.connect() as conn:
+        assert conn.execute("SELECT state FROM agent_v2_runs WHERE task_id=?", (task,)).fetchone()[0] == "failed"

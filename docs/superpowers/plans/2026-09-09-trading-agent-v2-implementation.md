@@ -1,5 +1,7 @@
 # 交易 Agent V2 Implementation Plan
 
+> 2026-09-09 V2.1 修订：已确认复用现有 Render 付费实例。部署、依赖、运行保护和后续验收以[新版方案](2026-09-09-trading-agent-v2-shared-render-implementation.md)为准；本文其他业务与接口合同保留。旧 T11 的另找常驻主机安排已被替代，新版适配尚未完成。
+
 > **执行方式：** 单主 Agent 按 `superpowers:executing-plans` 逐任务执行；用户未授权子 Agent，不使用默认子 Agent 工作流。T0–T10 已在隔离分支完成本地实现与回归，以下复选框保留为逐项验收追踪；T11 仍需真实 Staging 条件。
 
 **Goal:** 宏源全量有效持仓、交易和可靠计算通过 MCP 接入 DeepSeek，支持开放查询、公开研究与证据推论，在企微本人私聊完成真实验收。
