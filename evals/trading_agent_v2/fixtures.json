@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "purpose": "C1 synthetic replayable fixtures with frozen business oracles",
+  "cases": [
+    {
+      "id": "fixture-positions-count",
+      "kind": "positions_snapshot",
+      "questions": [
+        "给我现在全部持仓数量",
+        "当前一共有多少手持仓？",
+        "换一种说法统计我现在的仓位总量"
+      ],
+      "input": {
+        "rows": [
+          {"contract": "i2609", "asset_type": "future", "direction": "买", "quantity": "2"},
+          {"contract": "i2609-c-750", "asset_type": "option", "direction": "买", "quantity": "1"},
+          {"contract": "rb2601", "asset_type": "future", "direction": "卖", "quantity": "4"}
+        ]
+      },
+      "oracle": {
+        "row_count": 3,
+        "total_quantity": "7",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "fixture-pnl-missing-quote",
+      "kind": "pnl_missing_quote",
+      "questions": ["行情缺一条时，当前浮盈如何回答？"],
+      "input": {
+        "rows": [
+          {"contract": "i2609", "direction": "买", "quantity": "1", "average_price": "700"},
+          {"contract": "rb2601", "direction": "卖", "quantity": "2", "average_price": "3500"}
+        ],
+        "quotes": {
+          "i2609": {"last_price": "710", "multiplier": "100"},
+          "rb2601": {}
+        }
+      },
+      "oracle": {
+        "status": "partial",
+        "floating_pnl": "1000.0",
+        "covered_rows": 1,
+        "eligible_rows": 2
+      }
+    },
+    {
+      "id": "fixture-historical-no-quote",
+      "kind": "historical_no_quote",
+      "questions": ["历史持仓没有同期行情时能否计算浮盈？"],
+      "input": {
+        "as_of": {"mode": "settlement_date", "date": "2026-08-31"},
+        "rows": [
+          {"contract": "i2609", "direction": "买", "quantity": "2", "average_price": "700"}
+        ],
+        "quotes": {}
+      },
+      "oracle": {
+        "status": "partial",
+        "floating_pnl": null,
+        "valuation_basis": "historical_unavailable",
+        "data_as_of": null
+      }
+    },
+    {
+      "id": "fixture-fact-inference",
+      "kind": "fact_inference",
+      "questions": ["把事实和基于事实的解释分开说明"],
+      "input": {
+        "draft": {
+          "status": "complete",
+          "paragraphs": [
+            {
+              "kind": "fact",
+              "text": "当前持仓数量见事实引用。",
+              "evidence_refs": ["synthetic://positions#/metrics/quantity"]
+            },
+            {
+              "kind": "inference",
+              "text": "这只是对当前快照的解释，不代表未来收益。",
+              "evidence_refs": ["synthetic://positions#/metrics/quantity"]
+            }
+          ],
+          "fact_refs": [],
+          "missing": [],
+          "clarification": null
+        }
+      },
+      "oracle": {
+        "status": "complete",
+        "fact_paragraph_count": 1,
+        "inference_paragraph_count": 1,
+        "shared_evidence_ref": true
+      }
+    },
+    {
+      "id": "fixture-answer-repair",
+      "kind": "answer_repair",
+      "questions": ["答案格式错误时只允许一次受控纠错"],
+      "input": {
+        "invalid_draft": {
+          "status": "complete",
+          "paragraphs": [{"kind": "knowledge", "text": "说明"}],
+          "evidence_refs": []
+        },
+        "repaired_draft": {
+          "status": "complete",
+          "paragraphs": [{"kind": "knowledge", "text": "说明", "evidence_refs": []}],
+          "fact_refs": [],
+          "missing": [],
+          "clarification": null
+        }
+      },
+      "oracle": {
+        "initial_error": "extra_field",
+        "repair_count": 1,
+        "final_status": "complete"
+      }
+    }
+  ]
+}

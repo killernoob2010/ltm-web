@@ -116,3 +116,11 @@
 - 公开证据：答案校验支持 `research_uuid#/sources/index`（搜索摘要）和 `public_read_uuid#/payload/text`（正文读取），拒绝直接 URL；正文引用必须有当前任务内的搜索父结果，当前任务之外的同会话结果不能复用。提示同步了新引用协议。
 - 回归：`./.runtime/agent-v2/bin/python -m pytest tests/agent_v2 -q` 为 128 passed、4 个依赖弃用警告；effective facts 与 Agent scope 定向回归 38 passed；compileall 和 `git diff --check` 通过。
 - 未做：没有创建真实 Eval fixture、没有调用 DeepSeek/Brave/企微、没有修改 Staging/Production 或数据库迁移。C1-EVAL-FIXTURES 仍需先确定可回放数据与冻结 oracle；C1-REAL-SMOKE 需要另行确认付费 API 和网页验收边界。
+
+## C1-EVAL-FIXTURES（2026-09-09）
+
+- 已新增 `evals/trading_agent_v2/fixtures.json`，只包含脱敏合成数据和冻结 oracle，不读取业务库、不读取凭据、不访问网络。五个场景分别覆盖：三种当前持仓总量问法、缺一条行情时的浮盈覆盖率、历史持仓无同期行情、事实与推论分段、一次受控答案纠错。
+- 已为 Eval runner 增加 `fixture-replay` 模式。它重新计算固定结果并逐项比对 oracle；任何篡改 oracle 或重复 fixture id 都会失败，不把“文件存在”当作行为通过。
+- 新鲜验证：fixture replay 5/5；Agent V2 测试 133 passed（4 个依赖弃用警告）；effective facts 与 scope 定向回归 38 passed；题库 definition regression 44/44、holdout 12/12；offline behavior 8/8；compileall 与 `git diff --check` 通过。
+- 本阶段仍只证明本地确定性边界和可重复夹具，不证明真实 DeepSeek 语言回答、Brave 联网、Staging 网页问答、企微、实时行情/Greeks 或持续运行；`real_model_evaluated=false`、`release_readiness=not_evaluated`。
+- 下一步可评估 C1-REAL-SMOKE，但必须单独确认剩余付费 API 额度、Staging 网页验收和是否启用真实搜索；在此之前不恢复付费调用、不打开云端 Agent。
