@@ -308,8 +308,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 return final
             except Exception as exc:
                 # At most one repair prompt; it is still counted in model budget.
-                if not any(item.get("content") == "最终答案格式或证据无效，请修复后只输出 AnswerDraft JSON。" for item in messages if item.get("role") == "system") and budget.model_calls < budget.max_models:
-                    messages.append({"role":"system","content":"最终答案格式或证据无效，请修复后只输出 AnswerDraft JSON。"})
+                deps.store.append_event(principal, "answer_validation", status="failed", error_code=type(exc).__name__)
+                if not any(str(item.get("content", "")).startswith("最终答案格式或证据无效") for item in messages if item.get("role") == "system") and budget.model_calls < budget.max_models:
+                    reason = str(exc) if isinstance(exc, answer.InvalidEvidence) else "请检查JSON字段类型和必填项"
+                    messages.append({"role":"system","content":f"最终答案格式或证据无效：{reason}。请修复后只输出符合给定Schema的 AnswerDraft JSON。"})
                     continue
                 final = _fallback("partial", "已取得部分工具结果，但最终答案证据校验未通过；请重新提问。")
                 break

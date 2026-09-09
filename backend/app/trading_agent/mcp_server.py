@@ -1,7 +1,7 @@
 """Loopback-only authenticated MCP server for the Agent worker."""
 import contextvars
 import ipaddress
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
@@ -105,8 +105,10 @@ def build_mcp_server() -> MCPServer:
                           direction: str = "all", classification: str = "all") -> tools.ToolResponse:
         return _response("query_close_facts", {**locals(), "contracts": contracts or []})
 
-    def query_positions(as_of_mode: str = "latest", as_of_date: str | None = None, asset_type: str = "all",
-                        contracts: list[str] | None = None, direction: str = "all", classification: str = "all") -> tools.ToolResponse:
+    def query_positions(as_of_mode: Literal["latest", "settlement_date"] = "latest", as_of_date: str | None = None,
+                        asset_type: Literal["all", "future", "option"] = "all", contracts: list[str] | None = None,
+                        direction: Literal["all", "buy", "sell"] = "all",
+                        classification: Literal["all", "unclassified", "classified"] = "all") -> tools.ToolResponse:
         return _response("query_positions", {**locals(), "contracts": contracts or []})
 
     def summarize_positions(result_ref: str, group_by: list[str], metrics: list[str], order_by: str | None = None,

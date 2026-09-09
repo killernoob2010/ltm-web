@@ -181,7 +181,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "describe_capabilities": {"model": EmptyArgs, "description": "返回当前授权范围内实际支持的属性、指标和限制。"},
     "query_trade_facts": {"model": FactArgs, "description": "按事实交易日读取宏源去重后的全量成交事实。"},
     "query_close_facts": {"model": FactArgs, "description": "读取已核验的平仓、行权、履约或放弃事实。"},
-    "query_positions": {"model": PositionArgs, "description": "读取默认最新的宏源全量有效持仓并冻结行情。"},
+    "query_positions": {"model": PositionArgs, "description": "读取宏源全量有效持仓并冻结行情。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。返回 metrics.quantity 是全量持仓总手数；若只问总手数，可直接引用该指标，无需重复查询。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
     "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总。"},
     "summarize_facts": {"model": SummaryArgs, "description": "基于完整事实结果按白名单属性汇总。"},
     "read_result_page": {"model": PageArgs, "description": "读取已授权不可变结果的下一页。"},

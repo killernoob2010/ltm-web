@@ -1,5 +1,6 @@
 """Fixed loopback MCP client used by Harness; it cannot accept a model URL."""
 import os
+from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp.client.session import ClientSession
@@ -10,31 +11,34 @@ from .contracts import ToolEnvelope
 
 
 class MCPToolClient:
-    def __init__(self, endpoint: str | None = None):
+    def __init__(self, endpoint: str | None = None, *, request_timeout_seconds: float = 15):
         self.endpoint = endpoint or f"http://127.0.0.1:{os.environ.get('AGENT_V2_MCP_PORT', '8766')}/mcp"
         if not self.endpoint.startswith(("http://127.0.0.1:", "http://localhost:")):
             raise ValueError("MCP endpoint must be loopback")
         self._streams = None
         self._client = None
-        self._context = None
         self._http_client = None
         self._initialized = False
+        self._request_timeout_seconds = request_timeout_seconds
+        self._stack = AsyncExitStack()
 
     async def __aenter__(self):
-        self._http_client = httpx2.AsyncClient(timeout=15, follow_redirects=False)
-        self._context = streamable_http_client(self.endpoint, http_client=self._http_client)
-        self._streams = await self._context.__aenter__()
-        self._client = ClientSession(self._streams[0], self._streams[1])
-        await self._client.__aenter__()
-        return self
+        try:
+            # The SDK bounds individual requests. A transport read timeout would
+            # cancel the shared session task group, including its caller.
+            self._http_client = await self._stack.enter_async_context(httpx2.AsyncClient(
+                timeout=httpx2.Timeout(15, read=None), follow_redirects=False, trust_env=False))
+            self._streams = await self._stack.enter_async_context(
+                streamable_http_client(self.endpoint, http_client=self._http_client))
+            self._client = await self._stack.enter_async_context(ClientSession(
+                self._streams[0], self._streams[1], read_timeout_seconds=self._request_timeout_seconds))
+            return self
+        except BaseException:
+            await self._stack.aclose()
+            raise
 
     async def __aexit__(self, exc_type, exc, tb):
-        if self._client:
-            await self._client.__aexit__(exc_type, exc, tb)
-        if self._context:
-            await self._context.__aexit__(exc_type, exc, tb)
-        if self._http_client:
-            await self._http_client.aclose()
+        return await self._stack.__aexit__(exc_type, exc, tb)
 
     async def list_tools(self, grant: str | None = None):
         if grant is not None:

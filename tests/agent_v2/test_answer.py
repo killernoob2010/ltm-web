@@ -55,3 +55,10 @@ def test_answer_resolves_group_risk_metric_path(queued):
         "text": "该标的 Delta 敞口为 {{fact:%s#/payload/groups/0/metrics/delta_exposure}}。" % ref,
         "evidence_refs": []}], "fact_refs": []}
     assert "125 CNY/标的价格单位" in answer.render_answer(principal, draft, store)
+
+
+def test_dated_timestamps_are_not_mistaken_for_unreferenced_position_numbers():
+    from app.trading_agent.answer import _has_unreferenced_number
+    for timestamp in ('2026年9月9日17:52', '2026-09-09T17:52:00+08:00', '2026-09-09 17:52:00'):
+        assert not _has_unreferenced_number(f'数据时点：{timestamp}。')
+        assert _has_unreferenced_number(f'数据时点：{timestamp}，持仓合计2手。')
