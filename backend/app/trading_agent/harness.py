@@ -143,6 +143,19 @@ def _bound_messages(messages, max_chars=48000):
     return head + list(reversed(tail))
 
 
+def _messages_size(messages) -> int:
+    return sum(
+        len(str(item.get("content") or ""))
+        + len(json.dumps(item.get("tool_calls") or [], ensure_ascii=False))
+        for item in messages
+    )
+
+
+_ANSWER_VALIDATION_FAILURE = (
+    "本次回答未通过格式或证据校验，系统未交付业务结论；这是系统处理问题，当前任务已结束。"
+)
+
+
 async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     """Run one leased task. No model reasoning or private raw tool payload is persisted."""
     try:
@@ -233,8 +246,11 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         user_text = deps.store.task_text(task_id, principal.user_id)
         messages = prompts.build_messages(history, capability_payload, user_text=user_text)
         schemas = _model_schemas(live_tools)
+        repair_attempted = False
         for _ in range(budget.max_models):
             if deps.clock() - started >= budget.deadline_seconds:
+                if repair_attempted:
+                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
                 break
             budget.model_calls += 1
             deps.store.record_usage(task_id, model_calls=1)
@@ -253,18 +269,31 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     call_seconds=deps.limits.model_timeout_seconds,
                 )
             except ExecutionDeadline:
-                final = _fallback("partial", "本次分析达到时间上限，已停止继续请求。")
+                final = _fallback(
+                    "partial",
+                    _ANSWER_VALIDATION_FAILURE if repair_attempted
+                    else "本次分析达到时间上限，已停止继续请求。",
+                )
                 break
             except RetryableModelError as exc:
+                if repair_attempted:
+                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                    break
                 # One bounded repair/retry is represented by the next model budget slot.
                 messages.append({"role":"system","content":"工具或模型暂时不可用，请在现有证据基础上给出部分答案，并明确缺失。"})
                 if budget.model_calls >= budget.max_models:
                     final = _fallback("temporarily_unavailable", "模型服务暂时不可用，已停止继续请求；请稍后重试。")
                 continue
             except ModelError as exc:
-                final = _fallback("temporarily_unavailable", str(exc))
+                final = _fallback(
+                    "partial" if repair_attempted else "temporarily_unavailable",
+                    _ANSWER_VALIDATION_FAILURE if repair_attempted else str(exc),
+                )
                 break
             if turn.tool_calls:
+                if repair_attempted:
+                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                    break
                 planned_searches = sum(call.name == "search_public" for call in turn.tool_calls)
                 if (budget.tool_calls + len(turn.tool_calls) > budget.max_tools
                         or budget.search_calls + planned_searches > budget.max_search):
@@ -301,20 +330,33 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     break
                 continue
             try:
-                final = answer.parse_answer(turn.content or "")
-                rendered = answer.render_answer(principal, final, deps.store)
+                candidate = answer.parse_answer(turn.content or "")
+                rendered = answer.render_answer(principal, candidate, deps.store)
+            except answer.AnswerValidationError as exc:
+                deps.store.append_event(
+                    principal,
+                    "answer_validation",
+                    status="failed",
+                    error_code=exc.issues[0].code if exc.issues else "invalid_value",
+                )
+                if not repair_attempted and budget.model_calls < budget.max_models:
+                    repair_messages = prompts.build_answer_repair_messages(
+                        turn.content or "", exc.issues
+                    )
+                    bounded = _bound_messages(messages)
+                    if _messages_size(bounded + repair_messages) > 48000:
+                        final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                        break
+                    messages = bounded + repair_messages
+                    repair_attempted = True
+                    continue
+                final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                break
+            else:
+                final = candidate
                 deps.store.finish(task_id, deps.worker_id, _task_state(final), rendered,
                                   structured_payload=_draft_payload(final))
                 return final
-            except Exception as exc:
-                # At most one repair prompt; it is still counted in model budget.
-                deps.store.append_event(principal, "answer_validation", status="failed", error_code=type(exc).__name__)
-                if not any(str(item.get("content", "")).startswith("最终答案格式或证据无效") for item in messages if item.get("role") == "system") and budget.model_calls < budget.max_models:
-                    reason = str(exc) if isinstance(exc, answer.InvalidEvidence) else "请检查JSON字段类型和必填项"
-                    messages.append({"role":"system","content":f"最终答案格式或证据无效：{reason}。请修复后只输出符合给定Schema的 AnswerDraft JSON。"})
-                    continue
-                final = _fallback("partial", "已取得部分工具结果，但最终答案证据校验未通过；请重新提问。")
-                break
         if final is None:
             final = _fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。")
         rendered = answer.render_answer(principal, final, deps.store)

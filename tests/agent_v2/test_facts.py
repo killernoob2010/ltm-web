@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 from app import db
 from app.trading_agent import facts, store
@@ -64,3 +65,18 @@ def test_position_direction_filter_uses_public_buy_sell_values(queued):
         lambda reqs: {request.contract: QuoteSnapshot(last_price=710, multiplier=100) for request in reqs},
     )
     assert selected.payload["count"] == 2
+
+
+def test_capture_does_not_infer_data_as_of_from_capture_time(queued, monkeypatch):
+    fixed = datetime.now(timezone.utc).replace(microsecond=0)
+    task = store.claim_next("facts-time-worker")
+    principal = store.principal_for_task(task)
+    _insert_wh6_snapshot(
+        principal.account_ids[0],
+        rows=[dict(contract="i2609", asset_type="future", exchange="DCE",
+                   direction="买", quantity=1, average_price=700)],
+    )
+    monkeypatch.setattr(store, "now", lambda: fixed)
+    result = facts.capture_positions(principal, FactQuery(), lambda reqs: {})
+    assert result.captured_at == fixed
+    assert result.data_as_of is None

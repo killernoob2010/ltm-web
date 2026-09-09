@@ -62,3 +62,73 @@ def test_dated_timestamps_are_not_mistaken_for_unreferenced_position_numbers():
     for timestamp in ('2026年9月9日17:52', '2026-09-09T17:52:00+08:00', '2026-09-09 17:52:00'):
         assert not _has_unreferenced_number(f'数据时点：{timestamp}。')
         assert _has_unreferenced_number(f'数据时点：{timestamp}，持仓合计2手。')
+
+
+def test_extra_field_has_safe_exact_location():
+    raw = {"status": "complete", "paragraphs": [
+        {"kind": "knowledge", "text": "风险取决于数据和假设。"}
+    ], "evidence_refs": []}
+    with pytest.raises(answer.AnswerValidationError) as caught:
+        answer.parse_answer(raw)
+    issue = caught.value.issues[0]
+    assert issue.code == "extra_field"
+    assert issue.path == "/evidence_refs"
+    assert "对应段落" in issue.message
+
+
+@pytest.mark.parametrize(("raw", "code"), [
+    ({"status": "complete"}, "missing_field"),
+    ({"status": "complete", "paragraphs": "bad"}, "invalid_type"),
+    ({"status": "not-a-status", "paragraphs": []}, "invalid_value"),
+    ({"status": "complete", "paragraphs": []}, "answer_empty"),
+])
+def test_answer_validation_uses_safe_issue_categories(raw, code):
+    with pytest.raises(answer.AnswerValidationError) as caught:
+        answer.parse_answer(raw)
+    assert caught.value.issues[0].code == code
+
+
+@pytest.mark.parametrize("raw", [
+    (chr(96) * 3) + 'json\n{"status":"complete","paragraphs":[]}\n' + (chr(96) * 3),
+    '{"status":"complete","paragraphs":[],"x":NaN}',
+    '{"status":"complete","status":"partial","paragraphs":[]}',
+])
+def test_answer_json_errors_do_not_expose_input(raw):
+    with pytest.raises(answer.AnswerValidationError) as caught:
+        answer.parse_answer(raw)
+    assert caught.value.issues[0].code in {"invalid_json", "duplicate_field"}
+    assert "SECRET_CANARY_123" not in str(caught.value)
+
+
+def test_answer_validation_does_not_echo_unknown_sensitive_field():
+    raw = {
+        "status": "complete",
+        "paragraphs": [{"kind": "knowledge", "text": "说明"}],
+        "SECRET_CANARY_123": "should never be echoed",
+    }
+    with pytest.raises(answer.AnswerValidationError) as caught:
+        answer.parse_answer(raw)
+    assert "SECRET_CANARY_123" not in str(caught.value)
+    assert "SECRET_CANARY_123" not in repr(caught.value.as_dicts())
+
+
+def test_answer_rejects_oversized_raw_json():
+    with pytest.raises(answer.AnswerValidationError) as caught:
+        answer.parse_answer('{"status":"complete","paragraphs":[{"kind":"knowledge","text":"' + ("x" * 48000) + '"}]}')
+    assert caught.value.issues[0].code == "answer_too_large"
+
+
+def test_answer_rejects_missing_metric_and_malformed_placeholder(queued):
+    principal, ref = evidence(queued)
+    with pytest.raises(answer.InvalidEvidence) as missing:
+        answer.render_answer(principal, {
+            "status": "complete",
+            "paragraphs": [{"kind": "fact", "text": f"{{{{fact:{ref}#/metrics/quantity}}}}"}],
+        }, store)
+    assert missing.value.issues[0].code == "metric_unavailable"
+    with pytest.raises(answer.InvalidEvidence) as malformed:
+        answer.render_answer(principal, {
+            "status": "complete",
+            "paragraphs": [{"kind": "knowledge", "text": "{{fact:not-a-uuid#/metrics/quantity}}"}],
+        }, store)
+    assert malformed.value.issues[0].code == "invalid_reference"
