@@ -42,7 +42,17 @@ def test_prompt_example_is_valid_answer_draft_and_time_semantics_are_explicit():
     assert "工具结果为 partial 时" in prompts.SYSTEM_PROMPT
     assert "账户、合约、资产类型和多空方向" in prompts.SYSTEM_PROMPT
     assert "正文不重复表内数字" in prompts.SYSTEM_PROMPT
-    assert "spans 引用真实返回的指标路径" in prompts.SYSTEM_PROMPT
+    assert "blocks.refs 引用真实返回的指标路径" in prompts.SYSTEM_PROMPT
+
+
+def test_current_protocol_and_failed_public_sources_have_unambiguous_guidance():
+    policy = prompts.build_messages([], {})[0]["content"]
+    assert "最终只输出符合 ModelAnswer21" in policy
+    assert "最终只输出符合 AnswerDraft21" not in policy
+    assert "没有 result_ref 的工具失败不得创建 fact/public_fact 引用" in policy
+    repair = prompts.build_answer_repair_messages("{}", [{"code": "missing_reference"}])[-1]["content"]
+    assert "metadata_ref" in repair
+    assert "删除无证据段落" in repair
 
 
 def test_prompt_distinguishes_registered_public_refs_from_urls():
