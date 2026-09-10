@@ -425,6 +425,11 @@ def _dataset_measure_field(saved: Any, request: ViewRequest, fields: list[str], 
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _dataset_measure_candidates(request: ViewRequest, fields: list[str], x_field: str) -> list[str]:
+    excluded = {x_field, *request.series_by, *request.facet_by}
+    return [field for field in fields if field not in excluded and field not in {"unit", "value_state", "data_status"}]
+
+
 def build_dataset_chart(saved: Any, request: ViewRequest, *, facet_page: int = 1, facet_page_size: int = 6) -> dict:
     """Build the bounded multi-series chart DTO for a dataset snapshot.
 
@@ -451,6 +456,10 @@ def build_dataset_chart(saved: Any, request: ViewRequest, *, facet_page: int = 1
     x_field = request.x_field or next((field for field in fields if field in {"observation_date", "business_date", "period_start", "week_start", "business_week"}), None)
     if x_field is None:
         raise ValueError("图谱缺少横轴字段")
+    measure_candidates = _dataset_measure_candidates(request, fields, x_field)
+    if len(measure_candidates) > 1:
+        units = {_column(field).get("unit") or payload.get("unit") for field in measure_candidates}
+        return _v2_fallback("unit_mismatch" if len(units) > 1 else "measure_limit", request, facet_page=facet_page)
     y_field = _dataset_measure_field(saved, request, fields, x_field)
     if y_field is None or y_field not in allowed:
         raise ValueError("图谱缺少数值字段")

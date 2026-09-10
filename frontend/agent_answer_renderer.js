@@ -869,7 +869,6 @@
             if (pageData.chart && pageData.chart.version === 2) appendDatasetChartTable(doc, tableHost, pageData.chart);
             appendTable(doc, tableHost, pageData);
             appendPagination(doc, tableHost, pageData.pagination ? pageData : { ...pageData, pagination: {} }, loadPage, alive, listen, facetPage, matrixColumnPage);
-            if (pageData.chart && pageData.chart.version === 2) appendFacetPagination(doc, tableHost, pageData, loadPage, alive, listen, matrixColumnPage);
             listen(toggle, "click", () => {
               tableHost.hidden = !tableHost.hidden;
               toggle.textContent = tableHost.hidden ? "查看数据表" : "收起数据表";
@@ -877,6 +876,7 @@
             });
             host.body.appendChild(toggle);
             host.body.appendChild(tableHost);
+            if (pageData.chart && pageData.chart.version === 2) appendFacetPagination(doc, host.body, pageData, loadPage, alive, listen, matrixColumnPage);
           } else {
             appendTable(doc, host.body, pageData);
             appendPagination(doc, host.body, pageData.pagination ? pageData : { ...pageData, pagination: {} }, loadPage, alive, listen, facetPage, matrixColumnPage);
