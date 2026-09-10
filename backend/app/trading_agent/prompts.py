@@ -96,10 +96,12 @@ def build_answer_repair_messages(raw: str, issues, *, finish_reason="") -> list[
             "正文只保留来源、未知时点及非数值限制说明，具体行情时间由视图的 market_time 列展示。"
             "必须在正文保留的业务数字只能使用真实 fact 占位符和正确的 blocks.refs；不能通过标记 knowledge 或改写中文数字绕过校验。"
         )
-    if any(item["code"] in {"missing_reference", "reference_unavailable", "public_excerpt_required"} for item in safe_issues):
+    if any(item["code"] in {"invalid_reference", "missing_reference", "reference_unavailable", "public_excerpt_required"} for item in safe_issues):
         evidence_repair += (
             "保留正确视图，删除无证据段落，不要猜测新的引用路径或把事实改标为 knowledge。"
             "内部来源说明只使用工具实际返回的 metadata_ref；表格占位符单独放入 knowledge 段落。"
+            "blocks.refs 内不得包含 {{fact: 包装、Markdown链接或裸UUID，只能是 UUID#/允许路径 的字符串。"
+            "metadata_ref 只能放在 blocks.refs，不得放入正文的 {{fact:...}} 数值占位符；来源名称直接用非数值文字表达。"
             "没有引用的公开工具失败不写成 public_fact，系统会单独展示失败限制；没有官方正文就不写具体交易所规则。"
         )
     return [

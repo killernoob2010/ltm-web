@@ -55,6 +55,12 @@ def test_current_protocol_and_failed_public_sources_have_unambiguous_guidance():
     assert "删除无证据段落" in repair
 
 
+def test_malformed_reference_repair_distinguishes_refs_from_text_tokens():
+    repair = prompts.build_answer_repair_messages("{}", [{"code": "invalid_reference"}])[-1]["content"]
+    assert "blocks.refs 内不得包含 {{fact:" in repair
+    assert "metadata_ref" in repair
+
+
 def test_prompt_distinguishes_registered_public_refs_from_urls():
     messages = prompts.build_messages([], {"tools": []}, user_text="解释公开方法")
     content = messages[0]["content"]
