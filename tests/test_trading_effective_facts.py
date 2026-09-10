@@ -1076,3 +1076,20 @@ def test_overview_excludes_provisional_trade_facts_from_formal_totals(tmp_path, 
 
     assert overview["trades"]["record_count"] == 0
     assert overview["trades"]["contains_provisional"] is False
+
+
+def test_position_fill_coverage_is_checked_once_per_date(monkeypatch):
+    rows = [{'id': i, 'trade_date': '20260909'} for i in range(100)]
+    rows += [{'id': 101, 'trade_date': '20260910'}]
+    class Cursor:
+        def fetchall(self):
+            return rows
+    monkeypatch.setattr(db, '_exec', lambda *args: Cursor())
+    checked = []
+    def coverage(cur, account, day):
+        checked.append(day)
+        return day == '20260910'
+    monkeypatch.setattr(reconciliation, 'statement_coverage_for_date', coverage)
+    result = trading_effective_facts._position_fills_after_baseline(None, 1, '2026-09-08')
+    assert len(result) == 100
+    assert checked == ['20260909', '20260910']
