@@ -1,6 +1,48 @@
 from datetime import datetime, timezone
 
 
+def test_stage_events_query_survives_postgres_parameter_binding(monkeypatch):
+    """Literal SQL percent signs must not collide with psycopg placeholders."""
+    import sqlite3
+    from contextlib import contextmanager
+    from app.trading_agent import store
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE agent_v2_events (task_id, seq, kind, status, created_at)")
+    conn.executemany("INSERT INTO agent_v2_events VALUES (?,?,?,?,?)", [
+        (7, 1, "stage:internal_data", "complete", "2026-09-10T08:00:00Z"),
+        (7, 2, "tool", "complete", "2026-09-10T08:00:01Z"),
+        (8, 3, "stage:validation", "complete", "2026-09-10T08:00:02Z"),
+        (7, 4, "stage:validation", "complete", "2026-09-10T08:00:03Z"),
+    ])
+
+    class Cursor:
+        def execute(self, sql, params):
+            # Exercise db._exec's PostgreSQL path and percent-style binding;
+            # SQLite then evaluates the actual predicate, ordering and limit.
+            encoded = tuple("'" + value.replace("'", "''") + "'" if isinstance(value, str)
+                            else str(value) for value in params)
+            self.result = conn.execute(sql % encoded)
+
+        def fetchall(self):
+            return self.result.fetchall()
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def connect():
+        yield Connection()
+
+    monkeypatch.setattr(store.db, "connect", connect)
+    monkeypatch.setattr(store.db, "_is_pg", lambda: True)
+    assert [row["seq"] for row in store.stage_events(7)] == [1, 4]
+    assert [row["seq"] for row in store.stage_events(7, limit=1)] == [4]
+    conn.close()
+
+
 def test_progress_projects_queue_and_elapsed_seconds():
     from app.trading_agent.progress import project_progress
 

@@ -455,8 +455,8 @@ def stage_events(task_id, limit=30):
     with db.connect() as conn:
         rows = db._exec(conn.cursor(), """SELECT seq,kind,status,created_at
             FROM agent_v2_events
-            WHERE task_id=? AND kind LIKE 'stage:%'
-            ORDER BY seq DESC LIMIT ?""", (task_id, safe_limit)).fetchall()
+            WHERE task_id=? AND kind LIKE ?
+            ORDER BY seq DESC LIMIT ?""", (task_id, "stage:%", safe_limit)).fetchall()
     return [dict(row) for row in reversed(rows)]
 
 
