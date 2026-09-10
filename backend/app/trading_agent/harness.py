@@ -396,6 +396,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             capability_payload,
             user_text=user_text,
             restricted_modules=restricted_modules,
+            public_research_unavailable=bool(public_unavailable),
         )
         if live_tools is not None and hasattr(deps.mcp, "endpoint"):
             raw_live_tools = live_tools.get("tools", live_tools) if isinstance(live_tools, dict) else getattr(live_tools, "tools", live_tools)

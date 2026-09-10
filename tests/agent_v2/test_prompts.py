@@ -55,6 +55,19 @@ def test_current_protocol_and_failed_public_sources_have_unambiguous_guidance():
     assert "删除无证据段落" in repair
 
 
+def test_unconfigured_public_research_gets_explicit_bounded_fallback_guidance():
+    messages = prompts.build_messages(
+        [],
+        {"tools": ["query_dataset"]},
+        user_text="请分析近期外部供需信息，并结合系统库存。",
+        public_research_unavailable=True,
+    )
+    content = "\n".join(item["content"] for item in messages if item.get("role") == "system")
+    assert "公开搜索尚未配置授权服务" in content
+    assert "不得声称已经完成公开搜索" in content
+    assert "内部结果仍需继续完成" in content
+
+
 def test_malformed_reference_repair_distinguishes_refs_from_text_tokens():
     repair = prompts.build_answer_repair_messages("{}", [{"code": "invalid_reference"}])[-1]["content"]
     assert "blocks.refs 内不得包含 {{fact:" in repair

@@ -45,7 +45,14 @@ TABLE_ANSWER21_EXAMPLE = json.dumps({
 }, ensure_ascii=False, separators=(",", ":"))
 
 
-def build_messages(history, capability, *, user_text=None, restricted_modules=None):
+def build_messages(
+    history,
+    capability,
+    *,
+    user_text=None,
+    restricted_modules=None,
+    public_research_unavailable=False,
+):
     messages = [{"role": "system", "content": SYSTEM_PROMPT +
                  "\n当前输出使用分段协议，替代旧 body_markdown/spans：只返回 schema_version、blocks、views。每段有稳定 id、kind、text、refs、depends_on；程序自动计算证据位置，禁止输出 start/end。前文的 spans 引用规则对应 blocks.refs。\nModelAnswer21 JSON Schema：" + json.dumps(ModelAnswer21.model_json_schema(), ensure_ascii=False, separators=(",", ":")) +
                  "\nblocks[].refs 是字符串数组，不是对象或单独UUID。内部引用使用工具实际返回的 result_ref 和允许指标路径；公开引用只能使用工具返回的 research_uuid#/sources/index 或 public_read_uuid#/payload/text，不能编造 URL 或引用。" +
@@ -57,6 +64,16 @@ def build_messages(history, capability, *, user_text=None, restricted_modules=No
                  "\n来源、筛选范围、账本时点未知等非数值事实说明，使用 kind=fact、refs=[真实result_ref#/metadata]。metadata 只支持来源说明，不能当数字占位符使用；业务数字仍使用真实 /metrics 或 /rows 引用。纯展示占位符单独用 kind=knowledge，不要创建没有refs的fact段落。不要在说明里重复具体时分秒，行情时间由视图列展示。" +
                  "\n联合研究先按能力目录读取匹配的内部数据，再搜索和读取公开资料；一个来源不可用不能阻止另一个来源交付。查询基差使用 query_market_series。没有 result_ref 的工具失败不得创建 fact/public_fact 引用，尤其不能用内部结果引用为外部失败或规则背书。公开搜索失败由系统统一追加限制说明，正文保留内部视图及有真实 metadata_ref 的来源说明即可；不编造链接、不假装已完成联合分析。未读取官方正文时，不得把交易所具体规则包装成通用知识。基差按现货减期货解释，不混用相反定义；标准化吨和湿吨不得直接相减。"},
                 {"role": "system", "content": "当前能力目录（服务端已过滤）：" + json.dumps(capability, ensure_ascii=False, separators=(",", ":"))}]
+    if public_research_unavailable:
+        messages.append({
+            "role": "system",
+            "content": (
+                "服务端状态：公开搜索尚未配置授权服务。本次不得发送公开搜索请求，"
+                "不得声称已经完成公开搜索，也不得编造公开来源或把内部结果冒充外部信息。"
+                "如果用户同时要求内部数据，内部结果仍需继续完成，并明确说明公开研究受限；"
+                "如果用户只要求公开资料，直接返回 partial，并说明公开搜索尚未配置，不要反复尝试不存在的公开工具。"
+            ),
+        })
     restricted_modules = [str(item) for item in (restricted_modules or []) if str(item)]
     if restricted_modules:
         labels = {
