@@ -26,3 +26,12 @@
 - 默认下一步：先确定 C1-EVAL-FIXTURES 的脱敏数据与冻结 oracle；完成后才评估真实 smoke。不得自动恢复付费调用、开启 Agent、推送或进入 Production。
 - 关键文件：docs/superpowers/plans/2026-09-09-agent-v2-luna-repair-taskbook.md、docs/superpowers/analysis/2026-09-09-trading-agent-v2-execution.md、evals/trading_agent_v2/README.md。
 - 禁止：读取或输出 .runtime 凭据；改 Production/正式交易数据；执行任何真实交易或资金操作；把本批离线通过包装成 Agent 已可用。
+
+## 2026-09-10 当前接续状态（以本节为准）
+
+- 正式候选已发布：Production `ltm-web` 当前代码为 `a1ae19c`（功能候选 `cb7e46d`），Render Standard 运行时已固定 Python 3.12.14；Agent 仍由 `AGENT_V2_ENABLED=false` 关闭。
+- 正式数据库已完成迁移：六张 `agent_v2_*` 隔离附表均已存在并启用 RLS；迁移前在当前实例完成全量逻辑备份、`pg_restore` 清单核对和 schema-only 还原校验。未修改交易事实、成交、持仓或资金数据。
+- 正式页面已加载 `closing_review_agent.js` 和 `closing_review_agent.css` 新资源，浏览器控制台无 error/warn；当前停在正式登录页，尚无正式管理员会话。
+- 已写入非敏感 Production 配置：生产环境声明、Agent 关闭、企微关闭、DeepSeek 基址和模型名。Production 的 `DEEPSEEK_API_KEY` 未代读、未复制、未输出，真实模型尚未调用。
+- 默认下一步：用户在已打开正式 URL 登录管理员，并在 Render Production 环境变量中自行录入受保护的 `DEEPSEEK_API_KEY`（不要发给 Codex）；随后启用 Agent，执行一次不超过 1 元的真实只读交易持仓问答，回读任务状态、答案证据、权限和 DeepSeek 费用，再决定是否持续开启。
+- 风险与禁止：不得将 Staging 会话当作 Production 验收；不得启用企微群聊、公开搜索私有数据或任何交易动作；不得读取、回显或保存凭据；不得用全库覆盖方式回滚。
