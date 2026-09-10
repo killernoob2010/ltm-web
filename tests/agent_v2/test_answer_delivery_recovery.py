@@ -178,28 +178,48 @@ async def test_annual_inventory_request_preflights_range_and_period_end_summary(
 
         async def call_tool(self, name, args, grant):
             self.calls_by_name.append((name, args))
+            principal = store.resolve_grant(grant)
             if name == "query_dataset":
-                return ToolEnvelope(
+                envelope = ToolEnvelope(
                     status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
                     calculation_version="test", payload={"kind": "dataset_rows", "dataset": "inventory_summary"},
                 )
+                ref = store.save_result(principal, envelope, [], kind="dataset_rows")
+                return store.load_result(principal, ref).envelope
             if name == "summarize_dataset":
-                return ToolEnvelope(
+                envelope = ToolEnvelope(
                     status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
-                    calculation_version="test", payload={"kind": "dataset_summary", "dataset": "inventory_summary"},
+                    calculation_version="test",
+                    payload={
+                        "kind": "dataset_summary", "dataset": "inventory_summary",
+                        "annual_method": "period_end", "missing_years": [],
+                    },
                 )
+                ref = store.save_result(
+                    principal, envelope,
+                    [{"business_year": 2022, "value": "100", "row_ref": "summary:1"}],
+                    kind="dataset_summary",
+                )
+                return store.load_result(principal, ref).envelope
             return await super().call_tool(name, args, grant)
 
+    uid, _, task = queued
+    with store.db.connect() as conn:
+        conn.execute(
+            "INSERT INTO module_permissions(user_id,module_code,can_view,can_edit) VALUES (?, 'data_visualization_chart', 1, 0)",
+            (uid,),
+        )
     task = store.claim_next("annual-inventory-preflight")
     _replace_current_question(
         task,
         "请查询系统库存数据，时间范围为2022-01-01至2026-09-10，按业务年度汇总每个年度最后可用日期的库存数量",
     )
     mcp = AnnualPreflightMCP()
+    model = ScriptedModel([ModelTurn(content=GOOD_ANSWER21)])
     result = await harness.run_task(
         task,
         harness.RuntimeDeps(
-            store, ScriptedModel([ModelTurn(content=GOOD_ANSWER21)]), mcp,
+            store, model, mcp,
             worker_id="annual-inventory-preflight",
         ),
     )
@@ -210,6 +230,7 @@ async def test_annual_inventory_request_preflights_range_and_period_end_summary(
     assert query_call["end_date"] == "2026-09-10"
     assert summary_call["operation"] == "period_end"
     assert summary_call["group_by"] == ["business_year"]
+    assert model.calls == []
 
 
 def test_budget_fallback_preserves_verified_dataset_result(queued):

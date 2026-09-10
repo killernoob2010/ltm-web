@@ -501,6 +501,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     error_code=_safe_error_code(exc),
                 )
         annual_plan = _annual_inventory_preflight_args(user_text)
+        annual_summary_result = None
         if annual_plan is not None and budget.tool_calls + 2 <= budget.max_tools:
             annual_query = None
             budget.tool_calls += 1
@@ -543,6 +544,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             total_seconds=budget.deadline_seconds,
                             call_seconds=deps.limits.tool_timeout_seconds,
                         )
+                        annual_summary_result = annual_summary
                         if getattr(annual_summary, "result_ref", None):
                             known_result_refs.append(str(annual_summary.result_ref))
                         await asyncio.to_thread(
@@ -576,6 +578,35 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     tool_name="summarize_dataset" if annual_query is not None else "query_dataset",
                     error_code=_safe_error_code(exc),
                 )
+        if (annual_summary_result is not None
+                and getattr(annual_summary_result, "result_ref", None)
+                and not re.search(r"持仓|成交|盈亏|基差|到港|发运|期货|期权|融资|公开|联网|搜索", user_text)):
+            direct = _fallback21(
+                deps.store,
+                principal,
+                [str(annual_summary_result.result_ref)],
+                "annual_period_end_preflight",
+            )
+            if direct.views:
+                payload = getattr(annual_summary_result, "payload", {}) or {}
+                missing_years = payload.get("missing_years") or [] if isinstance(payload, dict) else []
+                complete = getattr(annual_summary_result, "status", None) == "complete" and not missing_years
+                body = (
+                    "各业务年度最后可用观察日的库存总量见下方表格；查询范围按用户给定日期执行。"
+                    if complete else
+                    "各业务年度最后可用观察日的库存总量见下方表格；缺失年度未补零。"
+                )
+                limitations = [] if complete else [
+                    Limitation(code="missing_years", message="部分业务年度没有可用观察数据，系统未补零。")
+                ]
+                final = direct.model_copy(update={
+                    "delivery_status": "complete" if complete else "partial",
+                    "body_markdown": body,
+                    "plain_text": body,
+                    "limitations": limitations,
+                })
+                await _finish21(deps, task_id, final)
+                return final
         messages = prompts.build_messages(
             history,
             capability_payload,
