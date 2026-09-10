@@ -11,6 +11,17 @@ from pydantic import ValidationError
 from .contracts import AnswerDraft
 from .store import ResultExpired
 
+# The 2.1 protocol lives in a separate module so the legacy 2.0 parser keeps
+# its original trust and compatibility behavior.
+from .answer_v21 import (  # noqa: E402
+    AnswerDraft21,
+    ValidatedAnswer21,
+    build_fallback21,
+    parse_answer21,
+    task_state21,
+    validate_answer21,
+)
+
 
 @dataclass(frozen=True)
 class AnswerIssue:
