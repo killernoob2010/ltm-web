@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pytest
 
@@ -117,6 +118,28 @@ def test_mixed_position_preflight_is_limited_to_authorized_quantity_query():
     assert harness._position_preflight_args("请查询订单融资的放款状态") is None
 
 
+def test_annual_inventory_preflight_preserves_explicit_multi_year_range():
+    plan = harness._annual_inventory_preflight_args(
+        "请查询系统库存数据，时间范围为2022-01-01至2026-09-10，按业务年度汇总每个年度最后可用日期的库存数量"
+    )
+    assert plan == {
+        "query": {
+            "dataset": "inventory_summary",
+            "mode": "range",
+            "start_date": "2022-01-01",
+            "end_date": "2026-09-10",
+            "filters": {"summary_metrics": ["库存总量"], "data_states": ["observed"]},
+            "fields": [
+                "observation_date", "business_year", "port", "region", "scope_type",
+                "summary_metric", "value", "unit", "value_state",
+            ],
+            "batch_size": 20000,
+        },
+        "summary": {"measure": "value", "operation": "period_end", "group_by": ["business_year"]},
+    }
+    assert harness._annual_inventory_preflight_args("请查询当前库存") is None
+
+
 @pytest.mark.asyncio
 async def test_mixed_position_request_preflights_authorized_tool_before_model(queued):
     class PreflightMCP(FakeMCP):
@@ -144,6 +167,49 @@ async def test_mixed_position_request_preflights_authorized_tool_before_model(qu
     assert result.delivery_status == "partial"
     assert mcp.position_args["asset_type"] == "future"
     assert mcp.position_args["valuation_mode"] == "quantity_only"
+
+
+@pytest.mark.asyncio
+async def test_annual_inventory_request_preflights_range_and_period_end_summary(queued):
+    class AnnualPreflightMCP(FakeMCP):
+        def __init__(self):
+            super().__init__()
+            self.calls_by_name = []
+
+        async def call_tool(self, name, args, grant):
+            self.calls_by_name.append((name, args))
+            if name == "query_dataset":
+                return ToolEnvelope(
+                    status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
+                    calculation_version="test", payload={"kind": "dataset_rows", "dataset": "inventory_summary"},
+                )
+            if name == "summarize_dataset":
+                return ToolEnvelope(
+                    status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
+                    calculation_version="test", payload={"kind": "dataset_summary", "dataset": "inventory_summary"},
+                )
+            return await super().call_tool(name, args, grant)
+
+    task = store.claim_next("annual-inventory-preflight")
+    _replace_current_question(
+        task,
+        "请查询系统库存数据，时间范围为2022-01-01至2026-09-10，按业务年度汇总每个年度最后可用日期的库存数量",
+    )
+    mcp = AnnualPreflightMCP()
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(
+            store, ScriptedModel([ModelTurn(content=GOOD_ANSWER21)]), mcp,
+            worker_id="annual-inventory-preflight",
+        ),
+    )
+    query_call = next(args for name, args in mcp.calls_by_name if name == "query_dataset")
+    summary_call = next(args for name, args in mcp.calls_by_name if name == "summarize_dataset")
+    assert result.delivery_status == "complete"
+    assert query_call["start_date"] == "2022-01-01"
+    assert query_call["end_date"] == "2026-09-10"
+    assert summary_call["operation"] == "period_end"
+    assert summary_call["group_by"] == ["business_year"]
 
 
 def test_budget_fallback_preserves_verified_dataset_result(queued):

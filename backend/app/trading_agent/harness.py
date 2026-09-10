@@ -93,6 +93,36 @@ def _position_preflight_args(user_text: str) -> dict[str, Any] | None:
     }
 
 
+def _annual_inventory_preflight_args(user_text: str) -> dict[str, Any] | None:
+    """Build the registered range-plus-period-end query for explicit annual asks."""
+    text = str(user_text or "")
+    if "库存" not in text or not re.search(r"业务年度|每个年度|年度汇总", text):
+        return None
+    if not re.search(r"最后可用|年度末|期末|每年.*最后", text):
+        return None
+    dates = re.findall(r"20\d{2}-\d{2}-\d{2}", text)
+    if len(dates) < 2:
+        return None
+    start_date, end_date = dates[0], dates[1]
+    if start_date > end_date:
+        return None
+    return {
+        "query": {
+            "dataset": "inventory_summary",
+            "mode": "range",
+            "start_date": start_date,
+            "end_date": end_date,
+            "filters": {"summary_metrics": ["库存总量"], "data_states": ["observed"]},
+            "fields": [
+                "observation_date", "business_year", "port", "region", "scope_type",
+                "summary_metric", "value", "unit", "value_state",
+            ],
+            "batch_size": 20000,
+        },
+        "summary": {"measure": "value", "operation": "period_end", "group_by": ["business_year"]},
+    }
+
+
 async def _bounded_call(factory, *, clock, started, total_seconds, call_seconds):
     """Run an async or sync-compatible call without exceeding task time."""
     remaining = float(total_seconds) - (clock() - started)
@@ -468,6 +498,82 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     "tool_error",
                     tool_name="query_positions",
                     arguments=preflight_args,
+                    error_code=_safe_error_code(exc),
+                )
+        annual_plan = _annual_inventory_preflight_args(user_text)
+        if annual_plan is not None and budget.tool_calls + 2 <= budget.max_tools:
+            annual_query = None
+            budget.tool_calls += 1
+            await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
+            try:
+                annual_query = await _bounded_call(
+                    lambda: deps.mcp.call_tool("query_dataset", annual_plan["query"], grant),
+                    clock=deps.clock,
+                    started=started,
+                    total_seconds=budget.deadline_seconds,
+                    call_seconds=deps.limits.tool_timeout_seconds,
+                )
+                if getattr(annual_query, "result_ref", None):
+                    known_result_refs.append(str(annual_query.result_ref))
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "tool",
+                    tool_name="query_dataset",
+                    arguments=annual_plan["query"],
+                    result_ref=getattr(annual_query, "result_ref", None),
+                    status=getattr(annual_query, "status", None),
+                )
+                if getattr(annual_query, "status", None) in {"complete", "partial"}:
+                    preflight_context.append(
+                        "服务端已按用户明确的完整日期范围预取库存原始证据；不得把该范围改写成365天或缩短年份："
+                        + prompts.project_tool_result(annual_query)
+                    )
+                    if getattr(annual_query, "result_ref", None):
+                        budget.tool_calls += 1
+                        await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
+                        annual_summary_args = {
+                            **annual_plan["summary"],
+                            "result_ref": str(annual_query.result_ref),
+                        }
+                        annual_summary = await _bounded_call(
+                            lambda: deps.mcp.call_tool("summarize_dataset", annual_summary_args, grant),
+                            clock=deps.clock,
+                            started=started,
+                            total_seconds=budget.deadline_seconds,
+                            call_seconds=deps.limits.tool_timeout_seconds,
+                        )
+                        if getattr(annual_summary, "result_ref", None):
+                            known_result_refs.append(str(annual_summary.result_ref))
+                        await asyncio.to_thread(
+                            deps.store.append_event,
+                            principal,
+                            "tool",
+                            tool_name="summarize_dataset",
+                            arguments=annual_summary_args,
+                            result_ref=getattr(annual_summary, "result_ref", None),
+                            status=getattr(annual_summary, "status", None),
+                        )
+                        if getattr(annual_summary, "status", None) in {"complete", "partial"}:
+                            preflight_context.append(
+                                "服务端已按每个业务年度的最后可用观察日完成确定性 period_end 汇总；"
+                                "请优先使用该汇总创建表格，明确列出缺失年度，不要重新扩大或缩短查询范围："
+                                + prompts.project_tool_result(annual_summary)
+                            )
+            except ExecutionDeadline:
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "tool_error",
+                    tool_name="summarize_dataset" if annual_query is not None else "query_dataset",
+                    error_code="deadline_exceeded",
+                )
+            except Exception as exc:
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "tool_error",
+                    tool_name="summarize_dataset" if annual_query is not None else "query_dataset",
                     error_code=_safe_error_code(exc),
                 )
         messages = prompts.build_messages(
