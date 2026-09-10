@@ -449,6 +449,9 @@ def _reference_for_span(ref: str, kind: str, principal: Any, store_api: Any):
     if not match:
         return None, ("invalid_reference", "事实引用格式无效。")
     saved = _load(store_api, principal, match.group(1))
+    if match.group(2) == "/metadata" and saved is not None and kind != "public_fact":
+        if _payload(saved).get("kind") in {"positions", "trades", "closes", "market_series"}:
+            return _internal_evidence(match.group(1), saved, None), None
     metric = _metric(saved, match.group(2)) if saved is not None else None
     value, unit = _metric_value(metric)
     if value is None:

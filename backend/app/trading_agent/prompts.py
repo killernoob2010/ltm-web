@@ -53,6 +53,7 @@ def build_messages(history, capability, *, user_text=None):
                  "\n用户要求表格时优先使用上例 views 引用全量持仓，正文只作简短解释，不要为每一行重复写数字。fields 只能是字段名字符串数组。要求柱状图时 views.kind=bar，fields=[contract,floating_pnl]；折线图 kind=line，首字段为横轴，其余为同单位数值。" +
                  "\n连续追问改变展示时复用历史目录中仍可访问的 result_ref，不必重新调用 query_positions；用户明确要求更新才查询新快照。目录空或过期时说明无法复用，不混用新旧时点。" +
                  "\n历史成交价格使用 price，不是 average_price 或 valuation_price。用户明确要求的字段必须保留；不可用时留空并说明，不得删列后声称全部完成。" +
+                 "\n来源、筛选范围、账本时点未知等非数值事实说明，使用 kind=fact、refs=[真实result_ref#/metadata]。metadata 只支持来源说明，不能当数字占位符使用；业务数字仍使用真实 /metrics 或 /rows 引用。纯展示占位符单独用 kind=knowledge，不要创建没有refs的fact段落。不要在说明里重复具体时分秒，行情时间由视图列展示。" +
                  "\n联合研究先按能力目录读取匹配的内部数据，再搜索和读取公开资料；一个来源不可用不能阻止另一个来源交付。查询基差使用 query_market_series。公开搜索未配置时明确说明，不编造链接、不假装已完成联合分析。"},
                 {"role": "system", "content": "当前能力目录（服务端已过滤）：" + json.dumps(capability, ensure_ascii=False, separators=(",", ":"))}]
     for message in (history or [])[-12:]:
@@ -113,6 +114,8 @@ def project_tool_result(envelope):
 
     payload = envelope.model_dump(mode="json") if hasattr(envelope, "model_dump") else envelope
     payload.pop("rows", None)
+    if payload.get("result_ref") and (payload.get("payload") or {}).get("kind") in {"positions", "trades", "closes", "market_series"}:
+        payload["metadata_ref"] = str(payload["result_ref"]) + "#/metadata"
     limit = 16000
 
     def encode(value):

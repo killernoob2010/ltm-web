@@ -56,3 +56,21 @@ def test_missing_requested_price_marks_answer_partial_without_dropping_view():
     assert result.delivery_status == "partial"
     assert result.views[0]["fields"] == ["contract", "price"]
     assert any(x.code == "view_data_unavailable" for x in result.limitations)
+
+
+def test_metadata_citation_supports_source_explanation_but_not_unbound_numbers():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    ref = str(uuid4())
+    saved = SimpleNamespace(rows=[], envelope=SimpleNamespace(payload={"kind": "positions"}, captured_at=datetime.now(timezone.utc)))
+    api = SimpleNamespace(load_result=lambda *args: saved)
+    raw = {"schema_version": "2.1", "blocks": [{"id": "s1", "kind": "fact", "text": "账本截至时点未知。", "refs": [ref + "#/metadata"]}], "views": []}
+    result = validate_answer21(None, raw, api)
+    assert result.delivery_status == "complete"
+    assert result.evidence[0].result_ref == ref
+    raw["blocks"][0]["text"] = "持仓123手。"
+    rejected = validate_answer21(None, raw, api)
+    assert rejected.delivery_status != "complete"
+    assert any(x.code == "unreferenced_number" for x in rejected.limitations)
+    assert "123" not in rejected.body_markdown
