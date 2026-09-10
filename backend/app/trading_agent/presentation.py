@@ -19,12 +19,16 @@ _LABELS = {
     "fee": "手续费", "market_time": "行情时间", "valuation_status": "估值状态",
     "assignment_status": "归属状态", "basis": "基差", "futures_close": "期货收盘价",
     "wet_spot_price": "湿吨现货价", "business_date": "业务日期", "port": "港口",
-    "product": "品种", "data_status": "数据状态", "row_ref": "行号",
+    "product": "品种", "data_status": "数据状态", "row_ref": "行号", "futures_series": "期货序列",
+    "business_year": "业务年份", "business_week": "业务周次", "week_label": "周次标签",
+    "rule_version": "规则版本", "parameter_version": "参数版本", "source_workbook_name": "来源文件",
+    "source_workbook_sha256": "来源文件哈希", "standardized_spot_price": "标准化现货价",
+    "quality_adjustment": "质量调整", "brand_adjustment": "品牌调整",
 }
 _UNITS = {
     "quantity": "手", "average_price": "元", "valuation_price": "元",
     "floating_pnl": "元", "realized_close_pnl": "元", "fee": "元",
-    "basis": "元/吨", "futures_close": "元/吨", "wet_spot_price": "元/吨",
+    "basis": "元/标准化吨", "futures_close": "元/吨", "wet_spot_price": "元/湿吨",
 }
 _DATE_FIELDS = {"trade_date", "business_date", "expiry_date"}
 _DATETIME_FIELDS = {"market_time", "captured_at", "data_as_of"}
@@ -138,6 +142,8 @@ def _default_fields(kind: str) -> list[str]:
                 "floating_pnl", "market_time", "valuation_status"]
     if kind in {"trades", "closes"}:
         return ["trade_date", "contract", "direction", "quantity", "average_price", "fee", "realized_close_pnl"]
+    if kind == "market_series":
+        return ["business_date", "port", "product", "basis", "futures_close", "wet_spot_price", "data_status"]
     return ["row_ref"]
 
 
@@ -187,10 +193,11 @@ def _summary(saved: Any, rows: list[dict], fields: list[str]) -> dict:
     envelope = saved.envelope
     metrics = getattr(envelope, "metrics", {}) or {}
     result = {}
+    kind = (envelope.payload or {}).get("kind") if hasattr(envelope, "payload") else None
     for field in fields:
         metric = metrics.get(field) if hasattr(metrics, "get") else None
         value = _metric_wire(metric)
-        if value is None and metric is None and field in _DECIMAL_FIELDS:
+        if value is None and metric is None and kind != "market_series" and field in _DECIMAL_FIELDS:
             values = [_decimal(row.get(field)) for row in rows]
             values = [item for item in values if item is not None]
             value = str(sum(values, Decimal(0))) if values else None
@@ -223,6 +230,10 @@ def _coverage(saved: Any, rows: list[dict]) -> dict:
             (row.get("contract"), row.get("direction"))
             for row in rows if row.get("valuation_price") is not None and row.get("contract") is not None
         }
+    elif kind == "market_series":
+        covered_rows = sum(1 for row in rows if row.get("data_status") == "有效")
+        covered = [value for row, value in quantities if row.get("data_status") == "有效" and value is not None]
+        covered_contract_keys = set()
     else:
         covered_rows = eligible_rows
         covered = [value for _, value in quantities if value is not None]
@@ -239,8 +250,8 @@ def _coverage(saved: Any, rows: list[dict]) -> dict:
         "covered_rows": covered_rows,
         "eligible_quantity": str(eligible_quantity) if any(value is not None for _, value in quantities) else None,
         "covered_quantity": str(sum(covered, Decimal(0))) if covered else "0",
-        "eligible_contracts": len(eligible_contract_keys),
-        "covered_contracts": len(covered_contract_keys),
+        "eligible_contracts": None if kind == "market_series" else len(eligible_contract_keys),
+        "covered_contracts": None if kind == "market_series" else len(covered_contract_keys),
     }
 
 

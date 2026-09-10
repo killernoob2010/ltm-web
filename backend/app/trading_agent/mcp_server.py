@@ -126,6 +126,11 @@ def build_mcp_server() -> MCPServer:
                         classification: Literal["all", "unclassified", "classified"] = "all") -> tools.ToolResponse:
         return _response("query_positions", {**locals(), "contracts": contracts or []})
 
+    def query_market_series(dataset: Literal["iron_ore_basis"], start_date: str, end_date: str,
+                             metrics: list[str], ports: list[str] | None = None,
+                             products: list[str] | None = None) -> tools.ToolResponse:
+        return _response("query_market_series", {**locals(), "ports": ports or [], "products": products or []})
+
     def summarize_positions(result_ref: str, group_by: list[str], metrics: list[str], order_by: str | None = None,
                             descending: bool = True) -> tools.ToolResponse:
         return _response("summarize_positions", locals())
@@ -157,6 +162,7 @@ def build_mcp_server() -> MCPServer:
 
     for name, fn in (("describe_capabilities", describe_capabilities), ("query_trade_facts", query_trade_facts),
                      ("query_close_facts", query_close_facts), ("query_positions", query_positions),
+                     ("query_market_series", query_market_series),
                      ("summarize_positions", summarize_positions), ("summarize_facts", summarize_facts),
                      ("read_result_page", read_result_page), ("compare_results", compare_results),
                      ("get_position_risk", get_position_risk), ("run_scenario", run_scenario),

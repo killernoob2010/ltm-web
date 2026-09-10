@@ -75,3 +75,38 @@ def test_build_view_summary_uses_full_snapshot_not_first_page():
     assert view["pagination"]["total_rows"] == 101
     assert view["summary"]["quantity"] == "5151"
     assert len(view["rows"]) == 20
+
+
+def test_market_series_view_keeps_source_metrics_and_does_not_recompute():
+    from app.trading_agent.presentation import build_view
+
+    saved = SimpleNamespace(
+        rows=[{
+            "business_date": "2026-09-06", "port": "日照港", "product": "PB粉",
+            "basis": "123.45", "futures_close": "700", "wet_spot_price": "680",
+            "data_status": "有效",
+        }],
+        envelope=ToolEnvelope(
+            status="complete",
+            captured_at="2026-09-10T03:22:46+00:00",
+            calculation_version="market-presentation-test",
+            payload={"kind": "market_series"},
+        ),
+    )
+    view = build_view(
+        None,
+        {
+            "id": "v1", "kind": "table", "result_ref": "00000000-0000-0000-0000-000000000001",
+            "fields": [], "title": "期现数据",
+        },
+        SimpleNamespace(),
+        saved=saved,
+    )
+
+    assert [column["key"] for column in view["columns"]] == [
+        "business_date", "port", "product", "basis", "futures_close", "wet_spot_price", "data_status",
+    ]
+    assert view["columns"][3]["unit"] == "元/标准化吨"
+    assert view["summary"]["basis"] is None
+    assert view["coverage"]["eligible_contracts"] is None
+    assert view["coverage"]["covered_contracts"] is None

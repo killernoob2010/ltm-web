@@ -16,7 +16,11 @@ VERSION = "effective-facts-live-pnl-v2"
 PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","average_price","fee","realized_close_pnl",
     "floating_pnl","group_key","valuation_price","valuation_status","market_time","contract_multiplier",
     "underlying_symbol","underlying_price","expiry_date","formation_method","settlement_type","count",
-    "iv","delta","gamma","theta","vega","rho","unit_greeks","display_greeks","position_exposures"}
+    "iv","delta","gamma","theta","vega","rho","unit_greeks","display_greeks","position_exposures",
+    "business_date","business_year","business_week","week_label","port","futures_series","basis",
+    "futures_close","wet_spot_price","data_status","quality_adjustment","brand_adjustment",
+    "standardized_spot_price","rule_version","parameter_version","source_workbook_name",
+    "source_workbook_sha256"}
 
 
 def _account_labels(cur, account_ids):

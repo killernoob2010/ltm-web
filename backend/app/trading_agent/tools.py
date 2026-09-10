@@ -7,9 +7,10 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field
+from fastapi import HTTPException
 
 from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
-from . import catalog, facts, risk, store, execution
+from . import catalog, facts, market_data, risk, store, execution
 
 
 class ToolResponse(StrictModel):
@@ -120,14 +121,23 @@ def default_quote_provider(requests, *, timeout_seconds=5):
 
 def _capability_envelope(principal) -> ToolEnvelope:
     now = datetime.now(timezone.utc).replace(microsecond=0)
+    market_allowed = True
+    try:
+        from .auth import authorize
+
+        authorize(principal, "trading.facts")
+        authorize(principal, "data_visualization.display")
+    except HTTPException:
+        market_allowed = False
     data = {
         "account_scope": "宏源期货 canonical account（由服务端确定）",
         "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"},
         "dimensions": catalog.DIMENSIONS,
         "metrics": {kind: sorted(values) for kind, values in catalog.METRICS.items()},
-        "tools": sorted(TOOL_SPECS),
+        "tools": sorted(name for name in TOOL_SPECS if market_allowed or name != "query_market_series"),
         "limits": {"snapshot_rows": 20000, "preview_rows": 20, "page_size": [20, 50, 100]},
         "calculation_versions": {"facts": facts.VERSION, "risk": risk.VERSION},
+        "datasets": {market_data.DATASET: market_data.dataset_catalog()} if market_allowed else {},
     }
     return ToolEnvelope(status="complete", captured_at=now, calculation_version="catalog-v2", payload=data)
 
@@ -146,6 +156,8 @@ def dispatch(principal, name: str, arguments: dict[str, Any] | None = None, *, q
         return _capability_envelope(principal)
     if name == "query_positions":
         return facts.capture_positions(principal, _query_from_position(args), quote_provider or default_quote_provider)
+    if name == "query_market_series":
+        return market_data.capture_market_series(principal, args)
     if name == "query_trade_facts":
         return facts.capture_facts(principal, "trades", args.start_date, args.end_date,
                                    FactQuery(asset_type=args.asset_type, contracts=args.contracts,
@@ -202,6 +214,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "query_trade_facts": {"model": FactArgs, "description": "按事实交易日读取宏源去重后的全量成交事实。"},
     "query_close_facts": {"model": FactArgs, "description": "读取已核验的平仓、行权、履约或放弃事实。"},
     "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓并冻结行情。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。返回 metrics.quantity 是全量持仓总手数；payload.groups 提供按账户、合约、期货或期权、多空方向的可引用分组指标。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
+    "query_market_series": {"model": market_data.MarketSeriesArgs, "description": "按已登记日期、港口和品种读取铁矿石期现结果；只返回源表已保存的基差、期货收盘价和湿吨现货价，不重新计算。非有效状态保留为异常或缺失。"},
     "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总；逐项持仓请使用 group_by=['account','contract','asset_type','direction'] 和 metrics=['quantity']（需要时再加 floating_pnl），每个分组可用 /payload/groups/{index}/metrics/{metric} 引用。"},
     "summarize_facts": {"model": SummaryArgs, "description": "基于完整事实结果按白名单属性汇总。"},
     "read_result_page": {"model": PageArgs, "description": "读取已授权不可变结果的下一页。"},
@@ -214,6 +227,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
-def tool_schemas() -> list[dict[str, Any]]:
+def tool_schemas(*, include_market: bool = True) -> list[dict[str, Any]]:
     return [{"name": name, "description": spec["description"], "inputSchema": spec["model"].model_json_schema()}
-            for name, spec in TOOL_SPECS.items()]
+            for name, spec in TOOL_SPECS.items()
+            if include_market or name != "query_market_series"]
