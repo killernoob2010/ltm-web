@@ -156,6 +156,24 @@ def test_completed_view_can_be_read_without_active_run(route_client):
     assert payload["coverage"]["covered_quantity"] == "5"
 
 
+def test_history_and_task_do_not_expose_answer_after_permission_revocation(route_client):
+    client, uid, conversation_id, message_id, _ = _finished_view_task(route_client)
+    with db.connect() as conn:
+        task_id = conn.execute("SELECT task_id FROM closing_review_messages WHERE id=?", (message_id,)).fetchone()[0]
+    history_path = f"/trading-agent-v2/conversations/{conversation_id}/messages"
+    assert "已保留持仓表" in client.get(history_path).text
+    with db.connect() as conn:
+        conn.execute("UPDATE module_permissions SET can_view=0 WHERE user_id=? AND module_code='trading_positions'", (uid,))
+    history = client.get(history_path)
+    assert history.status_code == 200
+    answer = next(item for item in history.json()["items"] if item["id"] == message_id)
+    assert answer["structured_payload"] is None
+    assert "已保留持仓表" not in answer["content"]
+    task = client.get(f"/trading-agent-v2/tasks/{task_id}").json()
+    assert "已保留持仓表" not in task["answer"]
+    assert task["result_refs"] == []
+
+
 def test_view_rechecks_live_permission_and_expiry(route_client):
     client, uid, conversation_id, message_id, ref = _finished_view_task(route_client)
     path = f"/trading-agent-v2/conversations/{conversation_id}/messages/{message_id}/views/v1"

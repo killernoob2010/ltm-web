@@ -55,6 +55,19 @@ def _conversation(row):
             "status": row["status"], "created_at": _seconds(row.get("created_at")), "updated_at": _seconds(row.get("updated_at"))}
 
 
+def _readable_answer(user_id, conversation_id, content, payload):
+    if not isinstance(payload, dict) or payload.get("schema_version") != "2.1":
+        return content, payload
+    refs = {item["result_ref"] for field in ("views", "evidence")
+            for item in payload.get(field, []) if isinstance(item, dict) and item.get("result_ref")}
+    try:
+        for ref in refs:
+            store.load_result_for_view(user_id, conversation_id, ref)
+    except (HTTPException, store.ResultExpired, ValueError):
+        return "该答案的来源已过期或当前权限无法读取，请在权限恢复后重新查询。", None
+    return content, payload
+
+
 def _owned_conversation(user_id, conversation_id):
     with db.connect() as conn:
         row = db._exec(conn.cursor(), """SELECT * FROM closing_review_conversations
@@ -109,8 +122,11 @@ def list_messages(conversation_id: int, user: dict = Depends(trading_management_
         import json
         try: structured=json.loads(value.get("structured_payload")) if value.get("structured_payload") else None
         except (TypeError,ValueError): structured=None
+        content = value.get("content")
+        if value.get("role") == "assistant":
+            content, structured = _readable_answer(user["id"], conversation_id, content, structured)
         items.append({"id":value["id"],"conversation_id":conversation_id,"task_id":value.get("task_id"),"role":value.get("role"),
-                      "message_type":value.get("message_type"),"content":value.get("content"),"structured_payload":structured,
+                      "message_type":value.get("message_type"),"content":content,"structured_payload":structured,
                       "created_at":_seconds(value.get("created_at"))})
     with db.connect() as conn:
         active = db._exec(conn.cursor(), """SELECT t.*,r.delivery_state
@@ -173,6 +189,7 @@ def get_task(task_id: int, user: dict = Depends(trading_management_current_user)
         import json
         try: result["answer"]=message["content"]; payload=json.loads(message["structured_payload"]) if message["structured_payload"] else {}
         except (TypeError,ValueError): payload={}
+        result["answer"], payload = _readable_answer(user["id"], task["conversation_id"], result["answer"], payload)
         if isinstance(payload, dict):
             refs = list(payload.get("fact_refs", []))
             refs.extend(item.get("result_ref") for item in payload.get("evidence", []) if isinstance(item, dict) and item.get("result_ref"))
