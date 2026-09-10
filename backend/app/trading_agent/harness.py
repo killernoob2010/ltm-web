@@ -75,6 +75,24 @@ def _safe_error_code(exc: Exception) -> str:
     return type(exc).__name__
 
 
+def _position_preflight_args(user_text: str) -> dict[str, Any] | None:
+    """Build the narrow, read-only position query needed by mixed requests."""
+    text = str(user_text or "")
+    if "持仓" not in text or not re.search(r"手数|持仓数量|持仓.*(?:数量|多少)", text):
+        return None
+    asset_type = "future" if "期货" in text and "期权" not in text else "all"
+    return {
+        "as_of_mode": "latest",
+        "as_of_date": None,
+        "asset_type": asset_type,
+        "contracts": [],
+        "direction": "all",
+        "classification": "all",
+        "valuation_mode": "quantity_only",
+        "required_metrics": ["quantity"],
+    }
+
+
 async def _bounded_call(factory, *, clock, started, total_seconds, call_seconds):
     """Run an async or sync-compatible call without exceeding task time."""
     remaining = float(total_seconds) - (clock() - started)
@@ -403,6 +421,55 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 "readiness": research_policy.public_provider_readiness(),
             }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
+        preflight_context = []
+        preflight_args = (
+            _position_preflight_args(user_text)
+            if restricted_modules and has_internal_request(user_text) else None
+        )
+        if preflight_args is not None and budget.tool_calls < budget.max_tools:
+            budget.tool_calls += 1
+            await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
+            try:
+                preflight = await _bounded_call(
+                    lambda: deps.mcp.call_tool("query_positions", preflight_args, grant),
+                    clock=deps.clock,
+                    started=started,
+                    total_seconds=budget.deadline_seconds,
+                    call_seconds=deps.limits.tool_timeout_seconds,
+                )
+                if getattr(preflight, "result_ref", None):
+                    known_result_refs.append(str(preflight.result_ref))
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "tool",
+                    tool_name="query_positions",
+                    arguments=preflight_args,
+                    result_ref=getattr(preflight, "result_ref", None),
+                    status=getattr(preflight, "status", None),
+                )
+                if getattr(preflight, "status", None) in {"complete", "partial"}:
+                    preflight_context.append(
+                        "服务端已为当前混合请求预取仅限授权账户的持仓证据；请优先使用该结果回答持仓部分，"
+                        "不要查询或推断受限模块：" + prompts.project_tool_result(preflight)
+                    )
+            except ExecutionDeadline:
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "tool_error",
+                    tool_name="query_positions",
+                    error_code="deadline_exceeded",
+                )
+            except Exception as exc:
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "tool_error",
+                    tool_name="query_positions",
+                    arguments=preflight_args,
+                    error_code=_safe_error_code(exc),
+                )
         messages = prompts.build_messages(
             history,
             capability_payload,
@@ -410,6 +477,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             restricted_modules=restricted_modules,
             public_research_unavailable=bool(public_unavailable),
         )
+        if preflight_context:
+            messages.append({"role": "system", "content": "\n\n".join(preflight_context)})
         if live_tools is not None and hasattr(deps.mcp, "endpoint"):
             raw_live_tools = live_tools.get("tools", live_tools) if isinstance(live_tools, dict) else getattr(live_tools, "tools", live_tools)
             if isinstance(raw_live_tools, (list, tuple)) and not public_tools_allowed(plan, configured):

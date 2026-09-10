@@ -102,6 +102,50 @@ def test_mixed_restricted_prompt_requires_supported_part_to_be_completed():
     assert "必须先完成仍可回答的内部问题" in system_text
 
 
+def test_mixed_position_preflight_is_limited_to_authorized_quantity_query():
+    args = harness._position_preflight_args("请统计当前全部期货持仓手数，并同时查询订单融资的放款状态")
+    assert args == {
+        "as_of_mode": "latest",
+        "as_of_date": None,
+        "asset_type": "future",
+        "contracts": [],
+        "direction": "all",
+        "classification": "all",
+        "valuation_mode": "quantity_only",
+        "required_metrics": ["quantity"],
+    }
+    assert harness._position_preflight_args("请查询订单融资的放款状态") is None
+
+
+@pytest.mark.asyncio
+async def test_mixed_position_request_preflights_authorized_tool_before_model(queued):
+    class PreflightMCP(FakeMCP):
+        def __init__(self):
+            super().__init__()
+            self.position_args = None
+
+        async def call_tool(self, name, args, grant):
+            if name == "query_positions":
+                self.position_args = args
+            return await super().call_tool(name, args, grant)
+
+    task = store.claim_next("mixed-position-preflight")
+    _replace_current_question(task, "请统计当前全部期货持仓手数，并同时查询订单融资的放款状态")
+    mcp = PreflightMCP()
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(
+            store,
+            ScriptedModel([ModelTurn(content=GOOD_ANSWER21)]),
+            mcp,
+            worker_id="mixed-position-preflight",
+        ),
+    )
+    assert result.delivery_status == "partial"
+    assert mcp.position_args["asset_type"] == "future"
+    assert mcp.position_args["valuation_mode"] == "quantity_only"
+
+
 def test_budget_fallback_preserves_verified_dataset_result(queued):
     task = store.claim_next("dataset-fallback")
     principal = store.principal_for_task(task)
