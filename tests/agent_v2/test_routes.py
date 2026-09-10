@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import db
+from app.trading_agent import store
+from app.trading_agent.contracts import MetricValue, ToolEnvelope
 from app.trading_agent import routes
 from app.trading_agent.schema import migrate_agent_v2_schema
 
@@ -73,3 +75,88 @@ def test_poll_closes_expired_task_when_worker_is_unavailable(route_client):
     assert response['state'] == 'failed'
     assert '排队' in response['answer']
     assert response['poll_timeout_seconds'] >= 210
+
+
+def _finished_view_task(route_client):
+    client, uid = route_client
+    conversation = client.post("/trading-agent-v2/conversations", json={}).json()
+    task_id = client.post(
+        f"/trading-agent-v2/conversations/{conversation['id']}/messages",
+        json={"client_request_id": str(uuid4()), "content": "查看冻结持仓"},
+    ).json()["task_id"]
+    assert store.claim_next("view-worker") == task_id
+    principal = store.principal_for_task(task_id)
+    ref = store.save_result(
+        principal,
+        ToolEnvelope(
+            status="partial",
+            captured_at=store.now(),
+            calculation_version="view-test",
+            payload={"kind": "positions"},
+            metrics={"quantity": MetricValue(value="6", unit="手", status="complete", covered_rows=3, eligible_rows=3)},
+        ),
+        [
+            {"row_ref": "r1", "contract": "i2609", "direction": "买", "quantity": "1", "valuation_price": None},
+            {"row_ref": "r2", "contract": "i2609", "direction": "卖", "quantity": "2", "valuation_price": "700"},
+            {"row_ref": "r3", "contract": "i2610", "direction": "买", "quantity": "3", "valuation_price": "701"},
+        ],
+    )
+    validated = {
+        "schema_version": "2.1",
+        "delivery_status": "partial",
+        "body_markdown": "已保留持仓表。",
+        "plain_text": "已保留持仓表。",
+        "evidence": [],
+        "views": [{
+            "id": "v1", "kind": "table", "result_ref": str(ref),
+            "fields": ["contract", "quantity", "valuation_price"], "title": "持仓表",
+        }],
+        "limitations": [],
+    }
+    assert store.finish(task_id, "view-worker", "partial", "已保留持仓表。", structured_payload=validated)
+    with db.connect() as conn:
+        message_id = conn.execute(
+            "SELECT id FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()["id"]
+    return client, uid, conversation["id"], message_id, ref
+
+
+def test_completed_view_can_be_read_without_active_run(route_client):
+    client, _, conversation_id, message_id, _ = _finished_view_task(route_client)
+
+    response = client.get(
+        f"/trading-agent-v2/conversations/{conversation_id}/messages/{message_id}/views/v1",
+        params={"page": 1, "page_size": 20},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["view_id"] == "v1"
+    assert payload["pagination"]["total_rows"] == 3
+    assert payload["rows"][0]["valuation_price"] is None
+    assert payload["coverage"]["eligible_quantity"] == "6"
+    assert payload["coverage"]["covered_quantity"] == "5"
+
+
+def test_view_rechecks_live_permission_and_expiry(route_client):
+    client, uid, conversation_id, message_id, ref = _finished_view_task(route_client)
+    path = f"/trading-agent-v2/conversations/{conversation_id}/messages/{message_id}/views/v1"
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE module_permissions SET can_view=0 WHERE user_id=? AND module_code='trading_positions'",
+            (uid,),
+        )
+    assert client.get(path).status_code == 403
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE module_permissions SET can_view=1 WHERE user_id=? AND module_code='trading_positions'",
+            (uid,),
+        )
+        conn.execute(
+            "UPDATE agent_v2_results SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
+            (str(ref),),
+        )
+    assert client.get(path).status_code == 410
