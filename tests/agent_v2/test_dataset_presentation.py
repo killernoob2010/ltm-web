@@ -183,6 +183,25 @@ def test_dataset_summary_does_not_expose_trade_only_coverage_terms():
     assert "row_count" in result["summary"]
 
 
+def test_dataset_summary_default_view_includes_registered_group_dimensions():
+    from app.trading_agent.presentation import build_view
+
+    saved = _saved([
+        {
+            "row_ref": "summary:1", "business_year": 2022, "value": "100",
+            "covered_rows": 4, "eligible_rows": 4, "status": "complete",
+        },
+    ], kind="dataset_summary", dataset="inventory_summary", payload={
+        "group_by": ["business_year"], "value_fields": ["value"],
+    })
+    result = build_view(None, ViewRequest(
+        id="v1", kind="table", result_ref=REF, fields=[], title="年度库存",
+    ), SimpleNamespace(), saved=saved)
+
+    assert [column["key"] for column in result["columns"]][:2] == ["business_year", "value"]
+    assert result["rows"][0]["business_year"] == 2022
+
+
 def test_dataset_row_delta_reference_is_allowed_but_hidden_or_invalid_values_are_not():
     from app.trading_agent.answer_v21 import validate_answer21
 

@@ -251,7 +251,10 @@ def _dataset_fields(saved: Any, fields: list[str]) -> list[str]:
         return [field for field in defaults if field in allowed_fields_for_saved(saved)]
     if kind in _DATASET_RESULT_KINDS:
         allowed = allowed_fields_for_saved(saved)
-        return [field for field in _default_fields(kind) if field in allowed]
+        group_by = payload.get("group_by", [])
+        dimensions = [field for field in group_by if isinstance(field, str)] if isinstance(group_by, list) else []
+        preferred = [*dimensions, *_default_fields(kind)]
+        return [field for field in dict.fromkeys(preferred) if field in allowed]
     return list(fields)
 
 
