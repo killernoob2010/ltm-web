@@ -10,3 +10,45 @@ test("agent page probes V2 capabilities and preserves V1 fallback", () => {
   assert.match(source, /state\.v2 = Boolean\(capabilities && capabilities\.enabled\)/);
   assert.match(source, /waitForTask/);
 });
+
+const { default: vm } = await import('node:vm');
+const pollingFunction = source.slice(source.indexOf('  async function waitForTask'), source.indexOf('  async function submitMessage'));
+
+function pollingHarness(api) {
+  let now = 0;
+  const context = {
+    state: { activation: 1, api: (url) => api(url, now) },
+    endpoint: () => '/api/trading-agent-v2',
+    setStatus: () => {},
+    Date: { now: () => now },
+    setTimeout: (resolve, delay) => { now += delay; resolve(); },
+  };
+  vm.runInNewContext(pollingFunction, context);
+  return context.waitForTask;
+}
+
+test('polling includes queue time and returns the server terminal state', async () => {
+  const wait = pollingHarness(async (url, elapsed) => ({
+    state: elapsed < 120000 ? 'queued' : elapsed < 160000 ? 'running' : 'succeeded',
+    poll_timeout_seconds: 225,
+  }));
+  assert.equal((await wait(42, 1)).state, 'succeeded');
+});
+
+test('transient status-read failure retries the same task without resubmitting', async () => {
+  let reads = 0;
+  const wait = pollingHarness(async (url) => {
+    assert.equal(url, '/api/trading-agent-v2/tasks/42');
+    if (++reads < 3) throw new Error('temporary network failure');
+    return { state: 'succeeded' };
+  });
+  assert.equal((await wait(42, 1)).state, 'succeeded');
+  assert.equal(reads, 3);
+});
+
+test('repeated status-read failure stops monitoring after three attempts', async () => {
+  let reads = 0;
+  const wait = pollingHarness(async () => { reads++; throw new Error('unavailable'); });
+  await assert.rejects(wait(42, 1), /unavailable/);
+  assert.equal(reads, 3);
+});

@@ -7,7 +7,7 @@ from threading import Event
 import time
 
 TASK_SECONDS = 90
-TOOL_SECONDS = 15
+TOOL_SECONDS = 25
 LEASE_SECONDS = 30
 HEARTBEAT_SECONDS = 5
 logger = logging.getLogger(__name__)
