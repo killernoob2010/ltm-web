@@ -17,17 +17,17 @@ test("closing review Agent has one guarded workspace entry point", () => {
   assert.match(appJs, /closingReviewAgentPage/);
 });
 
-test("Agent workspace separates history, automatic results, suggestions and the single composer", () => {
+test("Agent workspace separates history, results and the single composer without suggestions", () => {
   assert.match(indexHtml, /id="closingReviewHistory"/);
   assert.match(indexHtml, /id="closingReviewMessages"/);
-  assert.match(indexHtml, /id="closingReviewSuggestions"/);
+  assert.doesNotMatch(indexHtml, /closingReviewSuggestions/);
   assert.match(indexHtml, /id="closingReviewComposer"/);
   assert.match(indexHtml, /id="closingReviewInput"/);
   assert.match(indexHtml, /id="closingReviewSendBtn"/);
   assert.match(indexHtml, /自动持仓结果/);
   assert.match(agentJs, /ENDPOINT = "\/api\/closing-review-agent"/);
   assert.match(agentJs, /ENDPOINT\}\/conversations/);
-  assert.match(agentJs, /ENDPOINT\}\/suggestions/);
+  assert.doesNotMatch(agentJs, /suggestion/i);
   assert.match(agentJs, /\/messages/);
   assert.match(agentJs, /message_type/);
   assert.match(agentJs, /重试原问题/);
@@ -57,5 +57,5 @@ test("Agent exposes seconds-only timestamps and evidence/status labels", () => {
   assert.match(agentJs, /最新来源|结果已更新/);
   assert.match(css, /\.closing-review-agent-page/);
   assert.match(css, /\.closing-review-agent-composer/);
-  assert.match(css, /\.closing-review-agent-suggestion/);
+  assert.doesNotMatch(css, /\.closing-review-agent-suggestion/);
 });

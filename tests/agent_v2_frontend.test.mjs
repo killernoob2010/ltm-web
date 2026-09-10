@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const source = fs.readFileSync(new URL("../frontend/closing_review_agent.js", import.meta.url), "utf8");
+const progressSource = fs.readFileSync(new URL("../frontend/agent_progress.js", import.meta.url), "utf8");
 
 test("agent page probes V2 capabilities and preserves V1 fallback", () => {
   assert.match(source, /const ENDPOINT = "\/api\/closing-review-agent"/);
@@ -51,4 +52,12 @@ test('repeated status-read failure stops monitoring after three attempts', async
   const wait = pollingHarness(async () => { reads++; throw new Error('unavailable'); });
   await assert.rejects(wait(42, 1), /unavailable/);
   assert.equal(reads, 3);
+});
+
+test('progress reducer keeps terminal state and formats Beijing seconds', async () => {
+  const progressModule = await import(new URL('../frontend/agent_progress.js', import.meta.url));
+  const done = { sequence: 9, stage: 'finished', terminal: true, elapsed_seconds: 12 };
+  assert.deepEqual(progressModule.reduceProgress(done, { sequence: 8, stage: 'search', terminal: false }), done);
+  assert.equal(progressModule.formatBeijingSeconds('2026-09-10T18:01:02.999+00:00'), '2026-09-11 02:01:02');
+  assert.match(progressSource, /Asia\/Shanghai/);
 });

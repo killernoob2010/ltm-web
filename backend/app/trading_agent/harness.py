@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from . import answer, prompts, tools, execution
+from . import answer, prompts, progress, tools, execution
 from .answer_contracts import ValidatedAnswer21
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
@@ -157,6 +157,12 @@ async def _finish21(deps: RuntimeDeps, task_id: int, result: ValidatedAnswer21):
     )
 
 
+async def _record_stage(deps: RuntimeDeps, principal, stage: str, status: str):
+    await asyncio.to_thread(
+        progress.record_stage, principal, stage, status, store_api=deps.store
+    )
+
+
 def _bound_messages(messages, max_chars=48000):
     sizes = [len(str(item.get("content") or "")) + len(json.dumps(item.get("tool_calls") or [], ensure_ascii=False))
              for item in messages]
@@ -295,6 +301,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 break
             budget.model_calls += 1
             await asyncio.to_thread(deps.store.record_usage, task_id, model_calls=1)
+            await _record_stage(deps, principal, "composing", "running")
             try:
                 turn = await _bounded_call(
                     lambda: _model_call(
@@ -377,6 +384,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             raw_answer = turn.content or ""
             if protocol21_mode or _looks_like_answer21(raw_answer):
                 protocol21_mode = True
+                await _record_stage(deps, principal, "composing", "complete")
+                await _record_stage(deps, principal, "validation", "running")
                 v21_issues = []
                 try:
                     draft21 = answer.parse_answer21(raw_answer)
@@ -388,6 +397,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 except answer.Answer21ValidationError as exc:
                     v21_issues = exc.as_dicts()
                 if v21_issues:
+                    await _record_stage(deps, principal, "validation", "failed")
                     await asyncio.to_thread(
                         deps.store.append_event,
                         principal,
@@ -407,13 +417,17 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     final = _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed")
                     break
                 final = validated21
+                await _record_stage(deps, principal, "validation", "complete")
                 await _finish21(deps, task_id, final)
                 return final
             else:
+                await _record_stage(deps, principal, "composing", "complete")
+                await _record_stage(deps, principal, "validation", "running")
                 try:
                     candidate = answer.parse_answer(raw_answer)
                     rendered = await asyncio.to_thread(answer.render_answer, principal, candidate, deps.store)
                 except answer.AnswerValidationError as exc:
+                    await _record_stage(deps, principal, "validation", "failed")
                     await asyncio.to_thread(deps.store.append_event,
                         principal,
                         "answer_validation",
@@ -435,6 +449,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     break
                 else:
                     final = candidate
+                    await _record_stage(deps, principal, "validation", "complete")
                     await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
                                       structured_payload=_draft_payload(final))
                     return final
