@@ -3206,6 +3206,31 @@ def migrate_mid_event_schema(conn) -> None:
 def migrate_auth_schema(conn) -> None:
     if _is_pg():
         cur = conn.cursor()
+        # An idempotent ALTER still takes AccessExclusiveLock. Avoid repeating
+        # auth DDL while the Web service and Agent are reading these tables.
+        cur.execute("""
+            SELECT
+              (SELECT count(*) FROM information_schema.columns
+               WHERE table_schema='public' AND (
+                 (table_name='users' AND column_name IN
+                   ('is_guest','cannot_change_password','username','password_change_recommended'))
+                 OR (table_name='module_permissions' AND column_name='can_sensitive')
+                 OR (table_name='user_sessions' AND column_name='expires_at'))) = 6
+              AND EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='users'
+                  AND column_name='username' AND is_nullable='NO')
+              AND EXISTS (SELECT 1 FROM pg_index
+                  WHERE indexrelid=to_regclass('public.idx_users_username_unique')
+                  AND indisunique AND indisvalid)
+              AND NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid=to_regclass('public.users') AND conname='users_name_key')
+              AS ready
+        """)
+        if cur.fetchone()["ready"]:
+            cur.execute("UPDATE users SET username = name WHERE username = ''")
+            cur.execute("UPDATE users SET department = '管理部门' WHERE role IN ('管理员', 'admin') AND department != '管理部门'")
+            conn.commit()
+            return
         cur.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'module_permissions'"
         )
