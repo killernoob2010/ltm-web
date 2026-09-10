@@ -293,6 +293,8 @@ def _summary(saved: Any, rows: list[dict], fields: list[str]) -> dict:
     kind = (envelope.payload or {}).get("kind") if hasattr(envelope, "payload") else None
     for field in fields:
         metric = metrics.get(field) if hasattr(metrics, "get") else None
+        if kind != "market_series" and metric is None and field not in {"quantity", "floating_pnl", "realized_close_pnl", "fee"}:
+            continue
         value = _metric_wire(metric)
         if value is None and metric is None and kind != "market_series" and field in _DECIMAL_FIELDS:
             values = [_decimal(row.get(field)) for row in rows]
@@ -324,7 +326,7 @@ def _coverage(saved: Any, rows: list[dict]) -> dict:
         covered_rows = sum(1 for row in rows if row.get("valuation_price") is not None)
         covered = [value for row, value in quantities if row.get("valuation_price") is not None and value is not None]
         covered_contract_keys = {
-            (row.get("contract"), row.get("direction"))
+            row.get("contract")
             for row in rows if row.get("valuation_price") is not None and row.get("contract") is not None
         }
     elif kind == "market_series":
@@ -335,11 +337,11 @@ def _coverage(saved: Any, rows: list[dict]) -> dict:
         covered_rows = eligible_rows
         covered = [value for _, value in quantities if value is not None]
         covered_contract_keys = {
-            (row.get("contract"), row.get("direction"))
+            row.get("contract")
             for row in rows if row.get("contract") is not None
         }
     eligible_contract_keys = {
-        (row.get("contract"), row.get("direction"))
+        row.get("contract")
         for row in rows if row.get("contract") is not None
     }
     return {

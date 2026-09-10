@@ -85,3 +85,20 @@ def test_quote_wait_is_bounded_and_does_not_queue_more_requests(monkeypatch):
         assert calls == [1]
     finally:
         release.set()
+
+
+def test_default_quote_wait_covers_observed_cold_start_but_remains_bounded(monkeypatch):
+    from app.trading_agent import tools
+    class Future:
+        def add_done_callback(self, callback):
+            callback(self)
+        def result(self, timeout):
+            if timeout < 12:
+                raise TimeoutError("cold provider needs twelve seconds")
+            assert timeout <= 22
+            return {"sample": "available"}
+    class Executor:
+        def submit(self, *args):
+            return Future()
+    monkeypatch.setattr(tools, "_quote_executor", Executor())
+    assert tools.default_quote_provider([]) == {"sample": "available"}

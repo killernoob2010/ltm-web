@@ -100,7 +100,7 @@ _quote_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-qu
 _quote_slot = BoundedSemaphore(1)
 
 
-def default_quote_provider(requests, *, timeout_seconds=5):
+def default_quote_provider(requests, *, timeout_seconds=15):
     from ..trading_valuation import get_quote_snapshots
 
     execution.checkpoint()

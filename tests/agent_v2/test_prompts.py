@@ -32,8 +32,9 @@ def test_prompt_example_is_valid_answer_draft_and_time_semantics_are_explicit():
     assert "captured_at" in prompts.SYSTEM_PROMPT
     assert "data_as_of 未提供时必须明确未知" in prompts.SYSTEM_PROMPT
     assert "工具结果为 partial 时" in prompts.SYSTEM_PROMPT
-    assert "账户、合约和多空方向" in prompts.SYSTEM_PROMPT
-    assert "/payload/groups/0/metrics/quantity" in prompts.SYSTEM_PROMPT
+    assert "账户、合约、资产类型和多空方向" in prompts.SYSTEM_PROMPT
+    assert "正文不重复表内数字" in prompts.SYSTEM_PROMPT
+    assert "spans 引用真实返回的指标路径" in prompts.SYSTEM_PROMPT
 
 
 def test_prompt_distinguishes_registered_public_refs_from_urls():

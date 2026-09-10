@@ -3,6 +3,21 @@ from types import SimpleNamespace
 from app.trading_agent.contracts import MetricValue, ToolEnvelope
 
 
+def test_position_summary_never_adds_prices_or_counts_sides_as_contracts():
+    from app.trading_agent.presentation import build_view
+    rows = [{"contract": "i2610-c-750", "direction": "buy", "quantity": "2", "average_price": "5", "valuation_price": "6"},
+            {"contract": "i2610-c-750", "direction": "sell", "quantity": "3", "average_price": "9", "valuation_price": "6"}]
+    saved = SimpleNamespace(rows=rows, envelope=ToolEnvelope(status="partial", captured_at="2026-09-10T03:22:46+00:00",
+        calculation_version="test", payload={"kind": "positions"}))
+    result = build_view(None, {"id": "v1", "kind": "table", "result_ref": "00000000-0000-0000-0000-000000000001",
+        "fields": ["contract", "direction", "quantity", "average_price", "valuation_price"], "title": "持仓"}, SimpleNamespace(), saved=saved)
+    assert "average_price" not in result["summary"]
+    assert "valuation_price" not in result["summary"]
+    assert result["summary"]["quantity"] == "5"
+    assert result["coverage"]["eligible_contracts"] == 1
+    assert result["rows"][0]["average_price"] == "5"
+
+
 def test_sort_whole_snapshot_numerically():
     from app.trading_agent.presentation import project_page
 
