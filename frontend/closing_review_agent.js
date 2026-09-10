@@ -15,6 +15,7 @@
     v2: false,
     pending: null,
     progress: null,
+    activeTask: null,
     announcedProgress: "",
     answerRenders: [],
   };
@@ -86,6 +87,13 @@
     return "Agent 回答";
   }
 
+  function historyStatusLabel(conversation) {
+    const selected = Number(conversation.id) === Number(state.conversationId);
+    const taskState = selected && state.activeTask ? String(state.activeTask.state || "") : "";
+    if (taskState === "queued" || taskState === "running") return "处理中";
+    return conversation.status === "active" ? "可继续" : "已归档";
+  }
+
   function renderHistory() {
     clear(history);
     if (!state.conversations.length) {
@@ -98,7 +106,7 @@
       item.className = `closing-review-agent-history-item${Number(conversation.id) === Number(state.conversationId) ? " active" : ""}`;
       item.setAttribute("aria-pressed", String(Number(conversation.id) === Number(state.conversationId)));
       addText(item, "strong", "closing-review-agent-history-title", conversation.title || "交易持仓助手对话");
-      addText(item, "span", "closing-review-agent-history-meta", `${conversation.status === "active" ? "进行中" : "已归档"} · ${timestampSeconds(conversation.updated_at || conversation.last_message_at) || "刚刚"}`);
+      addText(item, "span", "closing-review-agent-history-meta", `${historyStatusLabel(conversation)} · ${timestampSeconds(conversation.updated_at || conversation.last_message_at) || "刚刚"}`);
       item.addEventListener("click", () => selectConversation(conversation.id));
       history.appendChild(item);
     });
@@ -240,6 +248,7 @@
     if (activation !== state.activation || Number(conversationId) !== Number(state.conversationId)) return;
     state.activeTask = data.active_task || null;
     renderMessages(data.items || []);
+    renderHistory();
     if (state.activeTask) renderProgress(state.activeTask);
   }
 
@@ -257,6 +266,7 @@
     }
     const selected = state.conversations.find((item) => Number(item.id) === Number(state.conversationId));
     state.conversationId = selected ? selected.id : state.conversations[0].id;
+    state.activeTask = null;
     renderHistory();
     await loadMessages(state.conversationId, activation);
   }
@@ -264,6 +274,7 @@
   async function selectConversation(conversationId) {
     if (state.loading || Number(state.conversationId) === Number(conversationId)) return;
     state.conversationId = conversationId;
+    state.activeTask = null;
     state.progress = null;
     state.announcedProgress = "";
     renderHistory();
@@ -287,6 +298,7 @@
       });
       state.conversations = [conversation, ...state.conversations];
       state.conversationId = conversation.id;
+      state.activeTask = null;
       state.progress = null;
       renderHistory();
       renderMessages([]);
@@ -354,6 +366,8 @@
       state.pending = null;
       input.value = "";
       article.dataset.taskId = queued.task_id || queued.task_ref || "";
+      state.activeTask = { state: queued.state || "queued" };
+      renderHistory();
       if (state.v2 && queued.task_id) {
         state.progress = null;
         state.announcedProgress = "";
@@ -395,6 +409,7 @@
     const activation = state.activation;
     state.v2 = false;
     state.pending = null;
+    state.activeTask = null;
     state.progress = null;
     state.announcedProgress = "";
     try {

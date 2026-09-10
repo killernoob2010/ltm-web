@@ -12,6 +12,22 @@ test("agent page probes V2 capabilities and preserves V1 fallback", () => {
   assert.match(source, /waitForTask/);
 });
 
+test("conversation history distinguishes active tasks from reusable conversations", () => {
+  assert.match(source, /function historyStatusLabel/);
+  const start = source.indexOf("  function historyStatusLabel");
+  const end = source.indexOf("  function renderHistory", start);
+  const historyStatusFunction = source.slice(start, end);
+  const run = (state, conversation) => {
+    const context = { state, result: null };
+    vm.runInNewContext(`${historyStatusFunction}\nresult = historyStatusLabel(${JSON.stringify(conversation)});`, context);
+    return context.result;
+  };
+  assert.equal(run({conversationId: 7, activeTask: {state: "running"}}, {id: 7, status: "active"}), "处理中");
+  assert.equal(run({conversationId: 7, activeTask: {state: "failed"}}, {id: 7, status: "active"}), "可继续");
+  assert.equal(run({conversationId: 7, activeTask: null}, {id: 7, status: "active"}), "可继续");
+  assert.equal(run({conversationId: 7, activeTask: null}, {id: 7, status: "archived"}), "已归档");
+});
+
 const { default: vm } = await import('node:vm');
 const pollingFunction = source.slice(source.indexOf('  async function waitForTask'), source.indexOf('  async function submitMessage'));
 
