@@ -75,6 +75,21 @@ def test_mixed_result_keeps_completed_body_and_adds_restricted_module_limit():
     assert limited.limitations[0].code == "module_not_connected"
 
 
+def test_mixed_restricted_prompt_requires_supported_part_to_be_completed():
+    messages = prompts.build_messages(
+        [],
+        {"tools": ["query_positions"]},
+        user_text="请统计当前全部期货持仓手数，并同时查询订单融资的放款状态。",
+        restricted_modules=["order_finance"],
+    )
+
+    system_text = "\n".join(
+        item["content"] for item in messages if item.get("role") == "system"
+    )
+    assert "受限模块只能说明限制" in system_text
+    assert "必须先完成仍可回答的内部问题" in system_text
+
+
 def test_budget_fallback_preserves_verified_dataset_result(queued):
     task = store.claim_next("dataset-fallback")
     principal = store.principal_for_task(task)

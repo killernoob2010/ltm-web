@@ -391,7 +391,12 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 "readiness": research_policy.public_provider_readiness(),
             }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
-        messages = prompts.build_messages(history, capability_payload, user_text=user_text)
+        messages = prompts.build_messages(
+            history,
+            capability_payload,
+            user_text=user_text,
+            restricted_modules=restricted_modules,
+        )
         if live_tools is not None and hasattr(deps.mcp, "endpoint"):
             raw_live_tools = live_tools.get("tools", live_tools) if isinstance(live_tools, dict) else getattr(live_tools, "tools", live_tools)
             if isinstance(raw_live_tools, (list, tuple)) and not public_tools_allowed(plan, configured):
