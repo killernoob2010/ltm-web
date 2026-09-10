@@ -211,15 +211,43 @@ def resolve_grant(token):
     return principal
 
 
-def save_result(principal, envelope: ToolEnvelope, rows, *, kind="positions", parent_ref=None, result_ref=None):
+def save_result(
+    principal,
+    envelope: ToolEnvelope,
+    rows,
+    *,
+    kind="positions",
+    parent_ref=None,
+    result_ref=None,
+    required_resources=None,
+    account_scope=None,
+):
     authorize(principal, "trading.facts")
     if len(rows) > 20000:
         raise ValueError("limit_exceeded")
     if parent_ref:
         load_result(principal, parent_ref)
     ref = result_ref or uuid4()
+    payload = dict(envelope.payload or {})
+    existing_resources = payload.get("required_resources")
+    if required_resources is None:
+        required_resources = existing_resources or (
+            ["trading.facts", "data_visualization.display"]
+            if kind == "market_series" else ["trading.facts"]
+        )
+    if not isinstance(required_resources, (list, tuple)):
+        raise ValueError("required_resources must be a list")
+    if account_scope is None:
+        account_scope = principal.account_ids
+    try:
+        account_scope = [int(value) for value in account_scope]
+    except (TypeError, ValueError):
+        raise ValueError("account_scope must be numeric") from None
+    payload["required_resources"] = list(dict.fromkeys(str(value) for value in required_resources))
+    payload["account_scope"] = account_scope
     frozen = envelope.model_copy(deep=True, update={"result_ref": ref,
-        "snapshot_ref": ref if kind=="positions" and not parent_ref else envelope.snapshot_ref})
+        "snapshot_ref": ref if kind=="positions" and not parent_ref else envelope.snapshot_ref,
+        "payload": payload})
     payload = json.dumps({"envelope": frozen.model_dump(mode="json"), "rows": rows}, ensure_ascii=False, allow_nan=False)
     if len(payload.encode("utf-8")) > 10 * 1024 * 1024:
         raise ValueError("limit_exceeded")
@@ -251,13 +279,78 @@ def load_result(principal, ref, *, require_current_task=False):
         raise HTTPException(404, "结果不存在")
     if datetime.fromisoformat(row["expires_at"]) <= now():
         raise ResultExpired("结果已过期")
+    return _stored_result_from_row(row, principal, ref)
+
+
+def _stored_result_from_row(row, principal, ref):
+    if datetime.fromisoformat(row["expires_at"]) <= now():
+        raise ResultExpired("结果已过期")
     payload = json.loads(row["payload_json"])
     if digest(row["payload_json"]) != row["source_hash"]:
         raise ValueError("evidence_integrity_error")
-    return StoredResult(ref=ref,envelope=payload["envelope"],rows=payload["rows"],
+    return StoredResult(ref=ref, envelope=payload["envelope"], rows=payload["rows"],
         owner_user_id=principal.user_id,conversation_id=principal.conversation_id,
         parent_ref=UUID(str(row["parent_ref"])) if row["parent_ref"] else None,
         expires_at=row["expires_at"])
+
+
+def _view_context(user_id, conversation_id, ref):
+    try:
+        ref = UUID(str(ref))
+    except (TypeError, ValueError):
+        raise HTTPException(404, "结果不存在") from None
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), """SELECT r.*, ar.channel, ar.execution_id, ar.account_scope_json
+            FROM agent_v2_results r
+            JOIN agent_v2_runs ar ON ar.task_id=r.task_id
+            WHERE r.id=? AND r.user_id=? AND r.conversation_id=?""",
+            (str(ref), int(user_id), int(conversation_id))).fetchone()
+    if not row:
+        raise HTTPException(404, "结果不存在")
+    try:
+        principal = resolve_principal(
+            int(user_id), row["channel"], int(conversation_id), UUID(str(row["execution_id"]))
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(403, "结果账户范围无法确认") from None
+    return row, principal, ref
+
+
+def load_result_for_view(user_id, conversation_id, result_ref):
+    """Load a frozen result after rechecking live permissions, without a grant."""
+    row, principal, ref = _view_context(user_id, conversation_id, result_ref)
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(403, "结果完整性无法确认") from None
+    if digest(row["payload_json"]) != row["source_hash"]:
+        raise HTTPException(403, "结果完整性无法确认")
+    envelope = payload.get("envelope") if isinstance(payload, dict) else None
+    metadata = envelope.get("payload") if isinstance(envelope, dict) else None
+    metadata = metadata if isinstance(metadata, dict) else {}
+    required = metadata.get("required_resources")
+    if not isinstance(required, list) or not required:
+        kind = metadata.get("kind")
+        required = ["trading.facts", "data_visualization.display"] if kind == "market_series" else ["trading.facts"]
+    try:
+        for resource in required:
+            authorize(principal, str(resource))
+    except HTTPException:
+        raise
+    except (TypeError, ValueError):
+        raise HTTPException(403, "结果权限范围无法确认") from None
+    saved_scope = metadata.get("account_scope")
+    if saved_scope is None:
+        try:
+            saved_scope = json.loads(row["account_scope_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise HTTPException(403, "结果账户范围无法确认") from None
+    try:
+        if tuple(int(value) for value in saved_scope) != tuple(principal.account_ids):
+            raise HTTPException(403, "结果账户范围已变化")
+    except (TypeError, ValueError):
+        raise HTTPException(403, "结果账户范围无法确认") from None
+    return _stored_result_from_row(row, principal, ref)
 
 
 def _terminal(cur, task_id, state, timestamp, error=None):

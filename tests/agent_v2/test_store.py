@@ -54,6 +54,25 @@ def test_snapshot_is_immutable_and_unavailable_after_expiry(queued):
         store.load_result(principal, ref)
 
 
+def test_saved_result_freezes_required_resources_and_account_scope(queued):
+    task = store.claim_next("metadata-worker")
+    principal = store.principal_for_task(task)
+    ref = store.save_result(
+        principal,
+        ToolEnvelope(
+            status="complete",
+            captured_at=datetime.now(timezone.utc),
+            calculation_version="metadata-test",
+            payload={"kind": "positions"},
+        ),
+        [],
+    )
+
+    saved = store.load_result(principal, ref)
+    assert saved.envelope.payload["required_resources"] == ["trading.facts"]
+    assert saved.envelope.payload["account_scope"] == list(principal.account_ids)
+
+
 def test_grant_revoked_at_terminal_task(queued):
     task = store.claim_next("a")
     principal = store.principal_for_task(task)

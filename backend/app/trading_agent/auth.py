@@ -58,7 +58,7 @@ def resolve_principal(user_id: int, channel: str, conversation_id: int, executio
 
 
 def authorize(principal: Principal, resource: str) -> Principal:
-    if resource not in {"closing_review.agent", "trading.facts"}:
+    if resource not in {"closing_review.agent", "trading.facts", "data_visualization.display"}:
         raise HTTPException(403, "没有访问权限")
     current = resolve_principal(principal.user_id, principal.channel, principal.conversation_id, principal.execution_id)
     permissions.require_permission(_live_user(current.user_id), resource, "view")

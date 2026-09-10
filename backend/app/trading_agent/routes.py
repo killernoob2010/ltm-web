@@ -9,7 +9,7 @@ from pydantic import ConfigDict, Field
 from .. import db
 from ..trading_management import trading_management_current_user
 from ..permissions import require_permission
-from . import catalog, store, tools
+from . import catalog, presentation, store, tools
 from .auth import pilot_allows_user
 from .contracts import StrictModel
 
@@ -153,6 +153,56 @@ def get_task(task_id: int, user: dict = Depends(trading_management_current_user)
         except (TypeError,ValueError): payload={}
         result["result_refs"] = payload.get("fact_refs",[]) if isinstance(payload,dict) else []
     return result
+
+
+@router.get("/conversations/{conversation_id}/messages/{message_id}/views/{view_id}")
+def get_message_view(
+    conversation_id: int,
+    message_id: int,
+    view_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20),
+    user: dict = Depends(trading_management_current_user),
+):
+    _require(user, schema=True)
+    conversation = _owned_conversation(user["id"], conversation_id)
+    if not conversation:
+        raise HTTPException(404, "对话不存在")
+    if page_size not in {20, 50, 100}:
+        raise HTTPException(422, "分页大小无效")
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), """SELECT id, structured_payload
+            FROM closing_review_messages
+            WHERE id=? AND conversation_id=? AND role='assistant'""",
+            (message_id, conversation_id)).fetchone()
+    if not row:
+        raise HTTPException(404, "消息不存在")
+    import json
+    try:
+        payload = json.loads(row["structured_payload"] or "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(404, "视图不存在") from None
+    if not isinstance(payload, dict) or payload.get("schema_version") != "2.1":
+        raise HTTPException(404, "视图不存在")
+    raw_view = next(
+        (item for item in payload.get("views", [])
+         if isinstance(item, dict) and item.get("id") == view_id),
+        None,
+    )
+    if raw_view is None:
+        raise HTTPException(404, "视图不存在")
+    try:
+        view = presentation.ViewRequest.model_validate(raw_view)
+        saved = store.load_result_for_view(user["id"], conversation_id, view.result_ref)
+        return presentation.build_view(
+            None, view, store, page=page, page_size=page_size, saved=saved
+        )
+    except store.ResultExpired:
+        raise HTTPException(410, "结果已过期") from None
+    except HTTPException:
+        raise
+    except (TypeError, ValueError):
+        raise HTTPException(404, "视图不存在") from None
 
 
 @router.post("/wecom/pair-code")
