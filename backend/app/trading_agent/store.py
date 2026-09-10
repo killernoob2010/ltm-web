@@ -450,6 +450,16 @@ def task_status(task_id):
     return dict(row) if row else None
 
 
+def stage_events(task_id, limit=30):
+    safe_limit = max(1, min(int(limit or 30), 30))
+    with db.connect() as conn:
+        rows = db._exec(conn.cursor(), """SELECT seq,kind,status,created_at
+            FROM agent_v2_events
+            WHERE task_id=? AND kind LIKE 'stage:%'
+            ORDER BY seq DESC LIMIT ?""", (task_id, safe_limit)).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
 def revoke_task_grants(task_id):
     with db.connect() as conn:
         db._exec(conn.cursor(), "UPDATE agent_v2_execution_grants SET revoked_at=? WHERE task_id=? AND revoked_at IS NULL", (stamp(), task_id))

@@ -7,7 +7,7 @@ import re
 
 from .. import db, trading_effective_facts as effective
 from ..trading_valuation import QuoteRequest, QuoteSnapshot, select_live_trade_price, calculate_live_position_floating_pnl
-from . import store, execution
+from . import execution, progress, store
 from .auth import authorize, require_account_scope
 from .catalog import DIMENSIONS, METRICS, validate_summary
 from .contracts import FactQuery, MetricValue, ToolEnvelope
@@ -141,13 +141,19 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     authorize(principal,"trading.facts")
     filters = _filters(principal,query)
     from ..trading_management import _active_contract_spec_multipliers
-    with execution.phase("positions_database"), db.connect() as conn:
-        _transaction(conn)
-        if db._is_pg():
-            db._exec(conn.cursor(), "SET LOCAL statement_timeout = '10000'")
-        raw = effective.query_effective_positions(conn.cursor(),filters,include_all_items=True)
-        specs = _active_contract_spec_multipliers(conn.cursor())
-        account_labels = _account_labels(conn.cursor(), principal.account_ids)
+    progress.record_stage(principal, "internal_data", "running")
+    try:
+        with execution.phase("positions_database"), db.connect() as conn:
+            _transaction(conn)
+            if db._is_pg():
+                db._exec(conn.cursor(), "SET LOCAL statement_timeout = '10000'")
+            raw = effective.query_effective_positions(conn.cursor(),filters,include_all_items=True)
+            specs = _active_contract_spec_multipliers(conn.cursor())
+            account_labels = _account_labels(conn.cursor(), principal.account_ids)
+    except Exception:
+        progress.record_stage(principal, "internal_data", "failed")
+        raise
+    progress.record_stage(principal, "internal_data", "complete")
     rows = deepcopy(_select_contracts(raw.get("all_items",[]),query.contracts))
     _attach_account_labels(rows, account_labels)
     if len(rows)>20000:
@@ -157,6 +163,8 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     warnings = list(raw.get("warnings",[]))
     quotes = {}
     if requests and not historical:
+        progress.record_stage(principal, "quotes", "running")
+        quote_status = "complete"
         try:
             with execution.phase("positions_quotes"):
                 supplied_quotes = quote_provider(list(requests.values()))
@@ -165,7 +173,10 @@ def capture_positions(principal, query: FactQuery, quote_provider):
             else:
                 warnings.append("行情提供方返回格式无效；浮盈亏及Greeks未覆盖")
         except Exception:
+            quote_status = "failed"
             warnings.append("行情提供方暂时不可用；浮盈亏及Greeks未覆盖")
+        finally:
+            progress.record_stage(principal, "quotes", quote_status)
     if historical:
         warnings.append("历史持仓没有同期行情，不计算历史浮盈亏及Greeks；当前归属不作历史归属。")
     execution.checkpoint()
@@ -213,23 +224,29 @@ def capture_facts(principal, kind, start_date, end_date, filters=None):
     query = filters or FactQuery()
     scoped = replace(_filters(principal,query),start_date=start.isoformat(),end_date=end.isoformat())
     rows=[]
-    with db.connect() as conn:
-        _transaction(conn)
-        for page in range(1,202):
-            if kind=="trades":
-                result = effective.query_effective_trades(conn.cursor(),replace(scoped,page=page))
-            else:
-                from ..trading_management import FactFilters, _query_close_rows_paged
-                result = _query_close_rows_paged(conn.cursor(),FactFilters(account_ids=principal.account_ids,
-                    contract=query.contracts[0] if len(query.contracts) == 1 else "",
-                    direction={"all": "", "buy": "买", "sell": "卖"}[query.direction],
-                    asset_type="" if query.asset_type == "all" else query.asset_type,
-                    classification="" if query.classification == "all" else query.classification,
-                    start_date=start.isoformat(),end_date=end.isoformat(),page=page,page_size=100))
-            rows.extend(result["items"])
-            if len(rows)>20000 or page>=result["total_pages"]:
-                break
-        account_labels = _account_labels(conn.cursor(), principal.account_ids)
+    progress.record_stage(principal, "internal_data", "running")
+    try:
+        with db.connect() as conn:
+            _transaction(conn)
+            for page in range(1,202):
+                if kind=="trades":
+                    result = effective.query_effective_trades(conn.cursor(),replace(scoped,page=page))
+                else:
+                    from ..trading_management import FactFilters, _query_close_rows_paged
+                    result = _query_close_rows_paged(conn.cursor(),FactFilters(account_ids=principal.account_ids,
+                        contract=query.contracts[0] if len(query.contracts) == 1 else "",
+                        direction={"all": "", "buy": "买", "sell": "卖"}[query.direction],
+                        asset_type="" if query.asset_type == "all" else query.asset_type,
+                        classification="" if query.classification == "all" else query.classification,
+                        start_date=start.isoformat(),end_date=end.isoformat(),page=page,page_size=100))
+                rows.extend(result["items"])
+                if len(rows)>20000 or page>=result["total_pages"]:
+                    break
+            account_labels = _account_labels(conn.cursor(), principal.account_ids)
+    except Exception:
+        progress.record_stage(principal, "internal_data", "failed")
+        raise
+    progress.record_stage(principal, "internal_data", "complete")
     if len(rows)>20000:
         return _persist(principal,rows,kind)
     rows = _select_contracts(rows,query.contracts)

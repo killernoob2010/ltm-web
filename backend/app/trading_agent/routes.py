@@ -9,7 +9,7 @@ from pydantic import ConfigDict, Field
 from .. import db
 from ..trading_management import trading_management_current_user
 from ..permissions import require_permission
-from . import catalog, presentation, store, tools
+from . import catalog, presentation, progress, store, tools
 from .auth import pilot_allows_user
 from .contracts import StrictModel
 
@@ -110,7 +110,24 @@ def list_messages(conversation_id: int, user: dict = Depends(trading_management_
         items.append({"id":value["id"],"conversation_id":conversation_id,"task_id":value.get("task_id"),"role":value.get("role"),
                       "message_type":value.get("message_type"),"content":value.get("content"),"structured_payload":structured,
                       "created_at":_seconds(value.get("created_at"))})
-    return {"conversation":_conversation(conversation),"items":items}
+    with db.connect() as conn:
+        active = db._exec(conn.cursor(), """SELECT t.*,r.delivery_state
+            FROM closing_review_tasks t LEFT JOIN agent_v2_runs r ON r.task_id=t.id
+            WHERE t.conversation_id=? AND t.user_id=? AND t.task_kind='v2_user_message'
+              AND t.state NOT IN ('succeeded','partial','failed','cancelled')
+            ORDER BY t.id DESC LIMIT 1""", (conversation_id, user["id"])).fetchone()
+    active_task = None
+    if active:
+        active_task = dict(active)
+        active_task["progress"] = progress.project_progress(
+            active_task, store.stage_events(int(active_task["id"])), datetime.now(timezone.utc)
+        )
+        active_task = {
+            "task_id": active_task["id"],
+            "state": active_task["state"],
+            "progress": active_task["progress"],
+        }
+    return {"conversation":_conversation(conversation),"items":items,"active_task":active_task}
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -146,12 +163,19 @@ def get_task(task_id: int, user: dict = Depends(trading_management_current_user)
         message = db._exec(conn.cursor(), "SELECT content,structured_payload FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
     task = dict(task)
     result={"task_id":task_id,"conversation_id":task["conversation_id"],"state":task["state"],"delivery_state":task.get("delivery_state"),"finished_at":_seconds(task["finished_at"]),"answer":None,"result_refs":[]}
+    result["progress"] = progress.project_progress(
+        task, store.stage_events(task_id), datetime.now(timezone.utc)
+    )
     result["poll_timeout_seconds"] = int(store._queue_timeout_seconds() + store.execution.TASK_SECONDS + 15)
     if message:
         import json
         try: result["answer"]=message["content"]; payload=json.loads(message["structured_payload"]) if message["structured_payload"] else {}
         except (TypeError,ValueError): payload={}
-        result["result_refs"] = payload.get("fact_refs",[]) if isinstance(payload,dict) else []
+        if isinstance(payload, dict):
+            refs = list(payload.get("fact_refs", []))
+            refs.extend(item.get("result_ref") for item in payload.get("evidence", []) if isinstance(item, dict) and item.get("result_ref"))
+            refs.extend(item.get("result_ref") for item in payload.get("views", []) if isinstance(item, dict) and item.get("result_ref"))
+            result["result_refs"] = list(dict.fromkeys(refs))
     return result
 
 

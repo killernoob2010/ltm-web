@@ -4,24 +4,24 @@
   const ENDPOINT = "/api/closing-review-agent";
   const V2_ENDPOINT = "/api/trading-agent-v2";
   const legacyConversationEndpoint = `${ENDPOINT}/conversations`;
-  const legacySuggestionsEndpoint = `${ENDPOINT}/suggestions`;
   const state = {
     api: null,
     user: null,
     conversations: [],
-    suggestions: [],
     conversationId: null,
     bound: false,
     loading: false,
     activation: 0,
     v2: false,
+    pending: null,
+    progress: null,
+    announcedProgress: "",
   };
 
   const $ = (id) => document.getElementById(id);
   const page = $("closingReviewAgentPage");
   const history = $("closingReviewHistory");
   const messages = $("closingReviewMessages");
-  const suggestions = $("closingReviewSuggestions");
   const composer = $("closingReviewComposer");
   const input = $("closingReviewInput");
   const sendButton = $("closingReviewSendBtn");
@@ -68,6 +68,7 @@
     return {
       complete: "数据完整",
       partial: "部分结果",
+      failed: "处理失败",
       waiting_for_data: "等待数据",
       data_anomaly: "数据异常",
       processing: "处理中",
@@ -103,30 +104,35 @@
   }
 
   function evidenceBlock(payload) {
-    const metadata = payload && typeof payload === "object" ? payload.metadata : null;
+    if (!payload || typeof payload !== "object") return null;
+    const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+    const limitations = Array.isArray(payload.limitations) ? payload.limitations : [];
+    const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : null;
     const refs = metadata && Array.isArray(metadata.evidence_refs) ? metadata.evidence_refs : [];
-    if (!metadata && !refs.length) return null;
+    if (!evidence.length && !limitations.length && !metadata && !refs.length) return null;
     const wrapper = document.createElement("div");
     wrapper.className = "closing-review-agent-evidence";
-    addText(wrapper, "strong", "closing-review-agent-evidence-heading", "证据");
+    addText(wrapper, "strong", "closing-review-agent-evidence-heading", "证据与限制");
     if (metadata && metadata.source) addText(wrapper, "span", "closing-review-agent-evidence-source", `最新来源：${metadata.source}`);
-    if (metadata && metadata.freshness) addText(wrapper, "span", "closing-review-agent-evidence-freshness", `时效：${metadata.freshness}`);
-    if (refs.length) {
-      const list = document.createElement("ul");
-      list.className = "closing-review-agent-evidence-list";
-      refs.slice(0, 6).forEach((ref) => {
-        const text = [ref.source, ref.locator].filter(Boolean).join(" · ");
-        if (text) addText(list, "li", "", text);
-      });
-      wrapper.appendChild(list);
-    }
+    const list = document.createElement("ul");
+    list.className = "closing-review-agent-evidence-list";
+    evidence.slice(0, 6).forEach((item) => {
+      const label = [item.title, item.url, item.fetch_status].filter(Boolean).join(" · ");
+      if (label) addText(list, "li", "", label);
+    });
+    refs.slice(0, 6).forEach((ref) => {
+      const label = [ref.source, ref.locator].filter(Boolean).join(" · ");
+      if (label) addText(list, "li", "", label);
+    });
+    limitations.slice(0, 6).forEach((item) => addText(list, "li", "", item.message || item.code || "部分内容未交付"));
+    if (list.childNodes.length) wrapper.appendChild(list);
     return wrapper;
   }
 
   function renderMessages(items) {
     clear(messages);
     if (!items.length) {
-      addText(messages, "p", "closing-review-agent-empty", "这段对话还没有消息。可从下方推荐问题开始。");
+      addText(messages, "p", "closing-review-agent-empty", "这段对话还没有消息。");
       return;
     }
     const supersededIds = new Set(
@@ -141,14 +147,11 @@
       addText(header, "time", "closing-review-agent-message-time", timestampSeconds(message.created_at));
       article.appendChild(header);
       addText(article, "p", "closing-review-agent-message-content", message.content || "该消息内容已按保留策略清理。");
-      if (supersededIds.has(Number(message.id))) {
-        addText(article, "span", "closing-review-agent-status-chip", "已被更新");
-      }
+      if (supersededIds.has(Number(message.id))) addText(article, "span", "closing-review-agent-status-chip", "已被更新");
       const payload = message.structured_payload;
       const projection = payload && typeof payload === "object" ? payload : null;
-      if (projection && projection.status) {
-        addText(article, "span", `closing-review-agent-status-chip status-${projection.status}`, `数据状态：${statusLabel(projection.status)}`);
-      }
+      const dataStatus = projection && (projection.delivery_status || projection.status);
+      if (dataStatus) addText(article, "span", `closing-review-agent-status-chip status-${dataStatus}`, `数据状态：${statusLabel(dataStatus)}`);
       const evidence = evidenceBlock(projection);
       if (evidence) article.appendChild(evidence);
       if (message.role !== "user" && message.message_type === "error") {
@@ -170,27 +173,47 @@
     messages.scrollTop = messages.scrollHeight;
   }
 
-  function renderSuggestions() {
-    clear(suggestions);
-    if (!state.suggestions.length) {
-      addText(suggestions, "p", "closing-review-agent-empty", "暂无推荐问题。");
-      return;
+  function sendingBubble(content, clientRequestId) {
+    const article = document.createElement("article");
+    article.className = "closing-review-agent-message is-user is-sending";
+    article.dataset.clientRequestId = clientRequestId;
+    const header = document.createElement("div");
+    header.className = "closing-review-agent-message-header";
+    addText(header, "strong", "closing-review-agent-message-label", "我的问题");
+    addText(header, "time", "closing-review-agent-message-time", "刚刚");
+    article.appendChild(header);
+    addText(article, "p", "closing-review-agent-message-content", content);
+    const progress = addText(article, "span", "closing-review-agent-inline-progress", "正在提交…");
+    progress.setAttribute("aria-live", "off");
+    messages.appendChild(article);
+    messages.scrollTop = messages.scrollHeight;
+    return article;
+  }
+
+  function renderProgress(task, article) {
+    const incoming = task && task.progress;
+    if (!incoming) return;
+    const reducer = typeof window.AgentProgress?.reduceProgress === "function" ? window.AgentProgress.reduceProgress : null;
+    state.progress = reducer ? reducer(state.progress, incoming) : incoming;
+    if (!state.progress) return;
+    const progress = article && article.querySelector(".closing-review-agent-inline-progress");
+    if (progress) {
+      const elapsed = Number(state.progress.elapsed_seconds);
+      progress.textContent = `${state.progress.summary || "处理中"}${Number.isFinite(elapsed) ? ` · ${elapsed} 秒` : ""}`;
     }
-    state.suggestions.forEach((suggestion) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "closing-review-agent-suggestion";
-      addText(button, "strong", "closing-review-agent-suggestion-label", suggestion.label);
-      addText(button, "span", "closing-review-agent-suggestion-question", suggestion.question);
-      button.addEventListener("click", () => submitMessage({ suggestionId: suggestion.id }));
-      suggestions.appendChild(button);
-    });
+    const key = `${state.progress.sequence}:${state.progress.stage}:${state.progress.stage_status}`;
+    if (key !== state.announcedProgress) {
+      state.announcedProgress = key;
+      setStatus(state.progress.summary || "正在处理…");
+    }
   }
 
   async function loadMessages(conversationId, activation) {
     const data = await state.api(`${endpoint()}/conversations/${conversationId}/messages`);
-    if (activation !== state.activation) return;
+    if (activation !== state.activation || Number(conversationId) !== Number(state.conversationId)) return;
+    state.activeTask = data.active_task || null;
     renderMessages(data.items || []);
+    if (state.activeTask) renderProgress(state.activeTask);
   }
 
   async function loadConversations(activation) {
@@ -211,21 +234,11 @@
     await loadMessages(state.conversationId, activation);
   }
 
-  async function loadSuggestions(activation) {
-    if (state.v2) {
-      state.suggestions = [];
-      renderSuggestions();
-      return;
-    }
-    const data = await state.api(state.v2 ? `${V2_ENDPOINT}/suggestions` : legacySuggestionsEndpoint);
-    if (activation !== state.activation) return;
-    state.suggestions = data.items || [];
-    renderSuggestions();
-  }
-
   async function selectConversation(conversationId) {
     if (state.loading || Number(state.conversationId) === Number(conversationId)) return;
     state.conversationId = conversationId;
+    state.progress = null;
+    state.announcedProgress = "";
     renderHistory();
     setStatus("正在读取对话…");
     try {
@@ -247,6 +260,7 @@
       });
       state.conversations = [conversation, ...state.conversations];
       state.conversationId = conversation.id;
+      state.progress = null;
       renderHistory();
       renderMessages([]);
       setStatus("");
@@ -258,14 +272,15 @@
     }
   }
 
-  async function waitForTask(taskId, activation) {
+  async function waitForTask(taskId, activation, conversationId = state.conversationId, article = null) {
     const started = Date.now();
     let timeoutSeconds = endpoint().includes("trading-agent-v2") ? 225 : 90;
     let attempt = 0;
     let readFailures = 0;
     while (Date.now() - started < timeoutSeconds * 1000) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(++attempt, 5) * 1000));
-      if (activation !== state.activation) return;
+      if (activation !== state.activation) return null;
+      if (conversationId != null && state.conversationId != null && Number(conversationId) !== Number(state.conversationId)) return null;
       let task;
       try {
         task = await state.api(`${endpoint()}/tasks/${taskId}`);
@@ -275,50 +290,57 @@
         setStatus("暂时无法读取进度，正在重新连接…");
         continue;
       }
-      if (Number.isFinite(task.poll_timeout_seconds)) timeoutSeconds = task.poll_timeout_seconds;
+      if ((task.task_id != null && Number(task.task_id) !== Number(taskId))
+          || (conversationId != null && task.conversation_id != null && Number(task.conversation_id) !== Number(conversationId))) {
+        throw new Error("任务身份校验失败，请重新打开此对话。");
+      }
+      if (task.progress) renderProgress(task, article);
       if (["succeeded", "partial", "failed", "cancelled"].includes(task.state)) return task;
-      setStatus(task.state === "queued" ? "正在排队，等待后台处理…" : "正在分析…");
+      if (!task.progress) setStatus(task.state === "queued" ? "正在排队，等待后台处理…" : "正在分析…");
     }
     throw new Error("暂未取得最终状态，请稍后打开此对话查看结果；不要重复提交相同问题。");
   }
 
-  async function submitMessage({ suggestionId = null } = {}) {
+  async function submitMessage() {
     if (state.loading || !state.conversationId) return;
     const content = input.value.trim();
-    if (!suggestionId && !content) {
+    if (!content) {
       setStatus("请输入要查询的问题。", "error");
       input.focus();
       return;
     }
     state.loading = true;
     sendButton.disabled = true;
-    suggestions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-    setStatus("正在读取确定性持仓事实…");
-    const body = state.v2
-      ? { content, client_request_id: requestId() }
-      : {
-        content: suggestionId ? null : content,
-        suggestion_id: suggestionId,
-        client_request_id: requestId(),
-      };
+    const conversationId = state.conversationId;
+    const pending = state.pending && state.pending.conversationId === conversationId && state.pending.content === content
+      ? state.pending
+      : { conversationId, content, clientRequestId: requestId() };
+    state.pending = pending;
+    const article = sendingBubble(content, pending.clientRequestId);
+    setStatus("正在提交问题…");
+    const body = { content, client_request_id: pending.clientRequestId };
     try {
-      const queued = await state.api(`${endpoint()}/conversations/${state.conversationId}/messages`, {
+      const queued = await state.api(`${endpoint()}/conversations/${conversationId}/messages`, {
         method: "POST",
         body: JSON.stringify(body),
       });
+      state.pending = null;
       input.value = "";
+      article.dataset.taskId = queued.task_id || queued.task_ref || "";
       if (state.v2 && queued.task_id) {
-        setStatus("已收到问题，正在读取宏源持仓事实…");
-        await waitForTask(queued.task_id, state.activation);
+        state.progress = null;
+        state.announcedProgress = "";
+        await waitForTask(queued.task_id, state.activation, conversationId, article);
       }
       await loadConversations(state.activation);
       setStatus("");
     } catch (error) {
+      // Before the server accepts the request, keep both the text and request
+      // id so a retry is idempotent and does not duplicate the user bubble.
       setStatus(error.message || "复盘请求失败", "error");
     } finally {
       state.loading = false;
       sendButton.disabled = false;
-      suggestions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
     }
   }
 
@@ -345,6 +367,9 @@
     state.activation += 1;
     const activation = state.activation;
     state.v2 = false;
+    state.pending = null;
+    state.progress = null;
+    state.announcedProgress = "";
     try {
       const capabilities = await state.api(`${V2_ENDPOINT}/capabilities`);
       state.v2 = Boolean(capabilities && capabilities.enabled);
@@ -356,7 +381,7 @@
     scopeNote.textContent = state.v2 ? "宏源期货 · 全部期货与期权 · 只读开放分析" : "宏源期货 · 期权收盘复盘（兼容模式）";
     setStatus("正在加载 Agent…");
     try {
-      await Promise.all([loadConversations(activation), loadSuggestions(activation)]);
+      await loadConversations(activation);
       if (activation === state.activation) setStatus("");
     } catch (error) {
       if (activation === state.activation) setStatus(error.message || "Agent 页面加载失败", "error");

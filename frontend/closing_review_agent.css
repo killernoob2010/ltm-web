@@ -67,10 +67,11 @@
 .closing-review-agent-history-meta { color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-retention { margin-top: auto; padding-top: 14px; color: var(--cra-muted); font-size: 11px; line-height: 1.6; }
 
-.closing-review-agent-main { display: grid; grid-template-rows: minmax(260px, 1fr) auto auto; gap: 12px; min-width: 0; }
+.closing-review-agent-main { display: grid; grid-template-rows: minmax(260px, 1fr) auto; gap: 12px; min-width: 0; }
 .closing-review-agent-messages { min-height: 320px; max-height: calc(100vh - 420px); overflow: auto; display: grid; align-content: start; gap: 10px; padding: 4px; }
 .closing-review-agent-message { max-width: min(760px, 92%); padding: 13px 15px; border: 1px solid var(--cra-line); border-radius: 10px; background: #fff; box-shadow: 0 4px 14px rgba(15, 23, 42, .04); }
 .closing-review-agent-message.is-user { justify-self: end; border-color: #cbdaf6; background: var(--cra-blue-soft); }
+.closing-review-agent-message.is-sending { opacity: .86; }
 .closing-review-agent-message.is-automatic { border-color: #c6e0d5; background: #f5fbf8; }
 .closing-review-agent-message-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .closing-review-agent-message-label { font-size: 12px; }
@@ -80,17 +81,11 @@
 .closing-review-agent-status-chip.status-complete { color: var(--cra-green); background: #e9f7ef; }
 .closing-review-agent-status-chip.status-data_anomaly { color: #b42318; background: #fff0ef; }
 .closing-review-agent-status-chip.status-waiting_for_data { color: var(--cra-amber); background: #fff5dc; }
+.closing-review-agent-inline-progress { display: block; margin-top: 7px; color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-retry { min-height: 29px; margin-top: 10px; padding: 0 9px; font-size: 11px; }
 
 .closing-review-agent-evidence { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(148, 163, 184, .28); color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-evidence-list { margin: 0; padding-left: 16px; }
-
-.closing-review-agent-suggestion-panel { padding: 13px 15px; }
-.closing-review-agent-suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.closing-review-agent-suggestion { display: grid; gap: 4px; min-height: 0; padding: 10px 11px; border: 1px solid var(--cra-line); border-radius: 8px; background: #fff; color: var(--cra-text); text-align: left; }
-.closing-review-agent-suggestion:hover { border-color: #b5c9ee; background: var(--cra-blue-soft); }
-.closing-review-agent-suggestion-label { font-size: 12px; }
-.closing-review-agent-suggestion-question { color: var(--cra-muted); font-size: 11px; }
 
 .closing-review-agent-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: end; }
 .closing-review-agent-composer textarea { min-height: 74px; resize: vertical; }
@@ -108,7 +103,6 @@
 @media (max-width: 560px) {
   .closing-review-agent-header { display: grid; gap: 8px; }
   .closing-review-agent-history { grid-template-columns: 1fr; }
-  .closing-review-agent-suggestions { grid-template-columns: 1fr; }
   .closing-review-agent-composer { grid-template-columns: 1fr; }
   .closing-review-agent-composer button { width: 100%; }
 }
