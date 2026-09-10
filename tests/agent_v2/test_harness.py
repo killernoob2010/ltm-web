@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -9,6 +10,10 @@ from app.trading_agent import research
 from app.trading_agent.model import ModelTurn
 from app.trading_agent.contracts import ToolEnvelope
 from test_store import queued
+
+# These fixtures exercise the retained 2.0 compatibility contract. New-task
+# protocol defaults and malformed 2.1 delivery are tested in test_answer_delivery_recovery.
+LegacyDeps = partial(harness.RuntimeDeps, answer_protocol="2.0")
 
 
 class RepeatModel:
@@ -79,7 +84,7 @@ GOOD_ANSWER21 = '{"schema_version":"2.1","body_markdown":"一般性说明。","s
 async def test_budget_stops_repeated_tool_requests(queued):
     task = store.claim_next("harness-worker")
     model, mcp = RepeatModel(), FakeMCP()
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, mcp, worker_id="harness-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, mcp, worker_id="harness-worker"))
     assert mcp.calls <= 8
     assert model.calls <= 6
     assert result.status in {"partial", "temporarily_unavailable"}
@@ -90,14 +95,14 @@ async def test_budget_stops_repeated_tool_requests(queued):
 @pytest.mark.asyncio
 async def test_knowledge_answer_needs_no_fact_tool(queued):
     task = store.claim_next("harness-worker")
-    result = await harness.run_task(task, harness.RuntimeDeps(store, KnowledgeModel(), FakeMCP(), worker_id="harness-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, KnowledgeModel(), FakeMCP(), worker_id="harness-worker"))
     assert result.status == "complete"
 
 
 @pytest.mark.asyncio
 async def test_non_complete_answer_maps_to_terminal_partial_task_state(queued):
     task = store.claim_next("harness-worker")
-    result = await harness.run_task(task, harness.RuntimeDeps(store, UnsupportedModel(), FakeMCP(), worker_id="harness-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, UnsupportedModel(), FakeMCP(), worker_id="harness-worker"))
     assert result.status == "unsupported"
     with __import__("app").db.connect() as conn:
         assert conn.execute("SELECT state FROM agent_v2_runs WHERE task_id=?", (task,)).fetchone()[0] == "partial"
@@ -106,7 +111,7 @@ async def test_non_complete_answer_maps_to_terminal_partial_task_state(queued):
 @pytest.mark.asyncio
 async def test_harness_uses_live_mcp_catalog_when_available(queued):
     task = store.claim_next("harness-worker")
-    result = await harness.run_task(task, harness.RuntimeDeps(store, KnowledgeModel(), CatalogMCP(), worker_id="harness-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, KnowledgeModel(), CatalogMCP(), worker_id="harness-worker"))
     assert result.status == "complete"
     with __import__("app").db.connect() as conn:
         event = conn.execute("SELECT kind FROM agent_v2_events WHERE task_id=? AND kind='tool_catalog'", (task,)).fetchone()
@@ -116,7 +121,7 @@ async def test_harness_uses_live_mcp_catalog_when_available(queued):
 @pytest.mark.asyncio
 async def test_harness_stops_a_slow_tool_at_the_task_deadline(queued):
     task = store.claim_next("deadline-worker")
-    deps = harness.RuntimeDeps(
+    deps = LegacyDeps(
         store,
         KnowledgeModel(),
         SlowMCP(),
@@ -146,7 +151,7 @@ async def test_rejected_public_query_allows_one_safe_retry_without_sending_priva
     ])
     mcp = RejectingMCP()
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, mcp, worker_id="public-repair-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, mcp, worker_id="public-repair-worker"))
 
     assert result.status == "complete"
     assert mcp.calls == 2  # capability discovery plus the one rejected public-search attempt
@@ -177,7 +182,7 @@ async def test_typed_public_query_rejection_allows_one_safe_retry(queued):
     ])
     mcp = TypedRejectingMCP()
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, mcp, worker_id="typed-public-repair-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, mcp, worker_id="typed-public-repair-worker"))
 
     assert result.status == "complete"
     assert mcp.calls == 2
@@ -193,7 +198,7 @@ async def test_model_cannot_use_tool_outside_live_catalog(queued):
     ])
     mcp = CatalogMCP()
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, mcp, worker_id="catalog-boundary-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, mcp, worker_id="catalog-boundary-worker"))
 
     assert result.status == "complete"
     assert mcp.calls == 1  # only capability discovery; the forged tool never reaches MCP
@@ -228,7 +233,7 @@ async def test_public_text_injection_cannot_open_second_tool_outlet(queued):
     ])
     mcp = InjectionMCP()
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, mcp, worker_id="injection-boundary-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, mcp, worker_id="injection-boundary-worker"))
 
     assert result.status == "complete"
     assert mcp.calls == 2  # capability discovery plus read_public; forged follow-up is denied locally
@@ -241,7 +246,7 @@ async def test_answer_repair_success(queued):
     task = store.claim_next("repair-worker")
     model = ScriptedModel([ModelTurn(content=BAD_ANSWER), ModelTurn(content=GOOD_ANSWER)])
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="repair-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, FakeMCP(), worker_id="repair-worker"))
 
     assert result.status == "complete"
     assert len(model.calls) == 2
@@ -268,7 +273,7 @@ async def test_answer_repair_stops_after_second_invalid(queued):
     task = store.claim_next("repair-stop-worker")
     model = ScriptedModel([ModelTurn(content=BAD_ANSWER), ModelTurn(content=BAD_ANSWER), ModelTurn(content=GOOD_ANSWER)])
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="repair-stop-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, FakeMCP(), worker_id="repair-stop-worker"))
 
     assert result.status == "partial"
     assert len(model.calls) == 2
@@ -284,7 +289,7 @@ async def test_answer_repair_stops_after_second_invalid(queued):
 async def test_answer_repair_respects_model_budget(queued):
     task = store.claim_next("repair-budget-worker")
     model = ScriptedModel([ModelTurn(content=BAD_ANSWER), ModelTurn(content=GOOD_ANSWER)])
-    deps = harness.RuntimeDeps(
+    deps = LegacyDeps(
         store, model, FakeMCP(), worker_id="repair-budget-worker",
         limits=harness.RuntimeLimits(max_models=1),
     )
@@ -313,7 +318,7 @@ async def test_answer_repair_respects_deadline(queued):
 
     task = store.claim_next("repair-deadline-worker")
     model = ExpiringModel([ModelTurn(content=BAD_ANSWER), ModelTurn(content=GOOD_ANSWER)])
-    deps = harness.RuntimeDeps(
+    deps = LegacyDeps(
         store, model, FakeMCP(), clock=clock, worker_id="repair-deadline-worker",
         limits=harness.RuntimeLimits(deadline_seconds=0.5),
     )
@@ -333,7 +338,7 @@ async def test_answer_repair_does_not_execute_new_tools(queued):
     ])
     mcp = FakeMCP()
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, mcp, worker_id="repair-tools-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, mcp, worker_id="repair-tools-worker"))
 
     assert result.status == "partial"
     assert len(model.calls) == 2
@@ -346,7 +351,7 @@ async def test_answer_repair_stops_when_context_would_overflow(queued, monkeypat
     model = ScriptedModel([ModelTurn(content=BAD_ANSWER), ModelTurn(content=GOOD_ANSWER)])
     monkeypatch.setattr(harness, "_messages_size", lambda messages: 48001)
 
-    result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="repair-context-worker"))
+    result = await harness.run_task(task, LegacyDeps(store, model, FakeMCP(), worker_id="repair-context-worker"))
 
     assert result.status == "partial"
     assert len(model.calls) == 1
@@ -362,7 +367,7 @@ async def test_unexpected_render_failure_is_not_answer_repair(queued, monkeypatc
 
     monkeypatch.setattr(harness.answer, "render_answer", fail_render)
     with pytest.raises(RuntimeError, match="SYNTHETIC_RENDER_FAILURE"):
-        await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="render-failure-worker"))
+        await harness.run_task(task, LegacyDeps(store, model, FakeMCP(), worker_id="render-failure-worker"))
     assert len(model.calls) == 1
     with __import__("app").db.connect() as conn:
         count = conn.execute(
@@ -382,7 +387,7 @@ async def test_storage_failure_is_not_answer_repair(queued, monkeypatch):
 
     monkeypatch.setattr(store, "finish", fail_finish)
     with pytest.raises(RuntimeError, match="SYNTHETIC_STORE_FAILURE"):
-        await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="storage-failure-worker"))
+        await harness.run_task(task, LegacyDeps(store, model, FakeMCP(), worker_id="storage-failure-worker"))
     assert len(model.calls) == 1
     with __import__("app").db.connect() as conn:
         event = conn.execute(
@@ -407,7 +412,7 @@ async def test_v21_invalid_reference_gets_one_repair_and_persists_validated_answ
 
     result = await harness.run_task(
         task,
-        harness.RuntimeDeps(store, model, FakeMCP(), worker_id="v21-repair-worker"),
+        LegacyDeps(store, model, FakeMCP(), worker_id="v21-repair-worker"),
     )
 
     assert result.delivery_status == "complete"
@@ -436,7 +441,7 @@ async def test_v21_repair_is_bounded_and_failed_delivery_is_explicit(queued):
 
     result = await harness.run_task(
         task,
-        harness.RuntimeDeps(store, model, FakeMCP(), worker_id="v21-repair-stop-worker"),
+        LegacyDeps(store, model, FakeMCP(), worker_id="v21-repair-stop-worker"),
     )
 
     assert result.delivery_status == "failed"

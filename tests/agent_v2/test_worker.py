@@ -1,4 +1,5 @@
 import asyncio
+from test_harness import LegacyDeps
 import pytest
 
 from app.trading_agent import harness, store, worker
@@ -10,7 +11,7 @@ from test_store import queued
 
 @pytest.mark.asyncio
 async def test_worker_once_claims_and_finishes_one_task(queued):
-    deps = harness.RuntimeDeps(store=store, model=KnowledgeModel(), mcp=FakeMCP(), worker_id="worker-once")
+    deps = LegacyDeps(store=store, model=KnowledgeModel(), mcp=FakeMCP(), worker_id="worker-once")
     result = await worker.worker_once(deps)
     assert result.status == "complete"
     with __import__("app").db.connect() as conn:
@@ -24,7 +25,7 @@ async def test_worker_loop_can_stop_without_importing_main(queued):
     was_loaded = "app.main" in sys.modules
     stop = asyncio.Event()
     stop.set()
-    deps = harness.RuntimeDeps(store=store, model=KnowledgeModel(), mcp=FakeMCP(), worker_id="worker-loop")
+    deps = LegacyDeps(store=store, model=KnowledgeModel(), mcp=FakeMCP(), worker_id="worker-loop")
     await worker.worker_loop(deps, stop_event=stop)
     assert ("app.main" in sys.modules) is was_loaded
 
@@ -38,7 +39,7 @@ async def test_worker_loop_does_not_claim_when_resource_guard_blocks(queued):
             stop.set()
             return AdmissionDecision(False, "resource_pressure", ResourceSnapshot(0.80, 0.10, "test"))
 
-    deps = harness.RuntimeDeps(store, KnowledgeModel(), FakeMCP(), worker_id="guard-worker")
+    deps = LegacyDeps(store, KnowledgeModel(), FakeMCP(), worker_id="guard-worker")
     await worker.worker_loop(deps, stop_event=stop, resource_guard=DenyGuard())
 
     with __import__("app").db.connect() as conn:
@@ -57,7 +58,7 @@ async def test_worker_cancels_analysis_when_lease_is_lost(queued, monkeypatch):
     monkeypatch.setattr(harness, 'run_task', slow_run)
     proxy = SimpleNamespace(**{name: getattr(store, name) for name in dir(store) if not name.startswith('__')})
     proxy.heartbeat = lambda *args: False
-    deps = harness.RuntimeDeps(proxy, KnowledgeModel(), FakeMCP(), worker_id='lost-lease')
+    deps = LegacyDeps(proxy, KnowledgeModel(), FakeMCP(), worker_id='lost-lease')
     await worker.worker_once(deps, heartbeat_seconds=.01)
     assert cancelled.is_set()
     with __import__('app').db.connect() as conn:
@@ -69,7 +70,7 @@ async def test_worker_failure_does_not_leave_running_task(queued, monkeypatch):
     async def broken(*args):
         raise RuntimeError('synthetic failure')
     monkeypatch.setattr(harness, 'run_task', broken)
-    deps = harness.RuntimeDeps(store, KnowledgeModel(), FakeMCP(), worker_id='broken-worker')
+    deps = LegacyDeps(store, KnowledgeModel(), FakeMCP(), worker_id='broken-worker')
     await worker.worker_once(deps)
     with __import__('app').db.connect() as conn:
         assert conn.execute('SELECT state FROM agent_v2_runs WHERE task_id=?', (queued[2],)).fetchone()[0] == 'failed'
@@ -89,7 +90,7 @@ async def test_worker_heartbeat_does_not_block_event_loop(queued, monkeypatch):
         return True
     proxy.heartbeat = delayed_heartbeat
     monkeypatch.setattr(harness, 'run_task', short_run)
-    deps = harness.RuntimeDeps(proxy, KnowledgeModel(), FakeMCP(), worker_id='slow-heartbeat')
+    deps = LegacyDeps(proxy, KnowledgeModel(), FakeMCP(), worker_id='slow-heartbeat')
     started = time.monotonic()
     await worker.worker_once(deps, heartbeat_seconds=.01)
     assert progress[0] - started < .15
@@ -106,7 +107,7 @@ async def test_failed_task_does_not_block_next_question(queued, monkeypatch):
             raise RuntimeError('synthetic failure')
         return await original(task_id, deps)
     monkeypatch.setattr(harness, 'run_task', fail_first)
-    deps = harness.RuntimeDeps(store, KnowledgeModel(), FakeMCP(), worker_id='recovery-worker')
+    deps = LegacyDeps(store, KnowledgeModel(), FakeMCP(), worker_id='recovery-worker')
     await worker.worker_once(deps)
     result = await worker.worker_once(deps)
     assert result.status == 'complete'

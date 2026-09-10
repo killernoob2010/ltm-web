@@ -113,7 +113,9 @@ def _json_object(raw: str) -> Any:
         )
     except _DuplicateKey:
         raise _issue("duplicate_field", "/", "答案包含重复字段。") from None
-    except (_InvalidConstant, json.JSONDecodeError, TypeError, UnicodeDecodeError):
+    except json.JSONDecodeError as exc:
+        raise _issue("invalid_json", "/", f"JSON 语法错误：offset={exc.pos}, line={exc.lineno}, column={exc.colno}。") from None
+    except (_InvalidConstant, TypeError, UnicodeDecodeError):
         raise _issue("invalid_json", "/", "答案必须是单个合法 JSON 对象。") from None
     _check_unicode(parsed)
     return parsed
@@ -570,6 +572,19 @@ def build_fallback21(principal: Any, result_refs: list[str], query_scope: dict, 
         saved = _load(store_api, principal, ref)
         if saved is None:
             continue
+        metadata = _payload(saved)
+        if metadata.get("kind") not in {"positions", "trades", "closes", "market_series"} or metadata.get("aggregation"):
+            continue
+        if _value(_envelope(saved), "status") not in {"complete", "partial"}:
+            continue
+        if query_scope and any(metadata.get("selection", {}).get(key) != value for key, value in query_scope.items()):
+            continue
+        if hasattr(store_api, "load_result_for_view"):
+            try:
+                store_api.load_result(principal, UUID(ref), require_current_task=True)
+                store_api.load_result_for_view(principal.user_id, principal.conversation_id, ref)
+            except Exception:
+                continue
         views.append({"id": f"v{len(views) + 1}", "kind": "table", "result_ref": ref, "fields": [], "title": "已核验数据"})
         evidence.append(_internal_evidence(ref, saved, None).model_dump(mode="json"))
         if len(views) == 8:

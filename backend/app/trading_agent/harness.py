@@ -3,11 +3,13 @@ import asyncio
 from dataclasses import dataclass, field
 import inspect
 import json
+import logging
 import time
-from typing import Any
+from typing import Any, Literal
 
 from . import answer, prompts, progress, tools, execution
 from .answer_contracts import ValidatedAnswer21
+from .answer_v21 import Answer21Issue
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
 
@@ -32,6 +34,7 @@ class RuntimeDeps:
     clock: Any = time.monotonic
     worker_id: str = "agent-v2"
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
+    answer_protocol: Literal["2.0", "2.1"] = "2.1"
 
 
 @dataclass
@@ -142,6 +145,23 @@ def _validated21_issues(result: ValidatedAnswer21) -> list[dict[str, Any]]:
     return [item.model_dump(mode="json") for item in result.limitations[:5]]
 
 
+def _log_model_diagnostic(task_id, turn, *, attempt, repair):
+    data = {"task_id": task_id, "attempt": attempt, "repair": repair,
+            "finish_reason": turn.finish_reason if turn.finish_reason in {"stop", "length", "tool_calls", "content_filter"} else "unknown",
+            "content_chars": len(turn.content or ""), "tool_calls": len(turn.tool_calls)}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = turn.usage.get(key)
+        if type(value) is int and value >= 0:
+            data[key] = value
+    if not turn.tool_calls:
+        try:
+            json.loads(turn.content or "")
+        except json.JSONDecodeError as exc:
+            data.update(json_error_offset=exc.pos, json_error_line=exc.lineno,
+                        json_error_column=exc.colno, json_error_kind=exc.msg)
+    logging.getLogger(__name__).warning("agent_model_diagnostic %s", json.dumps(data))
+
+
 def _fallback21(store_api, principal, result_refs, code: str) -> ValidatedAnswer21:
     return answer.build_fallback21(principal, result_refs, {}, code, store_api)
 
@@ -219,7 +239,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         deadline_seconds=deps.limits.deadline_seconds,
     )
     final = None
-    protocol21_mode = False
+    protocol21_mode = deps.answer_protocol == "2.1"
     known_result_refs: list[str] = []
     public_query_repair_attempted = False
 
@@ -350,6 +370,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     "answer_validation_failed" if repair_attempted else "model_unavailable",
                 )
                 break
+            _log_model_diagnostic(task_id, turn, attempt=budget.model_calls, repair=repair_attempted)
             if turn.tool_calls:
                 if repair_attempted:
                     final = failure_fallback("partial", _ANSWER_VALIDATION_FAILURE, "answer_validation_failed")
@@ -440,6 +461,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 await _record_stage(deps, principal, "validation", "running")
                 v21_issues = []
                 try:
+                    if turn.finish_reason == "length":
+                        raise answer.Answer21ValidationError([Answer21Issue("output_truncated", "/", "输出达到长度上限，请缩短解释并使用表格引用。")])
                     draft21 = answer.parse_answer21(raw_answer)
                     validated21 = await asyncio.to_thread(
                         answer.validate_answer21, principal, draft21, deps.store
@@ -458,7 +481,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         error_code=v21_issues[0].get("code", "invalid_value"),
                     )
                     if not repair_attempted and budget.model_calls < budget.max_models:
-                        repair_messages = prompts.build_answer_repair_messages(raw_answer, v21_issues)
+                        repair_messages = prompts.build_answer_repair_messages(raw_answer, v21_issues, finish_reason=turn.finish_reason)
                         bounded = _bound_messages(messages)
                         if _messages_size(bounded + repair_messages) > 48000:
                             final = _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed")
