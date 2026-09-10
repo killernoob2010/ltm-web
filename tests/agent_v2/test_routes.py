@@ -12,6 +12,11 @@ from app.trading_agent import routes
 from app.trading_agent.schema import migrate_agent_v2_schema
 
 
+def test_module_display_name_changes_without_changing_compatibility_code():
+    assert ("智能助手", "closing_review_agent", "智能贸易助手") in db.MODULES
+    assert not any(display_name == "交易持仓助手" for _, _, display_name in db.MODULES)
+
+
 @pytest.fixture
 def route_client(monkeypatch):
     db.init_db(); monkeypatch.setenv("AGENT_V2_ENABLED", "true"); monkeypatch.setenv("AGENT_V2_PILOT_USERNAME", "synthetic_pilot")

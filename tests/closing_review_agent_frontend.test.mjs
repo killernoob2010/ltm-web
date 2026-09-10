@@ -38,11 +38,12 @@ test("Agent workspace separates history, results and the single composer without
   assert.match(agentJs, /supersedes_message_id/);
 });
 
-test("workspace is presented as the all-position Trading Holdings Assistant", () => {
-  assert.match(indexHtml, /<h1>交易持仓助手<\/h1>/);
-  assert.match(indexHtml, /期货与期权/);
-  assert.match(agentJs, /宏源期货 · 全部期货与期权 · 只读开放分析/);
-  assert.match(agentJs, /交易持仓助手/);
+test("workspace is presented as the Intelligent Trade Assistant", () => {
+  assert.match(indexHtml, /<h1>智能贸易助手<\/h1>/);
+  assert.match(indexHtml, /业务数据查询 · 市场研究 · 只读分析/);
+  assert.match(agentJs, /业务数据查询 · 市场研究 · 只读分析/);
+  assert.match(agentJs, /交易复盘兼容模式 · 当前功能范围以可用能力为准/);
+  assert.match(agentJs, /智能贸易助手/);
   assert.doesNotMatch(indexHtml, /<h1>期权收盘复盘 Agent<\/h1>/);
 });
 

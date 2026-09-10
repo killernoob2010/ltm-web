@@ -18,7 +18,7 @@ router = APIRouter(prefix="/trading-agent-v2")
 
 class ConversationIn(StrictModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    title: str = Field(default="新对话", min_length=1, max_length=80)
+    title: str = Field(default="智能贸易助手对话", min_length=1, max_length=80)
 
 
 class MessageIn(StrictModel):
@@ -89,7 +89,7 @@ def capabilities(user: dict = Depends(trading_management_current_user)):
 @router.post("/conversations")
 def create_conversation(payload: ConversationIn | None = None, user: dict = Depends(trading_management_current_user)):
     _require(user, schema=True)
-    title = payload.title if payload else "新对话"
+    title = payload.title if payload else "智能贸易助手对话"
     with db.connect() as conn:
         row_id = db._last_insert_id(conn.cursor(), """INSERT INTO closing_review_conversations
             (user_id,channel,kind,title,status,created_at,updated_at) VALUES (?,'web','v2_conversation',?,'active',?,?)""",

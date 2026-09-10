@@ -3,6 +3,8 @@
 
   const ENDPOINT = "/api/closing-review-agent";
   const V2_ENDPOINT = "/api/trading-agent-v2";
+  const DEFAULT_CONVERSATION_TITLE = "智能贸易助手对话";
+  const LEGACY_DEFAULT_CONVERSATION_TITLE = "交易持仓助手对话";
   const legacyConversationEndpoint = `${ENDPOINT}/conversations`;
   const state = {
     api: null,
@@ -87,6 +89,12 @@
     return "Agent 回答";
   }
 
+  function displayConversationTitle(value) {
+    const title = String(value || "").trim();
+    if (!title || title === LEGACY_DEFAULT_CONVERSATION_TITLE) return DEFAULT_CONVERSATION_TITLE;
+    return title;
+  }
+
   function historyStatusLabel(conversation) {
     const selected = Number(conversation.id) === Number(state.conversationId);
     const taskState = selected && state.activeTask ? String(state.activeTask.state || "") : "";
@@ -97,7 +105,7 @@
   function renderHistory() {
     clear(history);
     if (!state.conversations.length) {
-      addText(history, "p", "closing-review-agent-empty", "暂无对话，点击“新建对话”开始使用交易持仓助手。");
+      addText(history, "p", "closing-review-agent-empty", "暂无对话，点击“新建对话”开始使用智能贸易助手。");
       return;
     }
     state.conversations.forEach((conversation) => {
@@ -105,7 +113,7 @@
       item.type = "button";
       item.className = `closing-review-agent-history-item${Number(conversation.id) === Number(state.conversationId) ? " active" : ""}`;
       item.setAttribute("aria-pressed", String(Number(conversation.id) === Number(state.conversationId)));
-      addText(item, "strong", "closing-review-agent-history-title", conversation.title || "交易持仓助手对话");
+      addText(item, "strong", "closing-review-agent-history-title", displayConversationTitle(conversation.title));
       addText(item, "span", "closing-review-agent-history-meta", `${historyStatusLabel(conversation)} · ${timestampSeconds(conversation.updated_at || conversation.last_message_at) || "刚刚"}`);
       item.addEventListener("click", () => selectConversation(conversation.id));
       history.appendChild(item);
@@ -259,7 +267,7 @@
     if (!state.conversations.length) {
       const conversation = await state.api(`${endpoint()}/conversations`, {
         method: "POST",
-        body: JSON.stringify({ title: "交易持仓助手对话" }),
+        body: JSON.stringify({ title: DEFAULT_CONVERSATION_TITLE }),
       });
       if (activation !== state.activation) return;
       state.conversations = [conversation];
@@ -294,7 +302,7 @@
     try {
       const conversation = await state.api(`${endpoint()}/conversations`, {
         method: "POST",
-        body: JSON.stringify({ title: "交易持仓助手对话" }),
+        body: JSON.stringify({ title: DEFAULT_CONVERSATION_TITLE }),
       });
       state.conversations = [conversation, ...state.conversations];
       state.conversationId = conversation.id;
@@ -420,7 +428,7 @@
     }
     bind();
     page.classList.remove("hidden");
-    scopeNote.textContent = state.v2 ? "宏源期货 · 全部期货与期权 · 只读开放分析" : "宏源期货 · 期权收盘复盘（兼容模式）";
+    scopeNote.textContent = state.v2 ? "业务数据查询 · 市场研究 · 只读分析" : "交易复盘兼容模式 · 当前功能范围以可用能力为准";
     setStatus("正在加载 Agent…");
     try {
       await loadConversations(activation);
