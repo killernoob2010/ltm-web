@@ -68,6 +68,15 @@ def _row_ref(row: dict, index: int) -> str:
     return str(value) if value not in (None, "") else f"r{index + 1}"
 
 
+def _validate_projection_args(fields, *, page, page_size, sort_by):
+    if type(page) is not int or page < 1 or page_size not in PAGE_SIZES:
+        raise ValueError("分页无效")
+    if not isinstance(fields, list) or len(fields) > 16 or len(set(fields)) != len(fields):
+        raise ValueError("字段选择无效")
+    if sort_by is not None and sort_by not in fields:
+        raise ValueError("排序字段无效")
+
+
 def _sort_key(value: Any):
     number = _decimal(value)
     if number is not None:
@@ -89,13 +98,13 @@ def project_page(
     Sorting is deliberately performed before slicing.  Nulls are kept in a
     separate tail so descending order cannot move them to the first page.
     """
-    if type(page) is not int or page < 1 or page_size not in PAGE_SIZES:
-        raise ValueError("分页无效")
-    if not isinstance(fields, list) or len(fields) > 16 or len(set(fields)) != len(fields):
-        raise ValueError("字段选择无效")
-    if sort_by is not None and sort_by not in fields:
-        raise ValueError("排序字段无效")
+    _validate_projection_args(fields, page=page, page_size=page_size, sort_by=sort_by)
 
+    projected = _project_rows(rows, fields, sort_by=sort_by, descending=descending)
+    return _page_projected(projected, page=page, page_size=page_size)
+
+
+def _project_rows(rows: list[dict], fields: list[str], *, sort_by: str | None, descending: bool) -> list[dict]:
     projected = []
     for index, source in enumerate(rows):
         source = source if isinstance(source, dict) else {}
@@ -118,13 +127,18 @@ def project_page(
         populated.sort(key=lambda item: (item["row_ref"], item["_sort_index"]))
         populated.sort(key=lambda item: _sort_key(item["_sort_source"].get(sort_by)), reverse=descending)
         projected = populated + nulls
+    return projected
 
+
+def _clean_projected(item: dict) -> dict:
+    return {key: value for key, value in item.items() if not key.startswith("_")}
+
+
+def _page_projected(projected: list[dict], *, page: int, page_size: int) -> dict:
     start = (page - 1) * page_size
     visible = projected[start:start + page_size]
-    for item in visible:
-        item.pop("_sort_source", None)
-        item.pop("_sort_index", None)
-    total_rows = len(rows)
+    visible = [_clean_projected(item) for item in visible]
+    total_rows = len(projected)
     return {
         "rows": visible,
         "pagination": {
@@ -165,6 +179,89 @@ def _column(field: str) -> dict:
         "unit": _UNITS.get(field),
         "type": data_type,
         "scale": scale,
+    }
+
+
+def _chart_fallback(reason: str, x_key: str | None = None) -> dict:
+    return {
+        "fallback": "table",
+        "reason": reason,
+        "x_key": x_key,
+        "labels": [],
+        "unit": None,
+        "series": [],
+    }
+
+
+def build_chart_series(view_page: dict) -> dict:
+    """Build bounded chart data from an already validated view projection.
+
+    The function never combines duplicate x values or samples an oversized
+    result.  Callers can render the returned table fallback instead.
+    """
+    if not isinstance(view_page, dict):
+        raise ValueError("图表视图格式无效")
+    kind = view_page.get("kind")
+    fields = view_page.get("fields")
+    columns = view_page.get("columns")
+    rows = view_page.get("rows")
+    if kind not in {"bar", "line"} or not isinstance(fields, list) or len(fields) < 2:
+        raise ValueError("图表字段无效")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        raise ValueError("图表视图格式无效")
+    x_key = fields[0]
+    column_map = {}
+    for column in columns:
+        if not isinstance(column, dict) or not isinstance(column.get("key"), str):
+            raise ValueError("图表列定义无效")
+        if column["key"] in column_map:
+            raise ValueError("图表列定义重复")
+        column_map[column["key"]] = column
+    if any(field not in column_map for field in fields):
+        raise ValueError("图表字段未登记")
+    y_keys = fields[1:]
+    if len(y_keys) > 4:
+        return _chart_fallback("series_limit", x_key)
+    if len(rows) > 500:
+        return _chart_fallback("point_limit", x_key)
+    if not y_keys:
+        return _chart_fallback("empty_series", x_key)
+    if any(column_map[key].get("type") != "decimal" for key in y_keys):
+        return _chart_fallback("series_type", x_key)
+    units = [column_map[key].get("unit") for key in y_keys]
+    if len(set(units)) != 1:
+        return _chart_fallback("unit_mismatch", x_key)
+
+    labels = []
+    values_by_key = {key: [] for key in y_keys}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("图表行格式无效")
+        label = row.get(x_key)
+        if label is None:
+            return _chart_fallback("missing_x", x_key)
+        label = _wire_value(label)
+        labels.append(str(label))
+        for key in y_keys:
+            value = row.get(key)
+            if value is None:
+                values_by_key[key].append(None)
+                continue
+            value = _wire_value(value)
+            value = str(value)
+            if _decimal(value) is None:
+                return _chart_fallback("invalid_value", x_key)
+            values_by_key[key].append(value)
+    if len(labels) != len(set(labels)):
+        return _chart_fallback("duplicate_x", x_key)
+    return {
+        "x_key": x_key,
+        "labels": labels,
+        "unit": units[0],
+        "series": [
+            {"key": key, "label": column_map[key].get("label") or key, "values": values_by_key[key]}
+            for key in y_keys
+        ],
     }
 
 
@@ -275,13 +372,14 @@ def build_view(
         raise ValueError("字段不在公开业务目录中")
     if request.sort_by is not None and request.sort_by not in fields:
         raise ValueError("排序字段无效")
-    page_result = project_page(saved.rows, fields, page=page, page_size=page_size,
-                               sort_by=request.sort_by, descending=request.descending)
+    _validate_projection_args(fields, page=page, page_size=page_size, sort_by=request.sort_by)
+    projected = _project_rows(saved.rows, fields, sort_by=request.sort_by, descending=request.descending)
+    page_result = _page_projected(projected, page=page, page_size=page_size)
     warnings = list(saved.envelope.warnings or [])
     for field in fields:
         if saved.rows and not any(row.get(field) is not None for row in saved.rows):
             warnings.append(f"字段 {field} 在当前结果中无可用值")
-    return {
+    result = {
         "view_id": request.id,
         "kind": request.kind,
         "result_ref": str(request.result_ref),
@@ -294,6 +392,19 @@ def build_view(
         "captured_at": _timestamp(getattr(saved.envelope, "captured_at", None)),
         "warnings": list(dict.fromkeys(warnings)),
     }
+    if request.kind in {"bar", "line"}:
+        chart = build_chart_series({
+            "kind": request.kind,
+            "fields": fields,
+            "columns": result["columns"],
+            "rows": [_clean_projected(item) for item in projected],
+        })
+        result["chart"] = chart
+        if chart.get("fallback"):
+            result["warnings"] = list(dict.fromkeys(result["warnings"] + [
+                "图表数据不满足展示限制，已保留完整数据表。"
+            ]))
+    return result
 
 
-__all__ = ["build_view", "project_page"]
+__all__ = ["build_chart_series", "build_view", "project_page"]

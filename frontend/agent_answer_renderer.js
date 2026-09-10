@@ -30,6 +30,7 @@
   ];
   const VIEW_MARKER = /\{\{view:(v[1-8])\}\}/g;
   const PAGE_SIZES = [20, 50, 100];
+  const SVG_NS = "http://www.w3.org/2000/svg";
   const MISSING_LABELS = {
     missing_quote: "缺少最新成交价",
     quote_missing: "缺少最新成交价",
@@ -245,6 +246,183 @@
     parent.appendChild(wrapper);
   }
 
+  function svgNode(doc, tag, attributes) {
+    const node = doc.createElementNS(SVG_NS, tag);
+    Object.entries(attributes || {}).forEach(([key, value]) => node.setAttribute(key, asText(value)));
+    return node;
+  }
+
+  function chartNumber(value) {
+    if (!Number.isFinite(value)) return "—";
+    return Math.abs(value) >= 1000 ? value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })
+      : String(Number(value.toFixed(2)));
+  }
+
+  function chartValue(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function appendSvgText(doc, svg, x, y, value, className) {
+    const node = svgNode(doc, "text", { x, y });
+    if (className) node.setAttribute("class", className);
+    node.textContent = asText(value);
+    svg.appendChild(node);
+    return node;
+  }
+
+  function chartSeriesData(pageData) {
+    const chart = pageData && pageData.chart;
+    if (!chart || chart.fallback === "table") return null;
+    if (!Array.isArray(chart.labels) || !Array.isArray(chart.series)
+        || chart.labels.length > 500 || chart.series.length < 1 || chart.series.length > 4) return null;
+    const labels = chart.labels.map((label) => asText(label));
+    if (labels.length !== new Set(labels).size) return null;
+    const series = chart.series.map((item) => {
+      if (!item || typeof item !== "object" || typeof item.key !== "string" || !Array.isArray(item.values)
+          || item.values.length !== labels.length) return null;
+      const values = item.values.map((value) => {
+        if (value === null || value === undefined) return null;
+        return chartValue(value) === null ? "invalid" : value;
+      });
+      return values.includes("invalid") ? null : { ...item, values };
+    });
+    if (series.some((item) => !item)) return null;
+    return { ...chart, labels, series };
+  }
+
+  function appendChart(doc, parent, pageData) {
+    const chart = chartSeriesData(pageData);
+    if (!chart) return false;
+    const width = 760;
+    const height = 340;
+    const left = 58;
+    const right = 18;
+    const top = 32;
+    const bottom = 58;
+    const plotWidth = width - left - right;
+    const plotHeight = height - top - bottom;
+    const labels = chart.labels;
+    const values = chart.series.flatMap((item) => item.values.map(chartValue).filter((value) => value !== null));
+    const wrapper = doc.createElement("div");
+    wrapper.className = "agent-answer-view-chart";
+    const unit = chart.unit ? `单位：${asText(chart.unit)}` : "单位：未标注";
+    appendText(doc, wrapper, "p", unit, "agent-answer-view-chart-unit");
+    const svg = svgNode(doc, "svg", {
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-label": `${viewTitle(pageData)}，${unit}`,
+      preserveAspectRatio: "xMidYMid meet",
+    });
+    svg.classList.add("agent-answer-view-chart-svg");
+    appendSvgText(doc, svg, left, 20, viewTitle(pageData), "agent-answer-view-chart-title");
+    if (!values.length) {
+      appendSvgText(doc, svg, width / 2, height / 2, "暂无可绘制数据", "agent-answer-view-chart-empty");
+      wrapper.appendChild(svg);
+      parent.appendChild(wrapper);
+      return true;
+    }
+
+    let minimum = Math.min(...values);
+    let maximum = Math.max(...values);
+    if (pageData.kind === "bar") {
+      minimum = Math.min(0, minimum);
+      maximum = Math.max(0, maximum);
+    }
+    if (minimum === maximum) {
+      if (minimum === 0) maximum = 1;
+      else { minimum -= Math.abs(minimum) * 0.1 || 1; maximum += Math.abs(maximum) * 0.1 || 1; }
+    }
+    const range = maximum - minimum;
+    const scaleY = (value) => top + plotHeight - ((value - minimum) / range) * plotHeight;
+    const scaleX = (index) => labels.length === 1 ? left + plotWidth / 2 : left + (index / (labels.length - 1)) * plotWidth;
+    const baseline = scaleY(0);
+    const axis = svgNode(doc, "line", { x1: left, y1: top, x2: left, y2: top + plotHeight });
+    axis.setAttribute("class", "agent-answer-view-chart-axis");
+    svg.appendChild(axis);
+    const bottomAxis = svgNode(doc, "line", { x1: left, y1: top + plotHeight, x2: left + plotWidth, y2: top + plotHeight });
+    bottomAxis.setAttribute("class", "agent-answer-view-chart-axis");
+    svg.appendChild(bottomAxis);
+    for (let tick = 0; tick <= 4; tick += 1) {
+      const value = maximum - ((maximum - minimum) * tick / 4);
+      const y = scaleY(value);
+      const grid = svgNode(doc, "line", { x1: left, y1: y, x2: left + plotWidth, y2: y });
+      grid.setAttribute("class", "agent-answer-view-chart-grid");
+      svg.appendChild(grid);
+      appendSvgText(doc, svg, left - 8, y + 4, chartNumber(value), "agent-answer-view-chart-tick").setAttribute("text-anchor", "end");
+    }
+    if (pageData.kind === "bar") {
+      const zero = svgNode(doc, "line", { x1: left, y1: baseline, x2: left + plotWidth, y2: baseline });
+      zero.setAttribute("class", "agent-answer-view-chart-zero");
+      svg.appendChild(zero);
+    }
+    const step = labels.length <= 10 ? 1 : Math.ceil(labels.length / 8);
+    labels.forEach((label, index) => {
+      if (index % step !== 0 && index !== labels.length - 1) return;
+      const x = scaleX(index);
+      const tick = svgNode(doc, "line", { x1: x, y1: top + plotHeight, x2: x, y2: top + plotHeight + 4 });
+      tick.setAttribute("class", "agent-answer-view-chart-axis");
+      svg.appendChild(tick);
+      const text = appendSvgText(doc, svg, x, height - 22, label.length > 18 ? `${label.slice(0, 17)}…` : label, "agent-answer-view-chart-label");
+      text.setAttribute("text-anchor", "middle");
+    });
+
+    const colors = ["#2359c4", "#087443", "#a66500", "#8b3fc5"];
+    if (pageData.kind === "bar") {
+      const groupWidth = plotWidth / Math.max(1, labels.length) * 0.76;
+      const barWidth = groupWidth / chart.series.length;
+      chart.series.forEach((item, seriesIndex) => {
+        item.values.forEach((raw, index) => {
+          const value = chartValue(raw);
+          if (value === null) return;
+          const x = left + ((index + 0.5) / labels.length) * plotWidth - groupWidth / 2 + seriesIndex * barWidth;
+          const valueY = scaleY(value);
+          const y = value >= 0 ? valueY : baseline;
+          const bar = svgNode(doc, "rect", { x, y, width: Math.max(1, barWidth - 2), height: Math.max(1, Math.abs(valueY - baseline)), fill: colors[seriesIndex] });
+          bar.setAttribute("aria-label", `${asText(item.label || item.key)} ${asText(raw)}`);
+          svg.appendChild(bar);
+        });
+      });
+    } else {
+      chart.series.forEach((item, seriesIndex) => {
+        let segment = [];
+        const flush = () => {
+          if (segment.length >= 2) {
+            const line = svgNode(doc, "polyline", { points: segment.map((point) => point.join(",")).join(" "), fill: "none", stroke: colors[seriesIndex], "stroke-width": 2 });
+            svg.appendChild(line);
+          } else if (segment.length === 1) {
+            const point = svgNode(doc, "circle", { cx: segment[0][0], cy: segment[0][1], r: 3, fill: colors[seriesIndex] });
+            svg.appendChild(point);
+          }
+          segment = [];
+        };
+        item.values.forEach((raw, index) => {
+          const value = chartValue(raw);
+          if (value === null) { flush(); return; }
+          segment.push([scaleX(index), scaleY(value)]);
+        });
+        flush();
+      });
+    }
+    const legend = doc.createElement("div");
+    legend.className = "agent-answer-view-chart-legend";
+    chart.series.forEach((item, index) => {
+      const entry = doc.createElement("span");
+      entry.className = "agent-answer-view-chart-legend-item";
+      const swatch = doc.createElement("i");
+      swatch.className = "agent-answer-view-chart-swatch";
+      swatch.style.backgroundColor = colors[index];
+      entry.appendChild(swatch);
+      appendText(doc, entry, "span", item.label || item.key);
+      legend.appendChild(entry);
+    });
+    wrapper.appendChild(svg);
+    wrapper.appendChild(legend);
+    parent.appendChild(wrapper);
+    return true;
+  }
+
   function appendWarnings(doc, parent, warnings) {
     if (!Array.isArray(warnings) || !warnings.length) return;
     const list = doc.createElement("ul");
@@ -380,9 +558,36 @@
         if (!pageData || typeof pageData !== "object") throw new Error("数据展示返回格式无效");
         host.body.replaceChildren();
         appendSummary(doc, host.body, pageData);
-        appendTable(doc, host.body, pageData);
+        const chartPage = { ...pageData, title: view.title };
+        if (pageData.kind === "bar" || pageData.kind === "line") {
+          const chartRendered = appendChart(doc, host.body, chartPage);
+          if (chartRendered) {
+            const toggle = doc.createElement("button");
+            toggle.type = "button";
+            toggle.className = "agent-answer-view-table-toggle";
+            toggle.textContent = "查看数据表";
+            toggle.setAttribute("aria-expanded", "false");
+            const tableHost = doc.createElement("div");
+            tableHost.className = "agent-answer-view-table-host";
+            tableHost.hidden = true;
+            appendTable(doc, tableHost, pageData);
+            appendPagination(doc, tableHost, pageData.pagination ? pageData : { ...pageData, pagination: {} }, loadPage, alive, listen);
+            listen(toggle, "click", () => {
+              tableHost.hidden = !tableHost.hidden;
+              toggle.textContent = tableHost.hidden ? "查看数据表" : "收起数据表";
+              toggle.setAttribute("aria-expanded", String(!tableHost.hidden));
+            });
+            host.body.appendChild(toggle);
+            host.body.appendChild(tableHost);
+          } else {
+            appendTable(doc, host.body, pageData);
+            appendPagination(doc, host.body, pageData.pagination ? pageData : { ...pageData, pagination: {} }, loadPage, alive, listen);
+          }
+        } else {
+          appendTable(doc, host.body, pageData);
+          appendPagination(doc, host.body, pageData.pagination ? pageData : { ...pageData, pagination: {} }, loadPage, alive, listen);
+        }
         appendWarnings(doc, host.body, pageData.warnings);
-        appendPagination(doc, host.body, pageData.pagination ? pageData : { ...pageData, pagination: {} }, loadPage, alive, listen);
       } catch (error) {
         if (!alive() || sequence !== requestSequence || (error && error.name === "AbortError")) return;
         report(options.onError, error, { viewId: view.id });
