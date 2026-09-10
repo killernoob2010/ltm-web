@@ -44,6 +44,12 @@
     human_pass: "人工通过",
     human_fail: "人工未通过",
     human_review: "待人工复核",
+    passed: "通过",
+    blocked: "受阻",
+    not_run: "未执行",
+    definition_available: "题库已登记",
+    offline_available: "离线套件已登记",
+    not_recorded: "未记录",
   };
 
   function escapeHtml(value) {
@@ -114,7 +120,7 @@
   }
 
   function moduleText(items) {
-    const names = { trading: "交易管理", data_visualization: "数据可视化", information_warning: "信息预警" };
+    const names = { trading: "交易管理", data_visualization: "数据可视化", public_research: "公开研究" };
     return (items || []).map((item) => names[item] || item).join("、") || "未识别";
   }
 
@@ -165,10 +171,10 @@
     const data = state.evaluations || {};
     const definition = data.definition || {};
     const items = [
-      ["回归题库", `definition-regression`, definition.regression],
-      ["Holdout题库", `definition-holdout`, definition.holdout],
-      ["离线行为", `offline-behavior`, data.offline_behavior],
-      ["真实模型", "live", data.live],
+      ["回归题库", definition.regression?.batch_id || "definition-regression", definition.regression],
+      ["Holdout题库", definition.holdout?.batch_id || "definition-holdout", definition.holdout],
+      ["离线行为", data.offline_behavior?.batch_id || "offline-behavior", data.offline_behavior],
+      ["真实模型", data.live?.batch_id || "live", data.live],
     ];
     const live = data.live || {};
     evaluationNotice.textContent = live.real_model_evaluated
@@ -176,7 +182,7 @@
       : "当前页面明确显示：题库定义和离线行为检查不代表真实模型已通过；真实模型评估尚未记录。";
     evaluationList.innerHTML = items.map(([title, id, item]) => `<article class="agent-quality-evaluation">
       <h3>${escapeHtml(title)}</h3>
-      <p>状态：${escapeHtml(item?.status || "--")}<br>用例数：${escapeHtml(item?.count ?? "--")}<br>真实模型：${item?.real_model_evaluated ? "已执行" : "未执行"}</p>
+      <p>状态：${statusChip(item?.status || "not_recorded")}<br>用例数：${escapeHtml(item?.count ?? item?.total_count ?? "--")}<br>已执行：${escapeHtml(item?.executed ? "是" : "否")}<br>真实模型：${item?.real_model_evaluated ? "已执行" : "未执行"}${item?.batch_id ? `<br>批次：${escapeHtml(item.batch_id)}` : ""}</p>
       <button type="button" class="secondary" data-evaluation-id="${escapeHtml(id)}">查看批次</button>
     </article>`).join("");
   }
@@ -184,7 +190,7 @@
   async function showEvaluation(batchId) {
     try {
       const batch = await state.api(`${EVALUATIONS_ENDPOINT}/${encodeURIComponent(batchId)}`);
-      evaluationNotice.textContent = `${batch.id}：${batch.status}；真实模型评估：${batch.real_model_evaluated ? "已执行" : "未执行"}。`;
+      evaluationNotice.textContent = `${batch.id}：${batch.status}；执行来源：${batch.execution_source || batch.kind || "未记录"}；真实模型评估：${batch.real_model_evaluated ? "已执行" : "未执行"}。`;
       evaluationList.innerHTML = (batch.cases || []).slice(0, 100).map((item) => `<article class="agent-quality-evaluation">
         <h3>${escapeHtml(item.id || "未命名用例")}</h3>
         <p>状态：${escapeHtml(item.status || "not_run")}<br>${escapeHtml(item.question || "")}</p>

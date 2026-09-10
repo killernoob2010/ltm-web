@@ -11,6 +11,8 @@ from datetime import date, datetime, time, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from .. import db
 from .tools import agent_module_catalog
@@ -24,6 +26,7 @@ MAX_TEXT = 4000
 MAX_NOTE = 1000
 ROOT_DIR = Path(__file__).resolve().parents[3]
 EVAL_DIR = ROOT_DIR / "evals" / "trading_agent_v2"
+BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 
 _MODULE_TOOLS = {
     "trading": {
@@ -33,7 +36,7 @@ _MODULE_TOOLS = {
     "data_visualization": {
         "describe_dataset", "query_dataset", "summarize_dataset", "compare_dataset", "relate_datasets",
     },
-    "information_warning": {"search_public", "read_public"},
+    "public_research": {"search_public", "read_public"},
 }
 
 
@@ -74,13 +77,17 @@ def _parse_date(value: str | None) -> date | None:
 def _date_window(start_date: str | None, end_date: str | None) -> tuple[str | None, str | None, dict[str, str | None]]:
     start = _parse_date(start_date)
     end = _parse_date(end_date)
+    if start is None and end is None:
+        end = datetime.now(BUSINESS_TZ).date()
+        start = end - timedelta(days=6)
     if start and end and start > end:
         raise ValueError("开始日期不能晚于结束日期")
-    start_bound = datetime.combine(start, time.min, tzinfo=timezone.utc).isoformat(timespec="seconds") if start else None
-    end_bound = datetime.combine(end + timedelta(days=1), time.min, tzinfo=timezone.utc).isoformat(timespec="seconds") if end else None
+    start_bound = datetime.combine(start, time.min, tzinfo=BUSINESS_TZ).astimezone(timezone.utc).isoformat(timespec="seconds") if start else None
+    end_bound = datetime.combine(end + timedelta(days=1), time.min, tzinfo=BUSINESS_TZ).astimezone(timezone.utc).isoformat(timespec="seconds") if end else None
     return start_bound, end_bound, {
         "start": start.isoformat() if start else None,
         "end": end.isoformat() if end else None,
+        "timezone": "Asia/Shanghai",
     }
 
 
@@ -103,8 +110,26 @@ def _module_codes(task_id: int) -> list[str]:
     return sorted({module for module in (_module_for_tool(row["tool_name"]) for row in rows) if module})
 
 
+def _module_codes_for_tasks(task_ids: set[int]) -> dict[int, list[str]]:
+    if not task_ids or not _table_exists("agent_v2_events"):
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    with db.connect() as conn:
+        rows = db._exec(conn.cursor(),
+            f"SELECT task_id,tool_name FROM agent_v2_events WHERE task_id IN ({placeholders}) AND tool_name IS NOT NULL",
+            tuple(sorted(task_ids))).fetchall()
+    output: dict[int, set[str]] = {}
+    for row in rows:
+        module = _module_for_tool(row["tool_name"])
+        if module:
+            output.setdefault(int(row["task_id"]), set()).add(module)
+    return {task_id: sorted(values) for task_id, values in output.items()}
+
+
 def _latest_feedback(task_ids: set[int] | None = None) -> dict[int, dict[str, Any]]:
     if not _table_exists("operation_logs"):
+        return {}
+    if task_ids is not None and not task_ids:
         return {}
     params: list[Any] = [FEEDBACK_ENTITY]
     suffix = ""
@@ -151,7 +176,8 @@ def _run_quality(state: str, feedback: dict[str, Any] | None) -> str:
     return "pending"
 
 
-def _run_item(row: dict[str, Any], feedback: dict[str, Any] | None = None) -> dict[str, Any]:
+def _run_item(row: dict[str, Any], feedback: dict[str, Any] | None = None,
+              modules: list[str] | None = None) -> dict[str, Any]:
     task_id = int(row["task_id"])
     state = str(row.get("state") or row.get("task_state") or "unknown")
     return {
@@ -165,7 +191,7 @@ def _run_item(row: dict[str, Any], feedback: dict[str, Any] | None = None) -> di
         "tool_calls": int(row.get("tool_calls") or 0),
         "search_calls": int(row.get("search_calls") or 0),
         "last_error": str(row.get("last_error") or "")[:240] or None,
-        "modules": _module_codes(task_id),
+        "modules": modules if modules is not None else _module_codes(task_id),
         "quality_status": _run_quality(state, feedback),
         "feedback": feedback,
     }
@@ -211,7 +237,9 @@ def list_runs(*, page: int = 1, page_size: int = 20, start_date: str | None = No
     feedback = _latest_feedback({int(row["task_id"]) for row in rows})
     total = len(rows)
     offset = (safe_page - 1) * safe_size
-    items = [_run_item(row, feedback.get(int(row["task_id"]))) for row in rows[offset:offset + safe_size]]
+    page_rows = rows[offset:offset + safe_size]
+    modules = _module_codes_for_tasks({int(row["task_id"]) for row in page_rows})
+    items = [_run_item(row, feedback.get(int(row["task_id"])), modules.get(int(row["task_id"]), [])) for row in page_rows]
     return {
         "version": QUALITY_VERSION,
         "window": window,
@@ -279,6 +307,154 @@ def _read_json_lines(name: str) -> list[dict[str, Any]]:
         return []
 
 
+_EVALUATION_STATUSES = {"passed", "failed", "blocked", "needs_review", "not_run"}
+
+
+def _evaluation_tables_ready() -> bool:
+    return _table_exists("agent_v2_evaluation_batches") and _table_exists("agent_v2_evaluation_cases")
+
+
+def _json_value(value: Any, fallback):
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_json(value: Any, fallback):
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+    return parsed if isinstance(parsed, type(fallback)) else fallback
+
+
+def create_evaluation_batch(*, suite: str, execution_source: str, environment: str,
+                            cases: list[dict[str, Any]], idempotency_key: str,
+                            batch_id: str | None = None, metadata: dict[str, Any] | None = None) -> str:
+    """Create an auditable batch and pre-register every case as ``not_run``.
+
+    This is intentionally separate from the Agent task queue.  A definition or
+    offline batch can therefore be resumed without implying a live-model pass.
+    """
+    if not _evaluation_tables_ready():
+        raise ValueError("Evaluation附表尚未迁移")
+    suite = str(suite or "").strip()[:80]
+    execution_source = str(execution_source or "").strip()[:40]
+    environment = str(environment or "").strip()[:40]
+    idempotency_key = str(idempotency_key or "").strip()[:200]
+    if not suite or execution_source not in {"deterministic", "offline", "live", "human"} or not environment or not idempotency_key:
+        raise ValueError("Evaluation批次参数无效")
+    normalized_cases = [item for item in cases if isinstance(item, dict) and str(item.get("id") or "").strip()]
+    with db.connect() as conn:
+        existing = db._exec(conn.cursor(),
+            "SELECT id FROM agent_v2_evaluation_batches WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+        if existing:
+            return str(existing["id"])
+        batch_id = str(batch_id or uuid4())
+        created_at = _now()
+        db._exec(conn.cursor(), """INSERT INTO agent_v2_evaluation_batches
+            (id,suite,execution_source,environment,status,idempotency_key,total_count,metadata_json,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (batch_id, suite, execution_source, environment, "running", idempotency_key,
+             len(normalized_cases), _json_value(metadata or {}, {}), created_at))
+        for item in normalized_cases:
+            db._exec(conn.cursor(), """INSERT INTO agent_v2_evaluation_cases
+                (batch_id,case_id,question,capabilities_json,status)
+                VALUES (?,?,?,?,?)""",
+                (batch_id, str(item["id"])[:120], str(item.get("question") or "")[:240],
+                 _json_value(item.get("capabilities") or [], []), "not_run"))
+    return batch_id
+
+
+def record_evaluation_case(batch_id: str, case_id: str, *, status: str,
+                           score: dict[str, Any] | None = None,
+                           evidence: dict[str, Any] | None = None,
+                           task_id: int | None = None) -> None:
+    if not _evaluation_tables_ready():
+        raise ValueError("Evaluation附表尚未迁移")
+    status = str(status or "").strip()
+    if status not in _EVALUATION_STATUSES:
+        raise ValueError("Evaluation用例状态无效")
+    timestamp = _now()
+    with db.connect() as conn:
+        updated = db._exec(conn.cursor(), """UPDATE agent_v2_evaluation_cases
+            SET status=?,score_json=?,evidence_json=?,task_id=?,started_at=COALESCE(started_at,?),finished_at=?
+            WHERE batch_id=? AND case_id=?""",
+            (status, _json_value(score or {}, {}), _json_value(evidence or {}, {}), task_id,
+             timestamp, timestamp if status != "not_run" else None, str(batch_id), str(case_id))).rowcount
+    if updated != 1:
+        raise ValueError("Evaluation用例不存在")
+
+
+def finish_evaluation_batch(batch_id: str, *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not _evaluation_tables_ready():
+        raise ValueError("Evaluation附表尚未迁移")
+    with db.connect() as conn:
+        rows = db._exec(conn.cursor(),
+            "SELECT status,COUNT(*) AS count FROM agent_v2_evaluation_cases WHERE batch_id=? GROUP BY status",
+            (str(batch_id),)).fetchall()
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        total = sum(counts.values())
+        executed = total - counts.get("not_run", 0)
+        if counts.get("failed", 0):
+            status = "failed"
+        elif counts.get("blocked", 0):
+            status = "blocked"
+        elif counts.get("not_run", 0):
+            status = "partial"
+        elif total and counts.get("passed", 0) == total:
+            status = "passed"
+        else:
+            status = "needs_review"
+        db._exec(conn.cursor(), """UPDATE agent_v2_evaluation_batches SET status=?,executed_count=?,
+            passed_count=?,failed_count=?,blocked_count=?,not_run_count=?,metadata_json=?,finished_at=? WHERE id=?""",
+            (status, executed, counts.get("passed", 0), counts.get("failed", 0), counts.get("blocked", 0),
+             counts.get("not_run", 0), _json_value(metadata or {}, {}), _now(), str(batch_id)))
+    return _stored_evaluation_batch(batch_id) or {"id": str(batch_id), "status": status}
+
+
+def _stored_evaluation_batch(batch_id: str) -> dict[str, Any] | None:
+    if not _evaluation_tables_ready():
+        return None
+    with db.connect() as conn:
+        batch = db._exec(conn.cursor(), "SELECT * FROM agent_v2_evaluation_batches WHERE id=?", (str(batch_id),)).fetchone()
+        if not batch:
+            return None
+        cases = db._exec(conn.cursor(), """SELECT * FROM agent_v2_evaluation_cases
+            WHERE batch_id=? ORDER BY case_id""", (str(batch_id),)).fetchall()
+    source = str(batch["execution_source"])
+    return {
+        "id": str(batch["id"]), "suite": batch["suite"], "kind": source,
+        "execution_source": source, "environment": batch["environment"],
+        "status": batch["status"], "executed": int(batch["executed_count"] or 0) > 0,
+        "real_model_evaluated": source == "live" and int(batch["executed_count"] or 0) > 0,
+        "release_readiness": "passed" if source == "live" and batch["status"] == "passed" else "not_evaluated",
+        "total_count": int(batch["total_count"] or 0), "executed_count": int(batch["executed_count"] or 0),
+        "passed_count": int(batch["passed_count"] or 0), "failed_count": int(batch["failed_count"] or 0),
+        "blocked_count": int(batch["blocked_count"] or 0), "not_run_count": int(batch["not_run_count"] or 0),
+        "created_at": _seconds(batch["created_at"]), "finished_at": _seconds(batch["finished_at"]),
+        "metadata": _parse_json(batch["metadata_json"], {}),
+        "cases": [{
+            "id": str(case["case_id"]), "question": str(case["question"] or ""),
+            "capabilities": _parse_json(case["capabilities_json"], []), "status": case["status"],
+            "score": _parse_json(case["score_json"], {}), "evidence": _parse_json(case["evidence_json"], {}),
+            "task_id": case["task_id"], "started_at": _seconds(case["started_at"]),
+            "finished_at": _seconds(case["finished_at"]),
+        } for case in cases],
+    }
+
+
+def _latest_stored(suite: str, execution_source: str) -> dict[str, Any] | None:
+    if not _evaluation_tables_ready():
+        return None
+    with db.connect() as conn:
+        row = db._exec(conn.cursor(), """SELECT id FROM agent_v2_evaluation_batches
+            WHERE suite=? AND execution_source=? ORDER BY created_at DESC,id DESC LIMIT 1""",
+            (suite, execution_source)).fetchone()
+    return _stored_evaluation_batch(row["id"]) if row else None
+
+
 def evaluation_catalog() -> dict[str, Any]:
     regression = _read_json_lines("cases.jsonl")
     holdout = _read_json_lines("holdout.jsonl")
@@ -287,31 +463,65 @@ def evaluation_catalog() -> dict[str, Any]:
         offline_count = len(manifest.get("cases", []))
     except (OSError, ValueError, json.JSONDecodeError):
         offline_count = 0
+    stored_regression = _latest_stored("regression", "deterministic")
+    stored_holdout = _latest_stored("holdout", "deterministic")
+    stored_offline = _latest_stored("offline_behavior", "offline")
+    stored_live = _latest_stored("live", "live")
+
+    def definition_item(count: int, stored: dict[str, Any] | None) -> dict[str, Any]:
+        if stored:
+            return {"count": count, "status": stored["status"], "executed": stored["executed"], "batch_id": stored["id"],
+                    "passed_count": stored["passed_count"], "failed_count": stored["failed_count"],
+                    "blocked_count": stored["blocked_count"], "not_run_count": stored["not_run_count"]}
+        return {"count": count, "status": "available", "executed": False}
+
+    live = stored_live or {
+        "id": "live", "status": "not_recorded", "executed": False,
+        "real_model_evaluated": False, "release_readiness": "not_evaluated", "cases": [],
+    }
     return {
-        "real_model_evaluated": False,
-        "release_readiness": "not_evaluated",
+        "real_model_evaluated": bool(live.get("real_model_evaluated")),
+        "release_readiness": live.get("release_readiness", "not_evaluated"),
         "definition": {
-            "regression": {"count": len(regression), "status": "available", "executed": False},
-            "holdout": {"count": len(holdout), "status": "available", "executed": False},
+            "regression": definition_item(len(regression), stored_regression),
+            "holdout": definition_item(len(holdout), stored_holdout),
         },
-        "offline_behavior": {
-            "count": offline_count,
-            "status": "available" if offline_count else "unavailable",
-            "executed": False,
-            "real_model_evaluated": False,
-            "release_readiness": "not_evaluated",
-        },
+        "offline_behavior": ({
+            "count": offline_count, "status": stored_offline["status"], "executed": stored_offline["executed"],
+            "batch_id": stored_offline["id"], "real_model_evaluated": False,
+            "release_readiness": "not_evaluated", "passed_count": stored_offline["passed_count"],
+            "failed_count": stored_offline["failed_count"], "blocked_count": stored_offline["blocked_count"],
+            "not_run_count": stored_offline["not_run_count"],
+        } if stored_offline else {
+            "count": offline_count, "status": "available" if offline_count else "unavailable",
+            "executed": False, "real_model_evaluated": False, "release_readiness": "not_evaluated",
+        }),
         "live": {
-            "status": "not_recorded",
-            "executed": False,
-            "real_model_evaluated": False,
-            "release_readiness": "not_evaluated",
+            "status": live.get("status", "not_recorded"), "executed": bool(live.get("executed")),
+            "real_model_evaluated": bool(live.get("real_model_evaluated")),
+            "release_readiness": live.get("release_readiness", "not_evaluated"),
+            **({"batch_id": live["id"], "count": live.get("total_count", 0),
+                "passed_count": live.get("passed_count", 0), "failed_count": live.get("failed_count", 0),
+                "blocked_count": live.get("blocked_count", 0), "not_run_count": live.get("not_run_count", 0)}
+               if stored_live else {}),
         },
     }
 
 
 def evaluation_batch(batch_id: str) -> dict[str, Any]:
     batch_id = str(batch_id or "").strip()
+    stored = _stored_evaluation_batch(batch_id)
+    if stored is None:
+        aliases = {
+            "definition-regression": ("regression", "deterministic"),
+            "definition-holdout": ("holdout", "deterministic"),
+            "offline-behavior": ("offline_behavior", "offline"),
+            "live": ("live", "live"),
+        }
+        if batch_id in aliases:
+            stored = _latest_stored(*aliases[batch_id])
+    if stored:
+        return stored
     sources = {
         "definition-regression": ("definition", "cases.jsonl"),
         "definition-holdout": ("definition", "holdout.jsonl"),
@@ -382,6 +592,12 @@ def record_feedback(*, evaluator_id: int, task_id: int, label: str, note: str = 
         FEEDBACK_ENTITY,
         task_id,
     )
+    if _table_exists("agent_v2_evaluation_reviews"):
+        with db.connect() as conn:
+            db._exec(conn.cursor(), """INSERT INTO agent_v2_evaluation_reviews
+                (id,task_id,reviewer_type,reviewer_id,label,note,evaluator_version,created_at)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (str(uuid4()), task_id, "human", int(evaluator_id), label, note, evaluator_version, _now()))
     feedback = _latest_feedback({task_id}).get(task_id)
     return feedback or {
         "label": label,
@@ -464,5 +680,6 @@ def get_run_detail(task_id: int) -> dict[str, Any] | None:
 
 __all__ = [
     "QUALITY_VERSION", "FEEDBACK_LABELS", "build_summary", "evaluation_catalog", "evaluation_batch",
-    "get_run_detail", "list_runs", "record_feedback",
+    "get_run_detail", "list_runs", "record_feedback", "create_evaluation_batch",
+    "record_evaluation_case", "finish_evaluation_batch",
 ]

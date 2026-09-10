@@ -110,3 +110,8 @@ def test_dataset_specific_required_filters_are_not_silently_defaulted():
         validate_dataset_query(DatasetQuery(dataset="spot_series"))
     with pytest.raises(ValueError, match="needs_clarification:arrival_kind"):
         validate_dataset_query(DatasetQuery(dataset="arrival_detail"))
+from app.trading_agent.semantic_catalog import get_dataset_spec
+
+
+def test_inventory_catalog_registers_business_year_dimension():
+    assert "business_year" in get_dataset_spec("port_inventory").dimension_keys

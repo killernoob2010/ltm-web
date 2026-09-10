@@ -1,6 +1,14 @@
 """Fixed, read-only adapters for the registered trade data-visualization datasets."""
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
+import inspect
+import json
+import os
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -15,6 +23,7 @@ from .. import db
 VERSION = "dv-query-v1"
 MAX_ROWS = 20_000
 PREVIEW_ROWS = 20
+CURSOR_TTL_SECONDS = 15 * 60
 
 
 class DataSourceUnavailable(RuntimeError):
@@ -253,6 +262,11 @@ def _normalize_row(row: dict, dataset: str) -> dict:
     output = {key: value for key, value in row.items() if value is not None}
     output["row_ref"] = str(row.get("row_ref") or row.get("source_row_id"))
     output["observation_date"] = _date_value(row)
+    if output.get("business_year") is None and output.get("observation_date"):
+        try:
+            output["business_year"] = int(str(output["observation_date"])[:4])
+        except (TypeError, ValueError):
+            pass
     if row.get("period_start") is not None:
         output["period_start"] = str(row["period_start"])[:10]
     if row.get("business_week") is None:
@@ -303,11 +317,75 @@ def _duplicate_keys(dataset: str, rows: list[dict]) -> set[tuple]:
     return duplicate
 
 
-def _query_rows(args: DatasetQuery) -> list[dict]:
+def _cursor_secret() -> bytes:
+    # Prefer a deployment secret.  DATABASE_URL is a stable deployment-bound
+    # fallback for existing installations that predate the cursor setting; the
+    # cursor is still re-authorized and bound to the user/conversation below.
+    configured = (os.environ.get("AGENT_V2_CURSOR_SECRET") or os.environ.get("DATABASE_URL") or "agent-v2-local-cursor-key").strip()
+    return hashlib.sha256(configured.encode("utf-8")).digest()
+
+
+def _canonical_query(args: DatasetQuery) -> str:
+    payload = args.model_dump(mode="json")
+    payload.pop("cursor", None)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _encode_cursor(args: DatasetQuery, principal, row: dict) -> str:
+    payload = {
+        "v": 1,
+        "dataset": args.dataset,
+        "query": hashlib.sha256(_canonical_query(args).encode("utf-8")).hexdigest(),
+        "user_id": int(principal.user_id),
+        "conversation_id": int(principal.conversation_id),
+        "last_date": _date_value(row),
+        "last_row": str(row.get("row_ref") or ""),
+        "expires_at": int(time.time()) + CURSOR_TTL_SECONDS,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+    signature = hmac.new(_cursor_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _decode_cursor(args: DatasetQuery, principal) -> dict:
+    try:
+        encoded, supplied = args.cursor.split(".", 1)
+        expected = hmac.new(_cursor_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, supplied):
+            raise ValueError
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        if not isinstance(payload, dict):
+            raise ValueError
+        if payload.get("v") != 1 or payload.get("dataset") != args.dataset:
+            raise ValueError
+        if payload.get("user_id") != int(principal.user_id) or payload.get("conversation_id") != int(principal.conversation_id):
+            raise ValueError
+        query_hash = hashlib.sha256(_canonical_query(args).encode("utf-8")).hexdigest()
+        if payload.get("query") != query_hash or int(payload.get("expires_at", 0)) < int(time.time()):
+            raise ValueError
+        if not payload.get("last_date") or not payload.get("last_row"):
+            raise ValueError
+        return payload
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError, UnicodeError, binascii.Error):
+        raise ValueError("invalid_cursor") from None
+
+
+def _query_rows(args: DatasetQuery, principal) -> list[dict]:
     definition = _definition(args.dataset)
     where, params = _where(args, definition)
-    sql = f"SELECT {_fixed_select(definition)} FROM {definition['from']}{where} ORDER BY {definition['date_field']} DESC, source_row_id ASC LIMIT ?"
-    raw = _readonly_fetch(sql, tuple(params + [MAX_ROWS + 1]))
+    if args.cursor:
+        cursor = _decode_cursor(args, principal)
+        date_field = definition["date_field"]
+        row_field = definition["columns"]["source_row_id"]
+        cursor_clause = f"({date_field} < ? OR ({date_field} = ? AND {row_field} > ?))"
+        if where:
+            where = f"{where} AND {cursor_clause}"
+        else:
+            where = f" WHERE {cursor_clause}"
+        params.extend([cursor["last_date"], cursor["last_date"], cursor["last_row"]])
+    sql = f"SELECT {_fixed_select(definition)} FROM {definition['from']}{where} ORDER BY {definition['date_field']} DESC, {definition['columns']['source_row_id']} ASC LIMIT ?"
+    raw = _readonly_fetch(sql, tuple(params + [args.batch_size + 1]))
     return _apply_python_filters(raw, args)
 
 
@@ -339,6 +417,19 @@ def _envelope(status: str, dataset: str, args: DatasetQuery, rows: list[dict], *
             "last_observation": max((_date_value(row) for row in rows if _date_value(row)), default=None),
         },
     }
+    observed_years = sorted({
+        int(str(_date_value(row))[:4])
+        for row in rows
+        if _date_value(row) and str(_date_value(row))[:4].isdigit()
+    })
+    if observed_years:
+        payload["coverage"]["observed_years"] = observed_years
+        requested_years = (args.filters.years or [])
+        if not requested_years and args.start_date and args.end_date:
+            requested_years = list(range(args.start_date.year, args.end_date.year + 1))
+        if requested_years:
+            payload["coverage"]["requested_years"] = sorted(set(requested_years))
+            payload["coverage"]["missing_years"] = sorted(set(requested_years) - set(observed_years))
     if extra:
         payload.update(extra)
     return ToolEnvelope(
@@ -360,7 +451,12 @@ def query_dataset(principal, args: DatasetQuery) -> ToolEnvelope:
         authorize(principal, "data_visualization.data")
         resources.append("data_visualization.data")
     try:
-        rows = _query_rows(args)
+        # Keep the adapter seam compatible with narrow test/dry-run fakes that
+        # predate the principal-bound continuation argument.
+        if len(inspect.signature(_query_rows).parameters) == 1:
+            rows = _query_rows(args)
+        else:
+            rows = _query_rows(args, principal)
     except DataSourceUnavailable:
         return _envelope(
             "temporarily_unavailable", args.dataset, args, [],
@@ -372,13 +468,17 @@ def query_dataset(principal, args: DatasetQuery) -> ToolEnvelope:
             "data_anomaly", args.dataset, args, rows,
             missing=[{"reason": "同一登记逻辑身份存在多个已生效来源行", "code": "duplicate_identity"}],
         )
-    if len(rows) > MAX_ROWS:
-        return _envelope(
-            "limit_exceeded", args.dataset, args, [],
-            missing=[{"reason": "查询超过20000行，请缩小时间或筛选范围", "code": "limit_exceeded"}],
-        )
+    has_more = len(rows) > args.batch_size
+    rows = rows[:args.batch_size]
     rows = _project_rows(args.dataset, rows, args.fields)
-    envelope = _envelope("complete" if rows else "waiting_for_data", args.dataset, args, rows)
+    extra = {}
+    missing = []
+    if has_more and rows:
+        extra["next_cursor"] = _encode_cursor(args, principal, rows[-1])
+        extra["paged"] = True
+        missing = [{"reason": "结果超过当前批次，可使用 next_cursor 继续读取", "code": "next_cursor"}]
+    envelope = _envelope("partial" if has_more else "complete" if rows else "waiting_for_data",
+                         args.dataset, args, rows, missing=missing, extra=extra)
     # Source connection is closed before this independent Agent snapshot write.
     ref = store.save_result(
         principal, envelope, rows, kind="dataset_rows", required_resources=resources, account_scope=[]

@@ -66,3 +66,23 @@ def test_compare_dataset_returns_delta_and_missing_period_as_registered_rows(mon
     )
     assert result.payload["periods"] == {"current": "2026-09-08", "previous": "2026-09-01"}
     assert result.status == "partial"
+
+
+def test_inventory_period_end_summary_groups_by_registered_business_year(monkeypatch):
+    ref = uuid4()
+    saved = _saved([
+        {"observation_date": "2024-12-25", "business_year": 2024, "port": "江阴", "value": 100, "value_state": "observed"},
+        {"observation_date": "2024-12-31", "business_year": 2024, "port": "江阴", "value": 110, "value_state": "observed"},
+        {"observation_date": "2026-12-31", "business_year": 2026, "port": "江阴", "value": 130, "value_state": "observed"},
+    ])
+    monkeypatch.setattr(dv_analysis.store, "load_result", lambda *args, **kwargs: saved)
+    monkeypatch.setattr(dv_analysis, "authorize", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dv_analysis, "_save_derived", lambda principal, envelope, rows, **kwargs: envelope)
+
+    result = dv_analysis.summarize_dataset(
+        object(), DatasetSummary(result_ref=ref, measure="value", operation="period_end", group_by=["business_year"])
+    )
+
+    assert result.payload["annual_method"] == "period_end"
+    assert {(row["business_year"], row["value"]) for row in result.payload["preview"]} == {(2024, "110"), (2026, "130")}
+    assert result.payload["missing_years"] == [2025]

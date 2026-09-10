@@ -39,6 +39,8 @@ class DatasetQuery(StrictModel):
     end_date: date | None = None
     filters: DataFilters = Field(default_factory=DataFilters)
     fields: list[str] = Field(default_factory=list, max_length=16)
+    cursor: str | None = Field(default=None, min_length=16, max_length=2048)
+    batch_size: int = Field(default=20_000, ge=1, le=20_000)
 
 
 class DatasetDescribeArgs(StrictModel):
@@ -57,7 +59,7 @@ class DatasetCompare(StrictModel):
 class DatasetSummary(StrictModel):
     result_ref: UUID
     measure: str = Field(min_length=1, max_length=80)
-    operation: Literal["sum", "mean", "min", "max", "count"]
+    operation: Literal["sum", "mean", "min", "max", "count", "period_end"]
     group_by: list[str] = Field(default_factory=list, max_length=6)
 
 

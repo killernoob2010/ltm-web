@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field
 
@@ -46,10 +47,30 @@ _INTERNAL = re.compile(
 )
 _AMBIGUOUS = re.compile(r"研究一下|分析一下|最新情况|最近怎么样|原因是什么|为什么变化", re.I)
 _CONFLICTING_EXTERNAL = re.compile(r"(?:但|但是|同时|并且|另外|还要|(?<!不)需要)[^，。；;]{0,16}(?:联网|上网|搜索|网络(?:查询|搜索)?)", re.I)
+_INTERNAL_REQUEST = re.compile(
+    r"持仓|成交|平仓|盈亏|账户|库存|发运|到港|表需|基差|港差|现货|期现|"
+    r"数据库|系统口径|登记口径|最新库存|数据表|趋势图|图表|可视化",
+    re.I,
+)
+_RESTRICTED_MODULE_PATTERNS = (
+    ("order_finance", re.compile(r"订单融资|融资(?:放款|状态|余额|金额|到期|未还|还款)|未还款金额|放款状态", re.I)),
+    ("backend_admin", re.compile(r"后台管理|后台用户|系统用户|用户姓名|角色(?:配置)?|权限配置|后台操作日志|操作日志", re.I)),
+)
+
+
+def public_provider_readiness() -> dict[str, str]:
+    """Expose provider readiness without exposing credentials or making a request."""
+    if not os.environ.get("BRAVE_SEARCH_API_KEY", "").strip():
+        return {"provider": "brave", "status": "not_configured"}
+    endpoint = os.environ.get("BRAVE_SEARCH_ENDPOINT", "https://api.search.brave.com/res/v1/web/search").strip()
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"provider": "brave", "status": "config_invalid"}
+    return {"provider": "brave", "status": "available"}
 
 
 def public_tools_configured() -> bool:
-    return bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip())
+    return public_provider_readiness()["status"] == "available"
 
 
 def public_tools_allowed(plan: RequestPlan | None, configured: bool) -> bool:
@@ -104,6 +125,16 @@ def enforce_research_policy(user_text: str, candidate: RequestPlan) -> RequestPl
     )
 
 
+def restricted_module_requests(user_text: str) -> list[str]:
+    """Identify module requests that the Agent must never satisfy with data."""
+    text = str(user_text or "")
+    return [code for code, pattern in _RESTRICTED_MODULE_PATTERNS if pattern.search(text)]
+
+
+def has_internal_request(user_text: str) -> bool:
+    return bool(_INTERNAL_REQUEST.search(str(user_text or "")))
+
+
 def active_plan(principal) -> RequestPlan | None:
     """Read the current run's server-recorded policy, never client arguments."""
     try:
@@ -125,5 +156,6 @@ def active_plan(principal) -> RequestPlan | None:
 
 __all__ = [
     "POLICY_VERSION", "RequestPlan", "active_plan", "enforce_research_policy",
-    "public_tools_allowed", "public_tools_configured",
+    "public_tools_allowed", "public_tools_configured", "public_provider_readiness",
+    "restricted_module_requests", "has_internal_request",
 ]

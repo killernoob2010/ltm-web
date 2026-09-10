@@ -69,10 +69,10 @@ _DERIVED_FIELDS = {
 }
 _DATASET_DEFAULT_FIELDS = {
     "spot_series": ["observation_date", "business_year", "business_week", "product", "value", "unit", "value_state"],
-    "port_inventory": ["observation_date", "port", "product", "value", "unit", "value_state"],
-    "inventory_summary": ["observation_date", "port", "summary_metric", "value", "unit", "value_state"],
-    "inventory_grade": ["observation_date", "port", "grade", "value", "unit", "value_state"],
-    "source_mainstream_inventory": ["observation_date", "port", "product", "value", "unit", "value_state"],
+    "port_inventory": ["observation_date", "business_year", "port", "product", "value", "unit", "value_state"],
+    "inventory_summary": ["observation_date", "business_year", "port", "summary_metric", "value", "unit", "value_state"],
+    "inventory_grade": ["observation_date", "business_year", "port", "grade", "value", "unit", "value_state"],
+    "source_mainstream_inventory": ["observation_date", "business_year", "port", "product", "value", "unit", "value_state"],
     "arrival_detail": ["observation_date", "arrival_kind", "port", "slice_type", "dimension", "product", "value", "unit", "value_state"],
     "iron_ore_basis": ["business_date", "port", "product", "basis", "futures_close", "data_status"],
 }

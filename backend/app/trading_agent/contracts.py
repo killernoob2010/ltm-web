@@ -38,6 +38,8 @@ class FactQuery(StrictModel):
     contracts: list[str] = Field(default_factory=list, max_length=50)
     direction: Literal["all", "buy", "sell"] = "all"
     classification: Literal["all", "unclassified", "classified"] = "all"
+    valuation_mode: Literal["auto", "quantity_only", "mark_to_market"] = "auto"
+    required_metrics: list[Literal["quantity", "floating_pnl"]] = Field(default_factory=list, max_length=4)
 
 
 class MetricValue(StrictModel):

@@ -77,7 +77,7 @@ def _dataset(saved) -> str:
 
 
 def _resources(saved) -> list[str]:
-    resources = _metadata(saved).get("required_resources") or ["data_visualization.display"]
+    resources = _metadata(saved).get("required_resources")
     if not isinstance(resources, list) or not resources:
         raise ValueError("result_missing_resources")
     return list(dict.fromkeys(str(value) for value in resources))
@@ -117,6 +117,44 @@ def _result_envelope(status: str, payload: dict, rows: list[dict], *, missing=No
     )
 
 
+def _business_year(row: dict) -> int | None:
+    value = row.get("business_year")
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    period = row.get("observation_date") or row.get("business_date") or row.get("period_start")
+    try:
+        return int(str(period)[:4]) if period else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _annual_coverage(saved, rows: list[dict]) -> tuple[list[int], list[int], list[int]]:
+    observed_years = sorted({year for row in rows if (year := _business_year(row)) is not None})
+    selection = _metadata(saved).get("selection") or {}
+    selection = selection if isinstance(selection, dict) else {}
+    filters = selection.get("filters") or {}
+    filters = filters if isinstance(filters, dict) else {}
+    requested = filters.get("years") or []
+    try:
+        requested_years = sorted({int(year) for year in requested})
+    except (TypeError, ValueError):
+        requested_years = []
+    if not requested_years:
+        start, end = selection.get("start_date"), selection.get("end_date")
+        try:
+            if start and end:
+                requested_years = list(range(int(str(start)[:4]), int(str(end)[:4]) + 1))
+        except (TypeError, ValueError):
+            requested_years = []
+    if not requested_years and observed_years:
+        requested_years = list(range(observed_years[0], observed_years[-1] + 1))
+    missing_years = sorted(set(requested_years) - set(observed_years))
+    return requested_years, observed_years, missing_years
+
+
 def _save_derived(principal, envelope: ToolEnvelope, rows: list[dict], *, kind: str, input_refs: list[str], resources: list[str]):
     ref = store.save_result(
         principal, envelope, rows, kind=kind, input_refs=input_refs,
@@ -134,15 +172,22 @@ def summarize_dataset(principal, args: DatasetSummary) -> ToolEnvelope:
     authorize(principal, "data_visualization.display")
     if args.measure not in spec.measure_fields and args.operation != "count":
         raise ValueError(f"unsupported_measure:{args.measure}")
+    if args.operation == "period_end" and dataset not in _INVENTORY_DATASETS:
+        raise ValueError("unsupported_aggregation:period_end")
     if args.operation == "sum" and args.measure in _PRICE_MEASURES:
         raise ValueError("unsupported_aggregation:price_sum")
     dates = {row.get("observation_date") for row in saved.rows if row.get("observation_date")}
     if args.operation == "sum" and dataset in _INVENTORY_DATASETS and len(dates) > 1:
         raise ValueError("unsupported_aggregation:inventory_across_periods")
     group_by = _validate_group_by(dataset, args.group_by)
-    grouped = _rows_by_group(saved.rows, group_by)
+    rows = [dict(row, business_year=_business_year(row)) if "business_year" in group_by else row for row in saved.rows]
+    grouped = _rows_by_group(rows, group_by)
     output: list[dict] = []
     for key, group in sorted(grouped.items(), key=lambda item: tuple(str(value) for value in item[0])):
+        if args.operation == "period_end":
+            period_dates = [_period_date(row) for row in group if _period_date(row)]
+            latest_period = max(period_dates) if period_dates else None
+            group = [row for row in group if _period_date(row) == latest_period]
         values = [_decimal(row.get(args.measure)) for row in group if row.get("value_state", "observed") not in {"missing", "invalid"}]
         values = [value for value in values if value is not None]
         if args.operation == "count":
@@ -155,6 +200,8 @@ def summarize_dataset(principal, args: DatasetSummary) -> ToolEnvelope:
             value = sum(values, Decimal("0")) / Decimal(len(values))
         elif args.operation == "min":
             value = min(values)
+        elif args.operation == "period_end":
+            value = sum(values, Decimal("0"))
         else:
             value = max(values)
         row = {field: key[index] for index, field in enumerate(group_by)}
@@ -170,7 +217,19 @@ def summarize_dataset(principal, args: DatasetSummary) -> ToolEnvelope:
         "measure": args.measure, "operation": args.operation, "group_by": group_by,
         "unit": spec.unit, "value_fields": ["value"],
     }
+    if args.operation == "period_end":
+        requested_years, observed_years, missing_years = _annual_coverage(saved, rows)
+        payload.update({
+            "annual_method": "period_end",
+            "requested_years": requested_years,
+            "observed_years": observed_years,
+            "missing_years": missing_years,
+        })
+    elif args.operation == "mean" and dataset in _INVENTORY_DATASETS and "business_year" in group_by:
+        payload["annual_method"] = "observation_point_mean"
     status = "complete" if output and all(row["status"] == "complete" for row in output) else "partial" if output else "waiting_for_data"
+    if payload.get("missing_years"):
+        status = "partial"
     return _save_derived(principal, _result_envelope(status, payload, output), output,
                          kind="dataset_summary", input_refs=[str(args.result_ref)], resources=_resources(saved))
 

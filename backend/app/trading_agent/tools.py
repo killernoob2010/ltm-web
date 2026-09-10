@@ -47,6 +47,8 @@ class PositionArgs(StrictModel):
     contracts: list[str] = Field(default_factory=list, max_length=50)
     direction: Literal["all", "buy", "sell"] = "all"
     classification: Literal["all", "unclassified", "classified"] = "all"
+    valuation_mode: Literal["auto", "quantity_only", "mark_to_market"] = "auto"
+    required_metrics: list[Literal["quantity", "floating_pnl"]] = Field(default_factory=list, max_length=4)
 
 
 class SummaryArgs(StrictModel):
@@ -224,26 +226,27 @@ def tool_schemas_for_user(user: dict, *, include_market: bool = True) -> list[di
 
 def _public_gate(principal):
     plan = research_policy.active_plan(principal)
+    readiness = research_policy.public_provider_readiness()
     if plan is None:
         return ToolEnvelope(
             status="unsupported", captured_at=datetime.now(timezone.utc).replace(microsecond=0),
             calculation_version="research-policy-v1",
-            payload={"kind": "public_research_blocked", "code": "public_policy_unavailable"},
+            payload={"kind": "public_research_blocked", "code": "public_policy_unavailable", "readiness": readiness},
             warnings=["当前任务缺少有效的公开检索授权计划，系统未发送外部请求。"],
         )
     if research_policy.public_tools_allowed(plan, research_policy.public_tools_configured()):
         return None
-    if plan.mode == "research_allowed" and not research_policy.public_tools_configured():
+    if plan.mode == "research_allowed" and readiness["status"] != "available":
         return ToolEnvelope(
             status="temporarily_unavailable", captured_at=datetime.now(timezone.utc).replace(microsecond=0),
             calculation_version="research-policy-v1",
-            payload={"kind": "public_research_blocked", "code": "public_not_configured"},
-            warnings=["公开搜索尚未配置授权服务；内部查询仍可继续。"],
+            payload={"kind": "public_research_blocked", "code": "public_not_configured", "readiness": readiness},
+            warnings=["公开搜索服务当前不可用；内部查询仍可继续。"],
         )
     return ToolEnvelope(
         status="unsupported", captured_at=datetime.now(timezone.utc).replace(microsecond=0),
         calculation_version="research-policy-v1",
-        payload={"kind": "public_research_blocked", "code": "public_not_requested"},
+        payload={"kind": "public_research_blocked", "code": "public_not_requested", "readiness": readiness},
         warnings=["当前请求未授权公开检索，系统未发送外部请求。"],
     )
 
@@ -255,6 +258,8 @@ def _query_from_position(args: PositionArgs) -> FactQuery:
         contracts=args.contracts,
         direction=args.direction,
         classification=args.classification,
+        valuation_mode=args.valuation_mode,
+        required_metrics=args.required_metrics,
     )
 
 
@@ -421,7 +426,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "describe_capabilities": {"model": EmptyArgs, "description": "返回当前授权范围内实际支持的属性、指标和限制。"},
     "query_trade_facts": {"model": FactArgs, "description": "按事实交易日读取宏源去重后的全量成交事实。"},
     "query_close_facts": {"model": FactArgs, "description": "读取已核验的平仓、行权、履约或放弃事实。"},
-    "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓并冻结行情。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。返回 metrics.quantity 是全量持仓总手数；payload.groups 提供按账户、合约、期货或期权、多空方向的可引用分组指标。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
+    "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。只询问手数时传 valuation_mode=quantity_only、required_metrics=[quantity]，不调用行情；需要浮盈亏时传 mark_to_market 并返回最新成交价时点。返回 metrics.quantity 是全量持仓总手数；payload.groups 提供按账户、合约、期货或期权、多空方向的可引用分组指标。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
     "query_market_series": {"model": market_data.MarketSeriesArgs, "description": "按已登记日期、港口和品种读取铁矿石期现结果；metrics 只允许 basis、futures_close、wet_spot_price。data_status 自动随数据返回，不得放入 metrics。只返回源表已保存的数值，不重新计算。非有效状态保留为异常或缺失。"},
     "describe_dataset": {"model": DatasetDescribeArgs, "description": "返回一个已登记现货或期现数据集的字段、筛选维度和覆盖语义。"},
     "query_dataset": {"model": DatasetQuery, "description": "按已登记字段和筛选读取现货、到港、库存或期现只读事实；不接受 SQL、代码或任意连接条件。"},

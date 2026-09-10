@@ -184,7 +184,10 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     historical = query.as_of.mode=="settlement_date"
     warnings = list(raw.get("warnings",[]))
     quotes = {}
-    if requests and not historical:
+    requested_metrics = set(query.required_metrics or ("quantity",) if query.valuation_mode == "quantity_only" else
+                            query.required_metrics or METRICS["positions"].keys())
+    needs_quotes = bool(requests and not historical and query.valuation_mode != "quantity_only")
+    if needs_quotes:
         progress.record_stage(principal, "quotes", "running")
         quote_status = "complete"
         try:
@@ -224,11 +227,13 @@ def capture_positions(principal, query: FactQuery, quote_provider):
                 direction=row["direction"],remaining_quantity=float(row["quantity"]),multiplier=multiplier)
     valid = raw["data_status"]=="ok"
     metrics = {name:_metric(rows,name,unit,available=valid and (name!="floating_pnl" or not historical)) for name,unit in METRICS["positions"].items()}
-    status = "complete" if valid and all(m.status=="complete" for m in metrics.values()) and not warnings else "partial" if valid else "waiting_for_data"
+    status = "complete" if valid and all(metrics[name].status == "complete" for name in requested_metrics) and not warnings else "partial" if valid else "waiting_for_data"
     metadata = {"as_of":query.as_of.model_dump(mode="json"),"valuation_basis":"historical_unavailable" if historical else "latest_trade",
         "assignment_basis":"unavailable" if historical else "current","data_status":raw["data_status"],"quote_times":quote_times,
         "selection":query.model_dump(mode="json",exclude={"as_of"}),
         "provenance":raw.get("provenance") or {"data_as_of":None,"precision":None,"source_observations":[]}}
+    if query.valuation_mode == "quantity_only":
+        metadata["valuation_basis"] = "not_requested"
     position_groups, group_count, groups_truncated = _position_groups(rows)
     metadata.update({"groups": position_groups, "group_count": group_count, "groups_truncated": groups_truncated})
     if groups_truncated:

@@ -620,7 +620,10 @@ def build_fallback21(principal: Any, result_refs: list[str], query_scope: dict, 
         if saved is None:
             continue
         metadata = _payload(saved)
-        if metadata.get("kind") not in {"positions", "trades", "closes", "market_series"} or metadata.get("aggregation"):
+        if metadata.get("kind") not in {
+            "positions", "trades", "closes", "market_series", "dataset_rows", "dataset_summary",
+            "dataset_comparison", "dataset_relation",
+        } or metadata.get("aggregation"):
             continue
         if _value(_envelope(saved), "status") not in {"complete", "partial"}:
             continue
@@ -649,6 +652,51 @@ def build_fallback21(principal: Any, result_refs: list[str], query_scope: dict, 
     )
 
 
+_POLICY_MESSAGES = {
+    "order_finance": (
+        "订单融资管理模块当前尚未接入智能贸易助手，无法查询放款状态、未还款金额或融资到期日。",
+        "module_not_connected",
+    ),
+    "backend_admin": (
+        "后台管理信息不通过业务Agent提供，管理员也受此限制。",
+        "backend_admin_forbidden",
+    ),
+}
+
+
+def policy_answer21(module_codes: list[str]) -> ValidatedAnswer21:
+    messages = [_POLICY_MESSAGES[code][0] for code in module_codes if code in _POLICY_MESSAGES]
+    limitations = [Limitation(code=_POLICY_MESSAGES[code][1], message=_POLICY_MESSAGES[code][0])
+                   for code in module_codes if code in _POLICY_MESSAGES]
+    body = "\n\n".join(dict.fromkeys(messages)) or "当前请求不在智能贸易助手的授权业务范围内。"
+    return ValidatedAnswer21(
+        delivery_status="partial", body_markdown=body, plain_text=body,
+        evidence=[], views=[], limitations=limitations,
+    )
+
+
+def apply_policy_limits(result: ValidatedAnswer21, module_codes: list[str]) -> ValidatedAnswer21:
+    additions = [(_POLICY_MESSAGES[code][0], _POLICY_MESSAGES[code][1])
+                 for code in module_codes if code in _POLICY_MESSAGES]
+    if not additions:
+        return result
+    body = result.body_markdown
+    limitations = list(result.limitations)
+    existing = {(item.code, item.message) for item in limitations}
+    for message, code in additions:
+        if message not in body:
+            body = f"{body.rstrip()}\n\n{message}" if body.strip() else message
+        if (code, message) not in existing:
+            limitations.append(Limitation(code=code, message=message))
+            existing.add((code, message))
+    return result.model_copy(update={
+        "delivery_status": "partial",
+        "body_markdown": body,
+        "plain_text": body,
+        "limitations": limitations,
+    })
+
+
 def task_state21(delivery_status: str) -> str:
     mapping = {"complete": "succeeded", "partial": "partial", "failed": "failed"}
     if delivery_status not in mapping:
@@ -662,6 +710,7 @@ __all__ = [
     "AnswerDraft21",
     "ValidatedAnswer21",
     "build_fallback21",
+    "policy_answer21", "apply_policy_limits",
     "parse_answer21",
     "task_state21",
     "validate_answer21",

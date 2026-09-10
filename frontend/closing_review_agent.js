@@ -14,6 +14,7 @@
     bound: false,
     loading: false,
     activation: 0,
+    requestSequence: 0,
     v2: false,
     pending: null,
     progress: null,
@@ -48,6 +49,12 @@
       return crypto.randomUUID();
     }
     return `closing-review-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function requestIsCurrent(sequence, activation, conversationId = null) {
+    return sequence === state.requestSequence
+      && activation === state.activation
+      && (conversationId == null || Number(conversationId) === Number(state.conversationId));
   }
 
   function setStatus(message, kind = "") {
@@ -285,6 +292,8 @@
 
   async function selectConversation(conversationId) {
     if (state.loading || Number(state.conversationId) === Number(conversationId)) return;
+    const sequence = ++state.requestSequence;
+    const activation = state.activation;
     state.conversationId = conversationId;
     state.activeTask = null;
     state.progress = null;
@@ -292,15 +301,17 @@
     renderHistory();
     setStatus("正在读取对话…");
     try {
-      await loadMessages(conversationId, state.activation);
-      setStatus("");
+      await loadMessages(conversationId, activation);
+      if (requestIsCurrent(sequence, activation, conversationId)) setStatus("");
     } catch (error) {
-      setStatus(error.message || "读取对话失败", "error");
+      if (requestIsCurrent(sequence, activation, conversationId)) setStatus(error.message || "读取对话失败", "error");
     }
   }
 
   async function createConversation() {
     if (state.loading) return;
+    const sequence = ++state.requestSequence;
+    const activation = state.activation;
     state.loading = true;
     newButton.disabled = true;
     try {
@@ -308,6 +319,7 @@
         method: "POST",
         body: JSON.stringify({ title: DEFAULT_CONVERSATION_TITLE }),
       });
+      if (!requestIsCurrent(sequence, activation)) return;
       state.conversations = [conversation, ...state.conversations];
       state.conversationId = conversation.id;
       state.activeTask = null;
@@ -316,22 +328,23 @@
       renderMessages([]);
       setStatus("");
     } catch (error) {
-      setStatus(error.message || "新建对话失败", "error");
+      if (requestIsCurrent(sequence, activation)) setStatus(error.message || "新建对话失败", "error");
     } finally {
-      state.loading = false;
-      newButton.disabled = false;
+      if (requestIsCurrent(sequence, activation)) {
+        state.loading = false;
+        newButton.disabled = false;
+      }
     }
   }
 
-  async function waitForTask(taskId, activation, conversationId = state.conversationId, article = null) {
+  async function waitForTask(taskId, activation, conversationId = state.conversationId, article = null, sequence = state.requestSequence) {
     const started = Date.now();
     let timeoutSeconds = endpoint().includes("trading-agent-v2") ? 225 : 90;
     let attempt = 0;
     let readFailures = 0;
     while (Date.now() - started < timeoutSeconds * 1000) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(++attempt, 5) * 1000));
-      if (activation !== state.activation) return null;
-      if (conversationId != null && state.conversationId != null && Number(conversationId) !== Number(state.conversationId)) return null;
+      if (!requestIsCurrent(sequence, activation, conversationId)) return null;
       let task;
       try {
         task = await state.api(`${endpoint()}/tasks/${taskId}`);
@@ -362,6 +375,8 @@
     }
     state.loading = true;
     sendButton.disabled = true;
+    const sequence = ++state.requestSequence;
+    const activation = state.activation;
     const conversationId = state.conversationId;
     const pending = state.pending && state.pending.conversationId === conversationId && state.pending.content === content
       ? state.pending
@@ -375,6 +390,7 @@
         method: "POST",
         body: JSON.stringify(body),
       });
+      if (!requestIsCurrent(sequence, activation, conversationId)) return;
       state.pending = null;
       input.value = "";
       article.dataset.taskId = queued.task_id || queued.task_ref || "";
@@ -383,17 +399,21 @@
       if (state.v2 && queued.task_id) {
         state.progress = null;
         state.announcedProgress = "";
-        await waitForTask(queued.task_id, state.activation, conversationId, article);
+        await waitForTask(queued.task_id, activation, conversationId, article, sequence);
       }
-      await loadConversations(state.activation);
-      setStatus("");
+      if (requestIsCurrent(sequence, activation, conversationId)) {
+        await loadConversations(activation);
+        if (requestIsCurrent(sequence, activation, conversationId)) setStatus("");
+      }
     } catch (error) {
       // Before the server accepts the request, keep both the text and request
       // id so a retry is idempotent and does not duplicate the user bubble.
-      setStatus(error.message || "复盘请求失败", "error");
+      if (requestIsCurrent(sequence, activation, conversationId)) setStatus(error.message || "复盘请求失败", "error");
     } finally {
-      state.loading = false;
-      sendButton.disabled = false;
+      if (requestIsCurrent(sequence, activation, conversationId)) {
+        state.loading = false;
+        sendButton.disabled = false;
+      }
     }
   }
 
@@ -418,6 +438,7 @@
     state.api = config.api;
     state.user = config.user || null;
     state.activation += 1;
+    state.requestSequence += 1;
     const activation = state.activation;
     state.v2 = false;
     state.pending = null;

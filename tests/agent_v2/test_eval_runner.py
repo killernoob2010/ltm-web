@@ -1,6 +1,9 @@
 import json
 from types import SimpleNamespace
 
+from app import db
+from app.trading_agent import quality
+from app.trading_agent.schema import migrate_agent_v2_schema
 from scripts.run_agent_v2_evals import (
     _junit_statuses,
     load_cases,
@@ -119,3 +122,50 @@ def test_offline_runner_marks_timeout_as_not_run(tmp_path):
     assert result["offline_behavior_pass"] is False
     assert result["cases"] == [{"id": "one", "status": "error"}]
     assert result["not_run_count"] == 1
+
+
+def test_evaluation_batch_is_idempotent_and_keeps_case_level_status(pilot):
+    with db.connect() as conn:
+        migrate_agent_v2_schema(conn)
+
+    cases = [
+        {"id": "synthetic-pass", "question": "权限边界", "capabilities": ["permission_boundary"]},
+        {"id": "synthetic-blocked", "question": "公开研究", "capabilities": ["public_research_egress"]},
+    ]
+    batch_id = quality.create_evaluation_batch(
+        suite="regression", execution_source="deterministic", environment="local",
+        cases=cases, idempotency_key="test-eval-regression-v1",
+    )
+    assert quality.create_evaluation_batch(
+        suite="regression", execution_source="deterministic", environment="local",
+        cases=cases, idempotency_key="test-eval-regression-v1",
+    ) == batch_id
+
+    quality.record_evaluation_case(batch_id, "synthetic-pass", status="passed", score={"score": 1})
+    quality.record_evaluation_case(batch_id, "synthetic-blocked", status="blocked", evidence={"reason": "not configured"})
+    finished = quality.finish_evaluation_batch(batch_id)
+
+    assert finished["status"] == "blocked"
+    assert finished["passed_count"] == 1
+    assert finished["blocked_count"] == 1
+    assert finished["not_run_count"] == 0
+    assert {item["status"] for item in finished["cases"]} == {"passed", "blocked"}
+
+    catalog = quality.evaluation_catalog()
+    assert catalog["definition"]["regression"]["batch_id"] == batch_id
+    assert catalog["definition"]["regression"]["status"] == "blocked"
+
+
+def test_live_batch_with_no_executed_cases_is_not_a_real_model_pass(pilot):
+    with db.connect() as conn:
+        migrate_agent_v2_schema(conn)
+    batch_id = quality.create_evaluation_batch(
+        suite="live", execution_source="live", environment="production",
+        cases=[{"id": "live-not-run", "question": "只登记不执行"}],
+        idempotency_key="test-live-not-run-v1",
+    )
+    result = quality.finish_evaluation_batch(batch_id)
+
+    assert result["status"] == "partial"
+    assert result["real_model_evaluated"] is False
+    assert quality.evaluation_catalog()["live"]["real_model_evaluated"] is False

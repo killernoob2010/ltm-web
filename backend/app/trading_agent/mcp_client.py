@@ -1,5 +1,6 @@
 """Fixed loopback MCP client used by Harness; it cannot accept a model URL."""
 import os
+import json
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -9,6 +10,34 @@ import httpx2
 
 from .contracts import ToolEnvelope
 from .execution import TOOL_SECONDS
+
+
+class MCPToolError(RuntimeError):
+    def __init__(self, code: str, message: str = "MCP工具调用失败", diagnostic_id: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.diagnostic_id = diagnostic_id
+
+
+def error_from_result(result) -> MCPToolError:
+    payload = result.structured_content if isinstance(getattr(result, "structured_content", None), dict) else {}
+    if not payload and getattr(result, "content", None):
+        for item in result.content:
+            raw = getattr(item, "text", None)
+            if not raw:
+                continue
+            try:
+                candidate = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(candidate, dict):
+                payload = candidate
+                break
+    error = payload.get("error") if isinstance(payload, dict) else None
+    error = error if isinstance(error, dict) else payload
+    code = str(error.get("code") or "tool_error") if isinstance(error, dict) else "tool_error"
+    diagnostic_id = error.get("diagnostic_id") if isinstance(error, dict) else None
+    return MCPToolError(code, diagnostic_id=str(diagnostic_id) if diagnostic_id else None)
 
 
 class MCPToolClient:
@@ -67,7 +96,7 @@ class MCPToolClient:
             self._initialized = True
         result = await self._client.call_tool(name, arguments)
         if result.is_error:
-            raise RuntimeError("MCP tool failed")
+            raise error_from_result(result)
         data = result.structured_content or {}
         if not data and result.content:
             import json

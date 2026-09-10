@@ -69,6 +69,22 @@ def test_prompt_distinguishes_registered_public_refs_from_urls():
     assert "不能直接放 URL" in content
 
 
+def test_prompt_only_keeps_the_latest_prior_turn_as_optional_context():
+    history = [
+        {"role": "user", "content": "旧问题中的融资状态"},
+        {"role": "assistant", "content": "旧问题拒答全文"},
+        {"role": "user", "content": "最近一轮问题"},
+        {"role": "assistant", "content": "最近一轮可复用结果"},
+    ]
+    messages = prompts.build_messages(history, {}, user_text="当前新问题")
+    contents = "\n".join(item.get("content", "") for item in messages)
+    assert "旧问题中的融资状态" not in contents
+    assert "旧问题拒答全文" not in contents
+    assert "最近一轮问题" in contents
+    assert "当前新问题" in contents
+    assert "仅供当前问题指代" in contents
+
+
 def test_projected_tool_result_preserves_unknown_data_as_of():
     captured = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
     envelope = ToolEnvelope(

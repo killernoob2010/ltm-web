@@ -39,6 +39,27 @@ TABLES = {
         token_hash TEXT PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES closing_review_tasks(id),
         user_id INTEGER NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT
     """,
+    "agent_v2_evaluation_batches": """
+        id TEXT PRIMARY KEY, suite TEXT NOT NULL, execution_source TEXT NOT NULL,
+        environment TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+        total_count INTEGER NOT NULL DEFAULT 0, executed_count INTEGER NOT NULL DEFAULT 0,
+        passed_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0,
+        blocked_count INTEGER NOT NULL DEFAULT 0, not_run_count INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, finished_at TEXT
+    """,
+    "agent_v2_evaluation_cases": """
+        batch_id TEXT NOT NULL REFERENCES agent_v2_evaluation_batches(id),
+        case_id TEXT NOT NULL, question TEXT, capabilities_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL, score_json TEXT NOT NULL DEFAULT '{}',
+        evidence_json TEXT NOT NULL DEFAULT '{}', task_id INTEGER, started_at TEXT, finished_at TEXT,
+        PRIMARY KEY(batch_id, case_id)
+    """,
+    "agent_v2_evaluation_reviews": """
+        id TEXT PRIMARY KEY, batch_id TEXT REFERENCES agent_v2_evaluation_batches(id),
+        case_id TEXT, task_id INTEGER, reviewer_type TEXT NOT NULL,
+        reviewer_id INTEGER, label TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+        evaluator_version TEXT NOT NULL, created_at TEXT NOT NULL
+    """,
 }
 
 
@@ -48,6 +69,9 @@ def statements(postgres: bool = False) -> list[str]:
         ("runs_queue", "runs", "state, created_at"),
         ("results_owner", "results", "user_id, conversation_id, created_at"),
         ("events_sequence", "events", "task_id, seq"),
+        ("evaluation_cases_status", "evaluation_cases", "batch_id, status"),
+        ("evaluation_batches_source", "evaluation_batches", "execution_source, created_at"),
+        ("evaluation_reviews_task", "evaluation_reviews", "task_id, created_at"),
     ):
         sql.append(f"CREATE INDEX IF NOT EXISTS idx_agent_v2_{name} ON agent_v2_{table} ({columns})")
     if postgres:

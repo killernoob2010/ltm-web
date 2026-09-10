@@ -57,7 +57,13 @@ def build_messages(history, capability, *, user_text=None):
                  "\n来源、筛选范围、账本时点未知等非数值事实说明，使用 kind=fact、refs=[真实result_ref#/metadata]。metadata 只支持来源说明，不能当数字占位符使用；业务数字仍使用真实 /metrics 或 /rows 引用。纯展示占位符单独用 kind=knowledge，不要创建没有refs的fact段落。不要在说明里重复具体时分秒，行情时间由视图列展示。" +
                  "\n联合研究先按能力目录读取匹配的内部数据，再搜索和读取公开资料；一个来源不可用不能阻止另一个来源交付。查询基差使用 query_market_series。没有 result_ref 的工具失败不得创建 fact/public_fact 引用，尤其不能用内部结果引用为外部失败或规则背书。公开搜索失败由系统统一追加限制说明，正文保留内部视图及有真实 metadata_ref 的来源说明即可；不编造链接、不假装已完成联合分析。未读取官方正文时，不得把交易所具体规则包装成通用知识。基差按现货减期货解释，不混用相反定义；标准化吨和湿吨不得直接相减。"},
                 {"role": "system", "content": "当前能力目录（服务端已过滤）：" + json.dumps(capability, ensure_ascii=False, separators=(",", ":"))}]
-    for message in (history or [])[-12:]:
+    prior_turn = list(history or [])[-2:]
+    if prior_turn:
+        messages.append({
+            "role": "system",
+            "content": "以下仅供当前问题指代，不能当作当前待回答清单；只有用户明确引用且证据仍可访问的结果才能复用。",
+        })
+    for message in prior_turn:
         role = message.get("role")
         if role in {"user", "assistant"} and isinstance(message.get("content"), str):
             messages.append({"role": role, "content": message["content"][:4000]})

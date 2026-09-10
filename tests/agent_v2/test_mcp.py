@@ -9,6 +9,20 @@ from app.trading_agent import mcp_client, mcp_server, store
 from test_store import queued
 
 
+def test_mcp_client_preserves_structured_tool_error_code():
+    from types import SimpleNamespace
+
+    error = mcp_client.error_from_result(SimpleNamespace(
+        is_error=True,
+        structured_content={"error": {"code": "market_unavailable", "diagnostic_id": "diag-7"}},
+        content=[],
+    ))
+
+    assert isinstance(error, mcp_client.MCPToolError)
+    assert error.code == "market_unavailable"
+    assert error.diagnostic_id == "diag-7"
+
+
 def test_mcp_accepts_bracketed_ipv6_loopback_host_only():
     assert mcp_server._loopback_host("[::1]:8766") is True
     assert mcp_server._loopback_host("[2001:db8::1]:8766") is False

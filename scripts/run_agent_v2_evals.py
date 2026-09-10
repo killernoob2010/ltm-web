@@ -9,6 +9,9 @@ import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+from app.trading_agent import quality
+
 EVAL_DIR = ROOT / "evals" / "trading_agent_v2"
 MANIFEST_PATH = EVAL_DIR / "offline_behavior_manifest.json"
 TOOL_NAMES = {
@@ -187,7 +190,39 @@ def _definition_output(suite):
         "mode": "definition",
         "suite": suite,
         "summary": summarize_definitions(results),
+        "cases": results,
     }
+
+
+def persist_evaluation(output, *, suite: str, execution_source: str, environment: str,
+                       idempotency_key: str | None = None) -> dict:
+    """Persist an executed local/offline batch; never marks a live model pass."""
+    if execution_source == "offline":
+        manifest = {item["id"]: item for item in _manifest_cases()}
+        cases = [manifest.get(item["id"], {"id": item["id"]}) for item in output.get("cases", [])]
+    else:
+        cases = load_cases(suite)
+    key = idempotency_key or f"{execution_source}:{suite}:{output.get('mode')}"
+    batch_id = quality.create_evaluation_batch(
+        suite="offline_behavior" if execution_source == "offline" else suite,
+        execution_source=execution_source,
+        environment=environment,
+        cases=cases,
+        idempotency_key=key,
+        metadata={"runner": "scripts/run_agent_v2_evals.py", "mode": output.get("mode")},
+    )
+    results = {item["id"]: item for item in output.get("cases", [])}
+    for case in cases:
+        result = results.get(case["id"], {})
+        if execution_source == "deterministic":
+            status = "passed" if result.get("definition_pass") else "failed"
+            score = {"definition_pass": bool(result.get("definition_pass")), "errors": result.get("errors", [])}
+        else:
+            raw_status = result.get("status", "not_run")
+            status = raw_status if raw_status in {"passed", "failed", "blocked", "needs_review", "not_run"} else "not_run"
+            score = {"runner_status": raw_status}
+        quality.record_evaluation_case(batch_id, case["id"], status=status, score=score)
+    return quality.finish_evaluation_batch(batch_id, metadata={"runner": "scripts/run_agent_v2_evals.py"})
 
 
 def main():
@@ -199,6 +234,9 @@ def main():
     )
     parser.add_argument("--suite", choices=["regression", "holdout"], default="regression")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--persist", action="store_true", help="将本次定义/离线执行记录写入 Evaluation 附表")
+    parser.add_argument("--environment", default="local")
+    parser.add_argument("--idempotency-key")
     args = parser.parse_args()
     if args.mode == "live":
         parser.error("live mode requires the approved Staging model/tool runner; no external runner is enabled")
@@ -208,6 +246,16 @@ def main():
     else:
         output = run_offline_behavior()
         success = output["offline_behavior_pass"]
+        if args.persist:
+            output["persisted_batch"] = persist_evaluation(
+                output, suite="offline_behavior", execution_source="offline",
+                environment=args.environment, idempotency_key=args.idempotency_key,
+            )
+    if args.persist and args.mode in {"definition", "deterministic"}:
+        output["persisted_batch"] = persist_evaluation(
+            output, suite=args.suite, execution_source="deterministic",
+            environment=args.environment, idempotency_key=args.idempotency_key,
+        )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n")

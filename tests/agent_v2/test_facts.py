@@ -138,6 +138,31 @@ def test_quote_failure_keeps_position_quantity_and_marks_quote_metrics_unavailab
     assert failed.payload["groups"][0]["metrics"]["floating_pnl"]["status"] == "unavailable"
 
 
+def test_quantity_only_position_query_does_not_call_quote_provider(queued):
+    task = store.claim_next("quantity-only-worker")
+    principal = store.principal_for_task(task)
+    _insert_wh6_snapshot(
+        principal.account_ids[0],
+        rows=[dict(contract="i2609", asset_type="future", exchange="DCE", direction="买", quantity=3, average_price=700)],
+    )
+    calls = []
+
+    def quote_provider(requests):
+        calls.append(requests)
+        raise AssertionError("quantity-only query must not call quotes")
+
+    result = facts.capture_positions(
+        principal,
+        FactQuery(valuation_mode="quantity_only", required_metrics=["quantity"]),
+        quote_provider,
+    )
+
+    assert calls == []
+    assert result.status == "complete"
+    assert result.metrics["quantity"].value == "3.0"
+    assert result.metrics["quantity"].status == "complete"
+
+
 def test_capture_does_not_infer_data_as_of_from_capture_time(queued, monkeypatch):
     fixed = datetime.now(timezone.utc).replace(microsecond=0)
     task = store.claim_next("facts-time-worker")

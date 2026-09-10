@@ -123,7 +123,9 @@ def build_mcp_server() -> MCPServer:
     def query_positions(as_of_mode: Literal["latest", "settlement_date"] = "latest", as_of_date: str | None = None,
                         asset_type: Literal["all", "future", "option"] = "all", contracts: list[str] | None = None,
                         direction: Literal["all", "buy", "sell"] = "all",
-                        classification: Literal["all", "unclassified", "classified"] = "all") -> tools.ToolResponse:
+                        classification: Literal["all", "unclassified", "classified"] = "all",
+                        valuation_mode: Literal["auto", "quantity_only", "mark_to_market"] = "auto",
+                        required_metrics: list[Literal["quantity", "floating_pnl"]] | None = None) -> tools.ToolResponse:
         return _response("query_positions", {**locals(), "contracts": contracts or []})
 
     def query_market_series(dataset: Literal["iron_ore_basis"], start_date: str, end_date: str,
@@ -137,16 +139,18 @@ def build_mcp_server() -> MCPServer:
     def query_dataset(dataset: str, mode: Literal["latest", "range", "seasonal"] = "latest",
                       start_date: str | None = None, end_date: str | None = None,
                       filters: dict[str, Any] | None = None,
-                      fields: list[str] | None = None) -> tools.ToolResponse:
+                      fields: list[str] | None = None, cursor: str | None = None,
+                      batch_size: int = 20_000) -> tools.ToolResponse:
         return _response("query_dataset", {
             "dataset": dataset, "mode": mode, "start_date": start_date,
             "end_date": end_date, "filters": filters or {}, "fields": fields or [],
+            "cursor": cursor, "batch_size": batch_size,
         })
 
     def get_optimal_warrant(scope: Literal["current_year_global_latest"] = "current_year_global_latest") -> tools.ToolResponse:
         return _response("get_optimal_warrant", locals())
 
-    def summarize_dataset(result_ref: str, measure: str, operation: Literal["sum", "mean", "min", "max", "count"],
+    def summarize_dataset(result_ref: str, measure: str, operation: Literal["sum", "mean", "min", "max", "count", "period_end"],
                           group_by: list[str] | None = None) -> tools.ToolResponse:
         return _response("summarize_dataset", {**locals(), "group_by": group_by or []})
 

@@ -4,15 +4,23 @@ from dataclasses import dataclass, field
 import inspect
 import json
 import logging
+import re
 import time
 from typing import Any, Literal
 
-from . import answer, prompts, progress, tools, execution
+from . import answer, prompts, progress, tools, execution, research_policy
 from .answer_contracts import ValidatedAnswer21, Limitation
-from .answer_v21 import Answer21Issue
+from .answer_v21 import Answer21Issue, apply_policy_limits, policy_answer21
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
-from .research_policy import RequestPlan, enforce_research_policy, public_tools_configured, public_tools_allowed
+from .research_policy import (
+    RequestPlan,
+    enforce_research_policy,
+    has_internal_request,
+    public_tools_configured,
+    public_tools_allowed,
+    restricted_module_requests,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +66,13 @@ async def _await(value):
 
 class ExecutionDeadline(TimeoutError):
     """The task's total wall-clock budget has expired."""
+
+
+def _safe_error_code(exc: Exception) -> str:
+    value = getattr(exc, "code", None)
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+        return value
+    return type(exc).__name__
 
 
 async def _bounded_call(factory, *, clock, started, total_seconds, call_seconds):
@@ -260,6 +275,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     )
     configured = public_tools_configured()
     public_unavailable = {"policy": "public_not_configured"} if plan.mode == "research_allowed" and not configured else {}
+    restricted_modules = restricted_module_requests(user_text)
     try:
         await asyncio.to_thread(
             deps.store.append_event,
@@ -273,6 +289,16 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         # The local decision remains fail-closed even if audit persistence is
         # temporarily unavailable.
         pass
+    if restricted_modules and not has_internal_request(user_text):
+        if deps.answer_protocol == "2.1":
+            final = policy_answer21(restricted_modules)
+            await _finish21(deps, task_id, final)
+            return final
+        final = _fallback("partial", policy_answer21(restricted_modules).plain_text)
+        rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+        await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "partial", rendered,
+                                structured_payload=_draft_payload(final))
+        return final
     grant = None
     started = deps.clock()
     budget = Budget(
@@ -320,7 +346,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                   structured_payload=_draft_payload(final))
                 return final
             except Exception as exc:
-                await asyncio.to_thread(deps.store.append_event, principal, "tool_error", error_code=type(exc).__name__)
+                await asyncio.to_thread(deps.store.append_event, principal, "tool_error", error_code=_safe_error_code(exc))
                 final = _fallback("temporarily_unavailable", "当前工具目录暂时不可用，未执行任何业务查询；请稍后重试。")
                 rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
                 await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
@@ -348,7 +374,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             return final
         except Exception as exc:
             await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name="describe_capabilities",
-                                    error_code=type(exc).__name__)
+                                    error_code=_safe_error_code(exc))
             final = _fallback("temporarily_unavailable", "当前工具目录暂时不可用，未执行任何业务查询；请稍后重试。")
             rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
             await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
@@ -362,6 +388,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             capability_payload["research_policy"] = {
                 "mode": plan.mode, "reason": plan.reason, "domains": plan.domains,
                 "clarification": plan.clarification, "configured": configured,
+                "readiness": research_policy.public_provider_readiness(),
             }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
         messages = prompts.build_messages(history, capability_payload, user_text=user_text)
@@ -503,7 +530,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                          "content":json.dumps({"status":"partial","error":"任务时间已用尽"}, ensure_ascii=False)})
                         break
                     except Exception as exc:
-                        await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=type(exc).__name__)
+                        await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=_safe_error_code(exc))
                         try:
                             from .research import QueryRejected
                             public_query_rejected = isinstance(exc, QueryRejected)
@@ -565,7 +592,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     final = (await asyncio.to_thread(answer.validate_answer21, principal, recoverable_draft21, deps.store)
                              if recoverable_draft21 is not None else _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed"))
                     break
-                final = _with_source_limits(validated21, public_unavailable)
+                final = apply_policy_limits(_with_source_limits(validated21, public_unavailable), restricted_modules)
                 await _record_stage(deps, principal, "validation", "complete")
                 await _finish21(deps, task_id, final)
                 return final
@@ -605,7 +632,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         if final is None:
             final = failure_fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。", "budget_exhausted")
         if isinstance(final, ValidatedAnswer21):
-            final = _with_source_limits(final, public_unavailable)
+            final = apply_policy_limits(_with_source_limits(final, public_unavailable), restricted_modules)
             await _finish21(deps, task_id, final)
             return final
         rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)

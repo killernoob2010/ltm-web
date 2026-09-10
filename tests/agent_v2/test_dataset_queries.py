@@ -88,7 +88,7 @@ def test_query_dataset_latest_keeps_current_and_strict_previous_week(dv_query_co
     assert {row["observation_date"] for row in result.payload["preview"]} == {"2026-09-13"}
 
 
-def test_query_dataset_returns_controlled_limit_without_partial_claim(dv_query_context, monkeypatch):
+def test_query_dataset_returns_bounded_page_with_signed_continuation(dv_query_context, monkeypatch):
     _, _, principal = dv_query_context
     rows = [
         {
@@ -107,9 +107,36 @@ def test_query_dataset_returns_controlled_limit_without_partial_claim(dv_query_c
         principal,
         DatasetQuery(dataset="port_inventory", mode="range", start_date="2026-09-01", end_date="2026-09-30"),
     )
-    assert result.status == "limit_exceeded"
-    assert result.result_ref is None
-    assert result.missing[0]["code"] == "limit_exceeded"
+    assert result.status == "partial"
+    assert result.result_ref is not None
+    assert result.payload["row_count"] == dv_queries.MAX_ROWS
+    assert result.payload["next_cursor"]
+    assert result.missing[0]["code"] == "next_cursor"
+
+
+def test_query_dataset_rejects_tampered_or_rebound_continuation(dv_query_context, monkeypatch):
+    _, _, principal = dv_query_context
+    rows = [
+        {"source_row_id": index, "observation_date": "2026-09-01", "port": f"港{index}", "value": index, "value_state_source": "有效"}
+        for index in range(2)
+    ]
+    monkeypatch.setattr(dv_queries, "_readonly_fetch", lambda *args: rows)
+    first = dv_queries.query_dataset(
+        principal,
+        DatasetQuery(dataset="port_inventory", mode="range", start_date="2026-09-01", end_date="2026-09-30", batch_size=1),
+    )
+    with pytest.raises(ValueError, match="invalid_cursor"):
+        dv_queries.query_dataset(
+            principal,
+            DatasetQuery(dataset="port_inventory", mode="range", start_date="2026-09-01", end_date="2026-09-30", batch_size=1,
+                         cursor=first.payload["next_cursor"][:-1] + "0"),
+        )
+    with pytest.raises(ValueError, match="invalid_cursor"):
+        dv_queries.query_dataset(
+            principal,
+            DatasetQuery(dataset="port_inventory", mode="range", start_date="2026-09-01", end_date="2026-09-30", batch_size=2,
+                         cursor=first.payload["next_cursor"]),
+        )
 
 
 def test_query_adapter_does_not_invoke_import_or_sync_paths(dv_query_context, monkeypatch):

@@ -88,6 +88,12 @@ def test_quality_feedback_is_audited_without_mutating_agent_answer(queued):
         "entity_id": task_id,
         "operation_type": "Agent质量反馈",
     }
+    with db.connect() as conn:
+        review = conn.execute(
+            "SELECT reviewer_type,reviewer_id,label FROM agent_v2_evaluation_reviews "
+            "WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task_id,)
+        ).fetchone()
+    assert dict(review) == {"reviewer_type": "human", "reviewer_id": uid, "label": "needs_review"}
 
 
 def test_evaluation_catalog_marks_definition_and_offline_suites_without_claiming_live_pass():
@@ -98,3 +104,10 @@ def test_evaluation_catalog_marks_definition_and_offline_suites_without_claiming
     assert catalog["offline_behavior"]["count"] >= 10
     assert catalog["offline_behavior"]["real_model_evaluated"] is False
     assert catalog["live"]["status"] == "not_recorded"
+
+
+def test_quality_default_window_is_business_timezone_and_empty_feedback_is_empty():
+    start_bound, end_bound, window = quality._date_window(None, None)
+    assert start_bound and end_bound
+    assert window["timezone"] == "Asia/Shanghai"
+    assert quality._latest_feedback(set()) == {}

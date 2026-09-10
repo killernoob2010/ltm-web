@@ -93,6 +93,28 @@ def test_missing_search_key_does_not_call_session(queued, monkeypatch):
     assert session.calls == 0
 
 
+def test_empty_search_results_are_partial_and_not_a_public_success(queued, monkeypatch):
+    principal = store.principal_for_task(store.claim_next("research-empty-worker"))
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "synthetic")
+
+    class EmptyResponse:
+        status_code = 200
+
+        def json(self):
+            return {"web": {"results": []}}
+
+    class EmptySession:
+        def get(self, *args, **kwargs):
+            return EmptyResponse()
+
+    result = research.search_public(principal, "铁矿石供需", session=EmptySession())
+
+    assert result.status == "partial"
+    assert result.payload["search_status"] == "no_results"
+    assert result.payload["source_count"] == 0
+    assert any("没有返回" in warning for warning in result.warnings)
+
+
 def test_private_context_reads_only_current_authorized_result_values(queued):
     principal = store.principal_for_task(store.claim_next("research-context-worker"))
     store.save_result(
