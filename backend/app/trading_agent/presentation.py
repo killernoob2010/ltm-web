@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from math import ceil
+import re
 from typing import Any
 
 from . import facts, store
@@ -68,6 +69,13 @@ def _row_ref(row: dict, index: int) -> str:
     return str(value) if value not in (None, "") else f"r{index + 1}"
 
 
+def _field_wire(field: str, value: Any):
+    value = _wire_value(value)
+    if field in _DATETIME_FIELDS and isinstance(value, str):
+        return re.sub(r"(\d{2}:\d{2}:\d{2})\.\d+", r"\1", value)
+    return value
+
+
 def _validate_projection_args(fields, *, page, page_size, sort_by):
     if type(page) is not int or page < 1 or page_size not in PAGE_SIZES:
         raise ValueError("分页无效")
@@ -110,7 +118,7 @@ def _project_rows(rows: list[dict], fields: list[str], *, sort_by: str | None, d
         source = source if isinstance(source, dict) else {}
         projected.append({
             "row_ref": _row_ref(source, index),
-            **{field: _wire_value(source.get(field)) for field in fields if field != "row_ref"},
+            **{field: _field_wire(field, source.get(field)) for field in fields if field != "row_ref"},
             "_sort_source": source,
             "_sort_index": index,
         })

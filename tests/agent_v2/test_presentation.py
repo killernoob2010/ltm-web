@@ -3,6 +3,15 @@ from types import SimpleNamespace
 from app.trading_agent.contracts import MetricValue, ToolEnvelope
 
 
+def test_projection_truncates_string_timestamps_without_changing_prices():
+    from app.trading_agent.presentation import project_page
+    rows = [{"market_time": "2026-09-10 14:59:59.999503", "average_price": "3.149999999999999"}]
+    page = project_page(rows, ["market_time", "average_price"], page=1, page_size=20)
+    assert page["rows"][0]["market_time"] == "2026-09-10 14:59:59"
+    assert page["rows"][0]["average_price"] == rows[0]["average_price"]
+    assert rows[0]["market_time"].endswith(".999503")
+
+
 def test_position_summary_never_adds_prices_or_counts_sides_as_contracts():
     from app.trading_agent.presentation import build_view
     rows = [{"contract": "i2610-c-750", "direction": "buy", "quantity": "2", "average_price": "5", "valuation_price": "6"},
