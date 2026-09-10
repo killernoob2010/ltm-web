@@ -475,7 +475,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     validated21 = await asyncio.to_thread(
                         answer.validate_answer21, principal, draft21, deps.store
                     )
-                    if validated21.delivery_status == "failed":
+                    evidence_errors = {"uncovered_claim", "unreferenced_number", "missing_reference", "invalid_reference", "reference_unavailable"}
+                    if validated21.delivery_status == "failed" or any(item.code in evidence_errors for item in validated21.limitations):
                         v21_issues = _validated21_issues(validated21)
                 except answer.Answer21ValidationError as exc:
                     v21_issues = exc.as_dicts()

@@ -50,6 +50,17 @@ async def test_invalid_json_keeps_current_protocol_and_verified_table(queued, ca
 
 
 @pytest.mark.asyncio
+async def test_partial_answer_with_removed_claim_gets_one_evidence_repair(queued):
+    task = store.claim_next("partial-repair")
+    raw = json.dumps({"schema_version": "2.1", "body_markdown": "持仓为 123 手。\n数据需要核对。", "spans": [], "views": []})
+    model = ScriptedModel([ModelTurn(content=raw), ModelTurn(content=GOOD_ANSWER21)])
+    result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="partial-repair"))
+    assert len(model.calls) == 2
+    assert result.delivery_status == "complete"
+    assert "uncovered_claim" in str(model.calls[-1])
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_can_repair_without_changing_protocol(queued):
     task = store.claim_next("repair21")
     model = ScriptedModel([ModelTurn(content="not json"), ModelTurn(content=GOOD_ANSWER21)])
