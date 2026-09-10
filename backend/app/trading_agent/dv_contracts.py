@@ -27,7 +27,7 @@ class DataFilters(StrictModel):
     arrival_kind: Literal["actual", "source_forecast", "model_estimate"] | None = None
     grades: list[str] | None = Field(default=None, max_length=12)
     summary_metrics: list[str] | None = Field(default=None, max_length=12)
-    data_states: list[str] | None = Field(default=None, max_length=8)
+    data_states: list[Literal["observed", "missing", "legacy_zero_uncertain", "invalid"]] | None = Field(default=None, max_length=8)
 
 
 class DatasetQuery(StrictModel):
@@ -99,13 +99,16 @@ def _normalize_list(values, field: str):
 
 def _normalize_filters(filters: DataFilters) -> DataFilters:
     updates = {}
+    provided = filters.model_fields_set
     for field in _LIST_FILTER_FIELDS:
-        updates[field] = _normalize_list(getattr(filters, field), field)
+        if field in provided:
+            updates[field] = _normalize_list(getattr(filters, field), field)
     for field in ("scope_type", "slice_type"):
-        value = getattr(filters, field)
-        updates[field] = value.strip() if isinstance(value, str) else value
-        if updates[field] == "":
-            raise ValueError(f"empty_filter:{field}")
+        if field in provided:
+            value = getattr(filters, field)
+            updates[field] = value.strip() if isinstance(value, str) else value
+            if updates[field] == "":
+                raise ValueError(f"empty_filter:{field}")
     return filters.model_copy(update=updates)
 
 
@@ -133,7 +136,8 @@ def validate_dataset_query(args: DatasetQuery) -> DatasetQuery:
 
     unsupported = sorted(
         name for name in provided
-        if name not in set(spec.filter_keys) and not (name == "product_pool" and filters.product_pool == "custom")
+        if name not in set(spec.filter_keys)
+        and not (name == "product_pool" and filters.product_pool == "custom" and name in set(spec.filter_keys))
     )
     if unsupported:
         raise ValueError(f"unsupported_filter:{unsupported[0]}")

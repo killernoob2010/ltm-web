@@ -10,7 +10,7 @@ from pydantic import Field
 from fastapi import HTTPException
 
 from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
-from . import catalog, facts, market_data, risk, store, execution
+from . import catalog, facts, market_data, risk, store, execution, dv_queries
 from .dv_contracts import (
     DatasetCompare,
     DatasetDescribeArgs,
@@ -158,15 +158,20 @@ def _capability_envelope(principal) -> ToolEnvelope:
         if name in DATASET_TOOL_NAMES and not display_allowed:
             continue
         visible_tools.append(name)
+    datasets = {}
+    if display_allowed:
+        datasets.update({item["dataset"]: item for item in catalog.dataset_registry()})
+    if market_allowed:
+        datasets[market_data.DATASET] = market_data.dataset_catalog()
     data = {
-        "account_scope": "宏源期货 canonical account（由服务端确定）",
+        "account_scope": "宏源期货 canonical account（由服务端确定）" if trading_allowed else [],
         "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"},
         "dimensions": catalog.DIMENSIONS,
         "metrics": {kind: sorted(values) for kind, values in catalog.METRICS.items()},
         "tools": sorted(visible_tools),
         "limits": {"snapshot_rows": 20000, "preview_rows": 20, "page_size": [20, 50, 100]},
         "calculation_versions": {"facts": facts.VERSION, "risk": risk.VERSION},
-        "datasets": {market_data.DATASET: market_data.dataset_catalog()} if market_allowed else {},
+        "datasets": datasets,
     }
     return ToolEnvelope(status="complete", captured_at=now, calculation_version="catalog-v2", payload=data)
 
@@ -187,10 +192,13 @@ def dispatch(principal, name: str, arguments: dict[str, Any] | None = None, *, q
         return facts.capture_positions(principal, _query_from_position(args), quote_provider or default_quote_provider)
     if name == "query_market_series":
         return market_data.capture_market_series(principal, args)
+    if name == "describe_dataset":
+        return dv_queries.describe_dataset(principal, args.dataset)
     if name == "query_dataset":
-        validate_dataset_query(args)
-        raise RuntimeError("数据集只读适配器尚未启用")
-    if name in {"describe_dataset", "summarize_dataset", "compare_dataset", "relate_datasets", "get_optimal_warrant"}:
+        return dv_queries.query_dataset(principal, validate_dataset_query(args))
+    if name == "get_optimal_warrant":
+        return dv_queries.get_optimal_warrant(principal, args)
+    if name in {"summarize_dataset", "compare_dataset", "relate_datasets"}:
         raise RuntimeError("数据集只读适配器尚未启用")
     if name == "query_trade_facts":
         return facts.capture_facts(principal, "trades", args.start_date, args.end_date,

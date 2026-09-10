@@ -89,10 +89,16 @@ def capabilities(user: dict = Depends(trading_management_current_user)):
         if name in tools.DATASET_TOOL_NAMES and not display_allowed:
             continue
         visible_tools.append(item)
-    return {"enabled": True, "version": "2.0", "engine": "agent-v2", "account_scope": "宏源期货",
+    datasets = {}
+    if display_allowed:
+        datasets.update({item["dataset"]: item for item in catalog.dataset_registry()})
+    if market_allowed:
+        datasets[market_data.DATASET] = market_data.dataset_catalog()
+    return {"enabled": True, "version": "2.0", "engine": "agent-v2",
+            "account_scope": "宏源期货" if trading_allowed else [],
             "tools": visible_tools, "dimensions": catalog.DIMENSIONS,
             "metrics": {kind: sorted(items) for kind, items in catalog.METRICS.items()},
-            "datasets": {market_data.DATASET: market_data.dataset_catalog()} if market_allowed else {},
+            "datasets": datasets,
             "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"}}
 
 

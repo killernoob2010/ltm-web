@@ -131,6 +131,21 @@ def build_mcp_server() -> MCPServer:
                              products: list[str] | None = None) -> tools.ToolResponse:
         return _response("query_market_series", {**locals(), "ports": ports or [], "products": products or []})
 
+    def describe_dataset(dataset: str) -> tools.ToolResponse:
+        return _response("describe_dataset", locals())
+
+    def query_dataset(dataset: str, mode: Literal["latest", "range", "seasonal"] = "latest",
+                      start_date: str | None = None, end_date: str | None = None,
+                      filters: dict[str, Any] | None = None,
+                      fields: list[str] | None = None) -> tools.ToolResponse:
+        return _response("query_dataset", {
+            "dataset": dataset, "mode": mode, "start_date": start_date,
+            "end_date": end_date, "filters": filters or {}, "fields": fields or [],
+        })
+
+    def get_optimal_warrant(scope: Literal["current_year_global_latest"] = "current_year_global_latest") -> tools.ToolResponse:
+        return _response("get_optimal_warrant", locals())
+
     def summarize_positions(result_ref: str, group_by: list[str], metrics: list[str], order_by: str | None = None,
                             descending: bool = True) -> tools.ToolResponse:
         return _response("summarize_positions", locals())
@@ -163,6 +178,8 @@ def build_mcp_server() -> MCPServer:
     for name, fn in (("describe_capabilities", describe_capabilities), ("query_trade_facts", query_trade_facts),
                      ("query_close_facts", query_close_facts), ("query_positions", query_positions),
                      ("query_market_series", query_market_series),
+                     ("describe_dataset", describe_dataset), ("query_dataset", query_dataset),
+                     ("get_optimal_warrant", get_optimal_warrant),
                      ("summarize_positions", summarize_positions), ("summarize_facts", summarize_facts),
                      ("read_result_page", read_result_page), ("compare_results", compare_results),
                      ("get_position_risk", get_position_risk), ("run_scenario", run_scenario),
