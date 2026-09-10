@@ -4,7 +4,7 @@
 
 ## Agent V2.1 设计入口
 
-已确认复用现有 Render 付费实例；同实例启动、资源保护和恢复适配已部署共用 Staging，Agent 保持关闭，尚待数据库准备和真实联调。见[完整设计](docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md)及[接续实施计划](docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md)。
+已确认复用现有 Render Standard 付费实例；同实例启动、资源保护和恢复适配已发布到 Production `cb7e46d`，Production 六张 Agent 附表已显式迁移并启用 RLS。Agent 仍保持关闭，待正式管理员会话和受保护的 Production DeepSeek 密钥完成真实联调。见[完整设计](docs/superpowers/specs/2026-09-09-trading-agent-v2-shared-render-design.md)及[接续实施计划](docs/superpowers/plans/2026-09-09-trading-agent-v2-shared-render-implementation.md)。
 
 默认使用系统账号及现有 Agent/交易数据权限，无需设置 `AGENT_V2_PILOT_USERNAME`；仅需要临时限制单用户试点时才设置该可选项。企微用户首次自行绑定系统身份，群聊仍关闭。
 
