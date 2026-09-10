@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Trading Agent answer renderer table fixture</title>
+<body>
+  <main id="fixture"></main>
+  <pre id="result" aria-live="polite">running</pre>
+  <script src="../frontend/vendor/agent/marked.umd.js"></script>
+  <script src="../frontend/vendor/agent/purify.min.js"></script>
+  <script src="../frontend/agent_answer_renderer.js"></script>
+  <script>
+    const container = document.querySelector("#fixture");
+    const result = document.querySelector("#result");
+    const requests = [];
+    const instance = window.AgentAnswerRenderer.renderAnswer(container, {
+      schema_version: "2.1",
+      delivery_status: "complete",
+      body_markdown: "已核验持仓：\n\n{{view:v1}}\n\n[登记来源](https://example.com/source) [未登记来源](https://evil.invalid)",
+      views: [{ id: "v1", kind: "table", result_ref: "00000000-0000-0000-0000-000000000001", fields: ["contract", "valuation_price"], title: "持仓明细" }],
+      evidence: [{ id: "e1", kind: "public", result_ref: "00000000-0000-0000-0000-000000000002", title: "来源", url: "https://example.com/source", fetch_status: "full_text", captured_at: "2026-09-10T00:00:00Z" }],
+      limitations: [],
+    }, {
+      messageId: 17,
+      loadViewPage: async (request) => {
+        requests.push({ messageId: request.messageId, viewId: request.viewId, page: request.page, pageSize: request.pageSize });
+        return {
+          columns: [{ key: "contract", label: "合约" }, { key: "valuation_price", label: "最新成交价", unit: "元" }],
+          rows: [{ contract: "I2601", valuation_price: null, valuation_status: "missing_quote" }],
+          pagination: { page: request.page, page_size: request.pageSize, total_rows: 1, total_pages: 1 },
+          summary: { valuation_price: null },
+          coverage: { eligible_rows: 1, covered_rows: 0 },
+          warnings: [],
+        };
+      },
+      onError: (error) => { result.textContent = `ERROR: ${error.message}`; },
+    });
+    setTimeout(() => {
+      const table = container.querySelector("table");
+      const link = container.querySelector("a[href]");
+      const unregisteredLink = [...container.querySelectorAll("a")].find((item) => item.textContent === "未登记来源");
+      const missing = container.textContent.includes("缺少最新成交价");
+      const passed = Boolean(table && table.querySelector("th[scope='col']") && missing && link && link.href === "https://example.com/source"
+        && link.rel.includes("noopener") && link.rel.includes("noreferrer") && unregisteredLink && !unregisteredLink.hasAttribute("href")
+        && requests[0] && requests[0].messageId === 17);
+      result.textContent = passed ? "PASS" : JSON.stringify({ table: Boolean(table), missing, link: link && link.href, unregisteredLink: unregisteredLink && unregisteredLink.outerHTML, requests });
+    }, 0);
+  </script>
+</body>

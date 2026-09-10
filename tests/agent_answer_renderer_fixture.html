@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Trading Agent answer renderer security fixture</title>
+<body>
+  <main id="fixture"></main>
+  <pre id="result" aria-live="polite">running</pre>
+  <script src="../frontend/vendor/agent/marked.umd.js"></script>
+  <script src="../frontend/vendor/agent/purify.min.js"></script>
+  <script src="../frontend/agent_answer_renderer.js"></script>
+  <script>
+    const { renderAnswer } = window.AgentAnswerRenderer;
+    const container = document.querySelector("#fixture");
+    const result = document.querySelector("#result");
+    const errors = [];
+    const hostileHtml = "<scr" + "ipt>alert(1)</scr" + "ipt><div id=\"clobber\" name=\"form\" style=\"display:none\" data-track=\"1\" onclick=\"alert(1)\"><svg><foreignObject>坏</foreignObject></svg><form>坏</form></div>";
+    renderAnswer(container, {
+      schema_version: "2.1",
+      delivery_status: "complete",
+      body_markdown: "[危险](javascript:alert(1)) <img src=\"https://tracker.invalid/x\" onerror=\"alert(1)\"> " + hostileHtml,
+      views: [],
+      evidence: [],
+      limitations: [],
+    }, {
+      loadViewPage: async () => { throw new Error("unexpected page request"); },
+      onError: (error) => errors.push(error.message),
+    });
+    const unsafeElements = container.querySelector("img,script,iframe,form,object");
+    const unsafeLink = [...container.querySelectorAll("a")].some((link) => link.href.startsWith("javascript:"));
+    const unsafeAttributes = container.querySelector("[id], [name], [style], [data-track], [onclick], svg, math");
+    const blockedRequests = performance.getEntriesByType("resource").map((entry) => entry.name)
+      .filter((name) => /tracker\.invalid|javascript:/i.test(name));
+    const passed = !unsafeElements && !unsafeLink && !unsafeAttributes && errors.length === 0 && blockedRequests.length === 0;
+    result.textContent = passed ? "PASS" : JSON.stringify({ unsafeElements: Boolean(unsafeElements), unsafeLink, unsafeAttributes: Boolean(unsafeAttributes), errors, blockedRequests });
+    document.body.dataset.testResult = passed ? "pass" : "fail";
+  </script>
+</body>
