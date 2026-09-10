@@ -26,6 +26,14 @@ def test_repair_messages_bound_draft_and_issue_count():
     assert messages[1]["content"].count("invalid_value") == 5
 
 
+def test_uncovered_number_repair_preserves_views_and_gives_specific_action():
+    messages = prompts.build_answer_repair_messages("{}", [{"code": "uncovered_claim", "message": "数字未覆盖"}])
+    feedback = messages[-1]["content"]
+    assert "保留已经正确的 views" in feedback
+    assert "删除正文中重复的数量、价格、盈亏和具体时分秒" in feedback
+    assert "不能通过标记 knowledge" in feedback
+
+
 def test_prompt_example_is_valid_answer_draft_and_time_semantics_are_explicit():
     parsed = answer.parse_answer(json.loads(prompts.ANSWER_EXAMPLE))
     assert parsed.status == "complete"
