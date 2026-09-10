@@ -36,12 +36,23 @@ ANSWER21_EXAMPLE = json.dumps({
     "views": [],
 }, ensure_ascii=False, separators=(",", ":"))
 
+TABLE_ANSWER21_EXAMPLE = json.dumps({
+    "schema_version": "2.1",
+    "body_markdown": "以下为查询结果。空缺项不代表零值。\n\n{{view:v1}}",
+    "spans": [],
+    "views": [{"id": "v1", "kind": "table", "result_ref": "00000000-0000-0000-0000-000000000001",
+               "fields": ["contract", "direction", "quantity", "average_price", "valuation_price", "floating_pnl", "market_time", "valuation_status"],
+               "title": "期权持仓明细"}],
+}, ensure_ascii=False, separators=(",", ":"))
+
 
 def build_messages(history, capability, *, user_text=None):
     messages = [{"role": "system", "content": SYSTEM_PROMPT +
                  "\nAnswerDraft21 JSON Schema：" + json.dumps(AnswerDraft21.model_json_schema(), ensure_ascii=False, separators=(",", ":")) +
                  "\nspans[].refs 是字符串数组，不是对象或单独UUID。内部引用使用工具实际返回的 result_ref 和允许指标路径；公开引用只能使用工具返回的 research_uuid#/sources/index 或 public_read_uuid#/payload/text，不能编造 URL 或引用。" +
-                 "\n合法纯知识答案示例：" + ANSWER21_EXAMPLE},
+                 "\n合法纯知识答案示例：" + ANSWER21_EXAMPLE +
+                 "\n合法完整持仓表格示例（示例UUID必须替换为本次 query_positions 的真实 result_ref，不能引用示例UUID）：" + TABLE_ANSWER21_EXAMPLE +
+                 "\n用户要求表格时优先使用上例 views 引用全量持仓，正文只作简短解释，不要为每一行重复写数字、占位符和 spans。不要把视图字段名、行数据或字段说明对象放入 spans；fields 只能是字段名字符串数组。"},
                 {"role": "system", "content": "当前能力目录（服务端已过滤）：" + json.dumps(capability, ensure_ascii=False, separators=(",", ":"))}]
     for message in (history or [])[-12:]:
         role = message.get("role")

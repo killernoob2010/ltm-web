@@ -20,7 +20,7 @@ def test_deepseek_disables_thinking_and_parses_tool_call():
     assert turn.tool_calls[0].name == "query_positions"
     assert session.payload["json"]["thinking"] == {"type":"disabled"}
     assert session.payload["json"]["response_format"] == {"type":"json_object"}
-    assert session.payload["json"]["max_tokens"] == 2048
+    assert session.payload["json"]["max_tokens"] == 4096
     assert "Authorization" in session.payload["headers"]
 
 

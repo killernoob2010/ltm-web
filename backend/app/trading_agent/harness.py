@@ -145,6 +145,14 @@ def _validated21_issues(result: ValidatedAnswer21) -> list[dict[str, Any]]:
     return [item.model_dump(mode="json") for item in result.limitations[:5]]
 
 
+def _diagnostic_issue(item):
+    allowed = {"schema_version", "body_markdown", "spans", "views", "id", "kind", "start", "end",
+               "refs", "depends_on", "result_ref", "fields", "title", "sort_by", "descending", ""}
+    parts = str(item.get("path", "/")).split("/")[:8]
+    path = "/".join(part if part in allowed or (part.isascii() and part.isdecimal() and len(part) <= 5) else "?" for part in parts)
+    return {"code": item.get("code"), "path": path}
+
+
 def _log_model_diagnostic(task_id, turn, *, attempt, repair):
     data = {"task_id": task_id, "attempt": attempt, "repair": repair,
             "finish_reason": turn.finish_reason if turn.finish_reason in {"stop", "length", "tool_calls", "content_filter"} else "unknown",
@@ -472,6 +480,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 except answer.Answer21ValidationError as exc:
                     v21_issues = exc.as_dicts()
                 if v21_issues:
+                    logging.getLogger(__name__).warning("agent_answer_validation task_id=%s attempt=%s codes=%s", task_id, budget.model_calls,
+                        json.dumps([_diagnostic_issue(item) for item in v21_issues[:5]]))
                     await _record_stage(deps, principal, "validation", "failed")
                     await asyncio.to_thread(
                         deps.store.append_event,

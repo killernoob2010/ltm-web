@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.trading_agent import answer, harness, store
+from app.trading_agent import prompts
 from app.trading_agent.contracts import ToolEnvelope
 from app.trading_agent.model import ModelTurn
 from test_harness import FakeMCP, ScriptedModel, GOOD_ANSWER21
@@ -67,6 +68,17 @@ async def test_length_finish_requires_repair_even_when_json_is_parseable(queued)
     assert len(model.calls) == 2
 
 
+@pytest.mark.asyncio
+async def test_validation_diagnostics_do_not_log_unknown_model_field_names(queued, caplog):
+    task = store.claim_next("diagnostic-privacy")
+    raw = GOOD_ANSWER21[:-1] + ',"PRIVATE_SENTINEL":true}'
+    model = ScriptedModel([ModelTurn(content=raw), ModelTurn(content=raw)])
+    with caplog.at_level("WARNING"):
+        result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="diagnostic-privacy"))
+    assert result.delivery_status == "failed"
+    assert "PRIVATE_SENTINEL" not in caplog.text
+
+
 def test_fallback_does_not_present_capabilities_as_business_data(queued):
     task = store.claim_next("filter")
     principal = store.principal_for_task(task)
@@ -83,6 +95,21 @@ def test_parser_error_keeps_safe_position_without_raw_content():
         answer.parse_answer21('{"schema_version":"2.1","body_markdown":"PRIVATE_SENTINEL')
     assert "offset=" in err.value.issues[0].message
     assert "PRIVATE_SENTINEL" not in err.value.issues[0].message
+
+
+def test_table_prompt_example_uses_real_projection_contract(queued):
+    task = store.claim_next("example")
+    principal = store.principal_for_task(task)
+    envelope = ToolEnvelope(status="partial", captured_at=datetime.now(timezone.utc), calculation_version="test",
+                           payload={"kind": "positions"})
+    ref = store.save_result(principal, envelope, [{"contract": "i2610-c-750", "quantity": "2"}], kind="positions")
+    raw = prompts.TABLE_ANSWER21_EXAMPLE.replace("00000000-0000-0000-0000-000000000001", str(ref))
+    draft = answer.parse_answer21(raw)
+    result = answer.validate_answer21(principal, draft, store)
+    assert result.delivery_status == "complete"
+    assert len(result.views) == 1
+    assert len(raw) < 900
+    assert str(ref) in str(result.views)
 
 
 @pytest.mark.parametrize("invalid", ["expired", "permission", "scope", "aggregation"])
