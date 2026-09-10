@@ -118,6 +118,7 @@ MODULES = [
     ("后台管理", "user_management", "用户管理"),
     ("后台管理", "trading_collector", "WH6成交与持仓采集设备"),
     ("后台管理", "data_management", "数据管理"),
+    ("后台管理", "agent_quality", "Agent运行与质量"),
 ]
 
 

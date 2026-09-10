@@ -35,6 +35,7 @@ RESOURCE_MODULES = {
     "permissions": "user_management",
     "operation_logs": "user_management",
     "monitoring.status": "user_management",
+    "agent_quality": "agent_quality",
 }
 
 GUEST_PERMISSIONS = {
@@ -45,7 +46,7 @@ GUEST_PERMISSIONS = {
 VIEW_ACTIONS = {"view", "detail"}
 EDIT_ACTIONS = {"create", "edit"}
 SENSITIVE_ACTIONS = {"delete", "import", "export", "manage"}
-ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status", "trading.collector"}
+ADMIN_ONLY_RESOURCES = {"users", "permissions", "operation_logs", "monitoring.status", "trading.collector", "agent_quality"}
 
 DEPARTMENTS = ("贸易处", "期货组", "财企处", "资金处", "管理部门", "公司领导")
 USER_ROLES = ("用户", "领导", "管理员")

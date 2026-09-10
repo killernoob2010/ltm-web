@@ -1,3 +1,5 @@
+import pytest
+
 from app.trading_agent.research_policy import (
     RequestPlan,
     enforce_research_policy,
@@ -29,6 +31,16 @@ def test_mixed_question_keeps_internal_and_external_domains_separate():
     assert plan.mode == "research_allowed"
     assert plan.reason == "mixed_research"
     assert set(plan.domains) == {"trading", "spot", "basis", "public"}
+
+
+@pytest.mark.parametrize("question", [
+    "结合内部库存和公开供需资料分析",
+    "查询近期铁矿石供需新闻，并结合库存分析",
+    "结合库存分析近期海外矿山发运情况，需要网络查询",
+])
+def test_supply_research_synonyms_allow_public_research(question):
+    plan = enforce_research_policy(question, _candidate())
+    assert plan.mode == "research_allowed"
 
 
 def test_conflicting_no_web_instruction_fails_closed():

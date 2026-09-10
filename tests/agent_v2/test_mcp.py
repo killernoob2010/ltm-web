@@ -54,6 +54,10 @@ async def test_mcp_loopback_requires_live_grant_and_calls_describe(queued):
                 response = await client.post(f"http://127.0.0.1:{port}/mcp", headers={"Authorization":f"Bearer {grant}","Accept":"application/json, text/event-stream"}, json={"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})
                 assert response.status_code == 200
                 assert "query_positions" in response.text
+                assert "query_dataset" not in response.text
+                assert "query_market_series" not in response.text
+                assert "order_finance" not in response.text
+                assert "backend_admin" not in response.text
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, 5)

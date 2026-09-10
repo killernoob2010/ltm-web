@@ -83,6 +83,26 @@ def test_dataset_chart_supports_three_years_without_old_500_point_fallback():
     assert len(chart["facets"][0]["series"][0]["points"]) == 366
 
 
+def test_dataset_chart_allows_more_than_366_points_until_payload_limits():
+    from app.trading_agent.presentation import build_dataset_chart
+
+    rows = [
+        {
+            "row_ref": f"r{day}",
+            "observation_date": (datetime(2024, 1, 1) + timedelta(days=day)).date().isoformat(),
+            "business_year": 2024,
+            "product": "PB粉",
+            "value": str(day),
+        }
+        for day in range(730)
+    ]
+
+    chart = build_dataset_chart(_saved(rows), _request())
+
+    assert chart["version"] == 2
+    assert len(chart["facets"][0]["series"][0]["points"]) == 730
+
+
 def test_dataset_chart_allows_same_x_for_different_series_but_rejects_duplicate_series_x():
     from app.trading_agent.presentation import build_dataset_chart
 

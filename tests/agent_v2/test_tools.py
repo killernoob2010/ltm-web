@@ -21,6 +21,16 @@ def test_registry_has_only_read_only_allowlisted_tools():
     assert all("sql" not in " ".join(spec["model"].model_fields) for spec in tools.TOOL_SPECS.values())
 
 
+def test_agent_module_catalog_has_six_modules_and_hard_forbids_backend_data():
+    catalog = tools.agent_module_catalog()
+    assert set(catalog) == {
+        "trade_ledger", "trading", "information_warning", "data_visualization",
+        "order_finance", "backend_admin",
+    }
+    assert catalog["backend_admin"]["agent_access"] is False
+    assert catalog["order_finance"]["connection_status"] == "not_connected"
+
+
 def test_dataset_tool_schema_is_strict_and_has_no_identity_or_sql_arguments():
     schema = tools.TOOL_SPECS["query_dataset"]["model"].model_json_schema()
     assert schema["additionalProperties"] is False

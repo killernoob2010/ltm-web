@@ -81,7 +81,7 @@ async def _model_call(model, messages, schemas, timeout):
         return await asyncio.wait_for(asyncio.to_thread(model.next_turn, messages, schemas, timeout), timeout=max(.1, timeout))
 
 
-def _model_schemas(available=None):
+def _model_schemas(available=None, allowed_names=None):
     """Convert the live MCP catalog to the model schema after registry filtering."""
     if available is None:
         catalog = tools.tool_schemas()
@@ -95,6 +95,8 @@ def _model_schemas(available=None):
             if hasattr(item, "model_dump"):
                 item = item.model_dump(mode="json")
             if not isinstance(item, dict) or item.get("name") not in registered:
+                continue
+            if allowed_names is not None and item.get("name") not in allowed_names:
                 continue
             spec = registered[item["name"]]
             catalog.append({
@@ -371,7 +373,15 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     if (item.get("name") if isinstance(item, dict) else getattr(item, "name", None))
                     not in {"search_public", "read_public"}
                 ]}
-        schemas = _model_schemas(live_tools)
+        allowed_capability_tools = None
+        if isinstance(capability_payload, dict) and isinstance(capability_payload.get("tools"), list):
+            allowed_capability_tools = {
+                item if isinstance(item, str) else item.get("name")
+                for item in capability_payload["tools"]
+                if isinstance(item, str) or isinstance(item, dict)
+            }
+            allowed_capability_tools.discard(None)
+        schemas = _model_schemas(live_tools, allowed_names=allowed_capability_tools)
         allowed_tool_names = {
             item.get("function", {}).get("name")
             for item in schemas

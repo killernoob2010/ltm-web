@@ -81,14 +81,7 @@ def capabilities(user: dict = Depends(trading_management_current_user)):
     trading_allowed = can(user, "trading.facts", "view")
     display_allowed = can(user, "data_visualization.display", "view")
     market_allowed = trading_allowed and display_allowed
-    visible_tools = []
-    for item in tools.tool_schemas(include_market=True):
-        name = item["name"]
-        if name == "query_market_series" and not market_allowed:
-            continue
-        if name in tools.DATASET_TOOL_NAMES and not display_allowed:
-            continue
-        visible_tools.append(item)
+    visible_tools = tools.tool_schemas_for_user(user, include_market=market_allowed)
     datasets = {}
     if display_allowed:
         datasets.update({item["dataset"]: item for item in catalog.dataset_registry()})
@@ -99,6 +92,7 @@ def capabilities(user: dict = Depends(trading_management_current_user)):
             "tools": visible_tools, "dimensions": catalog.DIMENSIONS,
             "metrics": {kind: sorted(items) for kind, items in catalog.METRICS.items()},
             "datasets": datasets,
+            "modules": tools.agent_module_catalog(),
             "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"}}
 
 

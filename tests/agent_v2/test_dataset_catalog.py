@@ -71,19 +71,36 @@ def test_explicit_empty_selection_is_not_equivalent_to_omitted_selection():
     assert normalized_empty.filters.products == []
 
 
-def test_query_time_modes_have_bounded_and_explicit_ranges():
+def test_query_time_modes_allow_multi_year_ranges_with_explicit_boundaries():
     with pytest.raises(ValueError, match="latest_does_not_accept_dates"):
         validate_dataset_query(DatasetQuery(dataset="spot_series", filters={"metric": "inventory"}, start_date="2026-01-01"))
     with pytest.raises(ValueError, match="range_requires_dates"):
         validate_dataset_query(DatasetQuery(dataset="spot_series", mode="range", filters={"metric": "inventory"}))
     with pytest.raises(ValueError, match="seasonal_requires_years"):
         validate_dataset_query(DatasetQuery(dataset="spot_series", mode="seasonal", filters={"metric": "inventory"}))
-    with pytest.raises(ValueError, match="date_range_too_large"):
+    multi_year = validate_dataset_query(DatasetQuery(
+        dataset="spot_series",
+        mode="range",
+        start_date="2020-01-01",
+        end_date="2026-01-02",
+        filters={"metric": "inventory"},
+    ))
+    assert multi_year.start_date.isoformat() == "2020-01-01"
+    assert multi_year.end_date.isoformat() == "2026-01-02"
+
+    seasonal = validate_dataset_query(DatasetQuery(
+        dataset="spot_series",
+        mode="seasonal",
+        filters={"metric": "inventory", "years": [2020, 2021, 2022, 2023, 2024]},
+    ))
+    assert seasonal.filters.years == [2020, 2021, 2022, 2023, 2024]
+
+    with pytest.raises(ValueError, match="date_range_reversed"):
         validate_dataset_query(DatasetQuery(
             dataset="spot_series",
             mode="range",
-            start_date="2025-01-01",
-            end_date="2026-01-02",
+            start_date="2026-01-02",
+            end_date="2020-01-01",
             filters={"metric": "inventory"},
         ))
 
@@ -93,4 +110,3 @@ def test_dataset_specific_required_filters_are_not_silently_defaulted():
         validate_dataset_query(DatasetQuery(dataset="spot_series"))
     with pytest.raises(ValueError, match="needs_clarification:arrival_kind"):
         validate_dataset_query(DatasetQuery(dataset="arrival_detail"))
-

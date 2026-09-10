@@ -62,6 +62,7 @@ from .order_finance_snapshot_sync import start_order_finance_sync_scheduler
 from .spot_ledger_sync import start_spot_ledger_sync_scheduler
 from .closing_review_scheduler import start_closing_review_scheduler
 from .trading_agent import routes as trading_agent_v2_routes
+from .trading_agent import quality_routes as trading_agent_quality_routes
 from .sgx_usdcnh import fetch_sgx_usdcnh_rate
 from . import (
     data_visualization,
@@ -157,6 +158,7 @@ app.include_router(trading_management.router, prefix="/api/trading-management")
 app.include_router(closing_trading_review.router, prefix="/api")
 app.include_router(closing_review_agent.router, prefix="/api")
 app.include_router(trading_agent_v2_routes.router, prefix="/api")
+app.include_router(trading_agent_quality_routes.router, prefix="/api")
 app.include_router(trading_collector.router, prefix="/api")
 app.include_router(trading_collector_replication.router)
 
@@ -1545,6 +1547,7 @@ def modules(user=Depends(current_user)):
         row
         for row in db.MODULES
         if row[1] not in RETIRED_MODULE_CODES
+        and (row[1] != "agent_quality" or user["role"] in {"管理员", "admin"})
         and (row[1] != "closing_review_agent" or closing_review_agent.is_enabled() or v2_agent_visible)
     ]
     if user["role"] == "管理员":

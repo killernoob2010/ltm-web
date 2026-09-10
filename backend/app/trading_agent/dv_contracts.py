@@ -13,7 +13,9 @@ from .semantic_catalog import DatasetId, dataset_registry, get_dataset_spec
 
 class DataFilters(StrictModel):
     metric: Literal["inventory", "shipment", "arrival", "apparent_demand"] | None = None
-    years: list[int] | None = Field(default=None, max_length=3)
+    # Keep the request bounded by payload size, but do not impose a business
+    # limit of three years on historical comparisons.
+    years: list[int] | None = Field(default=None, max_length=50)
     business_weeks: list[int] | None = Field(default=None, max_length=53)
     products: list[str] | None = Field(default=None, max_length=200)
     categories: list[str] | None = Field(default=None, max_length=16)
@@ -156,15 +158,11 @@ def validate_dataset_query(args: DatasetQuery) -> DatasetQuery:
             raise ValueError("range_requires_dates")
         if args.start_date > args.end_date:
             raise ValueError("date_range_reversed")
-        if (args.end_date - args.start_date).days > 366:
-            raise ValueError("date_range_too_large")
     if args.mode == "seasonal":
         if args.start_date is not None or args.end_date is not None:
             raise ValueError("seasonal_does_not_accept_dates")
         if not filters.years:
             raise ValueError("seasonal_requires_years")
-        if len(filters.years) > 3:
-            raise ValueError("seasonal_year_limit")
 
     if args.dataset == "spot_series":
         if filters.metric is None:

@@ -100,6 +100,127 @@ DATASET_TOOL_NAMES = {
     "relate_datasets", "get_optimal_warrant",
 }
 
+TRADE_TOOL_NAMES = {
+    "query_trade_facts", "query_close_facts", "query_positions", "summarize_positions",
+    "summarize_facts", "read_result_page", "compare_results", "get_position_risk", "run_scenario",
+}
+
+# The registry is deliberately broader than the currently connected tools.  It
+# lets capability responses and the admin quality page distinguish an
+# authorized module from a module that has not been connected to Agent yet.
+_AGENT_MODULE_CATALOG = {
+    "trade_ledger": {
+        "module": "贸易台账管理", "connection_status": "not_connected", "agent_access": False,
+        "resources": ["spot_ledger.records"],
+    },
+    "trading": {
+        "module": "交易管理", "connection_status": "connected", "agent_access": True,
+        "resources": ["trading.facts"],
+    },
+    "information_warning": {
+        "module": "信息预警管理", "connection_status": "not_connected", "agent_access": False,
+        "resources": ["alert.realtime_summary", "alert.settings", "alert.notifications"],
+    },
+    "data_visualization": {
+        "module": "数据可视化管理", "connection_status": "connected", "agent_access": True,
+        "resources": ["data_visualization.display", "data_visualization.data"],
+    },
+    "order_finance": {
+        "module": "订单融资管理", "connection_status": "not_connected", "agent_access": False,
+        "resources": ["order_finance.records", "order_finance.capital"],
+    },
+    "backend_admin": {
+        "module": "后台管理", "connection_status": "forbidden", "agent_access": False,
+        "resources": ["users", "permissions", "operation_logs", "monitoring.status"],
+    },
+}
+
+
+def agent_module_catalog() -> dict[str, dict[str, Any]]:
+    """Return the six-module Agent boundary without exposing admin data."""
+    return {
+        code: {**item, "resources": list(item["resources"])}
+        for code, item in _AGENT_MODULE_CATALOG.items()
+    }
+
+
+def _authorized(principal, resource: str) -> bool:
+    from .auth import authorize
+
+    try:
+        authorize(principal, resource)
+    except (HTTPException, PermissionError):
+        return False
+    return True
+
+
+def _tool_authorized(principal, name: str, *, research_allowed: bool = False) -> bool:
+    if name == "describe_capabilities":
+        return _authorized(principal, "closing_review.agent")
+    if name in TRADE_TOOL_NAMES:
+        return _authorized(principal, "trading.facts")
+    if name in DATASET_TOOL_NAMES:
+        return _authorized(principal, "data_visualization.display")
+    if name == "query_market_series":
+        return _authorized(principal, "trading.facts") and _authorized(principal, "data_visualization.display")
+    if name == "explain_evidence":
+        return _authorized(principal, "trading.facts") or _authorized(principal, "data_visualization.display")
+    if name in {"search_public", "read_public"}:
+        return research_allowed and research_policy.public_tools_configured()
+    return False
+
+
+def tool_names_for_principal(principal, *, research_allowed: bool = False) -> list[str]:
+    from .auth import authorized_resources
+
+    try:
+        resources = authorized_resources(principal)
+    except (HTTPException, PermissionError):
+        return []
+    return sorted(
+        name for name in TOOL_SPECS
+        if (
+            name == "describe_capabilities" and "closing_review.agent" in resources
+        ) or (
+            name in TRADE_TOOL_NAMES and "trading.facts" in resources
+        ) or (
+            name in DATASET_TOOL_NAMES and "data_visualization.display" in resources
+        ) or (
+            name == "query_market_series"
+            and {"trading.facts", "data_visualization.display"}.issubset(resources)
+        ) or (
+            name == "explain_evidence"
+            and ({"trading.facts", "data_visualization.display"} & resources)
+        ) or (
+            name in {"search_public", "read_public"}
+            and "closing_review.agent" in resources
+            and research_allowed
+            and research_policy.public_tools_configured()
+        )
+    )
+
+
+def tool_schemas_for_user(user: dict, *, include_market: bool = True) -> list[dict[str, Any]]:
+    """Filter the browser capability catalog using current module permissions."""
+    from ..permissions import can
+
+    trading_allowed = can(user, "trading.facts", "view")
+    display_allowed = can(user, "data_visualization.display", "view")
+    names = []
+    for name in TOOL_SPECS:
+        if name == "query_market_series" and (not include_market or not (trading_allowed and display_allowed)):
+            continue
+        if name in TRADE_TOOL_NAMES and not trading_allowed:
+            continue
+        if name in DATASET_TOOL_NAMES and not display_allowed:
+            continue
+        if name == "explain_evidence" and not (trading_allowed or display_allowed):
+            continue
+        if name in {"search_public", "read_public"}:
+            continue
+        names.append(name)
+    return [item for item in tool_schemas(include_market=include_market) if item["name"] in names]
+
 
 def _public_gate(principal):
     plan = research_policy.active_plan(principal)
@@ -171,15 +292,10 @@ def _capability_envelope(principal) -> ToolEnvelope:
         display_allowed = False
     market_allowed = trading_allowed and display_allowed
     plan = research_policy.active_plan(principal)
-    visible_tools = []
-    for name in TOOL_SPECS:
-        if name == "query_market_series" and not market_allowed:
-            continue
-        if name in DATASET_TOOL_NAMES and not display_allowed:
-            continue
-        if name in {"search_public", "read_public"} and plan is not None and not research_policy.public_tools_allowed(plan, research_policy.public_tools_configured()):
-            continue
-        visible_tools.append(name)
+    visible_tools = tool_names_for_principal(
+        principal,
+        research_allowed=bool(plan and research_policy.public_tools_allowed(plan, research_policy.public_tools_configured())),
+    )
     datasets = {}
     if display_allowed:
         datasets.update({item["dataset"]: item for item in catalog.dataset_registry()})
@@ -194,6 +310,7 @@ def _capability_envelope(principal) -> ToolEnvelope:
         "limits": {"snapshot_rows": 20000, "preview_rows": 20, "page_size": [20, 50, 100]},
         "calculation_versions": {"facts": facts.VERSION, "risk": risk.VERSION},
         "datasets": datasets,
+        "modules": agent_module_catalog(),
     }
     return ToolEnvelope(status="complete", captured_at=now, calculation_version="catalog-v2", payload=data)
 

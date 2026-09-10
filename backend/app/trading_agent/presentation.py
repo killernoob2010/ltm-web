@@ -520,8 +520,6 @@ def build_dataset_chart(saved: Any, request: ViewRequest, *, facet_page: int = 1
         response_series = []
         for series in series_values:
             points = sorted(series["points"], key=lambda point: point["_sort"])
-            if len(points) > 366:
-                return _v2_fallback("series_point_limit", request, facet_page=facet_page, total_facets=total_facets)
             total_points += len(points)
             response_series.append({key: value for key, value in series.items() if not key.startswith("_")})
         response_facets.append({

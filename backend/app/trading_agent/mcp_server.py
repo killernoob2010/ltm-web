@@ -10,7 +10,7 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from starlette.types import Receive, Scope, Send
 
-from . import tools, execution
+from . import tools, execution, research_policy
 from .contracts import Principal
 from .store import resolve_grant
 
@@ -202,6 +202,26 @@ def build_mcp_server() -> MCPServer:
                      ("get_position_risk", get_position_risk), ("run_scenario", run_scenario),
                      ("explain_evidence", explain_evidence), ("search_public", search_public), ("read_public", read_public)):
         register(name, fn)
+
+    # The MCP registry contains the full implementation set, but the peer must
+    # only see tools authorized for the current execution grant.  Dispatch
+    # remains protected as a second, server-side boundary.
+    registered_list_tools = server.list_tools
+
+    async def list_tools_for_principal():
+        principal = _principal.get()
+        if principal is None:
+            return []
+        plan = research_policy.active_plan(principal)
+        allowed = set(tools.tool_names_for_principal(
+            principal,
+            research_allowed=bool(plan and research_policy.public_tools_allowed(
+                plan, research_policy.public_tools_configured()
+            )),
+        ))
+        return [item for item in await registered_list_tools() if item.name in allowed]
+
+    server.list_tools = list_tools_for_principal
     return server
 
 

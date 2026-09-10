@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import db
-from app.trading_agent import auth, store
+from app.trading_agent import auth, store, tools
 from app.trading_agent.contracts import ToolEnvelope
 from app.trading_agent.schema import migrate_agent_v2_schema
 
@@ -49,6 +49,14 @@ def test_data_visualization_only_principal_has_empty_trading_scope(display_only_
     with pytest.raises(HTTPException) as error:
         auth.authorize(principal, "trading.facts")
     assert error.value.status_code == 403
+
+
+def test_capability_catalog_hides_unrelated_tools_for_display_only_principal(display_only_principal):
+    _, _, principal = display_only_principal
+    envelope = tools.dispatch(principal, "describe_capabilities")
+    assert "query_dataset" in envelope.payload["tools"]
+    assert "query_positions" not in envelope.payload["tools"]
+    assert "query_market_series" not in envelope.payload["tools"]
 
 
 def test_dataset_snapshot_can_be_saved_and_read_without_trading_permission(display_only_principal):

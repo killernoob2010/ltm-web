@@ -140,6 +140,7 @@ const userManagementPage = document.querySelector("#userManagementPage");
 const tradingCollectorPage = document.querySelector("#tradingCollectorPage");
 const spotLedgerPage = document.querySelector("#spotLedgerPage");
 const closingReviewAgentPage = document.querySelector("#closingReviewAgentPage");
+const agentQualityPage = document.querySelector("#agentQualityPage");
 const placeholderPage = document.querySelector("#placeholderPage");
 const placeholderTitle = document.querySelector("#placeholderTitle");
 const orderFinancePage = document.querySelector("#orderFinancePage");
@@ -512,7 +513,7 @@ function renderMenu() {
 }
 
 function showOnly(page) {
-  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvReportPage, dvDataPage, dvChartPage, tradingManagementPage, tradingCollectorPage, closingReviewAgentPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
+  [infoSummaryPage, plattsIndexPage, midEventPage, shJunnengPage, riskAlertPage, userManagementPage, orderFinancePage, orderFinanceCapitalPage, dvIntegrationPage, dvReportPage, dvDataPage, dvChartPage, tradingManagementPage, tradingCollectorPage, closingReviewAgentPage, agentQualityPage, spotLedgerPage, placeholderPage].forEach((item) => item.classList.add("hidden"));
   page.classList.remove("hidden");
 }
 
@@ -597,6 +598,11 @@ async function activateModule(code, subName, subView = "") {
   if (code === "closing_review_agent") {
     showOnly(closingReviewAgentPage);
     await window.ClosingReviewAgent.activate({ api, user: state.user });
+    return;
+  }
+  if (code === "agent_quality") {
+    showOnly(agentQualityPage);
+    await window.AgentQuality.activate({ api, user: state.user });
     return;
   }
   if (code === "spot_ledger") {

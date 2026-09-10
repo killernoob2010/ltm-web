@@ -61,6 +61,38 @@ def resolve_principal(user_id: int, channel: str, conversation_id: int, executio
     return Principal(user_id, channel, conversation_id, _accounts(user), UUID(str(execution_id)))
 
 
+def authorized_resources(principal: Principal) -> set[str]:
+    """Read the current Agent resource view in one permission snapshot.
+
+    MCP tools/list is a hot path with a tight timeout.  It still rechecks live
+    permissions, but avoids running the full principal-resolution query once
+    per registered tool; individual tool dispatches retain the stricter
+    ``authorize`` check below.
+    """
+    user = _live_user(principal.user_id)
+    resources = {
+        "closing_review.agent",
+        "trading.facts",
+        "data_visualization.display",
+        "data_visualization.data",
+    }
+    if permissions.is_admin(user):
+        return resources
+    with db.connect() as conn:
+        module_codes = {
+            row["module_code"]
+            for row in db._exec(
+                conn.cursor(),
+                "SELECT module_code FROM module_permissions WHERE user_id=? AND can_view=1",
+                (principal.user_id,),
+            ).fetchall()
+        }
+    return {
+        resource for resource in resources
+        if permissions.RESOURCE_MODULES.get(resource, resource) in module_codes
+    }
+
+
 def authorize(principal: Principal, resource: str) -> Principal:
     if resource not in {
         "closing_review.agent",

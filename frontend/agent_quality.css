@@ -1,0 +1,43 @@
+.agent-quality-page { color: #172033; min-width: 0; }
+.agent-quality-header { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; margin-bottom:16px; }
+.agent-quality-header h1 { margin:0; font-size:25px; }
+.agent-quality-header p { margin:6px 0 0; color:#667085; font-size:13px; }
+.agent-quality-filters { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin-bottom:16px; }
+.agent-quality-filters label { display:grid; gap:5px; color:#475467; font-size:12px; }
+.agent-quality-filters input,.agent-quality-filters select { min-width:145px; }
+.agent-quality-cards { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin-bottom:16px; }
+.agent-quality-card { padding:13px 14px; border:1px solid #dfe5ed; border-radius:10px; background:#fff; }
+.agent-quality-card small { display:block; color:#667085; font-size:11px; }
+.agent-quality-card strong { display:block; margin-top:6px; font-size:22px; }
+.agent-quality-card span { display:block; margin-top:3px; color:#667085; font-size:11px; }
+.agent-quality-tabs { display:flex; gap:4px; border-bottom:1px solid #dfe5ed; margin-bottom:12px; }
+.agent-quality-tab { min-height:36px; padding:0 13px; border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; color:#667085; }
+.agent-quality-tab.active { border-bottom-color:#2359c4; color:#2359c4; font-weight:600; }
+.agent-quality-panel { padding:16px; border:1px solid #dfe5ed; border-radius:10px; background:#fff; }
+.agent-quality-panel + .agent-quality-panel { margin-top:12px; }
+.agent-quality-coverage { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.agent-quality-coverage-item { padding:11px; border-radius:8px; background:#f7f9fc; }
+.agent-quality-coverage-item strong { display:block; font-size:13px; }
+.agent-quality-coverage-item span { display:block; margin-top:5px; color:#667085; font-size:12px; line-height:1.5; }
+.agent-quality-table { min-width:760px; }
+.agent-quality-table td,.agent-quality-table th { white-space:nowrap; }
+.agent-quality-status { display:inline-flex; padding:3px 7px; border-radius:5px; background:#eef2f7; color:#526076; font-size:11px; }
+.agent-quality-status.good { background:#e9f7ef; color:#087443; }
+.agent-quality-status.warn { background:#fff5dc; color:#a66500; }
+.agent-quality-status.bad { background:#fff0ef; color:#b42318; }
+.agent-quality-pagination { display:flex; align-items:center; gap:8px; margin-top:11px; color:#667085; font-size:12px; }
+.agent-quality-detail { margin-top:14px; padding:14px; border:1px solid #cbdaf6; border-radius:9px; background:#fbfdff; }
+.agent-quality-detail h3 { margin:0 0 10px; font-size:15px; }
+.agent-quality-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.agent-quality-detail-block { padding:10px; border-radius:7px; background:#fff; border:1px solid #e5eaf1; }
+.agent-quality-detail-block strong { display:block; margin-bottom:5px; font-size:12px; }
+.agent-quality-detail-block p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; font-size:12px; }
+.agent-quality-feedback { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+.agent-quality-feedback button { min-height:29px; padding:0 9px; font-size:12px; }
+.agent-quality-notice { margin-bottom:12px; padding:10px 12px; border-radius:7px; background:#fff8e7; color:#7a4b00; font-size:12px; line-height:1.5; }
+.agent-quality-evaluation-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.agent-quality-evaluation { padding:13px; border:1px solid #dfe5ed; border-radius:8px; }
+.agent-quality-evaluation h3 { margin:0; font-size:14px; }
+.agent-quality-evaluation p { margin:6px 0 0; color:#667085; font-size:12px; line-height:1.5; }
+@media (max-width: 1100px) { .agent-quality-cards { grid-template-columns:repeat(3,minmax(0,1fr)); } .agent-quality-evaluation-list { grid-template-columns:1fr; } }
+@media (max-width: 700px) { .agent-quality-header,.agent-quality-detail-grid { display:grid; } .agent-quality-cards,.agent-quality-coverage { grid-template-columns:repeat(2,minmax(0,1fr)); } }

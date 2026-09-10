@@ -57,8 +57,10 @@ def insert_basis(cur, **overrides):
 
 
 def test_market_query_is_bounded():
+    multi_year = args(start_date="2020-01-01", end_date="2026-01-01")
+    assert multi_year.start_date.isoformat() == "2020-01-01"
     with pytest.raises(ValueError):
-        args(start_date="2020-01-01", end_date="2026-01-01")
+        args(start_date="2026-01-01", end_date="2020-01-01")
     with pytest.raises(ValueError):
         args(dataset="users", metrics=["password_hash"])
     with pytest.raises(ValueError):

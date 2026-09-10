@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/static/iron_ore_basis.css?v=iron-ore-basis-auto-sync-20260714" />
     <link rel="stylesheet" href="/static/trading_collector.css?v=release-20260908" />
     <link rel="stylesheet" href="/static/closing_review_agent.css?v=trading-agent-flexible-20260910" />
+    <link rel="stylesheet" href="/static/agent_quality.css?v=agent-quality-v1" />
   </head>
   <body>
     <main id="loginView" class="login-shell">
@@ -418,6 +419,46 @@
                 <tbody id="usersTable"></tbody>
               </table>
             </div>
+          </section>
+        </section>
+
+        <section id="agentQualityPage" class="page hidden agent-quality-page">
+          <div class="agent-quality-header">
+            <div>
+              <h1>Agent 运行与质量</h1>
+              <p>查看近期运行状态、工具轨迹、人工反馈与评估覆盖；运行成功不等于评估通过。</p>
+            </div>
+            <span id="agentQualityStatus" class="toolbar-status" role="status" aria-live="polite">待加载</span>
+          </div>
+          <form id="agentQualityFilterForm" class="panel agent-quality-filters">
+            <label>开始日期<input id="agentQualityStartDate" type="date" /></label>
+            <label>结束日期<input id="agentQualityEndDate" type="date" /></label>
+            <label>运行状态<select id="agentQualityState"><option value="">全部</option><option value="queued">排队</option><option value="running">运行中</option><option value="succeeded">成功</option><option value="partial">部分完成</option><option value="failed">失败</option></select></label>
+            <label>业务模块<select id="agentQualityModule"><option value="">全部</option><option value="trading">交易管理</option><option value="data_visualization">数据可视化管理</option><option value="information_warning">信息预警管理</option></select></label>
+            <button type="submit">刷新</button>
+          </form>
+
+          <div id="agentQualityCards" class="agent-quality-cards"></div>
+          <div class="agent-quality-tabs" role="tablist" aria-label="Agent质量视图">
+            <button type="button" class="agent-quality-tab active" data-quality-tab="summary">总体摘要</button>
+            <button type="button" class="agent-quality-tab" data-quality-tab="traces">运行轨迹</button>
+            <button type="button" class="agent-quality-tab" data-quality-tab="evaluations">Evaluation</button>
+          </div>
+
+          <section id="agentQualitySummaryPanel" class="agent-quality-panel" data-quality-panel="summary">
+            <div class="panel-head"><h2>覆盖与判定口径</h2><span>实时汇总</span></div>
+            <div id="agentQualityCoverage" class="agent-quality-coverage"></div>
+          </section>
+          <section id="agentQualityTracesPanel" class="agent-quality-panel hidden" data-quality-panel="traces">
+            <div class="panel-head"><h2>最近运行</h2><span id="agentQualityRunCount"></span></div>
+            <div class="table-wrap"><table class="agent-quality-table"><thead><tr><th>任务</th><th>时间</th><th>状态</th><th>模块</th><th>模型/工具/搜索</th><th>质量判定</th><th>操作</th></tr></thead><tbody id="agentQualityRunsTable"></tbody></table></div>
+            <div id="agentQualityRunPagination" class="agent-quality-pagination"></div>
+            <article id="agentQualityDetail" class="agent-quality-detail hidden" aria-live="polite"></article>
+          </section>
+          <section id="agentQualityEvaluationsPanel" class="agent-quality-panel hidden" data-quality-panel="evaluations">
+            <div class="panel-head"><h2>Evaluation 结果</h2><span>离线定义与真实模型结果分开显示</span></div>
+            <div id="agentQualityEvaluationNotice" class="agent-quality-notice"></div>
+            <div id="agentQualityEvaluationList" class="agent-quality-evaluation-list"></div>
           </section>
         </section>
 
@@ -1629,6 +1670,7 @@
     <script src="/static/agent_answer_renderer.js?v=trading-agent-answer-renderer-20260910"></script>
     <script src="/static/agent_progress.js?v=trading-agent-progress-20260910"></script>
     <script src="/static/closing_review_agent.js?v=trading-holdings-agent-20260910-status-v1"></script>
+    <script src="/static/agent_quality.js?v=agent-quality-v1"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=v14&release=20260908&weekly-report=20260908-history-v2"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
     <script src="/static/trading_collector.js?v=release-20260908"></script>

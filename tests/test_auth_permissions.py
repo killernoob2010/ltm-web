@@ -119,6 +119,39 @@ def test_agent_module_defaults_to_admin_only():
     assert futures_user["closing_review_agent"] == "none"
 
 
+def test_agent_quality_page_is_a_human_admin_only_backend_module():
+    admin = permissions.default_permission_levels("管理部门", "管理员")
+    leader = permissions.default_permission_levels("管理部门", "领导")
+
+    assert admin["agent_quality"] == "sensitive"
+    assert leader["agent_quality"] == "none"
+    assert permissions.RESOURCE_MODULES["agent_quality"] == "agent_quality"
+    assert "agent_quality" in permissions.ADMIN_ONLY_RESOURCES
+    assert "agent_quality" not in permissions.ACTIVE_BUSINESS_MODULES
+
+
+def test_agent_quality_menu_is_hidden_from_non_admin_even_if_a_row_is_manually_granted(tmp_path, monkeypatch):
+    use_temp_db(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO users(name,username,department,password_hash,role) VALUES "
+            "('Quality User','quality_user','期货组','x','用户')"
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO module_permissions(user_id,module_code,can_view,can_edit,can_sensitive) "
+            "VALUES (?, 'agent_quality', 1, 1, 1)",
+            (user_id,),
+        )
+        user = dict(conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+
+    visible = {
+        item["code"]
+        for group in main.modules(user)
+        for item in group["items"]
+    }
+    assert "agent_quality" not in visible
+
+
 def test_agent_resource_maps_to_pilot_module():
     assert permissions.RESOURCE_MODULES["closing_review.agent"] == "closing_review_agent"
     assert "closing_review_agent" in permissions.PERMISSION_MANAGED_MODULES

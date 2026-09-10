@@ -16,7 +16,9 @@ from .contracts import StrictModel, ToolEnvelope
 DATASET = "iron_ore_basis"
 SOURCE_TABLE = "iron_ore_basis_results"
 VERSION = "iron-ore-basis-read-v1"
-MAX_RANGE_DAYS = 366
+# Historical queries are bounded by the row/payload limits below rather than
+# by an arbitrary one-year business limit.
+MAX_RANGE_DAYS = None
 MAX_ROWS = 20000
 MARKET_METRICS = ("basis", "futures_close", "wet_spot_price")
 SOURCE_FIELDS = (
@@ -37,8 +39,6 @@ class MarketSeriesArgs(StrictModel):
     def validate_scope(self):
         if self.start_date > self.end_date:
             raise ValueError("开始日期晚于结束日期")
-        if (self.end_date - self.start_date).days > MAX_RANGE_DAYS:
-            raise ValueError("期现数据查询跨度不能超过366天")
         for field in ("ports", "products", "metrics"):
             values = [str(value).strip() for value in getattr(self, field)]
             if any(not value for value in values):
@@ -61,7 +61,7 @@ def dataset_catalog() -> dict:
         "dimensions": list(dataset["dimensions"]),
         "metrics": list(dataset["metrics"]),
         "fields": {key: dict(value) for key, value in dataset["fields"].items()},
-        "limits": {"date_span_days": MAX_RANGE_DAYS, "ports": 8, "products": 8},
+        "limits": {"date_span_days": MAX_RANGE_DAYS, "row_limit": MAX_ROWS, "ports": 8, "products": 8},
     }
 
 
