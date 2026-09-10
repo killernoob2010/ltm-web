@@ -171,7 +171,11 @@ def _with_source_limits(result, unavailable):
     code = "public_not_configured" if unavailable.get("policy") == "public_not_configured" else "public_source_unavailable"
     message = "公开搜索尚未配置授权服务，联合研究尚未执行；已核验的内部结果仍可查看。" if code == "public_not_configured" else "公开搜索或正文读取不可用，联合研究尚未完成；已核验的内部结果仍可查看。"
     limitation = Limitation(code=code, message=message)
+    body = result.body_markdown
+    if message not in body:
+        body = f"{body.rstrip()}\n\n{message}" if body.strip() else message
     return result.model_copy(update={"delivery_status": "partial" if result.delivery_status == "complete" else result.delivery_status,
+        "body_markdown": body, "plain_text": body,
         "limitations": [*result.limitations, limitation]})
 
 

@@ -75,6 +75,18 @@ def test_mixed_result_keeps_completed_body_and_adds_restricted_module_limit():
     assert limited.limitations[0].code == "module_not_connected"
 
 
+def test_public_unavailable_limit_is_visible_in_delivered_answer():
+    result = ValidatedAnswer21(
+        delivery_status="partial", body_markdown="已保留已核验的内部结果。", plain_text="已保留已核验的内部结果。",
+        evidence=[], views=[], limitations=[],
+    )
+    limited = harness._with_source_limits(result, {"policy": "public_not_configured"})
+    assert limited.delivery_status == "partial"
+    assert "公开搜索尚未配置授权服务" in limited.body_markdown
+    assert "公开搜索尚未配置授权服务" in limited.plain_text
+    assert any(item.code == "public_not_configured" for item in limited.limitations)
+
+
 def test_mixed_restricted_prompt_requires_supported_part_to_be_completed():
     messages = prompts.build_messages(
         [],
