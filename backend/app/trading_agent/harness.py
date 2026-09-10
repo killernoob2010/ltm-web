@@ -99,7 +99,9 @@ def _model_schemas(available=None):
             catalog.append({
                 "name": item["name"],
                 "description": spec["description"],
-                "inputSchema": item.get("inputSchema") or item.get("input_schema") or spec["inputSchema"],
+                # The live catalog controls availability; the shared dispatch
+                # registry owns argument constraints lost by MCP wrappers.
+                "inputSchema": spec["inputSchema"],
             })
         if not catalog:
             raise ValueError("MCP工具目录为空")

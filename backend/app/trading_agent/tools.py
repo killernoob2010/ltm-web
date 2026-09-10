@@ -226,7 +226,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "query_trade_facts": {"model": FactArgs, "description": "按事实交易日读取宏源去重后的全量成交事实。"},
     "query_close_facts": {"model": FactArgs, "description": "读取已核验的平仓、行权、履约或放弃事实。"},
     "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓并冻结行情。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。返回 metrics.quantity 是全量持仓总手数；payload.groups 提供按账户、合约、期货或期权、多空方向的可引用分组指标。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
-    "query_market_series": {"model": market_data.MarketSeriesArgs, "description": "按已登记日期、港口和品种读取铁矿石期现结果；只返回源表已保存的基差、期货收盘价和湿吨现货价，不重新计算。非有效状态保留为异常或缺失。"},
+    "query_market_series": {"model": market_data.MarketSeriesArgs, "description": "按已登记日期、港口和品种读取铁矿石期现结果；metrics 只允许 basis、futures_close、wet_spot_price。data_status 自动随数据返回，不得放入 metrics。只返回源表已保存的数值，不重新计算。非有效状态保留为异常或缺失。"},
     "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总；逐项持仓请使用 group_by=['account','contract','asset_type','direction'] 和 metrics=['quantity']（需要时再加 floating_pnl），每个分组可用 /payload/groups/{index}/metrics/{metric} 引用。"},
     "summarize_facts": {"model": SummaryArgs, "description": "基于完整事实结果按白名单属性汇总。"},
     "read_result_page": {"model": PageArgs, "description": "读取已授权不可变结果的下一页。"},

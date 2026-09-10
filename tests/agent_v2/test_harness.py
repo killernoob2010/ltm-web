@@ -16,6 +16,19 @@ from test_store import queued
 LegacyDeps = partial(harness.RuntimeDeps, answer_protocol="2.0")
 
 
+def test_live_catalog_keeps_registered_metric_constraints():
+    schemas = harness._model_schemas({"tools": [
+        {"name": "query_market_series", "inputSchema": {"type": "object"}},
+        {"name": "unregistered_tool", "inputSchema": {"type": "object"}},
+    ]})
+    assert len(schemas) == 1
+    parameters = schemas[0]["function"]["parameters"]
+    metrics = parameters["properties"]["metrics"]
+    assert metrics["maxItems"] == 3
+    assert metrics["items"]["enum"] == ["basis", "futures_close", "wet_spot_price"]
+    assert parameters["additionalProperties"] is False
+
+
 class RepeatModel:
     def __init__(self): self.calls = 0
     def next_turn(self, messages, schemas, timeout):
