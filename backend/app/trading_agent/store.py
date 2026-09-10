@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from .. import db
 from .auth import authorize, resolve_principal, _live_user
 from .contracts import Principal, StoredResult, ToolEnvelope
+from . import execution
 
 
 class RequestConflict(ValueError):
@@ -136,7 +137,7 @@ def enqueue(user, conversation_id, request_id, text, channel):
     return task_id
 
 
-def claim_next(worker_id):
+def claim_next(worker_id, *, deadline_seconds=execution.TASK_SECONDS):
     timestamp = now()
     with db.connect() as conn:
         _transaction(conn)
@@ -149,7 +150,7 @@ def claim_next(worker_id):
         task_id = int(row["task_id"])
         db._exec(cur, """UPDATE agent_v2_runs SET state='running',lease_owner=?,lease_expires_at=?,deadline_at=?
             WHERE task_id=? AND state='queued'""",
-            (worker_id, stamp(timestamp + timedelta(seconds=30)), stamp(timestamp + timedelta(seconds=90)), task_id))
+            (worker_id, stamp(timestamp + timedelta(seconds=execution.LEASE_SECONDS)), stamp(timestamp + timedelta(seconds=deadline_seconds)), task_id))
         db._exec(cur, "UPDATE closing_review_tasks SET state='running',started_at=? WHERE id=?", (stamp(timestamp),task_id))
     return task_id
 
@@ -158,7 +159,7 @@ def heartbeat(task_id, worker_id):
     with db.connect() as conn:
         cur = db._exec(conn.cursor(), """UPDATE agent_v2_runs SET lease_expires_at=?
             WHERE task_id=? AND lease_owner=? AND state='running' AND lease_expires_at>? AND deadline_at>?""",
-            (stamp(now()+timedelta(seconds=30)), task_id, worker_id, stamp(), stamp()))
+            (stamp(now()+timedelta(seconds=execution.LEASE_SECONDS)), task_id, worker_id, stamp(), stamp()))
         return cur.rowcount == 1
 
 
@@ -175,6 +176,7 @@ def principal_for_task(task_id):
 
 
 def _active_run(cur, principal):
+    execution.checkpoint()
     row = db._exec(cur, """SELECT r.task_id FROM agent_v2_runs r JOIN closing_review_tasks t ON t.id=r.task_id
         WHERE r.execution_id=? AND r.user_id=? AND t.conversation_id=? AND r.state='running'
         AND r.deadline_at>? AND r.lease_expires_at>?""",
@@ -262,6 +264,30 @@ def _terminal(cur, task_id, state, timestamp, error=None):
     db._exec(cur, "UPDATE agent_v2_runs SET state=?,finished_at=?,last_error=?,lease_expires_at=NULL WHERE task_id=?", (state,timestamp,error,task_id))
     db._exec(cur, "UPDATE closing_review_tasks SET state=?,finished_at=?,error_category=? WHERE id=?", (state,timestamp,error,task_id))
     db._exec(cur, "UPDATE agent_v2_execution_grants SET revoked_at=? WHERE task_id=? AND revoked_at IS NULL", (timestamp,task_id))
+
+
+def fail_owned(task_id, worker_id, reason):
+    """Close only this worker's unfinished run, including an expired lease."""
+    with db.connect() as conn:
+        _transaction(conn)
+        cur = conn.cursor()
+        suffix = " FOR UPDATE" if db._is_pg() else ""
+        row = db._exec(cur, """SELECT t.conversation_id FROM agent_v2_runs r
+            JOIN closing_review_tasks t ON t.id=r.task_id
+            WHERE r.task_id=? AND r.lease_owner=? AND r.state='running'""" + suffix,
+            (task_id, worker_id)).fetchone()
+        if not row:
+            return False
+        timestamp = stamp()
+        _terminal(cur, task_id, "failed", timestamp, reason)
+        message = "本次分析已停止，请重新提问。" if reason == "worker_error" else "本次分析执行超时或连接中断，已停止，请重新提问。"
+        db._exec(cur, """INSERT INTO closing_review_messages
+            (conversation_id,task_id,role,message_type,content,status,created_at)
+            VALUES (?,?,'assistant','error',?,'active',?)""",
+            (row["conversation_id"], task_id, message, timestamp))
+        db._exec(cur, "UPDATE closing_review_conversations SET last_message_at=?,updated_at=? WHERE id=?",
+            (timestamp, timestamp, row["conversation_id"]))
+    return True
 
 
 def finish(task_id, worker_id, state, answer, error=None, structured_payload=None):
@@ -392,6 +418,7 @@ def recover_interrupted():
         _transaction(conn)
         cur = conn.cursor()
         suffix = " FOR UPDATE" if db._is_pg() else ""
+        _expire_queued(cur)
         rows = db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE state='running' AND (lease_expires_at<=? OR deadline_at<=?)" + suffix,
             (stamp(),stamp())).fetchall()
         for row in rows:

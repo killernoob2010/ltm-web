@@ -16,7 +16,8 @@ def test_mcp_accepts_bracketed_ipv6_loopback_host_only():
     assert mcp_server._loopback_host("127.0.0.2:8766") is False
 
 
-def test_mcp_wrappers_normalize_omitted_optional_lists(monkeypatch):
+@pytest.mark.asyncio
+async def test_mcp_wrappers_normalize_omitted_optional_lists(monkeypatch):
     captured = []
 
     def response(name, args):
@@ -25,8 +26,8 @@ def test_mcp_wrappers_normalize_omitted_optional_lists(monkeypatch):
 
     monkeypatch.setattr(mcp_server, "_response", response)
     server = mcp_server.build_mcp_server()
-    server._tool_manager._tools["query_positions"].fn()
-    server._tool_manager._tools["query_trade_facts"].fn("2026-01-01", "2026-01-02")
+    await server._tool_manager._tools["query_positions"].fn()
+    await server._tool_manager._tools["query_trade_facts"].fn("2026-01-01", "2026-01-02")
 
     assert captured[0][1]["contracts"] == []
     assert captured[1][1]["contracts"] == []
@@ -140,3 +141,39 @@ async def test_slow_request_does_not_cancel_caller_or_break_client_cleanup(queue
         server.should_exit = True
         await asyncio.wait_for(serving, 5)
         listener.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_tool_cannot_persist_late_result(queued, monkeypatch):
+    import threading
+    from app.trading_agent.contracts import ToolEnvelope
+    task_id = store.claim_next('cancel-worker')
+    principal = store.principal_for_task(task_id)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    rejected = []
+    def delayed(*args):
+        entered.set()
+        release.wait(2)
+        try:
+            store.save_result(principal, ToolEnvelope(status='complete', captured_at=store.now(), calculation_version='test'), [])
+        except TimeoutError:
+            rejected.append(True)
+        finally:
+            finished.set()
+        return ToolEnvelope(status='complete', captured_at=store.now(), calculation_version='test')
+    monkeypatch.setattr(mcp_server.tools, 'dispatch', delayed)
+    token = mcp_server._principal.set(principal)
+    try:
+        server = mcp_server.build_mcp_server()
+        call = asyncio.create_task(server._tool_manager._tools['describe_capabilities'].fn())
+        assert await asyncio.to_thread(entered.wait, 1)
+        call.cancel()
+        await asyncio.gather(call, return_exceptions=True)
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 1)
+        assert rejected == [True]
+        with __import__('app').db.connect() as conn:
+            assert conn.execute('SELECT COUNT(*) FROM agent_v2_results').fetchone()[0] == 0
+    finally:
+        release.set()
+        mcp_server._principal.reset(token)

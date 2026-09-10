@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from . import answer, prompts, tools
+from . import answer, prompts, tools, execution
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
 
@@ -18,9 +18,9 @@ class RuntimeLimits:
     max_tools: int = 8
     max_search: int = 2
     max_models: int = 6
-    deadline_seconds: float = 90.0
+    deadline_seconds: float = execution.TASK_SECONDS
     model_timeout_seconds: float = 15.0
-    tool_timeout_seconds: float = 15.0
+    tool_timeout_seconds: float = execution.TOOL_SECONDS
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class Budget:
     max_tools: int = 8
     max_search: int = 2
     max_models: int = 6
-    deadline_seconds: float = 90
+    deadline_seconds: float = execution.TASK_SECONDS
 
     def available(self, clock, started):
         return self.tool_calls < self.max_tools and self.model_calls < self.max_models and clock() - started < self.deadline_seconds
@@ -70,9 +70,10 @@ async def _bounded_call(factory, *, clock, started, total_seconds, call_seconds)
 
 
 async def _model_call(model, messages, schemas, timeout):
-    if inspect.iscoroutinefunction(getattr(model, "next_turn", None)):
-        return await asyncio.wait_for(model.next_turn(messages, schemas, timeout), timeout=max(.1, timeout))
-    return await asyncio.wait_for(asyncio.to_thread(model.next_turn, messages, schemas, timeout), timeout=max(.1, timeout))
+    with execution.phase("model"):
+        if inspect.iscoroutinefunction(getattr(model, "next_turn", None)):
+            return await asyncio.wait_for(model.next_turn(messages, schemas, timeout), timeout=max(.1, timeout))
+        return await asyncio.wait_for(asyncio.to_thread(model.next_turn, messages, schemas, timeout), timeout=max(.1, timeout))
 
 
 def _model_schemas(available=None):
@@ -159,12 +160,12 @@ _ANSWER_VALIDATION_FAILURE = (
 async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     """Run one leased task. No model reasoning or private raw tool payload is persisted."""
     try:
-        principal = deps.store.principal_for_task(task_id)
+        principal = await asyncio.to_thread(deps.store.principal_for_task, task_id)
     except Exception as exc:
         final = _fallback("temporarily_unavailable", "任务权限已失效，未执行数据查询；请重新提问。")
         try:
-            rendered = answer.render_answer(None, final, deps.store)
-            deps.store.finish(task_id, deps.worker_id, "failed", rendered,
+            rendered = await asyncio.to_thread(answer.render_answer, None, final, deps.store)
+            await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
                               error=type(exc).__name__, structured_payload=_draft_payload(final))
         except Exception:
             pass
@@ -180,17 +181,17 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     final = None
     try:
         try:
-            grant = deps.store.issue_grant(principal)
+            grant = await asyncio.to_thread(deps.store.issue_grant, principal)
         except Exception as exc:
             final = _fallback("temporarily_unavailable", "任务权限在执行前已失效，未执行任何业务查询；请重新提问。")
-            rendered = answer.render_answer(principal, final, deps.store)
-            deps.store.finish(task_id, deps.worker_id, "failed", rendered,
+            rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+            await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
                               error=type(exc).__name__, structured_payload=_draft_payload(final))
             return final
         live_tools = None
         if hasattr(deps.mcp, "list_tools"):
             budget.tool_calls += 1
-            deps.store.record_usage(task_id, tool_calls=1)
+            await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
             try:
                 live_tools = await _bounded_call(
                     lambda: deps.mcp.list_tools(grant),
@@ -199,23 +200,23 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     total_seconds=budget.deadline_seconds,
                     call_seconds=deps.limits.tool_timeout_seconds,
                 )
-                deps.store.append_event(principal, "tool_catalog", status="complete")
+                await asyncio.to_thread(deps.store.append_event, principal, "tool_catalog", status="complete")
             except ExecutionDeadline:
                 final = _fallback("partial", "本次分析达到时间上限，未能读取完整工具目录。")
-                rendered = answer.render_answer(principal, final, deps.store)
-                deps.store.finish(task_id, deps.worker_id, "partial", rendered,
+                rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+                await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "partial", rendered,
                                   structured_payload=_draft_payload(final))
                 return final
             except Exception as exc:
-                deps.store.append_event(principal, "tool_error", error_code=type(exc).__name__)
+                await asyncio.to_thread(deps.store.append_event, principal, "tool_error", error_code=type(exc).__name__)
                 final = _fallback("temporarily_unavailable", "当前工具目录暂时不可用，未执行任何业务查询；请稍后重试。")
-                rendered = answer.render_answer(principal, final, deps.store)
-                deps.store.finish(task_id, deps.worker_id, "failed", rendered,
+                rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+                await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
                                   structured_payload=_draft_payload(final))
                 return final
         # Always discover actual server capabilities before interpreting the question.
         budget.tool_calls += 1
-        deps.store.record_usage(task_id, tool_calls=1)
+        await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
         try:
             capability = await _bounded_call(
                 lambda: deps.mcp.call_tool("describe_capabilities", {}, grant),
@@ -224,26 +225,26 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 total_seconds=budget.deadline_seconds,
                 call_seconds=deps.limits.tool_timeout_seconds,
             )
-            deps.store.append_event(principal, "tool", tool_name="describe_capabilities",
+            await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name="describe_capabilities",
                                     result_ref=getattr(capability, "result_ref", None),
                                     status=getattr(capability, "status", None))
         except ExecutionDeadline:
             final = _fallback("partial", "本次分析达到时间上限，未能读取当前能力目录。")
-            rendered = answer.render_answer(principal, final, deps.store)
-            deps.store.finish(task_id, deps.worker_id, "partial", rendered,
+            rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+            await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "partial", rendered,
                               structured_payload=_draft_payload(final))
             return final
         except Exception as exc:
-            deps.store.append_event(principal, "tool_error", tool_name="describe_capabilities",
+            await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name="describe_capabilities",
                                     error_code=type(exc).__name__)
             final = _fallback("temporarily_unavailable", "当前工具目录暂时不可用，未执行任何业务查询；请稍后重试。")
-            rendered = answer.render_answer(principal, final, deps.store)
-            deps.store.finish(task_id, deps.worker_id, "failed", rendered,
+            rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+            await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
                               structured_payload=_draft_payload(final))
             return final
         capability_payload = capability.payload if hasattr(capability, "payload") else capability
-        history = deps.store.task_history(task_id, principal.user_id)
-        user_text = deps.store.task_text(task_id, principal.user_id)
+        history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
+        user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
         messages = prompts.build_messages(history, capability_payload, user_text=user_text)
         schemas = _model_schemas(live_tools)
         repair_attempted = False
@@ -253,7 +254,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
                 break
             budget.model_calls += 1
-            deps.store.record_usage(task_id, model_calls=1)
+            await asyncio.to_thread(deps.store.record_usage, task_id, model_calls=1)
             try:
                 turn = await _bounded_call(
                     lambda: _model_call(
@@ -305,7 +306,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     budget.tool_calls += 1
                     if call.name == "search_public":
                         budget.search_calls += 1
-                    deps.store.record_usage(task_id, tool_calls=1, search_calls=1 if call.name == "search_public" else 0)
+                    await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1, search_calls=1 if call.name == "search_public" else 0)
                     try:
                         envelope = await _bounded_call(
                             lambda: deps.mcp.call_tool(call.name, call.arguments, grant),
@@ -314,7 +315,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             total_seconds=budget.deadline_seconds,
                             call_seconds=deps.limits.tool_timeout_seconds,
                         )
-                        deps.store.append_event(principal, "tool", tool_name=call.name, arguments=call.arguments,
+                        await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         messages.append({"role":"tool","tool_call_id":call.id,"content":prompts.project_tool_result(envelope)})
                     except ExecutionDeadline:
@@ -323,7 +324,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                          "content":json.dumps({"status":"partial","error":"任务时间已用尽"}, ensure_ascii=False)})
                         break
                     except Exception as exc:
-                        deps.store.append_event(principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=type(exc).__name__)
+                        await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=type(exc).__name__)
                         messages.append({"role":"tool","tool_call_id":call.id,"content":json.dumps({"status":"temporarily_unavailable","error":"工具暂时不可用"},ensure_ascii=False)})
                     messages = _bound_messages(messages)
                 if final:
@@ -331,9 +332,9 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 continue
             try:
                 candidate = answer.parse_answer(turn.content or "")
-                rendered = answer.render_answer(principal, candidate, deps.store)
+                rendered = await asyncio.to_thread(answer.render_answer, principal, candidate, deps.store)
             except answer.AnswerValidationError as exc:
-                deps.store.append_event(
+                await asyncio.to_thread(deps.store.append_event,
                     principal,
                     "answer_validation",
                     status="failed",
@@ -354,15 +355,15 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 break
             else:
                 final = candidate
-                deps.store.finish(task_id, deps.worker_id, _task_state(final), rendered,
+                await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
                                   structured_payload=_draft_payload(final))
                 return final
         if final is None:
             final = _fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。")
-        rendered = answer.render_answer(principal, final, deps.store)
-        deps.store.finish(task_id, deps.worker_id, _task_state(final), rendered,
+        rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
+        await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
                           structured_payload=_draft_payload(final))
         return final
     finally:
         if grant:
-            deps.store.revoke_task_grants(task_id)
+            await asyncio.to_thread(deps.store.revoke_task_grants, task_id)

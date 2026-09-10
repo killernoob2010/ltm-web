@@ -259,15 +259,18 @@
   }
 
   async function waitForTask(taskId, activation) {
-    const delays = [1000, 2000, 3000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000];
-    for (const delay of delays) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
+    const started = Date.now();
+    let timeoutSeconds = endpoint().includes("trading-agent-v2") ? 225 : 90;
+    let attempt = 0;
+    while (Date.now() - started < timeoutSeconds * 1000) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(++attempt, 5) * 1000));
       if (activation !== state.activation) return;
       const task = await state.api(`${endpoint()}/tasks/${taskId}`);
+      if (Number.isFinite(task.poll_timeout_seconds)) timeoutSeconds = task.poll_timeout_seconds;
       if (["succeeded", "partial", "failed", "cancelled"].includes(task.state)) return task;
-      setStatus(`正在分析…（${task.state || "处理中"}）`);
+      setStatus(task.state === "queued" ? "正在排队，等待后台处理…" : "正在分析…");
     }
-    throw new Error("分析超过 90 秒，请稍后重试。");
+    throw new Error("暂未取得最终状态，请稍后打开此对话查看结果；不要重复提交相同问题。");
   }
 
   async function submitMessage({ suggestionId = null } = {}) {

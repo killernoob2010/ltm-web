@@ -7,7 +7,7 @@ import re
 
 from .. import db, trading_effective_facts as effective
 from ..trading_valuation import QuoteRequest, QuoteSnapshot, select_live_trade_price, calculate_live_position_floating_pnl
-from . import store
+from . import store, execution
 from .auth import authorize, require_account_scope
 from .catalog import DIMENSIONS, METRICS, validate_summary
 from .contracts import FactQuery, MetricValue, ToolEnvelope
@@ -74,16 +74,19 @@ def _persist(principal, rows, kind, *, status="complete", warnings=None, metadat
     envelope = ToolEnvelope(status=status,captured_at=store.now(),data_as_of=data_as_of,calculation_version=VERSION,
         payload={"kind":kind,"count":len(rows),"preview":[_project(row) for row in rows[:20]],**(metadata or {})},
         warnings=warnings or [],metrics=metrics or {},quote_times=(metadata or {}).get("quote_times",{}))
-    ref = store.save_result(principal,envelope,rows,kind=kind,parent_ref=parent_ref)
-    return store.load_result(principal,ref).envelope
+    with execution.phase("evidence_save"):
+        ref = store.save_result(principal,envelope,rows,kind=kind,parent_ref=parent_ref)
+        return store.load_result(principal,ref).envelope
 
 
 def capture_positions(principal, query: FactQuery, quote_provider):
     authorize(principal,"trading.facts")
     filters = _filters(principal,query)
     from ..trading_management import _active_contract_spec_multipliers
-    with db.connect() as conn:
+    with execution.phase("positions_database"), db.connect() as conn:
         _transaction(conn)
+        if db._is_pg():
+            db._exec(conn.cursor(), "SET LOCAL statement_timeout = '10000'")
         raw = effective.query_effective_positions(conn.cursor(),filters,include_all_items=True)
         specs = _active_contract_spec_multipliers(conn.cursor())
     rows = deepcopy(_select_contracts(raw.get("all_items",[]),query.contracts))
@@ -95,7 +98,8 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     quotes = {}
     if requests and not historical:
         try:
-            supplied_quotes = quote_provider(list(requests.values()))
+            with execution.phase("positions_quotes"):
+                supplied_quotes = quote_provider(list(requests.values()))
             if isinstance(supplied_quotes, dict):
                 quotes = deepcopy(supplied_quotes)
             else:
@@ -104,6 +108,7 @@ def capture_positions(principal, query: FactQuery, quote_provider):
             warnings.append("行情提供方暂时不可用；浮盈亏及Greeks未覆盖")
     if historical:
         warnings.append("历史持仓没有同期行情，不计算历史浮盈亏及Greeks；当前归属不作历史归属。")
+    execution.checkpoint()
     quote_times = {}
     for index,row in enumerate(rows):
         contract = str(row["contract"])

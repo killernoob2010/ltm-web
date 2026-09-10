@@ -1,47 +1,61 @@
 """Standalone worker entrypoint; importing it never imports the Web app."""
 import asyncio
 import os
+import logging
 from typing import Any
 
 import uvicorn
 
-from . import harness, mcp_client, mcp_server, model, resources, store
+from . import harness, mcp_client, mcp_server, model, resources, store, execution
 
 
-async def worker_once(deps: harness.RuntimeDeps):
-    task_id = deps.store.claim_next(deps.worker_id)
+logger = logging.getLogger(__name__)
+
+
+async def worker_once(deps: harness.RuntimeDeps, *, heartbeat_seconds=execution.HEARTBEAT_SECONDS):
+    task_id = await asyncio.to_thread(deps.store.claim_next, deps.worker_id, deadline_seconds=deps.limits.deadline_seconds)
     if task_id is None:
         return None
-    heartbeat_stop = asyncio.Event()
 
     async def renew():
-        while not heartbeat_stop.is_set():
-            try:
-                await asyncio.wait_for(heartbeat_stop.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                if not deps.store.heartbeat(task_id, deps.worker_id):
-                    return
+        while True:
+            await asyncio.sleep(heartbeat_seconds)
+            if not await asyncio.to_thread(deps.store.heartbeat, task_id, deps.worker_id):
+                return
 
-    renew_task = asyncio.create_task(renew())
+    run = asyncio.create_task(harness.run_task(task_id, deps))
+    renewal = asyncio.create_task(renew())
     try:
-        result = await harness.run_task(task_id, deps)
-        # WeCom keeps only an in-memory reply context; a restart never blindly
-        # replays a business answer. Web tasks simply have no pending delivery.
-        from . import wecom
-
-        await wecom.deliver_task(task_id)
-        return result
+        done, _ = await asyncio.wait(
+            {run, renewal}, timeout=deps.limits.deadline_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if run in done:
+            result = await run
+            from . import wecom
+            await wecom.deliver_task(task_id)
+            return result
+        reason = "lease_lost" if renewal in done else "execution_timeout"
+        run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+        await asyncio.to_thread(deps.store.fail_owned, task_id, deps.worker_id, reason)
+        return None
+    except Exception as exc:
+        logger.warning("agent_task_failed task_id=%s error_type=%s", task_id, type(exc).__name__)
+        await asyncio.to_thread(deps.store.fail_owned, task_id, deps.worker_id, "worker_error")
+        return None
     finally:
-        heartbeat_stop.set()
-        renew_task.cancel()
-        await asyncio.gather(renew_task, return_exceptions=True)
+        run.cancel()
+        renewal.cancel()
+        await asyncio.gather(run, renewal, return_exceptions=True)
 
 
 async def worker_loop(deps: harness.RuntimeDeps, *, stop_event: asyncio.Event | None = None,
                       idle_seconds=1, resource_guard=None):
     stop_event = stop_event or asyncio.Event()
-    deps.store.recover_interrupted()
+    await asyncio.to_thread(deps.store.recover_interrupted)
     while not stop_event.is_set():
+        await asyncio.to_thread(deps.store.recover_interrupted)
         if resource_guard is not None:
             decision = resource_guard.admit()
             if not decision.allowed:
