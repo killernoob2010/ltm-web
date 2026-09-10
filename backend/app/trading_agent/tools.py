@@ -181,9 +181,21 @@ def dispatch(principal, name: str, arguments: dict[str, Any] | None = None, *, q
     if name == "explain_evidence":
         return explain_evidence(principal, args.result_ref, args.metric_path)
     if name == "search_public":
-        from .research import search_public
+        from .research import QueryRejected, search_public
 
-        return search_public(principal, args.public_query, args.freshness)
+        try:
+            return search_public(principal, args.public_query, args.freshness)
+        except QueryRejected:
+            # Keep the rejection typed and data-free across the MCP boundary. The
+            # Harness may spend its one bounded regeneration attempt, but the
+            # rejected query and private context never become a tool result.
+            return ToolEnvelope(
+                status="temporarily_unavailable",
+                captured_at=datetime.now(timezone.utc).replace(microsecond=0),
+                calculation_version="public-research-v1",
+                payload={"kind": "public_query_rejected", "query_sent": False},
+                warnings=["公开检索子问题未通过隐私校验，系统未发送该查询。"],
+            )
     if name == "read_public":
         from .research import read_public
 

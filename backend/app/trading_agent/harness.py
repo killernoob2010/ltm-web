@@ -191,6 +191,10 @@ def _messages_size(messages) -> int:
 _ANSWER_VALIDATION_FAILURE = (
     "本次回答未通过格式或证据校验，系统未交付业务结论；这是系统处理问题，当前任务已结束。"
 )
+_PUBLIC_QUERY_REJECTED = (
+    "公开检索子问题未通过隐私校验，系统没有发送该查询。请仅从用户的公开主题重新生成一个不含账户、金额、订单、客户、地点、编码或真实结果的公开子问题；"
+    "本次最多再调用一次 search_public。若无法安全拆分，请保留已有内部答案，并明确说明公开研究受限。"
+)
 
 
 async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
@@ -217,6 +221,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     final = None
     protocol21_mode = False
     known_result_refs: list[str] = []
+    public_query_repair_attempted = False
 
     def failure_fallback(status: str, text: str, code: str) -> Any:
         if protocol21_mode:
@@ -293,6 +298,11 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
         messages = prompts.build_messages(history, capability_payload, user_text=user_text)
         schemas = _model_schemas(live_tools)
+        allowed_tool_names = {
+            item.get("function", {}).get("name")
+            for item in schemas
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+        }
         repair_attempted = False
         for _ in range(budget.max_models):
             if deps.clock() - started >= budget.deadline_seconds:
@@ -356,6 +366,24 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     if call.name == "search_public":
                         budget.search_calls += 1
                     await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1, search_calls=1 if call.name == "search_public" else 0)
+                    if call.name not in allowed_tool_names:
+                        await asyncio.to_thread(
+                            deps.store.append_event,
+                            principal,
+                            "tool_error",
+                            tool_name="unknown",
+                            status="rejected",
+                            error_code="tool_not_allowed",
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": json.dumps(
+                                {"status": "rejected", "error": "工具不在当前授权目录中，未执行任何操作"},
+                                ensure_ascii=False,
+                            ),
+                        })
+                        continue
                     try:
                         envelope = await _bounded_call(
                             lambda: deps.mcp.call_tool(call.name, call.arguments, grant),
@@ -368,7 +396,19 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             known_result_refs.append(str(envelope.result_ref))
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
-                        messages.append({"role":"tool","tool_call_id":call.id,"content":prompts.project_tool_result(envelope)})
+                        envelope_payload = getattr(envelope, "payload", None)
+                        if (call.name == "search_public" and isinstance(envelope_payload, dict)
+                                and envelope_payload.get("kind") == "public_query_rejected"):
+                            if (not public_query_repair_attempted
+                                    and budget.search_calls < budget.max_search
+                                    and budget.model_calls < budget.max_models):
+                                public_query_repair_attempted = True
+                                content = json.dumps({"status": "rejected", "error": _PUBLIC_QUERY_REJECTED}, ensure_ascii=False)
+                            else:
+                                content = json.dumps({"status": "rejected", "error": "公开检索子问题未发送；请保留已有答案并明确说明公开研究受限。"}, ensure_ascii=False)
+                            messages.append({"role":"tool","tool_call_id":call.id,"content":content})
+                        else:
+                            messages.append({"role":"tool","tool_call_id":call.id,"content":prompts.project_tool_result(envelope)})
                     except ExecutionDeadline:
                         final = failure_fallback("partial", "本次分析达到时间上限，已停止继续调用工具。", "deadline_exceeded")
                         messages.append({"role":"tool","tool_call_id":call.id,
@@ -376,7 +416,19 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         break
                     except Exception as exc:
                         await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=type(exc).__name__)
-                        messages.append({"role":"tool","tool_call_id":call.id,"content":json.dumps({"status":"temporarily_unavailable","error":"工具暂时不可用"},ensure_ascii=False)})
+                        try:
+                            from .research import QueryRejected
+                            public_query_rejected = isinstance(exc, QueryRejected)
+                        except ImportError:
+                            public_query_rejected = False
+                        if public_query_rejected and not public_query_repair_attempted and budget.search_calls < budget.max_search and budget.model_calls < budget.max_models:
+                            public_query_repair_attempted = True
+                            content = json.dumps({"status": "rejected", "error": _PUBLIC_QUERY_REJECTED}, ensure_ascii=False)
+                        elif public_query_rejected:
+                            content = json.dumps({"status": "rejected", "error": "公开检索子问题未发送；请保留已有答案并明确说明公开研究受限。"}, ensure_ascii=False)
+                        else:
+                            content = json.dumps({"status":"temporarily_unavailable","error":"工具暂时不可用"},ensure_ascii=False)
+                        messages.append({"role":"tool","tool_call_id":call.id,"content":content})
                     messages = _bound_messages(messages)
                 if final:
                     break

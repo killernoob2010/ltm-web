@@ -48,6 +48,22 @@ def test_explain_evidence_cannot_read_unknown_metric(queued):
         tools.dispatch(principal, "explain_evidence", {"result_ref": str(ref), "metric_path": "/metrics/secret"})
 
 
+def test_rejected_public_query_crosses_tool_boundary_without_query_data(queued, monkeypatch):
+    from app.trading_agent import research
+
+    principal = store.principal_for_task(store.claim_next("research-rejection-worker"))
+
+    def reject(*args, **kwargs):
+        raise research.QueryRejected("private query must not cross the tool boundary")
+
+    monkeypatch.setattr(research, "search_public", reject)
+    envelope = tools.dispatch(principal, "search_public", {"public_query": "private", "freshness": "none"})
+
+    assert envelope.status == "temporarily_unavailable"
+    assert envelope.payload == {"kind": "public_query_rejected", "query_sent": False}
+    assert all("private query" not in warning for warning in envelope.warnings)
+
+
 def test_quote_wait_is_bounded_and_does_not_queue_more_requests(monkeypatch):
     import threading
     from app import trading_valuation
