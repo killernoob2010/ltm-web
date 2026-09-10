@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from . import answer, prompts, tools, execution
+from .answer_contracts import ValidatedAnswer21
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
 
@@ -127,6 +128,35 @@ def _task_state(draft: AnswerDraft) -> str:
     return "partial"
 
 
+def _looks_like_answer21(raw: Any) -> bool:
+    if not isinstance(raw, str):
+        return False
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and value.get("schema_version") == "2.1"
+
+
+def _validated21_issues(result: ValidatedAnswer21) -> list[dict[str, Any]]:
+    return [item.model_dump(mode="json") for item in result.limitations[:5]]
+
+
+def _fallback21(store_api, principal, result_refs, code: str) -> ValidatedAnswer21:
+    return answer.build_fallback21(principal, result_refs, {}, code, store_api)
+
+
+async def _finish21(deps: RuntimeDeps, task_id: int, result: ValidatedAnswer21):
+    await asyncio.to_thread(
+        deps.store.finish,
+        task_id,
+        deps.worker_id,
+        answer.task_state21(result.delivery_status),
+        result.plain_text,
+        structured_payload=result.model_dump(mode="json"),
+    )
+
+
 def _bound_messages(messages, max_chars=48000):
     sizes = [len(str(item.get("content") or "")) + len(json.dumps(item.get("tool_calls") or [], ensure_ascii=False))
              for item in messages]
@@ -179,6 +209,14 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         deadline_seconds=deps.limits.deadline_seconds,
     )
     final = None
+    protocol21_mode = False
+    known_result_refs: list[str] = []
+
+    def failure_fallback(status: str, text: str, code: str) -> Any:
+        if protocol21_mode:
+            return _fallback21(deps.store, principal, known_result_refs, code)
+        return _fallback(status, text)
+
     try:
         try:
             grant = await asyncio.to_thread(deps.store.issue_grant, principal)
@@ -242,6 +280,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, "failed", rendered,
                               structured_payload=_draft_payload(final))
             return final
+        if getattr(capability, "result_ref", None):
+            known_result_refs.append(str(capability.result_ref))
         capability_payload = capability.payload if hasattr(capability, "payload") else capability
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
         user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
@@ -251,7 +291,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         for _ in range(budget.max_models):
             if deps.clock() - started >= budget.deadline_seconds:
                 if repair_attempted:
-                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                    final = failure_fallback("partial", _ANSWER_VALIDATION_FAILURE, "answer_validation_failed")
                 break
             budget.model_calls += 1
             await asyncio.to_thread(deps.store.record_usage, task_id, model_calls=1)
@@ -270,15 +310,16 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     call_seconds=deps.limits.model_timeout_seconds,
                 )
             except ExecutionDeadline:
-                final = _fallback(
+                final = failure_fallback(
                     "partial",
                     _ANSWER_VALIDATION_FAILURE if repair_attempted
                     else "本次分析达到时间上限，已停止继续请求。",
+                    "answer_validation_failed" if repair_attempted else "deadline_exceeded",
                 )
                 break
             except RetryableModelError as exc:
                 if repair_attempted:
-                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                    final = failure_fallback("partial", _ANSWER_VALIDATION_FAILURE, "answer_validation_failed")
                     break
                 # One bounded repair/retry is represented by the next model budget slot.
                 messages.append({"role":"system","content":"工具或模型暂时不可用，请在现有证据基础上给出部分答案，并明确缺失。"})
@@ -286,14 +327,15 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     final = _fallback("temporarily_unavailable", "模型服务暂时不可用，已停止继续请求；请稍后重试。")
                 continue
             except ModelError as exc:
-                final = _fallback(
+                final = failure_fallback(
                     "partial" if repair_attempted else "temporarily_unavailable",
                     _ANSWER_VALIDATION_FAILURE if repair_attempted else str(exc),
+                    "answer_validation_failed" if repair_attempted else "model_unavailable",
                 )
                 break
             if turn.tool_calls:
                 if repair_attempted:
-                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                    final = failure_fallback("partial", _ANSWER_VALIDATION_FAILURE, "answer_validation_failed")
                     break
                 planned_searches = sum(call.name == "search_public" for call in turn.tool_calls)
                 if (budget.tool_calls + len(turn.tool_calls) > budget.max_tools
@@ -315,11 +357,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             total_seconds=budget.deadline_seconds,
                             call_seconds=deps.limits.tool_timeout_seconds,
                         )
+                        if getattr(envelope, "result_ref", None):
+                            known_result_refs.append(str(envelope.result_ref))
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         messages.append({"role":"tool","tool_call_id":call.id,"content":prompts.project_tool_result(envelope)})
                     except ExecutionDeadline:
-                        final = _fallback("partial", "本次分析达到时间上限，已停止继续调用工具。")
+                        final = failure_fallback("partial", "本次分析达到时间上限，已停止继续调用工具。", "deadline_exceeded")
                         messages.append({"role":"tool","tool_call_id":call.id,
                                          "content":json.dumps({"status":"partial","error":"任务时间已用尽"}, ensure_ascii=False)})
                         break
@@ -330,36 +374,75 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 if final:
                     break
                 continue
-            try:
-                candidate = answer.parse_answer(turn.content or "")
-                rendered = await asyncio.to_thread(answer.render_answer, principal, candidate, deps.store)
-            except answer.AnswerValidationError as exc:
-                await asyncio.to_thread(deps.store.append_event,
-                    principal,
-                    "answer_validation",
-                    status="failed",
-                    error_code=exc.issues[0].code if exc.issues else "invalid_value",
-                )
-                if not repair_attempted and budget.model_calls < budget.max_models:
-                    repair_messages = prompts.build_answer_repair_messages(
-                        turn.content or "", exc.issues
+            raw_answer = turn.content or ""
+            if protocol21_mode or _looks_like_answer21(raw_answer):
+                protocol21_mode = True
+                v21_issues = []
+                try:
+                    draft21 = answer.parse_answer21(raw_answer)
+                    validated21 = await asyncio.to_thread(
+                        answer.validate_answer21, principal, draft21, deps.store
                     )
-                    bounded = _bound_messages(messages)
-                    if _messages_size(bounded + repair_messages) > 48000:
-                        final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
-                        break
-                    messages = bounded + repair_messages
-                    repair_attempted = True
-                    continue
-                final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
-                break
-            else:
-                final = candidate
-                await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
-                                  structured_payload=_draft_payload(final))
+                    if validated21.delivery_status == "failed":
+                        v21_issues = _validated21_issues(validated21)
+                except answer.Answer21ValidationError as exc:
+                    v21_issues = exc.as_dicts()
+                if v21_issues:
+                    await asyncio.to_thread(
+                        deps.store.append_event,
+                        principal,
+                        "answer_validation",
+                        status="failed",
+                        error_code=v21_issues[0].get("code", "invalid_value"),
+                    )
+                    if not repair_attempted and budget.model_calls < budget.max_models:
+                        repair_messages = prompts.build_answer_repair_messages(raw_answer, v21_issues)
+                        bounded = _bound_messages(messages)
+                        if _messages_size(bounded + repair_messages) > 48000:
+                            final = _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed")
+                            break
+                        messages = bounded + repair_messages
+                        repair_attempted = True
+                        continue
+                    final = _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed")
+                    break
+                final = validated21
+                await _finish21(deps, task_id, final)
                 return final
+            else:
+                try:
+                    candidate = answer.parse_answer(raw_answer)
+                    rendered = await asyncio.to_thread(answer.render_answer, principal, candidate, deps.store)
+                except answer.AnswerValidationError as exc:
+                    await asyncio.to_thread(deps.store.append_event,
+                        principal,
+                        "answer_validation",
+                        status="failed",
+                        error_code=exc.issues[0].code if exc.issues else "invalid_value",
+                    )
+                    if not repair_attempted and budget.model_calls < budget.max_models:
+                        repair_messages = prompts.build_answer_repair_messages(
+                            raw_answer, exc.issues
+                        )
+                        bounded = _bound_messages(messages)
+                        if _messages_size(bounded + repair_messages) > 48000:
+                            final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                            break
+                        messages = bounded + repair_messages
+                        repair_attempted = True
+                        continue
+                    final = _fallback("partial", _ANSWER_VALIDATION_FAILURE)
+                    break
+                else:
+                    final = candidate
+                    await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
+                                      structured_payload=_draft_payload(final))
+                    return final
         if final is None:
-            final = _fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。")
+            final = failure_fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。", "budget_exhausted")
+        if isinstance(final, ValidatedAnswer21):
+            await _finish21(deps, task_id, final)
+            return final
         rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
         await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
                           structured_payload=_draft_payload(final))

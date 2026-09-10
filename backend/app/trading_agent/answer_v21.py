@@ -163,7 +163,9 @@ def _validate_spans(draft: AnswerDraft21) -> None:
         visit(span.id)
 
 
-def parse_answer21(raw: str | dict[str, Any]) -> AnswerDraft21:
+def parse_answer21(raw: AnswerDraft21 | str | dict[str, Any]) -> AnswerDraft21:
+    if isinstance(raw, AnswerDraft21):
+        return raw
     if isinstance(raw, str):
         raw = _json_object(raw)
     elif not isinstance(raw, dict):

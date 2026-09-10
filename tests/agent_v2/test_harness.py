@@ -62,6 +62,8 @@ class ScriptedModel:
 
 BAD_ANSWER = '{"status":"complete","paragraphs":[{"kind":"knowledge","text":"说明"}],"evidence_refs":[]}'
 GOOD_ANSWER = '{"status":"complete","paragraphs":[{"kind":"knowledge","text":"说明","evidence_refs":[]}],"fact_refs":[],"missing":[],"clarification":null}'
+BAD_ANSWER21 = '{"schema_version":"2.1","body_markdown":"当前数量为 {{fact:00000000-0000-0000-0000-000000000001#/metrics/quantity}}。","spans":[{"id":"s1","kind":"fact","start":0,"end":70,"refs":["00000000-0000-0000-0000-000000000001#/metrics/quantity"],"depends_on":[]}],"views":[]}'
+GOOD_ANSWER21 = '{"schema_version":"2.1","body_markdown":"一般性说明。","spans":[{"id":"s1","kind":"knowledge","start":0,"end":6,"refs":[],"depends_on":[]}],"views":[]}'
 
 
 @pytest.mark.asyncio
@@ -277,3 +279,59 @@ async def test_storage_failure_is_not_answer_repair(queued, monkeypatch):
         ).fetchone()["count"]
     assert event == 0
     assert grants == 0
+
+
+@pytest.mark.asyncio
+async def test_v21_invalid_reference_gets_one_repair_and_persists_validated_answer(queued):
+    task = store.claim_next("v21-repair-worker")
+    model = ScriptedModel([
+        ModelTurn(content=BAD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
+    ])
+
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, model, FakeMCP(), worker_id="v21-repair-worker"),
+    )
+
+    assert result.delivery_status == "complete"
+    assert len(model.calls) == 2
+    with __import__("app").db.connect() as conn:
+        row = conn.execute(
+            "SELECT state FROM closing_review_tasks WHERE id=?", (task,)
+        ).fetchone()
+        message = conn.execute(
+            "SELECT content,structured_payload FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+            (task,),
+        ).fetchone()
+    assert row["state"] == "succeeded"
+    assert message["content"] == "一般性说明。"
+    assert '"schema_version": "2.1"' in message["structured_payload"]
+
+
+@pytest.mark.asyncio
+async def test_v21_repair_is_bounded_and_failed_delivery_is_explicit(queued):
+    task = store.claim_next("v21-repair-stop-worker")
+    model = ScriptedModel([
+        ModelTurn(content=BAD_ANSWER21),
+        ModelTurn(content=BAD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
+    ])
+
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, model, FakeMCP(), worker_id="v21-repair-stop-worker"),
+    )
+
+    assert result.delivery_status == "failed"
+    assert len(model.calls) == 2
+    with __import__("app").db.connect() as conn:
+        row = conn.execute(
+            "SELECT state FROM closing_review_tasks WHERE id=?", (task,)
+        ).fetchone()
+        message = conn.execute(
+            "SELECT content,structured_payload FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+            (task,),
+        ).fetchone()
+    assert row["state"] == "failed"
+    assert '"delivery_status": "failed"' in message["structured_payload"]
