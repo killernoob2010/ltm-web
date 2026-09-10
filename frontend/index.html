@@ -424,8 +424,8 @@
         <section id="closingReviewAgentPage" class="page hidden closing-review-agent-page">
           <div class="closing-review-agent-header">
             <div>
-              <h1>期权收盘复盘 Agent</h1>
-              <p id="closingReviewScopeNote">宏源账户 · 铁矿石期权 · 仅收盘复盘事实查询</p>
+              <h1>交易持仓助手</h1>
+              <p id="closingReviewScopeNote">宏源期货 · 期货与期权 · 只读持仓分析</p>
             </div>
             <span id="closingReviewStatus" class="closing-review-agent-status" role="status" aria-live="polite"></span>
           </div>
@@ -437,10 +437,10 @@
                 <button id="closingReviewNewBtn" class="secondary closing-review-agent-new" type="button">新建对话</button>
               </div>
               <div id="closingReviewHistory" class="closing-review-agent-history"></div>
-              <p class="closing-review-agent-retention">对话内容按保留策略管理；自动收盘复盘结果保留数据状态、来源与证据提示。</p>
+              <p class="closing-review-agent-retention">对话内容按保留策略管理；自动持仓结果保留数据状态、来源与证据提示。</p>
             </aside>
 
-            <section class="closing-review-agent-main" aria-label="收盘复盘对话">
+            <section class="closing-review-agent-main" aria-label="交易持仓助手对话">
               <div id="closingReviewMessages" class="closing-review-agent-messages" aria-live="polite"></div>
 
               <section class="closing-review-agent-panel closing-review-agent-suggestion-panel" aria-labelledby="closingReviewSuggestionsTitle">
@@ -452,9 +452,9 @@
               </section>
 
               <form id="closingReviewComposer" class="closing-review-agent-composer">
-                <textarea id="closingReviewInput" maxlength="1000" aria-label="输入收盘复盘问题" placeholder="例如：2026-08-31 的铁矿石期权真实平仓盈亏是多少？"></textarea>
+                <textarea id="closingReviewInput" maxlength="1000" aria-label="输入持仓分析问题" placeholder="例如：当前全部期货和期权持仓按合约与多空方向是多少？"></textarea>
                 <button id="closingReviewSendBtn" type="submit">查询</button>
-                <p class="closing-review-agent-composer-note">Agent 只支持固定范围的收盘复盘查询，不提供交易动作或交易建议。⌘/Ctrl + Enter 发送。</p>
+                <p class="closing-review-agent-composer-note">助手只提供授权范围内的只读持仓与交易事实分析，不提供交易动作或交易建议。⌘/Ctrl + Enter 发送。</p>
               </form>
             </section>
           </div>
@@ -1632,7 +1632,7 @@
     <script src="/static/data_visualization_components.js?v=data-visualization-pagination-20260713"></script>
     <script src="/static/platts_index_monitor.js?v=platts-index-20260807-v14"></script>
     <script src="/static/spot_ledger.js?v=spot-ledger-strategic-save-20260907"></script>
-    <script src="/static/closing_review_agent.js?v=closing-review-agent-v1"></script>
+    <script src="/static/closing_review_agent.js?v=trading-holdings-agent-20260910"></script>
     <script src="/static/app.js?v=risk-alert-beijing-time-v2-20260717&of=order-finance-port-status-20260722&info=default-contract-year-20260806&platts=v14&release=20260908&weekly-report=20260908-history-v2"></script>
     <script src="/static/iron_ore_basis.js?v=iron-ore-basis-date-refresh-20260716"></script>
     <script src="/static/trading_collector.js?v=release-20260908"></script>

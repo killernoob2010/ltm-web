@@ -64,6 +64,45 @@ def test_dated_timestamps_are_not_mistaken_for_unreferenced_position_numbers():
         assert _has_unreferenced_number(f'数据时点：{timestamp}，持仓合计2手。')
 
 
+@pytest.mark.parametrize("contract", ["i2609", "i2609-p-650", "DCE.i2609-p-650"])
+def test_contract_identifiers_are_not_mistaken_for_business_numbers(contract):
+    from app.trading_agent.answer import _has_unreferenced_number
+
+    assert not _has_unreferenced_number(f"合约 {contract} 当前有持仓。")
+    assert _has_unreferenced_number(f"合约 {contract} 当前持仓 200 手。")
+
+
+def test_numeric_contract_code_is_not_mistaken_for_business_number():
+    from app.trading_agent.answer import _has_unreferenced_number
+
+    assert not _has_unreferenced_number("合约代码 2609 当前有持仓。")
+    assert _has_unreferenced_number("合约代码 2609 当前持仓 2 手。")
+
+
+def test_group_fact_reference_can_bind_a_contract_quantity(queued):
+    principal, _ = evidence(queued)
+    envelope = ToolEnvelope(
+        status="complete", captured_at=datetime.now(timezone.utc), calculation_version="positions",
+        payload={"kind": "positions", "groups": [{
+            "dimensions": {"account": "宏源期货", "contract": "i2609-p-650", "direction": "买"},
+            "metrics": {"quantity": {
+                "value": "2", "unit": "手", "status": "complete",
+                "covered_rows": 1, "eligible_rows": 1,
+            }},
+        }]},
+    )
+    ref = store.save_result(principal, envelope, [])
+    draft = {
+        "status": "complete",
+        "paragraphs": [{
+            "kind": "fact",
+            "text": f"宏源期货合约 i2609-p-650 买方持仓为 {{{{fact:{ref}#/payload/groups/0/metrics/quantity}}}}。",
+            "evidence_refs": [f"{ref}#/payload/groups/0/metrics/quantity"],
+        }],
+    }
+    assert "持仓为 2 手" in answer.render_answer(principal, draft, store)
+
+
 def test_extra_field_has_safe_exact_location():
     raw = {"status": "complete", "paragraphs": [
         {"kind": "knowledge", "text": "风险取决于数据和假设。"}

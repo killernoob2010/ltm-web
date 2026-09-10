@@ -1,7 +1,7 @@
 """Business vocabulary used to validate composable queries, never SQL expressions."""
 
 DIMENSIONS = {
-    "contract": "合约", "product": "品种", "exchange": "交易所",
+    "account": "账户", "contract": "合约", "product": "品种", "exchange": "交易所",
     "asset_type": "期货或期权", "direction": "买卖方向", "trade_date": "交易日",
     "fact_status": "事实确认状态", "assignment_status": "归类状态",
 }

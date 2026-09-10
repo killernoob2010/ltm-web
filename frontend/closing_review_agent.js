@@ -78,7 +78,7 @@
   }
 
   function messageLabel(message) {
-    if (message.message_type === "automatic_result") return "自动收盘复盘";
+    if (message.message_type === "automatic_result") return "自动持仓结果";
     if (message.role === "user") return "我的问题";
     if (message.message_type === "error") return "Agent 状态";
     return "Agent 回答";
@@ -87,7 +87,7 @@
   function renderHistory() {
     clear(history);
     if (!state.conversations.length) {
-      addText(history, "p", "closing-review-agent-empty", "暂无对话，点击“新建对话”开始。");
+      addText(history, "p", "closing-review-agent-empty", "暂无对话，点击“新建对话”开始使用交易持仓助手。");
       return;
     }
     state.conversations.forEach((conversation) => {
@@ -95,7 +95,7 @@
       item.type = "button";
       item.className = `closing-review-agent-history-item${Number(conversation.id) === Number(state.conversationId) ? " active" : ""}`;
       item.setAttribute("aria-pressed", String(Number(conversation.id) === Number(state.conversationId)));
-      addText(item, "strong", "closing-review-agent-history-title", conversation.title || "期权收盘复盘");
+      addText(item, "strong", "closing-review-agent-history-title", conversation.title || "交易持仓助手对话");
       addText(item, "span", "closing-review-agent-history-meta", `${conversation.status === "active" ? "进行中" : "已归档"} · ${timestampSeconds(conversation.updated_at || conversation.last_message_at) || "刚刚"}`);
       item.addEventListener("click", () => selectConversation(conversation.id));
       history.appendChild(item);
@@ -200,7 +200,7 @@
     if (!state.conversations.length) {
       const conversation = await state.api(`${endpoint()}/conversations`, {
         method: "POST",
-        body: JSON.stringify({ title: "期权收盘复盘" }),
+        body: JSON.stringify({ title: "交易持仓助手对话" }),
       });
       if (activation !== state.activation) return;
       state.conversations = [conversation];
@@ -243,7 +243,7 @@
     try {
       const conversation = await state.api(`${endpoint()}/conversations`, {
         method: "POST",
-        body: JSON.stringify({ title: "期权收盘复盘" }),
+        body: JSON.stringify({ title: "交易持仓助手对话" }),
       });
       state.conversations = [conversation, ...state.conversations];
       state.conversationId = conversation.id;
@@ -293,7 +293,7 @@
     state.loading = true;
     sendButton.disabled = true;
     suggestions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-    setStatus("正在读取确定性复盘结果…");
+    setStatus("正在读取确定性持仓事实…");
     const body = state.v2
       ? { content, client_request_id: requestId() }
       : {
@@ -308,7 +308,7 @@
       });
       input.value = "";
       if (state.v2 && queued.task_id) {
-        setStatus("已收到问题，正在读取宏源交易事实…");
+        setStatus("已收到问题，正在读取宏源持仓事实…");
         await waitForTask(queued.task_id, state.activation);
       }
       await loadConversations(state.activation);
@@ -353,7 +353,7 @@
     }
     bind();
     page.classList.remove("hidden");
-    scopeNote.textContent = state.v2 ? "宏源期货 · 全部期货与期权 · 只读开放分析" : "宏源账户 · 铁矿石期权 · 仅收盘复盘事实查询";
+    scopeNote.textContent = state.v2 ? "宏源期货 · 全部期货与期权 · 只读开放分析" : "宏源期货 · 期权收盘复盘（兼容模式）";
     setStatus("正在加载 Agent…");
     try {
       await Promise.all([loadConversations(activation), loadSuggestions(activation)]);

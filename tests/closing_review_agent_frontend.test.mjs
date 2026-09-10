@@ -24,7 +24,7 @@ test("Agent workspace separates history, automatic results, suggestions and the 
   assert.match(indexHtml, /id="closingReviewComposer"/);
   assert.match(indexHtml, /id="closingReviewInput"/);
   assert.match(indexHtml, /id="closingReviewSendBtn"/);
-  assert.match(indexHtml, /自动收盘复盘/);
+  assert.match(indexHtml, /自动持仓结果/);
   assert.match(agentJs, /ENDPOINT = "\/api\/closing-review-agent"/);
   assert.match(agentJs, /ENDPOINT\}\/conversations/);
   assert.match(agentJs, /ENDPOINT\}\/suggestions/);
@@ -32,6 +32,14 @@ test("Agent workspace separates history, automatic results, suggestions and the 
   assert.match(agentJs, /message_type/);
   assert.match(agentJs, /重试原问题/);
   assert.match(agentJs, /supersedes_message_id/);
+});
+
+test("workspace is presented as the all-position Trading Holdings Assistant", () => {
+  assert.match(indexHtml, /<h1>交易持仓助手<\/h1>/);
+  assert.match(indexHtml, /期货与期权/);
+  assert.match(agentJs, /宏源期货 · 全部期货与期权 · 只读开放分析/);
+  assert.match(agentJs, /交易持仓助手/);
+  assert.doesNotMatch(indexHtml, /<h1>期权收盘复盘 Agent<\/h1>/);
 });
 
 test("Agent renders server content as text and does not create a client-side transcript", () => {

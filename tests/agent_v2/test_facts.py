@@ -27,6 +27,32 @@ def test_summary_uses_all_rows_not_preview(queued):
     assert summary.metrics["floating_pnl"].covered_rows == 205
 
 
+def test_position_summary_persists_contract_direction_metric_groups(queued):
+    principal, result = capture(queued, 2)
+    summary = facts.summarize(
+        principal,
+        result.result_ref,
+        ["account", "contract", "direction"],
+        ["quantity"],
+    )
+
+    assert summary.payload["group_count"] == 2
+    assert summary.payload["groups_truncated"] is False
+    assert [group["dimensions"]["contract"] for group in summary.payload["groups"]] == ["i1000", "i1001"]
+    assert all(group["metrics"]["quantity"]["status"] == "complete" for group in summary.payload["groups"])
+    assert {Decimal(group["metrics"]["quantity"]["value"]) for group in summary.payload["groups"]} == {Decimal("1")}
+
+
+def test_large_position_summary_marks_group_preview_without_losing_total(queued):
+    principal, result = capture(queued, 205)
+    summary = facts.summarize(principal, result.result_ref, ["contract"], ["quantity"])
+
+    assert summary.payload["group_count"] == 205
+    assert summary.payload["groups_truncated"] is True
+    assert len(summary.payload["groups"]) == 100
+    assert Decimal(summary.metrics["quantity"].value) == 205
+
+
 def test_missing_quotes_do_not_turn_into_zero_pnl(queued):
     task = store.claim_next("facts-worker")
     principal = store.principal_for_task(task)
@@ -65,6 +91,51 @@ def test_position_direction_filter_uses_public_buy_sell_values(queued):
         lambda reqs: {request.contract: QuoteSnapshot(last_price=710, multiplier=100) for request in reqs},
     )
     assert selected.payload["count"] == 2
+
+
+def test_position_filters_cover_future_option_contract_and_direction_without_merging(queued):
+    task = store.claim_next("mixed-position-worker")
+    principal = store.principal_for_task(task)
+    _insert_wh6_snapshot(
+        principal.account_ids[0],
+        rows=[
+            dict(contract="i2609", asset_type="future", exchange="DCE", direction="买", quantity=2, average_price=700),
+            dict(contract="i2701", asset_type="future", exchange="DCE", direction="卖", quantity=3, average_price=710),
+            dict(contract="i2609-p-650", asset_type="option", exchange="DCE", direction="卖", quantity=4, average_price=4),
+            dict(contract="i2609-p-700", asset_type="option", exchange="DCE", direction="买", quantity=5, average_price=5),
+        ],
+    )
+
+    def quotes(requests):
+        return {request.contract: QuoteSnapshot(last_price=710, multiplier=100) for request in requests}
+
+    result = facts.capture_positions(principal, FactQuery(), quotes)
+    assert result.payload["count"] == 4
+    assert result.metrics["quantity"].value == "14.0"
+    assert {group["dimensions"]["account"] for group in result.payload["groups"]} == {"宏源期货"}
+    assert {(group["dimensions"]["contract"], group["dimensions"]["direction"])
+            for group in result.payload["groups"]} == {
+                ("i2609", "买"), ("i2701", "卖"), ("i2609-p-650", "卖"), ("i2609-p-700", "买"),
+            }
+
+    option_only = facts.capture_positions(principal, FactQuery(asset_type="option"), quotes)
+    assert option_only.payload["count"] == 2
+    sell_only = facts.capture_positions(principal, FactQuery(direction="sell"), quotes)
+    assert sell_only.payload["count"] == 2
+    exact_contract = facts.capture_positions(principal, FactQuery(contracts=["i2609-p-650"]), quotes)
+    assert exact_contract.payload["count"] == 1
+    assert exact_contract.payload["groups"][0]["dimensions"]["direction"] == "卖"
+
+
+def test_quote_failure_keeps_position_quantity_and_marks_quote_metrics_unavailable(queued):
+    principal, result = capture(queued, 1)
+    failed = facts.capture_positions(principal, FactQuery(), lambda requests: (_ for _ in ()).throw(RuntimeError("quote down")))
+
+    assert failed.status == "partial"
+    assert failed.metrics["quantity"].status == "complete"
+    assert failed.metrics["floating_pnl"].status == "unavailable"
+    assert failed.payload["groups"][0]["metrics"]["quantity"]["status"] == "complete"
+    assert failed.payload["groups"][0]["metrics"]["floating_pnl"]["status"] == "unavailable"
 
 
 def test_capture_does_not_infer_data_as_of_from_capture_time(queued, monkeypatch):
