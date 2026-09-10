@@ -3,7 +3,8 @@
   "capabilities": [
     "intent_understanding", "composable_fact_query", "full_scope_calculation", "attribute_aware_history",
     "evidence_bound_answer", "uncertainty_and_clarification", "public_research_egress", "permission_boundary",
-    "budget_and_recovery", "general_knowledge"
+    "budget_and_recovery", "general_knowledge", "semantic_dataset_query",
+    "deterministic_dataset_analysis", "chart_and_matrix_presentation"
   ],
   "hard_gates": ["scope", "permissions", "numbers", "units", "coverage", "egress", "references"],
   "soft_dimensions": ["relevance", "evidence", "restraint", "clarification", "conciseness"]

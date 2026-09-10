@@ -15,6 +15,8 @@ TOOL_NAMES = {
     "describe_capabilities", "query_trade_facts", "query_close_facts", "query_positions",
     "summarize_positions", "summarize_facts", "read_result_page", "compare_results",
     "get_position_risk", "run_scenario", "explain_evidence", "search_public", "read_public",
+    "describe_dataset", "query_dataset", "summarize_dataset", "compare_dataset",
+    "relate_datasets", "get_optimal_warrant",
 }
 CAPABILITY_NAMES = set(json.loads((EVAL_DIR / "capabilities.json").read_text())["capabilities"])
 REQUIRED_FIELDS = {

@@ -40,6 +40,21 @@
       "id": "offline-timestamp-number",
       "nodeid": "tests/agent_v2/test_answer.py::test_dated_timestamps_are_not_mistaken_for_unreferenced_position_numbers",
       "capabilities": ["evidence_bound_answer", "uncertainty_and_clarification"]
+    },
+    {
+      "id": "offline-dataset-contract",
+      "nodeid": "tests/agent_v2/test_dataset_presentation.py::test_view_request_accepts_registered_layout_controls_and_keeps_old_defaults",
+      "capabilities": ["evidence_bound_answer", "composable_fact_query"]
+    },
+    {
+      "id": "offline-dataset-chart",
+      "nodeid": "tests/agent_v2/test_dataset_presentation.py::test_dataset_chart_facets_are_server_paginated_and_not_sampled",
+      "capabilities": ["composable_fact_query"]
+    },
+    {
+      "id": "offline-dataset-evidence",
+      "nodeid": "tests/agent_v2/test_dataset_presentation.py::test_dataset_row_delta_reference_is_allowed_but_hidden_or_invalid_values_are_not",
+      "capabilities": ["evidence_bound_answer", "permission_boundary"]
     }
   ]
 }
