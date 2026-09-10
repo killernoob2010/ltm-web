@@ -213,6 +213,7 @@ def resolve_grant(token):
 
 _NON_TRADING_RESULT_KINDS = {
     "dataset_rows", "dataset_summary", "dataset_comparison", "dataset_relation",
+    "research", "public_read",
 }
 _MAX_RESULT_ANCESTOR_DEPTH = 8
 _MAX_RESULT_ANCESTORS = 32
@@ -220,6 +221,8 @@ _MAX_RESULT_ANCESTORS = 32
 
 def _default_result_resources(kind):
     if kind in _NON_TRADING_RESULT_KINDS:
+        if kind in {"research", "public_read"}:
+            return ["closing_review.agent"]
         return ["data_visualization.display"]
     if kind == "market_series":
         return ["trading.facts", "data_visualization.display"]

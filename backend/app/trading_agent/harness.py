@@ -12,6 +12,7 @@ from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
+from .research_policy import RequestPlan, enforce_research_policy, public_tools_configured, public_tools_allowed
 
 
 @dataclass(frozen=True)
@@ -150,7 +151,9 @@ def _validated21_issues(result: ValidatedAnswer21) -> list[dict[str, Any]]:
 def _with_source_limits(result, unavailable):
     if not any(unavailable.values()):
         return result
-    limitation = Limitation(code="public_source_unavailable", message="公开搜索或正文读取不可用，联合研究尚未完成；已核验的内部结果仍可查看。")
+    code = "public_not_configured" if unavailable.get("policy") == "public_not_configured" else "public_source_unavailable"
+    message = "公开搜索尚未配置授权服务，联合研究尚未执行；已核验的内部结果仍可查看。" if code == "public_not_configured" else "公开搜索或正文读取不可用，联合研究尚未完成；已核验的内部结果仍可查看。"
+    limitation = Limitation(code=code, message=message)
     return result.model_copy(update={"delivery_status": "partial" if result.delivery_status == "complete" else result.delivery_status,
         "limitations": [*result.limitations, limitation]})
 
@@ -248,6 +251,26 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         except Exception:
             pass
         return final
+    user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
+    plan = enforce_research_policy(
+        user_text,
+        RequestPlan(mode="clarification_required", reason="ambiguous", domains=["public"]),
+    )
+    configured = public_tools_configured()
+    public_unavailable = {"policy": "public_not_configured"} if plan.mode == "research_allowed" and not configured else {}
+    try:
+        await asyncio.to_thread(
+            deps.store.append_event,
+            principal,
+            "research_policy",
+            tool_name=",".join(plan.domains),
+            status=plan.mode,
+            error_code=plan.reason,
+        )
+    except Exception:
+        # The local decision remains fail-closed even if audit persistence is
+        # temporarily unavailable.
+        pass
     grant = None
     started = deps.clock()
     budget = Budget(
@@ -332,9 +355,22 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         if getattr(capability, "result_ref", None):
             known_result_refs.append(str(capability.result_ref))
         capability_payload = capability.payload if hasattr(capability, "payload") else capability
+        if isinstance(capability_payload, dict):
+            capability_payload = dict(capability_payload)
+            capability_payload["research_policy"] = {
+                "mode": plan.mode, "reason": plan.reason, "domains": plan.domains,
+                "clarification": plan.clarification, "configured": configured,
+            }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
-        user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
         messages = prompts.build_messages(history, capability_payload, user_text=user_text)
+        if live_tools is not None and hasattr(deps.mcp, "endpoint"):
+            raw_live_tools = live_tools.get("tools", live_tools) if isinstance(live_tools, dict) else getattr(live_tools, "tools", live_tools)
+            if isinstance(raw_live_tools, (list, tuple)) and not public_tools_allowed(plan, configured):
+                live_tools = {"tools": [
+                    item for item in raw_live_tools
+                    if (item.get("name") if isinstance(item, dict) else getattr(item, "name", None))
+                    not in {"search_public", "read_public"}
+                ]}
         schemas = _model_schemas(live_tools)
         allowed_tool_names = {
             item.get("function", {}).get("name")
@@ -343,7 +379,6 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         }
         repair_attempted = False
         recoverable_draft21 = None
-        public_unavailable = {}
         for _ in range(budget.max_models):
             if deps.clock() - started >= budget.deadline_seconds:
                 if repair_attempted:

@@ -10,7 +10,7 @@ from pydantic import Field
 from fastapi import HTTPException
 
 from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
-from . import catalog, facts, market_data, risk, store, execution, dv_queries, dv_analysis
+from . import catalog, facts, market_data, risk, store, execution, dv_queries, dv_analysis, research_policy
 from .dv_contracts import (
     DatasetCompare,
     DatasetDescribeArgs,
@@ -101,6 +101,25 @@ DATASET_TOOL_NAMES = {
 }
 
 
+def _public_gate(principal):
+    plan = research_policy.active_plan(principal)
+    if plan is None or research_policy.public_tools_allowed(plan, research_policy.public_tools_configured()):
+        return None
+    if plan.mode == "research_allowed" and not research_policy.public_tools_configured():
+        return ToolEnvelope(
+            status="temporarily_unavailable", captured_at=datetime.now(timezone.utc).replace(microsecond=0),
+            calculation_version="research-policy-v1",
+            payload={"kind": "public_research_blocked", "code": "public_not_configured"},
+            warnings=["公开搜索尚未配置授权服务；内部查询仍可继续。"],
+        )
+    return ToolEnvelope(
+        status="unsupported", captured_at=datetime.now(timezone.utc).replace(microsecond=0),
+        calculation_version="research-policy-v1",
+        payload={"kind": "public_research_blocked", "code": "public_not_requested"},
+        warnings=["当前请求未授权公开检索，系统未发送外部请求。"],
+    )
+
+
 def _query_from_position(args: PositionArgs) -> FactQuery:
     return FactQuery(
         as_of={"mode": args.as_of_mode, "date": args.as_of_date},
@@ -151,11 +170,14 @@ def _capability_envelope(principal) -> ToolEnvelope:
     except HTTPException:
         display_allowed = False
     market_allowed = trading_allowed and display_allowed
+    plan = research_policy.active_plan(principal)
     visible_tools = []
     for name in TOOL_SPECS:
         if name == "query_market_series" and not market_allowed:
             continue
         if name in DATASET_TOOL_NAMES and not display_allowed:
+            continue
+        if name in {"search_public", "read_public"} and plan is not None and not research_policy.public_tools_allowed(plan, research_policy.public_tools_configured()):
             continue
         visible_tools.append(name)
     datasets = {}
@@ -183,6 +205,10 @@ def dispatch(principal, name: str, arguments: dict[str, Any] | None = None, *, q
     arguments = arguments or {}
     spec = TOOL_SPECS[name]
     args = spec["model"].model_validate(arguments)
+    if name in {"search_public", "read_public"}:
+        blocked = _public_gate(principal)
+        if blocked is not None:
+            return blocked
     if name == "describe_capabilities":
         from .auth import authorize
 
