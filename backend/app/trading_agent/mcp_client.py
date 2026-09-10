@@ -8,10 +8,11 @@ from mcp.client.streamable_http import streamable_http_client
 import httpx2
 
 from .contracts import ToolEnvelope
+from .execution import TOOL_SECONDS
 
 
 class MCPToolClient:
-    def __init__(self, endpoint: str | None = None, *, request_timeout_seconds: float = 15):
+    def __init__(self, endpoint: str | None = None, *, request_timeout_seconds: float = TOOL_SECONDS):
         self.endpoint = endpoint or f"http://127.0.0.1:{os.environ.get('AGENT_V2_MCP_PORT', '8766')}/mcp"
         if not self.endpoint.startswith(("http://127.0.0.1:", "http://localhost:")):
             raise ValueError("MCP endpoint must be loopback")

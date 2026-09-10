@@ -136,6 +136,7 @@ def post_message(conversation_id: int, payload: MessageIn, response: Response, u
 @router.get("/tasks/{task_id}")
 def get_task(task_id: int, user: dict = Depends(trading_management_current_user)):
     _require(user, schema=True)
+    store.recover_interrupted()
     with db.connect() as conn:
         task = db._exec(conn.cursor(), """SELECT t.*,r.delivery_state FROM closing_review_tasks t
             LEFT JOIN agent_v2_runs r ON r.task_id=t.id
@@ -145,6 +146,7 @@ def get_task(task_id: int, user: dict = Depends(trading_management_current_user)
         message = db._exec(conn.cursor(), "SELECT content,structured_payload FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
     task = dict(task)
     result={"task_id":task_id,"conversation_id":task["conversation_id"],"state":task["state"],"delivery_state":task.get("delivery_state"),"finished_at":_seconds(task["finished_at"]),"answer":None,"result_refs":[]}
+    result["poll_timeout_seconds"] = int(store._queue_timeout_seconds() + store.execution.TASK_SECONDS + 15)
     if message:
         import json
         try: result["answer"]=message["content"]; payload=json.loads(message["structured_payload"]) if message["structured_payload"] else {}

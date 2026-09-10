@@ -59,3 +59,17 @@ def test_web_and_pairing_use_system_permission_without_named_pilot(route_client,
         conn.execute("UPDATE module_permissions SET can_view=0 WHERE user_id=? AND module_code='closing_review_agent'", (uid,))
     assert client.get("/trading-agent-v2/capabilities").status_code == 403
     assert client.post("/trading-agent-v2/wecom/pair-code").status_code == 403
+
+
+def test_poll_closes_expired_task_when_worker_is_unavailable(route_client):
+    client, _ = route_client
+    conversation = client.post('/trading-agent-v2/conversations', json={}).json()
+    task = client.post(f"/trading-agent-v2/conversations/{conversation['id']}/messages", json={
+        'client_request_id': str(uuid4()), 'content': '合成排队测试',
+    }).json()['task_id']
+    with db.connect() as conn:
+        conn.execute("UPDATE agent_v2_runs SET created_at='2000-01-01T00:00:00+00:00' WHERE task_id=?", (task,))
+    response = client.get(f'/trading-agent-v2/tasks/{task}').json()
+    assert response['state'] == 'failed'
+    assert '排队' in response['answer']
+    assert response['poll_timeout_seconds'] >= 210

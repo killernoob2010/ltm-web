@@ -1,4 +1,7 @@
 """Loopback-only authenticated MCP server for the Agent worker."""
+import asyncio
+from functools import wraps
+import time
 import contextvars
 import ipaddress
 from typing import Any, Literal
@@ -7,7 +10,7 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from starlette.types import Receive, Scope, Send
 
-from . import tools
+from . import tools, execution
 from .contracts import Principal
 from .store import resolve_grant
 
@@ -56,7 +59,7 @@ class GrantMiddleware:
             await _error(send, 401, "缺少执行凭证")
             return
         try:
-            principal = resolve_grant(auth[7:].strip())
+            principal = await asyncio.to_thread(resolve_grant, auth[7:].strip())
         except Exception:
             await _error(send, 401, "执行凭证无效")
             return
@@ -90,7 +93,19 @@ def build_mcp_server() -> MCPServer:
     server = MCPServer("hongyuan-trading-agent-v2", version="2.0")
 
     def register(name: str, fn):
-        server.add_tool(fn, name=name, description=tools.TOOL_SPECS[name]["description"],
+        @wraps(fn)
+        async def bounded(*args, **kwargs):
+            scope = execution.ToolExecution(time.monotonic() + execution.TOOL_SECONDS)
+            token = execution.current.set(scope)
+            try:
+                with execution.phase(name):
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(fn, *args, **kwargs), execution.TOOL_SECONDS)
+            finally:
+                scope.cancelled.set()
+                execution.current.reset(token)
+
+        server.add_tool(bounded, name=name, description=tools.TOOL_SPECS[name]["description"],
                         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
                         structured_output=True)
 
