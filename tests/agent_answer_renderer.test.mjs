@@ -7,6 +7,7 @@ import renderer from "../frontend/agent_answer_renderer.js";
 const source = readFileSync(new URL("../frontend/agent_answer_renderer.js", import.meta.url), "utf8");
 const browserFixture = readFileSync(new URL("./agent_answer_renderer_fixture.html", import.meta.url), "utf8");
 const tableFixture = readFileSync(new URL("./agent_answer_renderer_table_fixture.html", import.meta.url), "utf8");
+const chartFixture = readFileSync(new URL("./agent_answer_renderer_chart_fixture.html", import.meta.url), "utf8");
 
 test("answer renderer exposes the fixed browser API", () => {
   assert.equal(typeof renderer.renderAnswer, "function");
@@ -37,4 +38,14 @@ test("browser fixture covers trusted view tables, null reasons and page requests
   assert.match(tableFixture, /missing_quote/);
   assert.match(tableFixture, /messageId: 17/);
   assert.match(tableFixture, /pageSize/);
+});
+
+test("chart fixture covers SVG gaps, zero baseline and table toggle", () => {
+  assert.match(source, /createElementNS/);
+  assert.match(source, /查看数据表/);
+  assert.match(chartFixture, /kind: "line"/);
+  assert.match(chartFixture, /kind: "bar"/);
+  assert.match(chartFixture, /values: \[null, "12\.50", "-3\.00"\]/);
+  assert.match(chartFixture, /agent-answer-view-chart-zero/);
+  assert.match(chartFixture, /requests\.length === beforeToggle/);
 });

@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Trading Agent answer renderer chart fixture</title>
+<body>
+  <main id="fixture"></main>
+  <pre id="result" aria-live="polite">running</pre>
+  <script src="../frontend/vendor/agent/marked.umd.js"></script>
+  <script src="../frontend/vendor/agent/purify.min.js"></script>
+  <script src="../frontend/agent_answer_renderer.js"></script>
+  <script>
+    const container = document.querySelector("#fixture");
+    const result = document.querySelector("#result");
+    const requests = [];
+    window.AgentAnswerRenderer.renderAnswer(container, {
+      schema_version: "2.1",
+      delivery_status: "complete",
+      body_markdown: "已核验图表：\n\n{{view:v1}}\n\n{{view:v2}}",
+      views: [
+        { id: "v1", kind: "line", result_ref: "00000000-0000-0000-0000-000000000001", fields: ["business_date", "basis"], title: "基差趋势" },
+        { id: "v2", kind: "bar", result_ref: "00000000-0000-0000-0000-000000000002", fields: ["business_date", "basis"], title: "基差柱图" },
+      ],
+      evidence: [],
+      limitations: [],
+    }, {
+      messageId: 18,
+      loadViewPage: async (request) => {
+        requests.push({ viewId: request.viewId, page: request.page, pageSize: request.pageSize });
+        if (request.viewId === "v1") {
+          return {
+            kind: "line",
+            chart: {
+              x_key: "business_date",
+              labels: ["2026-09-09", "2026-09-10", "2026-09-11"],
+              unit: "CNY/t",
+              series: [{ key: "basis", label: "基差", values: [null, "12.50", "-3.00"] }],
+            },
+            columns: [{ key: "business_date", label: "业务日期" }, { key: "basis", label: "基差", unit: "CNY/t" }],
+            rows: [
+              { business_date: "2026-09-09", basis: null },
+              { business_date: "2026-09-10", basis: "12.50" },
+              { business_date: "2026-09-11", basis: "-3.00" },
+            ],
+            pagination: { page: 1, page_size: 20, total_rows: 3, total_pages: 1 },
+            summary: {}, coverage: {}, warnings: [],
+          };
+        }
+        return {
+          kind: "bar",
+          chart: {
+            x_key: "business_date",
+            labels: ["2026-09-10", "2026-09-11"],
+            unit: "CNY/t",
+            series: [{ key: "basis", label: "基差", values: ["12.50", "-3.00"] }],
+          },
+          columns: [{ key: "business_date", label: "业务日期" }, { key: "basis", label: "基差", unit: "CNY/t" }],
+          rows: [{ business_date: "2026-09-10", basis: "12.50" }, { business_date: "2026-09-11", basis: "-3.00" }],
+          pagination: { page: 1, page_size: 20, total_rows: 2, total_pages: 1 },
+          summary: {}, coverage: {}, warnings: [],
+        };
+      },
+    });
+    setTimeout(() => {
+      const charts = [...container.querySelectorAll(".agent-answer-view-chart")];
+      const lineSvg = charts[0] && charts[0].querySelector("svg");
+      const barSvg = charts[1] && charts[1].querySelector("svg");
+      const lineToggle = charts[0] && charts[0].parentElement.querySelector(".agent-answer-view-table-toggle");
+      const tableHost = lineToggle && lineToggle.nextElementSibling;
+      const beforeToggle = requests.length;
+      if (lineToggle) lineToggle.click();
+      const passed = charts.length === 2
+        && lineSvg && lineSvg.querySelectorAll("polyline").length === 1
+        && lineSvg.querySelectorAll("circle").length === 0
+        && barSvg && barSvg.querySelector(".agent-answer-view-chart-zero")
+        && barSvg.querySelectorAll("rect").length === 2
+        && barSvg.querySelector("rect[aria-label*='-3.00']")
+        && tableHost && tableHost.hidden === false && tableHost.querySelector("table")
+        && requests.length === beforeToggle && requests.length === 2;
+      result.textContent = passed ? "PASS" : JSON.stringify({
+        charts: charts.length,
+        linePolylines: lineSvg && lineSvg.querySelectorAll("polyline").length,
+        lineCircles: lineSvg && lineSvg.querySelectorAll("circle").length,
+        barZero: Boolean(barSvg && barSvg.querySelector(".agent-answer-view-chart-zero")),
+        barRects: barSvg && barSvg.querySelectorAll("rect").length,
+        tableVisible: tableHost && tableHost.hidden === false,
+        requests,
+      });
+      document.body.dataset.testResult = passed ? "pass" : "fail";
+    }, 20);
+  </script>
+</body>

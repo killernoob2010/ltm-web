@@ -106,6 +106,21 @@
 .closing-review-agent-answer .agent-answer-view-summary dl { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 3px 12px; margin: 0; font-size: 11px; }
 .closing-review-agent-answer .agent-answer-view-summary dt { color: var(--cra-muted); }
 .closing-review-agent-answer .agent-answer-view-summary dd { margin: 0; overflow-wrap: anywhere; }
+.closing-review-agent-answer .agent-answer-view-chart { margin: 8px 0 10px; padding: 8px; border: 1px solid #e1e7ef; border-radius: 6px; background: #fff; }
+.closing-review-agent-answer .agent-answer-view-chart-unit { margin: 0 0 3px; color: var(--cra-muted); font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-chart-svg { display: block; width: 100%; min-height: 220px; overflow: visible; }
+.closing-review-agent-answer .agent-answer-view-chart-title { fill: var(--cra-text); font-size: 13px; font-weight: 600; }
+.closing-review-agent-answer .agent-answer-view-chart-axis { stroke: #9aa6b6; stroke-width: 1; }
+.closing-review-agent-answer .agent-answer-view-chart-grid { stroke: #e7ecf2; stroke-width: 1; }
+.closing-review-agent-answer .agent-answer-view-chart-zero { stroke: #64748b; stroke-width: 1.2; }
+.closing-review-agent-answer .agent-answer-view-chart-tick,
+.closing-review-agent-answer .agent-answer-view-chart-label { fill: var(--cra-muted); font-size: 10px; }
+.closing-review-agent-answer .agent-answer-view-chart-empty { fill: var(--cra-muted); font-size: 12px; text-anchor: middle; }
+.closing-review-agent-answer .agent-answer-view-chart-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 3px; color: var(--cra-muted); font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-chart-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.closing-review-agent-answer .agent-answer-view-chart-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+.closing-review-agent-answer .agent-answer-view-table-toggle { min-height: 27px; margin: 0 0 7px; padding: 0 9px; font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-table-host[hidden] { display: none; }
 .closing-review-agent-answer .agent-answer-view-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 9px; font-size: 11px; }
 .closing-review-agent-answer .agent-answer-view-pagination button { min-height: 26px; padding: 0 8px; font-size: 11px; }
 .closing-review-agent-answer .agent-answer-view-pagination select { min-height: 26px; margin-left: 4px; padding: 0 4px; font-size: 11px; }

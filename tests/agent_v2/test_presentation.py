@@ -110,3 +110,96 @@ def test_market_series_view_keeps_source_metrics_and_does_not_recompute():
     assert view["summary"]["basis"] is None
     assert view["coverage"]["eligible_contracts"] is None
     assert view["coverage"]["covered_contracts"] is None
+
+
+def test_chart_keeps_missing_value_and_original_decimal_strings():
+    from app.trading_agent.presentation import build_chart_series
+
+    view = {
+        "kind": "line",
+        "fields": ["business_date", "basis"],
+        "columns": [
+            {"key": "business_date", "type": "date"},
+            {"key": "basis", "unit": "CNY/t", "type": "decimal"},
+        ],
+        "rows": [
+            {"business_date": "2026-09-09", "basis": None},
+            {"business_date": "2026-09-10", "basis": "12.50"},
+        ],
+    }
+
+    series = build_chart_series(view)
+
+    assert series["x_key"] == "business_date"
+    assert series["labels"] == ["2026-09-09", "2026-09-10"]
+    assert series["series"][0]["values"] == [None, "12.50"]
+    assert series["unit"] == "CNY/t"
+
+
+def test_chart_over_limit_or_incompatible_data_falls_back_without_sampling():
+    from app.trading_agent.presentation import build_chart_series
+
+    rows = [{"business_date": f"2026-01-{(index % 28) + 1:02d}", "basis": "1.00"} for index in range(501)]
+    too_many = build_chart_series({
+        "kind": "line", "fields": ["business_date", "basis"],
+        "columns": [{"key": "business_date", "type": "date"}, {"key": "basis", "unit": "CNY/t", "type": "decimal"}],
+        "rows": rows,
+    })
+    incompatible = build_chart_series({
+        "kind": "bar", "fields": ["business_date", "basis", "futures_close"],
+        "columns": [
+            {"key": "business_date", "type": "date"},
+            {"key": "basis", "unit": "CNY/t", "type": "decimal"},
+            {"key": "futures_close", "unit": "CNY/ton", "type": "decimal"},
+        ],
+        "rows": [{"business_date": "2026-09-10", "basis": "1.00", "futures_close": "700"}],
+    })
+
+    assert too_many["fallback"] == "table"
+    assert too_many["reason"] == "point_limit"
+    assert incompatible["fallback"] == "table"
+    assert incompatible["reason"] == "unit_mismatch"
+
+
+def test_chart_rejects_duplicate_x_without_series_dimension():
+    from app.trading_agent.presentation import build_chart_series
+
+    result = build_chart_series({
+        "kind": "line", "fields": ["business_date", "basis"],
+        "columns": [{"key": "business_date", "type": "date"}, {"key": "basis", "unit": "CNY/t", "type": "decimal"}],
+        "rows": [
+            {"business_date": "2026-09-10", "basis": "1.00"},
+            {"business_date": "2026-09-10", "basis": "2.00"},
+        ],
+    })
+
+    assert result["fallback"] == "table"
+    assert result["reason"] == "duplicate_x"
+
+
+def test_build_view_chart_uses_complete_snapshot_not_page_rows():
+    from app.trading_agent.presentation import build_view
+
+    rows = [{"row_ref": f"r{index}", "business_date": f"2026-01-{(index % 28) + 1:02d}", "basis": "1.00"} for index in range(21)]
+    saved = SimpleNamespace(
+        rows=rows,
+        envelope=ToolEnvelope(
+            status="complete",
+            captured_at="2026-09-10T03:22:46+00:00",
+            calculation_version="chart-test",
+            payload={"kind": "market_series"},
+        ),
+    )
+
+    view = build_view(
+        None,
+        {
+            "id": "v1", "kind": "line", "result_ref": "00000000-0000-0000-0000-000000000001",
+            "fields": ["business_date", "basis"], "title": "基差趋势",
+        },
+        SimpleNamespace(),
+        saved=saved,
+    )
+
+    assert len(view["rows"]) == 20
+    assert len(view["chart"]["labels"]) == 21
