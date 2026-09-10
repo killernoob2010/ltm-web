@@ -56,9 +56,21 @@ _DATETIME_TOKEN = re.compile(
     r"[ T]?(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?"
     r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?(?![A-Za-z0-9])"
 )
+_CONTRACT_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?=[A-Za-z0-9.-]*[A-Za-z])(?=[A-Za-z0-9.-]*\d)"
+    r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*"
+    r"(?![A-Za-z0-9])"
+)
+_NUMERIC_CONTRACT_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"(?:合约(?:代码|编号)|代码)\s*[:：#]?\s*\d{2,}"
+    r"|\d{2,}\s*合约"
+    r")(?![A-Za-z0-9])"
+)
 _BUSINESS_NUMBER = re.compile(
-    r"(?<![A-Za-z])(?:[-+]?\d{2,}(?:\.\d+)?|[-+]?\d+\.\d+|[-+]?\d+(?=\s*(?:手|笔|张|合约|元|万元|CNY|%|点)))"
-    r"\s*(?:手|笔|张|合约|元|万元|CNY|%|点)?(?![A-Za-z])",
+    r"(?<![A-Za-z0-9])(?:[-+]?\d{2,}(?:\.\d+)?|[-+]?\d+\.\d+|[-+]?\d+(?=\s*(?:手|笔|张|合约|元|万元|CNY|%|点)))"
+    r"\s*(?:手|笔|张|合约|元|万元|CNY|%|点)?(?![A-Za-z0-9])",
     re.I,
 )
 _SAFE_PATH_FIELDS = {
@@ -253,7 +265,8 @@ def _resolve(text: str, principal, store):
 def _has_unreferenced_number(text: str) -> bool:
     without_refs = _FACT_REF.sub(" ", text)
     without_dates = _DATE_TOKEN.sub(" ", _DATETIME_TOKEN.sub(" ", without_refs))
-    return bool(_BUSINESS_NUMBER.search(without_dates))
+    without_codes = _NUMERIC_CONTRACT_TOKEN.sub(" ", _CONTRACT_TOKEN.sub(" ", without_dates))
+    return bool(_BUSINESS_NUMBER.search(without_codes))
 
 
 def render_answer(principal, draft: AnswerDraft | str | dict[str, Any], store) -> str:

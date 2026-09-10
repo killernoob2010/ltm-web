@@ -32,6 +32,8 @@ def test_prompt_example_is_valid_answer_draft_and_time_semantics_are_explicit():
     assert "captured_at" in prompts.SYSTEM_PROMPT
     assert "data_as_of 未提供时必须明确未知" in prompts.SYSTEM_PROMPT
     assert "工具结果为 partial 时" in prompts.SYSTEM_PROMPT
+    assert "账户、合约和多空方向" in prompts.SYSTEM_PROMPT
+    assert "/payload/groups/0/metrics/quantity" in prompts.SYSTEM_PROMPT
 
 
 def test_prompt_distinguishes_registered_public_refs_from_urls():
@@ -53,3 +55,23 @@ def test_projected_tool_result_preserves_unknown_data_as_of():
     projected = json.loads(prompts.project_tool_result(envelope))
     assert projected["captured_at"].startswith("2026-09-09T12:00:00")
     assert projected["data_as_of"] is None
+
+
+def test_projected_tool_result_is_valid_json_and_marks_group_truncation():
+    groups = [{
+        "dimensions": {"contract": f"i{index:04d}", "direction": "买"},
+        "metrics": {"quantity": {
+            "value": "1", "unit": "手", "status": "complete",
+            "covered_rows": 1, "eligible_rows": 1,
+        }},
+        "note": "x" * 240,
+    } for index in range(300)]
+    envelope = ToolEnvelope(
+        status="complete", captured_at=datetime.now(timezone.utc), calculation_version="test",
+        payload={"kind": "positions", "count": 300, "groups": groups, "group_count": 300},
+    )
+
+    projected = json.loads(prompts.project_tool_result(envelope))
+    assert len(prompts.project_tool_result(envelope)) <= 16000
+    assert projected["payload"]["groups_truncated"] is True
+    assert len(projected["payload"]["groups"]) < len(groups)

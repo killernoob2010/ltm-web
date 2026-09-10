@@ -19,6 +19,63 @@ PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","average_price","fee","r
     "iv","delta","gamma","theta","vega","rho","unit_greeks","display_greeks","position_exposures"}
 
 
+def _account_labels(cur, account_ids):
+    account_ids = tuple(int(account_id) for account_id in account_ids)
+    if not account_ids:
+        return {}
+    placeholders = ",".join("?" for _ in account_ids)
+    rows = db._exec(
+        cur,
+        f"""SELECT id, COALESCE(NULLIF(masked_name, ''), NULLIF(display_name, ''), account_code) AS account_label
+            FROM trading_accounts WHERE id IN ({placeholders}) AND is_active = 1""",
+        account_ids,
+    ).fetchall()
+    return {int(row["id"]): str(row["account_label"]) for row in rows if row["account_label"]}
+
+
+def _attach_account_labels(rows, labels):
+    for row in rows:
+        account_id = row.get("account_id")
+        if account_id is None:
+            continue
+        try:
+            label = labels.get(int(account_id))
+        except (TypeError, ValueError):
+            label = None
+        if label:
+            row["account"] = label
+
+
+def _position_groups(rows, *, limit=100):
+    group_by = ("account", "contract", "asset_type", "direction")
+    grouped = {}
+    for row in rows:
+        key = tuple(row.get(field) for field in group_by)
+        grouped.setdefault(key, []).append(row)
+    ordered = sorted(grouped.items(), key=lambda item: tuple(str(value or "") for value in item[0]))
+    groups = []
+    for key, items in ordered[:limit]:
+        groups.append({
+            "dimensions": dict(zip(group_by, key)),
+            "metrics": {
+                name: _metric(items, name, unit).model_dump()
+                for name, unit in METRICS["positions"].items()
+            },
+        })
+    return groups, len(ordered), len(ordered) > limit
+
+
+def _summary_groups(rows, group_by, metrics, *, limit=100):
+    groups = []
+    for row in rows[:limit]:
+        coverage = row.get("_coverage") or {}
+        groups.append({
+            "dimensions": {field: row.get(field) for field in group_by},
+            "metrics": {name: coverage[name] for name in metrics if name in coverage},
+        })
+    return groups, len(rows), len(rows) > limit
+
+
 def _transaction(conn):
     db._exec(conn.cursor(), "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY" if db._is_pg() else "BEGIN")
 
@@ -72,7 +129,8 @@ def _persist(principal, rows, kind, *, status="complete", warnings=None, metadat
     if len(rows)>20000:
         return ToolEnvelope(status="limit_exceeded",captured_at=store.now(),calculation_version=VERSION,missing=[{"reason":"请缩小查询范围"}])
     envelope = ToolEnvelope(status=status,captured_at=store.now(),data_as_of=data_as_of,calculation_version=VERSION,
-        payload={"kind":kind,"count":len(rows),"preview":[_project(row) for row in rows[:20]],**(metadata or {})},
+        payload={"kind":kind,"count":len(rows),"preview":[_project(row) for row in rows[:20]],
+            "preview_count": min(len(rows), 20), "preview_truncated": len(rows) > 20, **(metadata or {})},
         warnings=warnings or [],metrics=metrics or {},quote_times=(metadata or {}).get("quote_times",{}))
     with execution.phase("evidence_save"):
         ref = store.save_result(principal,envelope,rows,kind=kind,parent_ref=parent_ref)
@@ -89,7 +147,9 @@ def capture_positions(principal, query: FactQuery, quote_provider):
             db._exec(conn.cursor(), "SET LOCAL statement_timeout = '10000'")
         raw = effective.query_effective_positions(conn.cursor(),filters,include_all_items=True)
         specs = _active_contract_spec_multipliers(conn.cursor())
+        account_labels = _account_labels(conn.cursor(), principal.account_ids)
     rows = deepcopy(_select_contracts(raw.get("all_items",[]),query.contracts))
+    _attach_account_labels(rows, account_labels)
     if len(rows)>20000:
         return _persist(principal,rows,"positions")
     requests = {str(row["contract"]):QuoteRequest(contract=str(row["contract"]),exchange=str(row.get("exchange") or ""),asset_type=str(row.get("asset_type") or "")) for row in rows}
@@ -136,6 +196,10 @@ def capture_positions(principal, query: FactQuery, quote_provider):
         "assignment_basis":"unavailable" if historical else "current","data_status":raw["data_status"],"quote_times":quote_times,
         "selection":query.model_dump(mode="json",exclude={"as_of"}),
         "provenance":raw.get("provenance") or {"data_as_of":None,"precision":None,"source_observations":[]}}
+    position_groups, group_count, groups_truncated = _position_groups(rows)
+    metadata.update({"groups": position_groups, "group_count": group_count, "groups_truncated": groups_truncated})
+    if groups_truncated:
+        warnings.append("持仓分组超过100组；总量仍按全量快照计算，逐组合约明细仅返回受限预览。")
     return _persist(principal,rows,"positions",status=status,warnings=warnings,metrics=metrics,metadata=metadata)
 
 
@@ -165,9 +229,11 @@ def capture_facts(principal, kind, start_date, end_date, filters=None):
             rows.extend(result["items"])
             if len(rows)>20000 or page>=result["total_pages"]:
                 break
+        account_labels = _account_labels(conn.cursor(), principal.account_ids)
     if len(rows)>20000:
         return _persist(principal,rows,kind)
     rows = _select_contracts(rows,query.contracts)
+    _attach_account_labels(rows, account_labels)
     for index,row in enumerate(rows):
         row["row_ref"] = str(index)
         row["direction"] = row.get("side",row.get("open_side"))
@@ -210,10 +276,14 @@ def summarize(principal,result_ref,group_by,metrics,order_by=None,descending=Tru
     warnings = list(saved.envelope.warnings)
     if len(rows) > 100:
         warnings.append("分组超过100组；保留完整结果引用并只返回受限预览，可通过结果引用继续分页读取。")
+    group_payload, group_count, groups_truncated = _summary_groups(rows, group_by, metrics)
     return _persist(principal,rows,kind,status=saved.envelope.status,warnings=warnings,metrics=totals,
-        parent_ref=result_ref,metadata={**{key:value for key,value in saved.envelope.payload.items() if key not in {"preview","count","kind"}},
+        parent_ref=result_ref,metadata={**{key:value for key,value in saved.envelope.payload.items() if key not in {
+            "preview", "preview_count", "preview_truncated", "count", "kind",
+            "groups", "group_count", "groups_truncated",
+        }},
             "group_by":group_by,"source_ref":str(result_ref),"aggregation":True,
-            "group_count":len(rows),"groups_truncated":len(rows)>100})
+            "groups":group_payload,"group_count":group_count,"groups_truncated":groups_truncated})
 
 
 def compare(principal,left_ref,right_ref,metrics):
