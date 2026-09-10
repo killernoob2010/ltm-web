@@ -1,7 +1,7 @@
 """Prompt policy for flexible, evidence-bound business conversations."""
 import json
 
-from .answer_contracts import AnswerDraft21
+from .answer_contracts import AnswerDraft21, ModelAnswer21
 from .contracts import AnswerDraft
 
 SYSTEM_PROMPT = """你是交易持仓助手，面向宏源期货授权账户提供期货与期权的只读分析。
@@ -31,15 +31,13 @@ ANSWER_EXAMPLE = json.dumps({
 
 ANSWER21_EXAMPLE = json.dumps({
     "schema_version": "2.1",
-    "body_markdown": "风险解释需要结合数据和假设。",
-    "spans": [{"id": "s1", "kind": "knowledge", "start": 0, "end": 14, "refs": [], "depends_on": []}],
+    "blocks": [{"id": "s1", "kind": "knowledge", "text": "风险解释需要结合数据和假设。", "refs": [], "depends_on": []}],
     "views": [],
 }, ensure_ascii=False, separators=(",", ":"))
 
 TABLE_ANSWER21_EXAMPLE = json.dumps({
     "schema_version": "2.1",
-    "body_markdown": "以下为查询结果。空缺项不代表零值。\n\n{{view:v1}}",
-    "spans": [],
+    "blocks": [{"id": "s1", "kind": "knowledge", "text": "以下为查询结果。空缺项不代表零值。\n\n{{view:v1}}"}],
     "views": [{"id": "v1", "kind": "table", "result_ref": "00000000-0000-0000-0000-000000000001",
                "fields": ["contract", "direction", "quantity", "average_price", "valuation_price", "floating_pnl", "market_time", "valuation_status"],
                "title": "期权持仓明细"}],
@@ -48,11 +46,14 @@ TABLE_ANSWER21_EXAMPLE = json.dumps({
 
 def build_messages(history, capability, *, user_text=None):
     messages = [{"role": "system", "content": SYSTEM_PROMPT +
-                 "\nAnswerDraft21 JSON Schema：" + json.dumps(AnswerDraft21.model_json_schema(), ensure_ascii=False, separators=(",", ":")) +
+                 "\n当前输出使用分段协议，替代旧 body_markdown/spans：只返回 schema_version、blocks、views。每段有稳定 id、kind、text、refs、depends_on；程序自动计算证据位置，禁止输出 start/end。前文的 spans 引用规则对应 blocks.refs。\nModelAnswer21 JSON Schema：" + json.dumps(ModelAnswer21.model_json_schema(), ensure_ascii=False, separators=(",", ":")) +
                  "\nspans[].refs 是字符串数组，不是对象或单独UUID。内部引用使用工具实际返回的 result_ref 和允许指标路径；公开引用只能使用工具返回的 research_uuid#/sources/index 或 public_read_uuid#/payload/text，不能编造 URL 或引用。" +
                  "\n合法纯知识答案示例：" + ANSWER21_EXAMPLE +
                  "\n合法完整持仓表格示例（示例UUID必须替换为本次 query_positions 的真实 result_ref，不能引用示例UUID）：" + TABLE_ANSWER21_EXAMPLE +
-                 "\n用户要求表格时优先使用上例 views 引用全量持仓，正文只作简短解释，不要为每一行重复写数字、占位符和 spans。不要把视图字段名、行数据或字段说明对象放入 spans；fields 只能是字段名字符串数组。"},
+                 "\n用户要求表格时优先使用上例 views 引用全量持仓，正文只作简短解释，不要为每一行重复写数字。fields 只能是字段名字符串数组。要求柱状图时 views.kind=bar，fields=[contract,floating_pnl]；折线图 kind=line，首字段为横轴，其余为同单位数值。" +
+                 "\n连续追问改变展示时复用历史目录中仍可访问的 result_ref，不必重新调用 query_positions；用户明确要求更新才查询新快照。目录空或过期时说明无法复用，不混用新旧时点。" +
+                 "\n历史成交价格使用 price，不是 average_price 或 valuation_price。用户明确要求的字段必须保留；不可用时留空并说明，不得删列后声称全部完成。" +
+                 "\n联合研究先按能力目录读取匹配的内部数据，再搜索和读取公开资料；一个来源不可用不能阻止另一个来源交付。查询基差使用 query_market_series。公开搜索未配置时明确说明，不编造链接、不假装已完成联合分析。"},
                 {"role": "system", "content": "当前能力目录（服务端已过滤）：" + json.dumps(capability, ensure_ascii=False, separators=(",", ":"))}]
     for message in (history or [])[-12:]:
         role = message.get("role")

@@ -183,7 +183,8 @@ def parse_answer21(raw: AnswerDraft21 | str | dict[str, Any]) -> AnswerDraft21:
         if len(encoded) > 64 * 1024:
             raise _issue("answer_too_large", "/", "答案超过长度限制。")
     try:
-        draft = AnswerDraft21.model_validate(raw)
+        from .answer_contracts import ModelAnswer21
+        draft = ModelAnswer21.model_validate(raw).compile() if "blocks" in raw else AnswerDraft21.model_validate(raw)
     except ValidationError as exc:
         raise _validation_error(exc) from None
     _validate_spans(draft)
@@ -224,9 +225,15 @@ def _metric(saved: Any, path: str):
         except (IndexError, KeyError, TypeError, ValueError):
             return None
     if len(parts) == 3 and parts[0] == "rows":
+        from .facts import PUBLIC_FIELDS
+        if parts[2] not in PUBLIC_FIELDS or not parts[1].isascii() or not parts[1].isdecimal():
+            return None
         try:
             row = (_value(saved, "rows", []) or [])[int(parts[1])]
-            return row.get(parts[2]) if isinstance(row, dict) else None
+            value = row.get(parts[2]) if isinstance(row, dict) else None
+            if isinstance(value, dict):
+                return value
+            return {"value": value, "status": "complete" if value is not None else "unavailable"}
         except (IndexError, KeyError, TypeError, ValueError):
             return None
     return None
@@ -490,6 +497,7 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
 
     valid_views: list[dict] = []
     valid_view_ids: set[str] = set()
+    incomplete_views = False
     for view in draft.views:
         saved = _load(store_api, principal, str(view.result_ref))
         if saved is None:
@@ -499,6 +507,12 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
             continue
         valid_view_ids.add(view.id)
         valid_views.append(view.model_dump(mode="json"))
+        from .presentation import _default_fields
+        fields = view.fields or _default_fields(_payload(saved).get("kind"))
+        rows = _value(saved, "rows", []) or []
+        if rows and any(any(row.get(field) is None for field in fields) for row in rows):
+            incomplete_views = True
+            limitation_rows.append(_limitation("view_data_unavailable", "所展示字段存在缺失值；记录读取完整不代表所需字段完整。", views=[view.id]))
 
     uncovered_ranges = _uncovered_claims(draft.body_markdown, draft.spans)
     for _ in uncovered_ranges:
@@ -540,7 +554,7 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
     has_body = bool(body.strip())
     has_view = bool(valid_views)
     has_business_content = has_body or has_view or bool(evidence)
-    has_failures = bool(invalid or uncovered_ranges or len(valid_views) != len(draft.views) or token_issues)
+    has_failures = bool(invalid or uncovered_ranges or len(valid_views) != len(draft.views) or token_issues or incomplete_views)
     if not has_business_content:
         delivery_status = "failed"
     elif has_failures:

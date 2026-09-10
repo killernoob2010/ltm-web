@@ -836,8 +836,11 @@ class MarketDataService:
                     fetched = self.provider.fetch(missing)
                     self.provider_status = "live"
                     self.provider_message = ""
-                except Exception:
+                except Exception as exc:
                     fetched = {}
+                    logging.getLogger(__name__).warning(
+                        "market_quote_failure type=%s elapsed_seconds=%d", type(exc).__name__, int(time.monotonic() - now)
+                    )
                     self.provider_status = "provider_error"
                     self.provider_message = "天勤行情读取失败"
             with self._lock:

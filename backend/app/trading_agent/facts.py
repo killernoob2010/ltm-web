@@ -13,7 +13,7 @@ from .catalog import DIMENSIONS, METRICS, validate_summary
 from .contracts import FactQuery, MetricValue, ToolEnvelope
 
 VERSION = "effective-facts-live-pnl-v2"
-PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","average_price","fee","realized_close_pnl",
+PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","price","average_price","fee","realized_close_pnl",
     "floating_pnl","group_key","valuation_price","valuation_status","market_time","contract_multiplier",
     "underlying_symbol","underlying_price","expiry_date","formation_method","settlement_type","count",
     "iv","delta","gamma","theta","vega","rho","unit_greeks","display_greeks","position_exposures",

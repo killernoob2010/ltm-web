@@ -388,6 +388,19 @@ def test_market_data_failure_uses_statement_settlement_without_fake_live_price()
     assert snapshot.market_data_message == "天勤行情读取失败"
 
 
+def test_market_failure_has_safe_diagnostics_without_provider_secret(caplog):
+    class FailingProvider:
+        def fetch(self, requests):
+            raise TimeoutError("PRIVATE_CREDENTIAL_SENTINEL")
+    service = MarketDataService(provider=FailingProvider())
+    with caplog.at_level("WARNING"):
+        snapshot = service.get_quotes([QuoteRequest(contract="i2701")])["i2701"]
+    assert snapshot.last_price is None
+    assert "market_quote_failure" in caplog.text
+    assert "TimeoutError" in caplog.text
+    assert "PRIVATE_CREDENTIAL_SENTINEL" not in caplog.text
+
+
 def test_market_data_service_retries_provider_initialization():
     class Provider:
         def fetch(self, requests):

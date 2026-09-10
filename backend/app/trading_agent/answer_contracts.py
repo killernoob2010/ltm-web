@@ -40,6 +40,31 @@ class AnswerDraft21(StrictModel):
     views: list[ViewRequest] = Field(default_factory=list, max_length=8)
 
 
+class AnswerBlock(StrictModel):
+    id: str = Field(pattern=r"^s(?:[1-9]|[1-7][0-9]|80)$")
+    kind: Literal["fact", "public_fact", "inference", "scenario", "knowledge"]
+    text: str = Field(min_length=1, max_length=24000)
+    refs: list[str] = Field(default_factory=list, max_length=100)
+    depends_on: list[str] = Field(default_factory=list, max_length=80)
+
+
+class ModelAnswer21(StrictModel):
+    """Model-facing blocks; the persisted contract retains server-owned offsets."""
+    schema_version: Literal["2.1"]
+    blocks: list[AnswerBlock] = Field(default_factory=list, max_length=80)
+    views: list[ViewRequest] = Field(default_factory=list, max_length=8)
+
+    def compile(self) -> AnswerDraft21:
+        parts, spans = [], []
+        offset = 0
+        for block in self.blocks:
+            spans.append(EvidenceSpan(id=block.id, kind=block.kind, start=offset,
+                end=offset + len(block.text), refs=block.refs, depends_on=block.depends_on))
+            parts.append(block.text)
+            offset += len(block.text) + 2
+        return AnswerDraft21(schema_version="2.1", body_markdown="\n\n".join(parts), spans=spans, views=self.views)
+
+
 class EvidenceItem(StrictModel):
     id: str
     kind: Literal["internal", "public"]

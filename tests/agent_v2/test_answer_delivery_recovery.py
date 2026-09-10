@@ -61,6 +61,37 @@ async def test_partial_answer_with_removed_claim_gets_one_evidence_repair(queued
 
 
 @pytest.mark.asyncio
+async def test_failed_text_repair_keeps_valid_bar_instead_of_replacing_with_table(queued):
+    task = store.claim_next("keep-bar")
+    principal = store.principal_for_task(task)
+    ref = store.save_result(principal, ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc),
+        calculation_version="test", payload={"kind": "positions"}), [{"contract": "hc2701", "floating_pnl": -10}], kind="positions")
+    raw = json.dumps({"schema_version": "2.1", "body_markdown": "没有证据的数量123手。\n{{view:v1}}", "spans": [],
+        "views": [{"id": "v1", "kind": "bar", "result_ref": str(ref), "fields": ["contract", "floating_pnl"], "title": "盈亏"}]})
+    model = ScriptedModel([ModelTurn(content=raw), ModelTurn(content="broken json")])
+    result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="keep-bar"))
+    assert result.delivery_status == "partial"
+    assert result.views[0]["kind"] == "bar"
+    assert "123" not in result.body_markdown
+    assert len(model.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_public_unavailable_cannot_be_labelled_complete_by_model(queued):
+    class UnavailableSearch(FakeMCP):
+        async def call_tool(self, name, args, grant):
+            if name == "search_public":
+                return ToolEnvelope(status="temporarily_unavailable", captured_at=datetime.now(timezone.utc),
+                    calculation_version="test", warnings=["公开搜索尚未配置授权服务"])
+            return await super().call_tool(name, args, grant)
+    task = store.claim_next("public-missing")
+    model = ScriptedModel([ModelTurn(tool_calls=[{"id": "q1", "name": "search_public", "arguments": {"public_query": "铁矿石交割机制"}}]), ModelTurn(content=GOOD_ANSWER21)])
+    result = await harness.run_task(task, harness.RuntimeDeps(store, model, UnavailableSearch(), worker_id="public-missing"))
+    assert result.delivery_status == "partial"
+    assert any(x.code == "public_source_unavailable" for x in result.limitations)
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_can_repair_without_changing_protocol(queued):
     task = store.claim_next("repair21")
     model = ScriptedModel([ModelTurn(content="not json"), ModelTurn(content=GOOD_ANSWER21)])
@@ -113,7 +144,9 @@ def test_table_prompt_example_uses_real_projection_contract(queued):
     principal = store.principal_for_task(task)
     envelope = ToolEnvelope(status="partial", captured_at=datetime.now(timezone.utc), calculation_version="test",
                            payload={"kind": "positions"})
-    ref = store.save_result(principal, envelope, [{"contract": "i2610-c-750", "quantity": "2"}], kind="positions")
+    ref = store.save_result(principal, envelope, [{"contract": "i2610-c-750", "direction": "buy", "quantity": "2",
+        "average_price": "5", "valuation_price": "6", "floating_pnl": "200", "market_time": "2026-09-10 14:59:59",
+        "valuation_status": "live"}], kind="positions")
     raw = prompts.TABLE_ANSWER21_EXAMPLE.replace("00000000-0000-0000-0000-000000000001", str(ref))
     draft = answer.parse_answer21(raw)
     result = answer.validate_answer21(principal, draft, store)

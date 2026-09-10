@@ -32,7 +32,7 @@ _DATE_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:19|20)\d{2}(?:[-/.年]\d{1,2}(?:[-
 _FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
 _CONTEXT_KEYS = {
     "account", "account_code", "account_label", "display_name", "masked_name", "username", "name",
-    "contract", "underlying_symbol", "quantity", "average_price", "valuation_price", "underlying_price",
+    "contract", "underlying_symbol", "quantity", "price", "average_price", "valuation_price", "underlying_price",
     "floating_pnl", "realized_close_pnl", "fee", "cost", "pnl", "direction", "asset_type", "port", "product",
     "business_key", "row_ref", "source_workbook_name", "source_workbook_sha256", "source_ref",
     "order_id", "order_no", "trade_id", "trade_no", "deal_id", "deal_no", "fill_id", "fill_no",

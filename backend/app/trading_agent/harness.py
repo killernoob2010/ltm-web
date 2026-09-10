@@ -8,7 +8,7 @@ import time
 from typing import Any, Literal
 
 from . import answer, prompts, progress, tools, execution
-from .answer_contracts import ValidatedAnswer21
+from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue
 from .contracts import AnswerDraft
 from .model import ModelError, RetryableModelError
@@ -143,6 +143,14 @@ def _looks_like_answer21(raw: Any) -> bool:
 
 def _validated21_issues(result: ValidatedAnswer21) -> list[dict[str, Any]]:
     return [item.model_dump(mode="json") for item in result.limitations[:5]]
+
+
+def _with_source_limits(result, unavailable):
+    if not any(unavailable.values()):
+        return result
+    limitation = Limitation(code="public_source_unavailable", message="公开搜索或正文读取不可用，联合研究尚未完成；已核验的内部结果仍可查看。")
+    return result.model_copy(update={"delivery_status": "partial" if result.delivery_status == "complete" else result.delivery_status,
+        "limitations": [*result.limitations, limitation]})
 
 
 def _diagnostic_issue(item):
@@ -332,6 +340,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             if isinstance(item, dict) and isinstance(item.get("function"), dict)
         }
         repair_attempted = False
+        recoverable_draft21 = None
+        public_unavailable = {}
         for _ in range(budget.max_models):
             if deps.clock() - started >= budget.deadline_seconds:
                 if repair_attempted:
@@ -426,6 +436,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         envelope_payload = getattr(envelope, "payload", None)
+                        if call.name in {"search_public", "read_public"}:
+                            public_unavailable[call.name] = getattr(envelope, "status", None) not in {"complete", "partial"}
                         if (call.name == "search_public" and isinstance(envelope_payload, dict)
                                 and envelope_payload.get("kind") == "public_query_rejected"):
                             if (not public_query_repair_attempted
@@ -475,6 +487,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     validated21 = await asyncio.to_thread(
                         answer.validate_answer21, principal, draft21, deps.store
                     )
+                    if validated21.views:
+                        recoverable_draft21 = draft21
                     evidence_errors = {"uncovered_claim", "unreferenced_number", "missing_reference", "invalid_reference", "reference_unavailable"}
                     if validated21.delivery_status == "failed" or any(item.code in evidence_errors for item in validated21.limitations):
                         v21_issues = _validated21_issues(validated21)
@@ -495,14 +509,16 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         repair_messages = prompts.build_answer_repair_messages(raw_answer, v21_issues, finish_reason=turn.finish_reason)
                         bounded = _bound_messages(messages)
                         if _messages_size(bounded + repair_messages) > 48000:
-                            final = _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed")
+                            final = (await asyncio.to_thread(answer.validate_answer21, principal, recoverable_draft21, deps.store)
+                                     if recoverable_draft21 is not None else _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed"))
                             break
                         messages = bounded + repair_messages
                         repair_attempted = True
                         continue
-                    final = _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed")
+                    final = (await asyncio.to_thread(answer.validate_answer21, principal, recoverable_draft21, deps.store)
+                             if recoverable_draft21 is not None else _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed"))
                     break
-                final = validated21
+                final = _with_source_limits(validated21, public_unavailable)
                 await _record_stage(deps, principal, "validation", "complete")
                 await _finish21(deps, task_id, final)
                 return final
@@ -542,6 +558,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         if final is None:
             final = failure_fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。", "budget_exhausted")
         if isinstance(final, ValidatedAnswer21):
+            final = _with_source_limits(final, public_unavailable)
             await _finish21(deps, task_id, final)
             return final
         rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)

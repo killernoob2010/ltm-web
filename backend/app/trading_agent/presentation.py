@@ -16,7 +16,7 @@ PAGE_SIZES = {20, 50, 100}
 _LABELS = {
     "account": "账户", "contract": "合约", "asset_type": "资产类型", "direction": "方向",
     "trade_date": "交易日期", "quantity": "手数", "average_price": "开仓均价",
-    "valuation_price": "最新成交价", "floating_pnl": "浮盈亏", "realized_close_pnl": "平仓盈亏",
+    "price": "成交价格", "valuation_price": "最新成交价", "floating_pnl": "浮盈亏", "realized_close_pnl": "平仓盈亏",
     "fee": "手续费", "market_time": "行情时间", "valuation_status": "估值状态",
     "assignment_status": "归属状态", "basis": "基差", "futures_close": "期货收盘价",
     "wet_spot_price": "湿吨现货价", "business_date": "业务日期", "port": "港口",
@@ -27,7 +27,7 @@ _LABELS = {
     "quality_adjustment": "质量调整", "brand_adjustment": "品牌调整",
 }
 _UNITS = {
-    "quantity": "手", "average_price": "元", "valuation_price": "元",
+    "quantity": "手", "price": "元", "average_price": "元", "valuation_price": "元",
     "floating_pnl": "元", "realized_close_pnl": "元", "fee": "元",
     "basis": "元/标准化吨", "futures_close": "元/吨", "wet_spot_price": "元/湿吨",
 }
@@ -35,7 +35,7 @@ _DATE_FIELDS = {"trade_date", "business_date", "expiry_date"}
 _DATETIME_FIELDS = {"market_time", "captured_at", "data_as_of"}
 _STATUS_FIELDS = {"valuation_status", "assignment_status", "data_status", "fact_status"}
 _DECIMAL_FIELDS = {
-    "quantity", "average_price", "valuation_price", "floating_pnl", "realized_close_pnl", "fee",
+    "quantity", "price", "average_price", "valuation_price", "floating_pnl", "realized_close_pnl", "fee",
     "contract_multiplier", "underlying_price", "iv", "delta", "gamma", "theta", "vega", "rho",
     "basis", "futures_close", "wet_spot_price", "standardized_spot_price", "quality_adjustment",
     "brand_adjustment", "value", "count",
@@ -162,7 +162,9 @@ def _default_fields(kind: str) -> list[str]:
     if kind == "positions":
         return ["contract", "direction", "quantity", "average_price", "valuation_price",
                 "floating_pnl", "market_time", "valuation_status"]
-    if kind in {"trades", "closes"}:
+    if kind == "trades":
+        return ["trade_date", "contract", "direction", "quantity", "price", "fee"]
+    if kind == "closes":
         return ["trade_date", "contract", "direction", "quantity", "average_price", "fee", "realized_close_pnl"]
     if kind == "market_series":
         return ["business_date", "port", "product", "basis", "futures_close", "wet_spot_price", "data_status"]

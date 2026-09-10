@@ -487,7 +487,7 @@ def task_history(task_id, user_id=None, limit=12):
         owner = " AND t.user_id=?"
         params.append(user_id)
     with db.connect() as conn:
-        sql = """SELECT m.role,m.content,m.structured_payload,m.id
+        sql = """SELECT m.role,m.content,m.structured_payload,m.id,t.user_id,t.conversation_id
             FROM closing_review_tasks t
             JOIN closing_review_messages current ON current.id=t.user_message_id
             JOIN closing_review_messages m ON m.conversation_id=t.conversation_id AND m.id < current.id
@@ -504,6 +504,20 @@ def task_history(task_id, user_id=None, limit=12):
             refs = payload.get("fact_refs", []) if isinstance(payload, dict) else []
             status = payload.get("status", "") if isinstance(payload, dict) else ""
             content = f"上次回答状态：{status}；可追问的证据引用：{json.dumps(refs, ensure_ascii=False)}"
+            if isinstance(payload, dict) and payload.get("schema_version") == "2.1":
+                reusable = []
+                for view in payload.get("views", [])[:8]:
+                    try:
+                        saved = load_result_for_view(row["user_id"], row["conversation_id"], view["result_ref"])
+                    except (HTTPException, ResultExpired, KeyError, ValueError, TypeError):
+                        continue
+                    metadata = saved.envelope.payload or {}
+                    reusable.append({"result_ref": str(saved.envelope.result_ref), "kind": metadata.get("kind"),
+                        "selection": metadata.get("selection"), "date_range": metadata.get("date_range"),
+                        "captured_at": saved.envelope.captured_at.isoformat(timespec="seconds"),
+                        "data_as_of": str(saved.envelope.data_as_of) if saved.envelope.data_as_of else None,
+                        "view": {key: view.get(key) for key in ("id", "kind", "fields", "title")}})
+                content = "上次回答状态：" + str(payload.get("delivery_status", "")) + "；当前仍可访问的原结果（改变展示可直接复用，不需重新查询）：" + json.dumps(reusable, ensure_ascii=False)
         else:
             content = str(row["content"] or "")
         history.append({"role": row["role"], "content": content})

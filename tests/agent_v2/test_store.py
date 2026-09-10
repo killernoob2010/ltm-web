@@ -10,6 +10,26 @@ from app.trading_agent.schema import migrate_agent_v2_schema
 from app.trading_agent.contracts import ToolEnvelope
 
 
+def test_followup_history_keeps_authorized_v21_view_and_scope(queued):
+    import json
+    uid, cid, task = queued
+    task = store.claim_next("history")
+    principal = store.principal_for_task(task)
+    ref = store.save_result(principal, ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc),
+        calculation_version="test", payload={"kind": "positions", "selection": {"asset_type": "future"}}),
+        [{"contract": "hc2701", "quantity": 2}], kind="positions")
+    store.finish(task, "history", "succeeded", "安全摘要", structured_payload={"schema_version": "2.1",
+        "delivery_status": "complete", "views": [{"id": "v1", "kind": "table", "result_ref": str(ref), "fields": ["contract", "quantity"], "title": "期货"}]})
+    followup = store.enqueue({"id": uid}, cid, str(uuid4()), "改成图表", "web")
+    content = store.task_history(followup, uid)[-1]["content"]
+    assert str(ref) in content
+    assert "future" in content
+    assert "complete" in content
+    with db.connect() as conn:
+        conn.execute("UPDATE agent_v2_results SET expires_at=? WHERE id=?", ("2000-01-01T00:00:00+00:00", str(ref)))
+    assert str(ref) not in store.task_history(followup, uid)[-1]["content"]
+
+
 @pytest.fixture
 def queued(pilot):
     with db.connect() as conn:
