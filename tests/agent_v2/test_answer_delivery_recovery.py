@@ -170,6 +170,24 @@ async def test_mixed_position_request_preflights_authorized_tool_before_model(qu
 
 
 @pytest.mark.asyncio
+async def test_mixed_position_request_delivers_preflight_without_model_rewrite(queued):
+    task = store.claim_next("mixed-position-delivery")
+    _replace_current_question(task, "请统计当前全部期货持仓手数，并同时查询订单融资的放款状态和未还款金额")
+    model = ScriptedModel([ModelTurn(content=GOOD_ANSWER21)])
+
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, model, PositionsMCP(), worker_id="mixed-position-delivery"),
+    )
+
+    assert result.delivery_status == "partial"
+    assert result.views
+    assert "订单融资管理模块当前尚未接入" in result.plain_text
+    assert model.calls == []
+    assert not any(item.code in {"missing_reference", "unreferenced_number"} for item in result.limitations)
+
+
+@pytest.mark.asyncio
 async def test_annual_inventory_request_preflights_range_and_period_end_summary(queued):
     class AnnualPreflightMCP(FakeMCP):
         def __init__(self):

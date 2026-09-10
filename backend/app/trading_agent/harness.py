@@ -452,6 +452,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
         preflight_context = []
+        position_preflight_result = None
         preflight_args = (
             _position_preflight_args(user_text)
             if restricted_modules and has_internal_request(user_text) else None
@@ -467,6 +468,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     total_seconds=budget.deadline_seconds,
                     call_seconds=deps.limits.tool_timeout_seconds,
                 )
+                position_preflight_result = preflight
                 if getattr(preflight, "result_ref", None):
                     known_result_refs.append(str(preflight.result_ref))
                 await asyncio.to_thread(
@@ -605,6 +607,26 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     "plain_text": body,
                     "limitations": limitations,
                 })
+                await _finish21(deps, task_id, final)
+                return final
+        if (position_preflight_result is not None
+                and getattr(position_preflight_result, "result_ref", None)
+                and restricted_modules
+                and annual_plan is None
+                and not re.search(r"库存|成交|平仓|盈亏|基差|到港|发运|公开|联网|搜索|期权", user_text)):
+            direct = _fallback21(
+                deps.store,
+                principal,
+                [str(position_preflight_result.result_ref)],
+                "mixed_position_preflight",
+            )
+            if direct.views:
+                direct = direct.model_copy(update={
+                    "body_markdown": "当前授权账户范围内的持仓结果见下方表格。",
+                    "plain_text": "当前授权账户范围内的持仓结果见下方表格。",
+                    "limitations": [],
+                })
+                final = apply_policy_limits(direct, restricted_modules)
                 await _finish21(deps, task_id, final)
                 return final
         messages = prompts.build_messages(
