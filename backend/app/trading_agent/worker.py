@@ -60,7 +60,12 @@ async def worker_loop(deps: harness.RuntimeDeps, *, stop_event: asyncio.Event | 
         if resource_guard is not None:
             decision = resource_guard.admit()
             if decision.reason != last_admission_reason:
-                logger.warning("agent_admission reason=%s", decision.reason)
+                logger.warning(
+                    "agent_admission reason=%s memory_percent=%s cpu_percent=%s",
+                    decision.reason,
+                    round(decision.snapshot.memory_fraction * 100) if decision.snapshot.memory_fraction is not None else "unknown",
+                    round(decision.snapshot.cpu_fraction * 100) if decision.snapshot.cpu_fraction is not None else "unknown",
+                )
                 last_admission_reason = decision.reason
             if not decision.allowed:
                 try:
