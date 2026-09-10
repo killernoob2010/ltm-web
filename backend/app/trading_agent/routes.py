@@ -8,8 +8,8 @@ from pydantic import ConfigDict, Field
 
 from .. import db
 from ..trading_management import trading_management_current_user
-from ..permissions import require_permission
-from . import catalog, presentation, progress, store, tools
+from ..permissions import can, require_permission
+from . import catalog, market_data, presentation, progress, store, tools
 from .auth import pilot_allows_user
 from .contracts import StrictModel
 
@@ -65,9 +65,11 @@ def _owned_conversation(user_id, conversation_id):
 @router.get("/capabilities")
 def capabilities(user: dict = Depends(trading_management_current_user)):
     _require(user)
+    market_allowed = can(user, "trading.facts", "view") and can(user, "data_visualization.display", "view")
     return {"enabled": True, "version": "2.0", "engine": "agent-v2", "account_scope": "宏源期货",
-            "tools": tools.tool_schemas(), "dimensions": catalog.DIMENSIONS,
+            "tools": tools.tool_schemas(include_market=market_allowed), "dimensions": catalog.DIMENSIONS,
             "metrics": {kind: sorted(items) for kind, items in catalog.METRICS.items()},
+            "datasets": {market_data.DATASET: market_data.dataset_catalog()} if market_allowed else {},
             "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"}}
 
 

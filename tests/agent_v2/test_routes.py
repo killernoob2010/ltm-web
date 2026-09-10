@@ -63,6 +63,23 @@ def test_web_and_pairing_use_system_permission_without_named_pilot(route_client,
     assert client.post("/trading-agent-v2/wecom/pair-code").status_code == 403
 
 
+def test_capabilities_expose_market_dataset_only_with_display_permission(route_client):
+    client, uid = route_client
+    without_display = client.get("/trading-agent-v2/capabilities")
+    assert without_display.status_code == 200
+    assert "query_market_series" not in {item["name"] for item in without_display.json()["tools"]}
+    assert without_display.json()["datasets"] == {}
+
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO module_permissions(user_id,module_code,can_view,can_edit) VALUES (?, 'data_visualization_chart', 1, 0)",
+            (uid,),
+        )
+    with_display = client.get("/trading-agent-v2/capabilities")
+    assert "query_market_series" in {item["name"] for item in with_display.json()["tools"]}
+    assert with_display.json()["datasets"]["iron_ore_basis"]["source"] == "iron_ore_basis_results"
+
+
 def test_poll_closes_expired_task_when_worker_is_unavailable(route_client):
     client, _ = route_client
     conversation = client.post('/trading-agent-v2/conversations', json={}).json()
