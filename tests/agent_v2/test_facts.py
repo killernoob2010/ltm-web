@@ -138,6 +138,20 @@ def test_quote_failure_keeps_position_quantity_and_marks_quote_metrics_unavailab
     assert failed.payload["groups"][0]["metrics"]["floating_pnl"]["status"] == "unavailable"
 
 
+def test_partial_quotes_keep_all_quantities_and_expose_partial_pnl_coverage(queued):
+    principal, _ = capture(queued, 2)
+
+    def one_quote(requests):
+        return {requests[0].contract: QuoteSnapshot(last_price=710, multiplier=100)}
+
+    partial = facts.capture_positions(principal, FactQuery(), one_quote)
+    assert partial.metrics["quantity"].value == "2.0"
+    assert partial.metrics["quantity"].status == "complete"
+    assert partial.metrics["floating_pnl"].status == "partial"
+    assert partial.metrics["floating_pnl"].covered_rows == 1
+    assert partial.metrics["floating_pnl"].eligible_rows == 2
+
+
 def test_capture_does_not_infer_data_as_of_from_capture_time(queued, monkeypatch):
     fixed = datetime.now(timezone.utc).replace(microsecond=0)
     task = store.claim_next("facts-time-worker")

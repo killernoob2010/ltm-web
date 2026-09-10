@@ -40,6 +40,13 @@ def test_fact_numbers_must_use_registered_metric_placeholder(queued):
         answer.render_answer(principal, draft, store)
 
 
+@pytest.mark.parametrize("text", ["当前成交价为 700。", "持仓数量为 2 手。"])
+def test_unreferenced_prices_and_quantities_are_rejected(queued, text):
+    principal, _ = evidence(queued)
+    with pytest.raises(answer.InvalidEvidence):
+        answer.render_answer(principal, {"status": "complete", "paragraphs": [{"kind": "fact", "text": text}]}, store)
+
+
 def test_answer_resolves_group_risk_metric_path(queued):
     task = store.claim_next("answer-worker")
     principal = store.principal_for_task(task)
