@@ -146,6 +146,21 @@ def build_mcp_server() -> MCPServer:
     def get_optimal_warrant(scope: Literal["current_year_global_latest"] = "current_year_global_latest") -> tools.ToolResponse:
         return _response("get_optimal_warrant", locals())
 
+    def summarize_dataset(result_ref: str, measure: str, operation: Literal["sum", "mean", "min", "max", "count"],
+                          group_by: list[str] | None = None) -> tools.ToolResponse:
+        return _response("summarize_dataset", {**locals(), "group_by": group_by or []})
+
+    def compare_dataset(result_ref: str, method: Literal["previous_week", "previous_observation", "explicit_periods"],
+                        measure: str, group_by: list[str] | None = None,
+                        current_date: str | None = None, previous_date: str | None = None) -> tools.ToolResponse:
+        return _response("compare_dataset", {
+            **locals(), "group_by": group_by or [], "current_date": current_date, "previous_date": previous_date,
+        })
+
+    def relate_datasets(left_ref: str, right_ref: str,
+                        relation: Literal["inventory_basis_observation", "inventory_wet_price_observation", "port_spread_vs_rizhao"]) -> tools.ToolResponse:
+        return _response("relate_datasets", locals())
+
     def summarize_positions(result_ref: str, group_by: list[str], metrics: list[str], order_by: str | None = None,
                             descending: bool = True) -> tools.ToolResponse:
         return _response("summarize_positions", locals())
@@ -180,6 +195,8 @@ def build_mcp_server() -> MCPServer:
                      ("query_market_series", query_market_series),
                      ("describe_dataset", describe_dataset), ("query_dataset", query_dataset),
                      ("get_optimal_warrant", get_optimal_warrant),
+                     ("summarize_dataset", summarize_dataset), ("compare_dataset", compare_dataset),
+                     ("relate_datasets", relate_datasets),
                      ("summarize_positions", summarize_positions), ("summarize_facts", summarize_facts),
                      ("read_result_page", read_result_page), ("compare_results", compare_results),
                      ("get_position_risk", get_position_risk), ("run_scenario", run_scenario),

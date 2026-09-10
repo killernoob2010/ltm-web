@@ -10,7 +10,7 @@ from pydantic import Field
 from fastapi import HTTPException
 
 from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
-from . import catalog, facts, market_data, risk, store, execution, dv_queries
+from . import catalog, facts, market_data, risk, store, execution, dv_queries, dv_analysis
 from .dv_contracts import (
     DatasetCompare,
     DatasetDescribeArgs,
@@ -198,8 +198,12 @@ def dispatch(principal, name: str, arguments: dict[str, Any] | None = None, *, q
         return dv_queries.query_dataset(principal, validate_dataset_query(args))
     if name == "get_optimal_warrant":
         return dv_queries.get_optimal_warrant(principal, args)
-    if name in {"summarize_dataset", "compare_dataset", "relate_datasets"}:
-        raise RuntimeError("数据集只读适配器尚未启用")
+    if name == "summarize_dataset":
+        return dv_analysis.summarize_dataset(principal, args)
+    if name == "compare_dataset":
+        return dv_analysis.compare_dataset(principal, args)
+    if name == "relate_datasets":
+        return dv_analysis.relate_datasets(principal, args)
     if name == "query_trade_facts":
         return facts.capture_facts(principal, "trades", args.start_date, args.end_date,
                                    FactQuery(asset_type=args.asset_type, contracts=args.contracts,
