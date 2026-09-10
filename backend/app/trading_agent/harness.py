@@ -316,6 +316,14 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     known_result_refs: list[str] = []
     public_query_repair_attempted = False
 
+    def mark_public_source_gap():
+        if (plan.mode == "research_allowed"
+                and budget.search_calls == 0
+                and not any(public_unavailable.values())):
+            public_unavailable["policy"] = (
+                "public_not_configured" if not configured else "public_source_unavailable"
+            )
+
     def failure_fallback(status: str, text: str, code: str) -> Any:
         if protocol21_mode:
             return _fallback21(deps.store, principal, known_result_refs, code)
@@ -602,6 +610,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     final = (await asyncio.to_thread(answer.validate_answer21, principal, recoverable_draft21, deps.store)
                              if recoverable_draft21 is not None else _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed"))
                     break
+                mark_public_source_gap()
                 final = apply_policy_limits(_with_source_limits(validated21, public_unavailable), restricted_modules)
                 await _record_stage(deps, principal, "validation", "complete")
                 await _finish21(deps, task_id, final)
@@ -639,6 +648,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
                                       structured_payload=_draft_payload(final))
                     return final
+        mark_public_source_gap()
         if final is None:
             final = failure_fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。", "budget_exhausted")
         if isinstance(final, ValidatedAnswer21):

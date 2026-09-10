@@ -194,6 +194,19 @@ async def test_public_unavailable_cannot_be_labelled_complete_by_model(queued):
 
 
 @pytest.mark.asyncio
+async def test_external_request_without_public_call_is_not_delivered_complete(queued, monkeypatch):
+    task = store.claim_next("public-not-called")
+    _replace_current_question(task, "请分析近期铁矿石外部供需信息")
+    monkeypatch.setattr(harness, "public_tools_configured", lambda: True)
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, ScriptedModel([ModelTurn(content=GOOD_ANSWER21)]), FakeMCP(), worker_id="public-not-called"),
+    )
+    assert result.delivery_status == "partial"
+    assert any(x.code == "public_source_unavailable" for x in result.limitations)
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_can_repair_without_changing_protocol(queued):
     task = store.claim_next("repair21")
     model = ScriptedModel([ModelTurn(content="not json"), ModelTurn(content=GOOD_ANSWER21)])
