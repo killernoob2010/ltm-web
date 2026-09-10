@@ -16,6 +16,7 @@
     pending: null,
     progress: null,
     announcedProgress: "",
+    answerRenders: [],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -130,6 +131,9 @@
   }
 
   function renderMessages(items) {
+    state.answerRenders.splice(0).forEach((render) => {
+      if (render && typeof render.destroy === "function") render.destroy();
+    });
     clear(messages);
     if (!items.length) {
       addText(messages, "p", "closing-review-agent-empty", "这段对话还没有消息。");
@@ -146,10 +150,33 @@
       addText(header, "strong", "closing-review-agent-message-label", messageLabel(message));
       addText(header, "time", "closing-review-agent-message-time", timestampSeconds(message.created_at));
       article.appendChild(header);
-      addText(article, "p", "closing-review-agent-message-content", message.content || "该消息内容已按保留策略清理。");
-      if (supersededIds.has(Number(message.id))) addText(article, "span", "closing-review-agent-status-chip", "已被更新");
       const payload = message.structured_payload;
       const projection = payload && typeof payload === "object" ? payload : null;
+      const isValidatedAnswer = message.role !== "user" && projection && projection.schema_version === "2.1";
+      if (isValidatedAnswer && typeof window.AgentAnswerRenderer?.renderAnswer === "function") {
+        const answer = document.createElement("div");
+        answer.className = "closing-review-agent-message-content closing-review-agent-answer";
+        article.appendChild(answer);
+        try {
+          const targetMessageId = message.id;
+          const targetConversationId = message.conversation_id || state.conversationId;
+          const rendered = window.AgentAnswerRenderer.renderAnswer(answer, projection, {
+            messageId: targetMessageId,
+            loadViewPage: ({ viewId, page, pageSize, signal }) => {
+              if (!/^v[1-8]$/.test(String(viewId))) throw new Error("视图编号无效");
+              const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+              return state.api(`${V2_ENDPOINT}/conversations/${targetConversationId}/messages/${targetMessageId}/views/${encodeURIComponent(viewId)}?${query.toString()}`, { signal });
+            },
+            onError: () => {},
+          });
+          if (rendered && typeof rendered.destroy === "function") state.answerRenders.push(rendered);
+        } catch (error) {
+          addText(answer, "span", "", message.content || "该消息内容已按保留策略清理。");
+        }
+      } else {
+        addText(article, "p", "closing-review-agent-message-content", message.content || "该消息内容已按保留策略清理。");
+      }
+      if (supersededIds.has(Number(message.id))) addText(article, "span", "closing-review-agent-status-chip", "已被更新");
       const dataStatus = projection && (projection.delivery_status || projection.status);
       if (dataStatus) addText(article, "span", `closing-review-agent-status-chip status-${dataStatus}`, `数据状态：${statusLabel(dataStatus)}`);
       const evidence = evidenceBlock(projection);

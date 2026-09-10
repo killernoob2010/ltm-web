@@ -77,6 +77,44 @@
 .closing-review-agent-message-label { font-size: 12px; }
 .closing-review-agent-message-time { color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-message-content { white-space: pre-wrap; line-height: 1.65; font-size: 13px; }
+.closing-review-agent-answer { white-space: normal; overflow-wrap: anywhere; }
+.closing-review-agent-answer .agent-answer-markdown { line-height: 1.65; }
+.closing-review-agent-answer .agent-answer-markdown p,
+.closing-review-agent-answer .agent-answer-markdown h1,
+.closing-review-agent-answer .agent-answer-markdown h2,
+.closing-review-agent-answer .agent-answer-markdown h3,
+.closing-review-agent-answer .agent-answer-markdown h4,
+.closing-review-agent-answer .agent-answer-markdown h5,
+.closing-review-agent-answer .agent-answer-markdown h6 { margin: 0 0 9px; }
+.closing-review-agent-answer .agent-answer-markdown ul,
+.closing-review-agent-answer .agent-answer-markdown ol { margin: 0 0 9px; padding-left: 21px; }
+.closing-review-agent-answer .agent-answer-markdown blockquote { margin: 9px 0; padding: 7px 11px; border-left: 3px solid #cbd5e1; color: var(--cra-muted); background: #f8fafc; }
+.closing-review-agent-answer .agent-answer-markdown pre { overflow-x: auto; margin: 9px 0; padding: 9px 11px; border-radius: 6px; background: #f5f7fa; }
+.closing-review-agent-answer .agent-answer-markdown code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+.closing-review-agent-answer .agent-answer-markdown a { color: var(--cra-blue); overflow-wrap: anywhere; }
+.closing-review-agent-answer .agent-answer-view { margin: 13px 0 3px; padding: 11px; border: 1px solid #dbe4ef; border-radius: 8px; background: #fbfdff; }
+.closing-review-agent-answer .agent-answer-view-title { margin: 0 0 8px; font-size: 13px; }
+.closing-review-agent-answer .agent-answer-view-body { min-width: 0; }
+.closing-review-agent-answer .agent-answer-view-table-scroll { max-width: 100%; overflow-x: auto; }
+.closing-review-agent-answer .agent-answer-view-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 12px; }
+.closing-review-agent-answer .agent-answer-view-table th,
+.closing-review-agent-answer .agent-answer-view-table td { padding: 6px 8px; border: 1px solid #e1e7ef; text-align: left; vertical-align: top; white-space: nowrap; }
+.closing-review-agent-answer .agent-answer-view-table th { background: #f1f5f9; font-weight: 600; }
+.closing-review-agent-answer .agent-answer-view-table td[title] { color: var(--cra-muted); }
+.closing-review-agent-answer .agent-answer-view-summary { margin-bottom: 9px; padding: 8px 10px; border-radius: 6px; background: #f4f7fb; }
+.closing-review-agent-answer .agent-answer-view-summary-title { display: block; margin-bottom: 4px; font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-summary dl { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 3px 12px; margin: 0; font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-summary dt { color: var(--cra-muted); }
+.closing-review-agent-answer .agent-answer-view-summary dd { margin: 0; overflow-wrap: anywhere; }
+.closing-review-agent-answer .agent-answer-view-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 9px; font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-pagination button { min-height: 26px; padding: 0 8px; font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-pagination select { min-height: 26px; margin-left: 4px; padding: 0 4px; font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-pagination-summary { color: var(--cra-muted); }
+.closing-review-agent-answer .agent-answer-view-loading,
+.closing-review-agent-answer .agent-answer-view-error,
+.closing-review-agent-answer .agent-answer-view-empty { margin: 5px 0; color: var(--cra-muted); font-size: 11px; }
+.closing-review-agent-answer .agent-answer-view-error { color: #b42318; }
+.closing-review-agent-answer .agent-answer-view-warnings { margin: 8px 0 0; padding-left: 17px; color: var(--cra-amber); font-size: 11px; }
 .closing-review-agent-status-chip { display: inline-flex; margin-top: 9px; padding: 3px 7px; border-radius: 5px; background: #eef2f7; color: #526076; font-size: 11px; }
 .closing-review-agent-status-chip.status-complete { color: var(--cra-green); background: #e9f7ef; }
 .closing-review-agent-status-chip.status-data_anomaly { color: #b42318; background: #fff0ef; }
