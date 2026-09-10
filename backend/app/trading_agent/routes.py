@@ -221,6 +221,9 @@ def get_message_view(
     view_id: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20),
+    facet_page: int = Query(default=1, ge=1),
+    facet_page_size: int = Query(default=6),
+    matrix_column_page: int = Query(default=1, ge=1),
     user: dict = Depends(trading_management_current_user),
 ):
     _require(user, schema=True)
@@ -229,6 +232,8 @@ def get_message_view(
         raise HTTPException(404, "对话不存在")
     if page_size not in {20, 50, 100}:
         raise HTTPException(422, "分页大小无效")
+    if facet_page_size != 6:
+        raise HTTPException(422, "图谱分页大小固定为6")
     with db.connect() as conn:
         row = db._exec(conn.cursor(), """SELECT id, structured_payload
             FROM closing_review_messages
@@ -254,7 +259,8 @@ def get_message_view(
         view = presentation.ViewRequest.model_validate(raw_view)
         saved = store.load_result_for_view(user["id"], conversation_id, view.result_ref)
         return presentation.build_view(
-            None, view, store, page=page, page_size=page_size, saved=saved
+            None, view, store, page=page, page_size=page_size,
+            facet_page=facet_page, matrix_column_page=matrix_column_page, saved=saved
         )
     except store.ResultExpired:
         raise HTTPException(410, "结果已过期") from None

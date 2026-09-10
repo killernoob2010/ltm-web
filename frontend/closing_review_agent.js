@@ -178,9 +178,13 @@
           const targetConversationId = message.conversation_id || state.conversationId;
           const rendered = window.AgentAnswerRenderer.renderAnswer(answer, projection, {
             messageId: targetMessageId,
-            loadViewPage: ({ viewId, page, pageSize, signal }) => {
+            loadViewPage: ({ viewId, page, pageSize, facetPage, matrixColumnPage, signal }) => {
               if (!/^v[1-8]$/.test(String(viewId))) throw new Error("视图编号无效");
-              const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+              const query = new URLSearchParams({
+                page: String(page), page_size: String(pageSize),
+                facet_page: String(facetPage || 1), facet_page_size: "6",
+                matrix_column_page: String(matrixColumnPage || 1),
+              });
               return state.api(`${V2_ENDPOINT}/conversations/${targetConversationId}/messages/${targetMessageId}/views/${encodeURIComponent(viewId)}?${query.toString()}`, { signal });
             },
             onError: () => {},

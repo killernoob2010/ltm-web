@@ -11,6 +11,7 @@ from . import execution, progress, store
 from .auth import authorize, require_account_scope
 from .catalog import DIMENSIONS, METRICS, validate_summary
 from .contracts import FactQuery, MetricValue, ToolEnvelope
+from .semantic_catalog import allowed_fields as dataset_allowed_fields
 
 VERSION = "effective-facts-live-pnl-v2"
 PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","price","average_price","fee","realized_close_pnl",
@@ -106,6 +107,19 @@ def _project(row, fields=None):
     if any(field not in PUBLIC_FIELDS for field in fields):
         raise ValueError("字段不在公开业务目录中")
     return {key:row.get(key) for key in sorted(fields) if key in row}
+
+
+def project_dataset_row(dataset, row, fields=None):
+    """Project a dataset row through its semantic field registry.
+
+    Dataset facts intentionally do not share the trading ``PUBLIC_FIELDS`` set:
+    a field is visible only when the dataset adapter has registered it.
+    """
+    allowed = set(dataset_allowed_fields(dataset))
+    selected = list(fields) if fields is not None else [key for key in row if key in allowed]
+    if any(field not in allowed for field in selected):
+        raise ValueError("字段不在当前数据集目录中")
+    return {key: row.get(key) for key in sorted(set(selected)) if key in row}
 
 
 def _metric(rows, name, unit, *, available=True):

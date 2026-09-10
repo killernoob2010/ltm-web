@@ -211,6 +211,16 @@ def _payload(saved: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _result_public_fields(saved: Any) -> set[str]:
+    """Resolve row references through the server-owned result registry."""
+    from .presentation import allowed_fields_for_saved
+
+    try:
+        return allowed_fields_for_saved(saved)
+    except (TypeError, ValueError):
+        return set()
+
+
 def _metric(saved: Any, path: str):
     envelope = _envelope(saved)
     if path.startswith("/metrics/"):
@@ -225,8 +235,7 @@ def _metric(saved: Any, path: str):
         except (IndexError, KeyError, TypeError, ValueError):
             return None
     if len(parts) == 3 and parts[0] == "rows":
-        from .facts import PUBLIC_FIELDS
-        if parts[2] not in PUBLIC_FIELDS or not parts[1].isascii() or not parts[1].isdecimal():
+        if not parts[1].isascii() or not parts[1].isdecimal() or parts[2] not in _result_public_fields(saved):
             return None
         try:
             row = (_value(saved, "rows", []) or [])[int(parts[1])]
@@ -450,7 +459,10 @@ def _reference_for_span(ref: str, kind: str, principal: Any, store_api: Any):
         return None, ("invalid_reference", "事实引用格式无效。")
     saved = _load(store_api, principal, match.group(1))
     if match.group(2) == "/metadata" and saved is not None and kind != "public_fact":
-        if _payload(saved).get("kind") in {"positions", "trades", "closes", "market_series"}:
+        if _payload(saved).get("kind") in {
+            "positions", "trades", "closes", "market_series", "dataset_rows", "dataset_summary",
+            "dataset_comparison", "dataset_relation",
+        }:
             return _internal_evidence(match.group(1), saved, None), None
     metric = _metric(saved, match.group(2)) if saved is not None else None
     value, unit = _metric_value(metric)
@@ -508,10 +520,28 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
                 _limitation("reference_unavailable", "数据展示引用不存在、越权或已过期。", views=[view.id])
             )
             continue
+        from .presentation import _default_fields
+        from .presentation import _dataset_fields, allowed_fields_for_saved
+        payload = _payload(saved)
+        kind = payload.get("kind")
+        fields = view.fields or (_dataset_fields(saved, []) if kind in {
+            "dataset_rows", "dataset_summary", "dataset_comparison", "dataset_relation",
+        } else _default_fields(kind))
+        allowed = allowed_fields_for_saved(saved)
+        controls = [view.x_field, *view.series_by, *view.facet_by]
+        if any(field not in allowed for field in fields + [field for field in controls if field is not None]):
+            limitation_rows.append(_limitation("invalid_view", "数据展示字段或维度未在当前结果目录登记。", views=[view.id]))
+            continue
+        if view.layout == "matrix" and view.kind != "table":
+            limitation_rows.append(_limitation("invalid_view", "矩阵展示必须使用表格视图。", views=[view.id]))
+            continue
+        if view.layout != "standard" and kind not in {
+            "dataset_rows", "dataset_summary", "dataset_comparison", "dataset_relation",
+        }:
+            limitation_rows.append(_limitation("invalid_view", "该布局仅适用于已登记数据集结果。", views=[view.id]))
+            continue
         valid_view_ids.add(view.id)
         valid_views.append(view.model_dump(mode="json"))
-        from .presentation import _default_fields
-        fields = view.fields or _default_fields(_payload(saved).get("kind"))
         rows = _value(saved, "rows", []) or []
         if rows and any(any(row.get(field) is None for field in fields) for row in rows):
             incomplete_views = True

@@ -31,6 +31,12 @@ class ViewRequest(StrictModel):
     title: str = Field(max_length=120)
     sort_by: str | None = Field(default=None, max_length=80)
     descending: bool = False
+    layout: Literal["standard", "atlas", "compare", "matrix"] = "standard"
+    x_field: str | None = Field(default=None, max_length=80)
+    series_by: list[str] = Field(default_factory=list, max_length=2)
+    facet_by: list[str] = Field(default_factory=list, max_length=2)
+    axis_mode: Literal["chronological", "business_week", "month_day"] = "chronological"
+    matrix_column_page: int = Field(default=1, ge=1)
 
 
 class AnswerDraft21(StrictModel):

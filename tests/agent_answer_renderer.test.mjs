@@ -8,6 +8,7 @@ const source = readFileSync(new URL("../frontend/agent_answer_renderer.js", impo
 const browserFixture = readFileSync(new URL("./agent_answer_renderer_fixture.html", import.meta.url), "utf8");
 const tableFixture = readFileSync(new URL("./agent_answer_renderer_table_fixture.html", import.meta.url), "utf8");
 const chartFixture = readFileSync(new URL("./agent_answer_renderer_chart_fixture.html", import.meta.url), "utf8");
+const datasetFixture = readFileSync(new URL("./agent_answer_renderer_dataset_fixture.html", import.meta.url), "utf8");
 
 test("answer renderer exposes the fixed browser API", () => {
   assert.equal(typeof renderer.renderAnswer, "function");
@@ -48,4 +49,17 @@ test("chart fixture covers SVG gaps, zero baseline and table toggle", () => {
   assert.match(chartFixture, /values: \[null, "12\.50", "-3\.00"\]/);
   assert.match(chartFixture, /agent-answer-view-chart-zero/);
   assert.match(chartFixture, /requests\.length === beforeToggle/);
+});
+
+test("dataset fixture covers atlas series, facet paging and matrix accessibility", () => {
+  assert.match(source, /chart\.version === 2/);
+  assert.match(source, /facetPage/);
+  assert.match(source, /matrixColumnPage/);
+  assert.match(source, /observation_date/);
+  assert.match(source, /agent-answer-dataset-chart/);
+  assert.match(source, /agent-answer-matrix/);
+  assert.match(source, /aria-label/);
+  assert.match(datasetFixture, /PB粉\|2025/);
+  assert.match(datasetFixture, /y: null/);
+  assert.match(datasetFixture, /source_row_ref/);
 });

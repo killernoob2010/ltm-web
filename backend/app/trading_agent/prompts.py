@@ -16,6 +16,7 @@ query_positions 或汇总结果中的 preview 不是全量明细；看到 previe
 
 SYSTEM_PROMPT += "\n直接回答用户所问，不自行增加未询问的数值细分。事实占位符由系统替换成数值和单位，不要在占位符后重复添加单位。不要输出推理过程、JSON代码围栏或JSON之外的说明。"
 SYSTEM_PROMPT += "\ncaptured_at 只是系统读取并保存结果的时间；data_as_of 未提供时必须明确未知，不能用 captured_at、查询时间或备份恢复时间代替。历史 as_of.date 是查询口径，不自动等于数据源截至时间。工具结果为 partial 时，按用户所问指标的覆盖率判断能否回答，不把 partial 自动当成所有指标不可用。"
+SYSTEM_PROMPT += "\n现货、库存、到港和基差数据使用工具返回的登记字段；dataset_rows、dataset_summary、dataset_comparison、dataset_relation 的数值也必须通过真实 result_ref#/rows/N/允许字段引用。未登记字段、来源文件内部字段和无效值不能引用。数据集图谱可用 views.layout=atlas 或 compare，x_field、series_by、facet_by 只能是工具结果字段；横轴可选 chronological、business_week、month_day，缺失值保持断点。港口×品种变化矩阵使用 kind=table、layout=matrix、facet_by 与 series_by 两个登记维度；完整长表仍由同一 view 提供，不把图表分页当作重新查询。数据集摘要只说明行数、期间、覆盖和单位，不使用交易专属手数或合约数。"
 
 ANSWER_EXAMPLE = json.dumps({
     "status": "complete",
@@ -50,7 +51,7 @@ def build_messages(history, capability, *, user_text=None):
                  "\nblocks[].refs 是字符串数组，不是对象或单独UUID。内部引用使用工具实际返回的 result_ref 和允许指标路径；公开引用只能使用工具返回的 research_uuid#/sources/index 或 public_read_uuid#/payload/text，不能编造 URL 或引用。" +
                  "\n合法纯知识答案示例：" + ANSWER21_EXAMPLE +
                  "\n合法完整持仓表格示例（示例UUID必须替换为本次 query_positions 的真实 result_ref，不能引用示例UUID）：" + TABLE_ANSWER21_EXAMPLE +
-                 "\n用户要求表格时优先使用上例 views 引用全量持仓，正文只作简短解释，不要为每一行重复写数字。fields 只能是字段名字符串数组。要求柱状图时 views.kind=bar，fields=[contract,floating_pnl]；折线图 kind=line，首字段为横轴，其余为同单位数值。" +
+                    "\n用户要求表格时优先使用上例 views 引用全量持仓，正文只作简短解释，不要为每一行重复写数字。fields 只能是字段名字符串数组。要求柱状图时 views.kind=bar，fields=[contract,floating_pnl]；折线图 kind=line，首字段为横轴，其余为同单位数值。数据集全品种图谱使用 kind=line、layout=atlas、x_field=business_week、series_by=[business_year]、facet_by=[product]；品种对比使用 layout=compare、series_by=[product,business_year]。不要把曲线点、SVG或HTML直接写入答案。" +
                  "\n连续追问改变展示时复用历史目录中仍可访问的 result_ref，不必重新调用 query_positions；用户明确要求更新才查询新快照。目录空或过期时说明无法复用，不混用新旧时点。" +
                  "\n历史成交价格使用 price，不是 average_price 或 valuation_price。用户明确要求的字段必须保留；不可用时留空并说明，不得删列后声称全部完成。" +
                  "\n来源、筛选范围、账本时点未知等非数值事实说明，使用 kind=fact、refs=[真实result_ref#/metadata]。metadata 只支持来源说明，不能当数字占位符使用；业务数字仍使用真实 /metrics 或 /rows 引用。纯展示占位符单独用 kind=knowledge，不要创建没有refs的fact段落。不要在说明里重复具体时分秒，行情时间由视图列展示。" +
@@ -122,7 +123,10 @@ def project_tool_result(envelope):
 
     payload = envelope.model_dump(mode="json") if hasattr(envelope, "model_dump") else envelope
     payload.pop("rows", None)
-    if payload.get("result_ref") and (payload.get("payload") or {}).get("kind") in {"positions", "trades", "closes", "market_series"}:
+    if payload.get("result_ref") and (payload.get("payload") or {}).get("kind") in {
+        "positions", "trades", "closes", "market_series", "dataset_rows", "dataset_summary",
+        "dataset_comparison", "dataset_relation",
+    }:
         payload["metadata_ref"] = str(payload["result_ref"]) + "#/metadata"
     limit = 16000
 

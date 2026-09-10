@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<div id="root"></div>
+<script>
+  const datasetChart = {
+    version: 2,
+    layout: "atlas",
+    axis_mode: "business_week",
+    facet_pagination: {page: 1, page_size: 6, total: 7, has_more: true},
+    facets: [{
+      key: "PB粉", title: "PB粉", unit: "万吨",
+      series: [
+        {key: "PB粉|2025", label: "PB粉 · 2025", color_key: "2025",
+          points: [{x: 36, y: "90", observation_date: "2025-09-01", row_ref: "r1"}]},
+        {key: "PB粉|2026", label: "PB粉 · 2026", color_key: "2026",
+          points: [{x: 36, y: null, observation_date: "2026-09-01", row_ref: "r2"}]},
+      ],
+    }],
+  };
+  const matrix = {
+    row_dimensions: ["port"],
+    columns: [{key: "c1", label: "PB粉", unit: "万吨"}],
+    rows: [{dimensions: {port: "日照港"}, cells: {c1: {value: "-10", source_row_ref: "r1"}}}],
+    column_pagination: {page: 1, page_size: 12, total: 13, has_more: true},
+  };
+</script>

@@ -10,6 +10,8 @@ test("agent page probes V2 capabilities and preserves V1 fallback", () => {
   assert.match(source, /const V2_ENDPOINT = "\/api\/trading-agent-v2"/);
   assert.match(source, /state\.v2 = Boolean\(capabilities && capabilities\.enabled\)/);
   assert.match(source, /waitForTask/);
+  assert.match(source, /facet_page_size/);
+  assert.match(source, /matrix_column_page/);
 });
 
 test("conversation history distinguishes active tasks from reusable conversations", () => {
