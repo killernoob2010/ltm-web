@@ -262,10 +262,19 @@
     const started = Date.now();
     let timeoutSeconds = endpoint().includes("trading-agent-v2") ? 225 : 90;
     let attempt = 0;
+    let readFailures = 0;
     while (Date.now() - started < timeoutSeconds * 1000) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(++attempt, 5) * 1000));
       if (activation !== state.activation) return;
-      const task = await state.api(`${endpoint()}/tasks/${taskId}`);
+      let task;
+      try {
+        task = await state.api(`${endpoint()}/tasks/${taskId}`);
+        readFailures = 0;
+      } catch (error) {
+        if (++readFailures >= 3) throw error;
+        setStatus("暂时无法读取进度，正在重新连接…");
+        continue;
+      }
       if (Number.isFinite(task.poll_timeout_seconds)) timeoutSeconds = task.poll_timeout_seconds;
       if (["succeeded", "partial", "failed", "cancelled"].includes(task.state)) return task;
       setStatus(task.state === "queued" ? "正在排队，等待后台处理…" : "正在分析…");
