@@ -11,6 +11,15 @@ from fastapi import HTTPException
 
 from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
 from . import catalog, facts, market_data, risk, store, execution
+from .dv_contracts import (
+    DatasetCompare,
+    DatasetDescribeArgs,
+    DatasetQuery,
+    DatasetRelation,
+    DatasetSummary,
+    OptimalWarrantArgs,
+    validate_dataset_query,
+)
 
 
 class ToolResponse(StrictModel):
@@ -158,6 +167,11 @@ def dispatch(principal, name: str, arguments: dict[str, Any] | None = None, *, q
         return facts.capture_positions(principal, _query_from_position(args), quote_provider or default_quote_provider)
     if name == "query_market_series":
         return market_data.capture_market_series(principal, args)
+    if name == "query_dataset":
+        validate_dataset_query(args)
+        raise RuntimeError("数据集只读适配器尚未启用")
+    if name in {"describe_dataset", "summarize_dataset", "compare_dataset", "relate_datasets", "get_optimal_warrant"}:
+        raise RuntimeError("数据集只读适配器尚未启用")
     if name == "query_trade_facts":
         return facts.capture_facts(principal, "trades", args.start_date, args.end_date,
                                    FactQuery(asset_type=args.asset_type, contracts=args.contracts,
@@ -227,6 +241,12 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "query_close_facts": {"model": FactArgs, "description": "读取已核验的平仓、行权、履约或放弃事实。"},
     "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓并冻结行情。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。返回 metrics.quantity 是全量持仓总手数；payload.groups 提供按账户、合约、期货或期权、多空方向的可引用分组指标。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
     "query_market_series": {"model": market_data.MarketSeriesArgs, "description": "按已登记日期、港口和品种读取铁矿石期现结果；metrics 只允许 basis、futures_close、wet_spot_price。data_status 自动随数据返回，不得放入 metrics。只返回源表已保存的数值，不重新计算。非有效状态保留为异常或缺失。"},
+    "describe_dataset": {"model": DatasetDescribeArgs, "description": "返回一个已登记现货或期现数据集的字段、筛选维度和覆盖语义。"},
+    "query_dataset": {"model": DatasetQuery, "description": "按已登记字段和筛选读取现货、到港、库存或期现只读事实；不接受 SQL、代码或任意连接条件。"},
+    "summarize_dataset": {"model": DatasetSummary, "description": "基于不可变数据集快照执行已登记的确定性汇总。"},
+    "compare_dataset": {"model": DatasetCompare, "description": "基于不可变数据集快照按已登记周期计算变化量和适用变化率。"},
+    "relate_datasets": {"model": DatasetRelation, "description": "按已登记关系匹配两个授权数据集并返回可比或未匹配观察。"},
+    "get_optimal_warrant": {"model": OptimalWarrantArgs, "description": "读取当前年度全局固定范围内的系统最优仓单候选；不接受任意港口或品种筛选，也不构成交易承诺。"},
     "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总；逐项持仓请使用 group_by=['account','contract','asset_type','direction'] 和 metrics=['quantity']（需要时再加 floating_pnl），每个分组可用 /payload/groups/{index}/metrics/{metric} 引用。"},
     "summarize_facts": {"model": SummaryArgs, "description": "基于完整事实结果按白名单属性汇总。"},
     "read_result_page": {"model": PageArgs, "description": "读取已授权不可变结果的下一页。"},

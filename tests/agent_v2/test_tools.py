@@ -13,10 +13,20 @@ def test_registry_has_only_read_only_allowlisted_tools():
     assert names == {
         "describe_capabilities", "query_trade_facts", "query_close_facts", "query_positions",
         "query_market_series",
+        "describe_dataset", "query_dataset", "summarize_dataset", "compare_dataset",
+        "relate_datasets", "get_optimal_warrant",
         "summarize_positions", "summarize_facts", "read_result_page", "compare_results",
         "get_position_risk", "run_scenario", "explain_evidence", "search_public", "read_public",
     }
     assert all("sql" not in " ".join(spec["model"].model_fields) for spec in tools.TOOL_SPECS.values())
+
+
+def test_dataset_tool_schema_is_strict_and_has_no_identity_or_sql_arguments():
+    schema = tools.TOOL_SPECS["query_dataset"]["model"].model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert "user_id" not in schema["properties"]
+    assert "account_ids" not in schema["properties"]
+    assert "sql" not in schema["properties"]
 
 
 def test_dispatch_rejects_unknown_tool_and_raw_identity(queued):

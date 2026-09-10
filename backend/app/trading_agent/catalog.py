@@ -1,5 +1,7 @@
 """Business vocabulary used to validate composable queries, never SQL expressions."""
 
+from .semantic_catalog import DATASET_SPECS, dataset_registry, get_dataset_spec
+
 DIMENSIONS = {
     "account": "账户", "contract": "合约", "product": "品种", "exchange": "交易所",
     "asset_type": "期货或期权", "direction": "买卖方向", "trade_date": "交易日",
