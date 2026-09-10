@@ -13,6 +13,7 @@ test("closing review Agent has one guarded workspace entry point", () => {
   assert.match(indexHtml, /vendor\/agent\/marked\.umd\.js/);
   assert.match(indexHtml, /vendor\/agent\/purify\.min\.js/);
   assert.match(indexHtml, /agent_answer_renderer\.js/);
+  assert.match(indexHtml, /closing_review_agent\.js\?v=trading-holdings-agent-20260910-status-v1/);
   assert.match(indexHtml, /closing_review_agent\.js/);
   assert.match(appJs, /const closingReviewAgentPage = document\.querySelector\("#closingReviewAgentPage"\)/);
   assert.match(appJs, /code === "closing_review_agent"/);
