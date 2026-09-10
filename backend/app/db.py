@@ -104,7 +104,7 @@ MODULES = [
     ("交易管理", "trading_sh_junneng", "上海钧能台账"),
     ("交易管理", "trading_options", "期权台账"),
     ("交易管理", "trading_export", "汇总与导出"),
-    ("智能助手", "closing_review_agent", "Agent 对话"),
+    ("智能助手", "closing_review_agent", "交易持仓助手"),
     ("信息预警管理", "info_summary", "实时信息汇总"),
     ("信息预警管理", "platts_index_monitor", "普氏指数监控"),
     ("信息预警管理", "risk_alert", "风险预警"),
