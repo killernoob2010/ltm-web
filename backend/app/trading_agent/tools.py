@@ -95,6 +95,12 @@ class PublicReadArgs(StrictModel):
     source_ref: str = Field(min_length=1, max_length=500)
 
 
+DATASET_TOOL_NAMES = {
+    "describe_dataset", "query_dataset", "summarize_dataset", "compare_dataset",
+    "relate_datasets", "get_optimal_warrant",
+}
+
+
 def _query_from_position(args: PositionArgs) -> FactQuery:
     return FactQuery(
         as_of={"mode": args.as_of_mode, "date": args.as_of_date},
@@ -130,20 +136,34 @@ def default_quote_provider(requests, *, timeout_seconds=15):
 
 def _capability_envelope(principal) -> ToolEnvelope:
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    market_allowed = True
+    trading_allowed = True
+    display_allowed = True
     try:
         from .auth import authorize
 
         authorize(principal, "trading.facts")
+    except HTTPException:
+        trading_allowed = False
+    try:
+        from .auth import authorize
+
         authorize(principal, "data_visualization.display")
     except HTTPException:
-        market_allowed = False
+        display_allowed = False
+    market_allowed = trading_allowed and display_allowed
+    visible_tools = []
+    for name in TOOL_SPECS:
+        if name == "query_market_series" and not market_allowed:
+            continue
+        if name in DATASET_TOOL_NAMES and not display_allowed:
+            continue
+        visible_tools.append(name)
     data = {
         "account_scope": "宏源期货 canonical account（由服务端确定）",
         "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"},
         "dimensions": catalog.DIMENSIONS,
         "metrics": {kind: sorted(values) for kind, values in catalog.METRICS.items()},
-        "tools": sorted(name for name in TOOL_SPECS if market_allowed or name != "query_market_series"),
+        "tools": sorted(visible_tools),
         "limits": {"snapshot_rows": 20000, "preview_rows": 20, "page_size": [20, 50, 100]},
         "calculation_versions": {"facts": facts.VERSION, "risk": risk.VERSION},
         "datasets": {market_data.DATASET: market_data.dataset_catalog()} if market_allowed else {},

@@ -211,6 +211,110 @@ def resolve_grant(token):
     return principal
 
 
+_NON_TRADING_RESULT_KINDS = {
+    "dataset_rows", "dataset_summary", "dataset_comparison", "dataset_relation",
+}
+_MAX_RESULT_ANCESTOR_DEPTH = 8
+_MAX_RESULT_ANCESTORS = 32
+
+
+def _default_result_resources(kind):
+    if kind in _NON_TRADING_RESULT_KINDS:
+        return ["data_visualization.display"]
+    if kind == "market_series":
+        return ["trading.facts", "data_visualization.display"]
+    return ["trading.facts"]
+
+
+def _result_row_payload(row):
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(403, "结果完整性无法确认") from None
+    if digest(row["payload_json"]) != row["source_hash"]:
+        raise HTTPException(403, "结果完整性无法确认")
+    if not isinstance(payload, dict) or not isinstance(payload.get("envelope"), dict):
+        raise HTTPException(403, "结果完整性无法确认")
+    return payload
+
+
+def _metadata_resources(metadata, kind):
+    required = metadata.get("required_resources")
+    if required is None:
+        required = _default_result_resources(kind)
+    if not isinstance(required, list) or not required or any(not isinstance(item, str) for item in required):
+        raise HTTPException(403, "结果权限范围无法确认")
+    return list(dict.fromkeys(required))
+
+
+def _result_scope(metadata, row):
+    saved_scope = metadata.get("account_scope")
+    if saved_scope is None:
+        try:
+            saved_scope = json.loads(row["account_scope_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise HTTPException(403, "结果账户范围无法确认") from None
+    if not isinstance(saved_scope, list):
+        raise HTTPException(403, "结果账户范围无法确认")
+    try:
+        return tuple(int(value) for value in saved_scope)
+    except (TypeError, ValueError):
+        raise HTTPException(403, "结果账户范围无法确认") from None
+
+
+def _validate_result_access(principal, row, *, seen=None, depth=0):
+    """Re-check the result and every registered ancestor at each read boundary."""
+    if seen is None:
+        seen = set()
+    ref = str(row["id"])
+    if ref in seen:
+        raise HTTPException(403, "结果依赖存在循环")
+    if depth > _MAX_RESULT_ANCESTOR_DEPTH or len(seen) >= _MAX_RESULT_ANCESTORS:
+        raise HTTPException(403, "结果依赖层级超限")
+    seen.add(ref)
+    try:
+        if datetime.fromisoformat(row["expires_at"]) <= now():
+            raise ResultExpired("结果已过期")
+        payload = _result_row_payload(row)
+        envelope = payload["envelope"]
+        metadata = envelope.get("payload") if isinstance(envelope.get("payload"), dict) else {}
+        for resource in _metadata_resources(metadata, row["kind"]):
+            authorize(principal, resource)
+        saved_scope = _result_scope(metadata, row)
+        # Non-trading datasets intentionally have account_scope=[]; an empty
+        # scope is a domain marker, never permission to broaden trading scope.
+        if saved_scope and saved_scope != tuple(principal.account_ids):
+            raise HTTPException(403, "结果账户范围已变化")
+
+        raw_inputs = metadata.get("input_refs", [])
+        if raw_inputs is None:
+            raw_inputs = []
+        if not isinstance(raw_inputs, list):
+            raise HTTPException(403, "结果依赖无法确认")
+        parent_refs = [row["parent_ref"]] if row["parent_ref"] else []
+        parent_refs.extend(str(value) for value in raw_inputs if str(value) not in parent_refs)
+        if len(parent_refs) + len(seen) > _MAX_RESULT_ANCESTORS:
+            raise HTTPException(403, "结果依赖层级超限")
+        if parent_refs:
+            with db.connect() as conn:
+                parent_rows = []
+                for parent_ref in parent_refs:
+                    try:
+                        normalized = str(UUID(str(parent_ref)))
+                    except (TypeError, ValueError):
+                        raise HTTPException(403, "结果依赖无法确认") from None
+                    parent = db._exec(conn.cursor(),
+                        "SELECT * FROM agent_v2_results WHERE id=? AND user_id=? AND conversation_id=?",
+                        (normalized, principal.user_id, principal.conversation_id)).fetchone()
+                    if not parent:
+                        raise HTTPException(403, "结果依赖无法确认")
+                    parent_rows.append(parent)
+            for parent in parent_rows:
+                _validate_result_access(principal, parent, seen=seen, depth=depth + 1)
+    finally:
+        seen.discard(ref)
+
+
 def save_result(
     principal,
     envelope: ToolEnvelope,
@@ -221,30 +325,47 @@ def save_result(
     result_ref=None,
     required_resources=None,
     account_scope=None,
+    input_refs=None,
 ):
-    authorize(principal, "trading.facts")
     if len(rows) > 20000:
         raise ValueError("limit_exceeded")
-    if parent_ref:
-        load_result(principal, parent_ref)
     ref = result_ref or uuid4()
     payload = dict(envelope.payload or {})
     existing_resources = payload.get("required_resources")
     if required_resources is None:
-        required_resources = existing_resources or (
-            ["trading.facts", "data_visualization.display"]
-            if kind == "market_series" else ["trading.facts"]
-        )
+        required_resources = existing_resources or _default_result_resources(kind)
     if not isinstance(required_resources, (list, tuple)):
         raise ValueError("required_resources must be a list")
+    required_resources = list(dict.fromkeys(str(value) for value in required_resources))
+    for resource in required_resources:
+        authorize(principal, resource)
+
+    if input_refs is None:
+        input_refs = payload.get("input_refs", [])
+    if input_refs is None:
+        input_refs = []
+    if not isinstance(input_refs, (list, tuple)):
+        raise ValueError("input_refs must be a list")
+    input_refs = list(dict.fromkeys(str(UUID(str(value))) for value in input_refs))
+    if parent_ref:
+        parent_ref = UUID(str(parent_ref))
+        if str(parent_ref) not in input_refs:
+            input_refs.insert(0, str(parent_ref))
+    if input_refs:
+        parents = [load_result(principal, value) for value in input_refs]
+    else:
+        parents = []
     if account_scope is None:
-        account_scope = principal.account_ids
+        account_scope = [] if kind in _NON_TRADING_RESULT_KINDS else principal.account_ids
     try:
         account_scope = [int(value) for value in account_scope]
     except (TypeError, ValueError):
         raise ValueError("account_scope must be numeric") from None
-    payload["required_resources"] = list(dict.fromkeys(str(value) for value in required_resources))
+    payload["required_resources"] = required_resources
     payload["account_scope"] = account_scope
+    payload["input_refs"] = input_refs
+    if parent_ref is None and input_refs:
+        parent_ref = UUID(input_refs[0])
     frozen = envelope.model_copy(deep=True, update={"result_ref": ref,
         "snapshot_ref": ref if kind=="positions" and not parent_ref else envelope.snapshot_ref,
         "payload": payload})
@@ -252,6 +373,9 @@ def save_result(
     if len(payload.encode("utf-8")) > 10 * 1024 * 1024:
         raise ValueError("limit_exceeded")
     timestamp = now()
+    expires_at = timestamp + timedelta(days=90)
+    for parent in parents:
+        expires_at = min(expires_at, parent.expires_at)
     with db.connect() as conn:
         cur = conn.cursor()
         task_id = _active_run(cur, principal)
@@ -260,12 +384,11 @@ def save_result(
              schema_version,calculation_version,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (str(ref),task_id,principal.user_id,principal.conversation_id,kind,str(parent_ref) if parent_ref else None,
              str(frozen.snapshot_ref) if frozen.snapshot_ref else None,payload,digest(payload),"2.0",
-             frozen.calculation_version,stamp(timestamp),stamp(timestamp+timedelta(days=90))))
+             frozen.calculation_version,stamp(timestamp),stamp(expires_at)))
     return ref
 
 
 def load_result(principal, ref, *, require_current_task=False):
-    authorize(principal, "trading.facts")
     with db.connect() as conn:
         cur = conn.cursor()
         params = [str(UUID(str(ref))), principal.user_id, principal.conversation_id]
@@ -277,8 +400,7 @@ def load_result(principal, ref, *, require_current_task=False):
             tuple(params)).fetchone()
     if not row:
         raise HTTPException(404, "结果不存在")
-    if datetime.fromisoformat(row["expires_at"]) <= now():
-        raise ResultExpired("结果已过期")
+    _validate_result_access(principal, row)
     return _stored_result_from_row(row, principal, ref)
 
 
@@ -319,37 +441,7 @@ def _view_context(user_id, conversation_id, ref):
 def load_result_for_view(user_id, conversation_id, result_ref):
     """Load a frozen result after rechecking live permissions, without a grant."""
     row, principal, ref = _view_context(user_id, conversation_id, result_ref)
-    try:
-        payload = json.loads(row["payload_json"])
-    except (TypeError, ValueError, json.JSONDecodeError):
-        raise HTTPException(403, "结果完整性无法确认") from None
-    if digest(row["payload_json"]) != row["source_hash"]:
-        raise HTTPException(403, "结果完整性无法确认")
-    envelope = payload.get("envelope") if isinstance(payload, dict) else None
-    metadata = envelope.get("payload") if isinstance(envelope, dict) else None
-    metadata = metadata if isinstance(metadata, dict) else {}
-    required = metadata.get("required_resources")
-    if not isinstance(required, list) or not required:
-        kind = metadata.get("kind")
-        required = ["trading.facts", "data_visualization.display"] if kind == "market_series" else ["trading.facts"]
-    try:
-        for resource in required:
-            authorize(principal, str(resource))
-    except HTTPException:
-        raise
-    except (TypeError, ValueError):
-        raise HTTPException(403, "结果权限范围无法确认") from None
-    saved_scope = metadata.get("account_scope")
-    if saved_scope is None:
-        try:
-            saved_scope = json.loads(row["account_scope_json"])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raise HTTPException(403, "结果账户范围无法确认") from None
-    try:
-        if tuple(int(value) for value in saved_scope) != tuple(principal.account_ids):
-            raise HTTPException(403, "结果账户范围已变化")
-    except (TypeError, ValueError):
-        raise HTTPException(403, "结果账户范围无法确认") from None
+    _validate_result_access(principal, row)
     return _stored_result_from_row(row, principal, ref)
 
 

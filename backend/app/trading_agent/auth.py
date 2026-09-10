@@ -32,6 +32,10 @@ def _live_user(user_id: int) -> dict:
 
 
 def _accounts(user: dict) -> tuple[int, ...]:
+    # A data-visualization-only principal is valid and deliberately carries no
+    # trading account scope.  An empty tuple must never mean "all accounts".
+    if not permissions.can(user, "trading.facts", "view"):
+        return ()
     scope = permissions.get_data_scope_filter(user, "trading.facts")
     # Fail closed if the application introduces a scope format this adapter cannot interpret.
     if scope.get("scope") != "all" or scope.get("where") or scope.get("params"):
@@ -58,7 +62,12 @@ def resolve_principal(user_id: int, channel: str, conversation_id: int, executio
 
 
 def authorize(principal: Principal, resource: str) -> Principal:
-    if resource not in {"closing_review.agent", "trading.facts", "data_visualization.display"}:
+    if resource not in {
+        "closing_review.agent",
+        "trading.facts",
+        "data_visualization.display",
+        "data_visualization.data",
+    }:
         raise HTTPException(403, "没有访问权限")
     current = resolve_principal(principal.user_id, principal.channel, principal.conversation_id, principal.execution_id)
     permissions.require_permission(_live_user(current.user_id), resource, "view")

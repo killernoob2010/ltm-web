@@ -78,9 +78,19 @@ def _owned_conversation(user_id, conversation_id):
 @router.get("/capabilities")
 def capabilities(user: dict = Depends(trading_management_current_user)):
     _require(user)
-    market_allowed = can(user, "trading.facts", "view") and can(user, "data_visualization.display", "view")
+    trading_allowed = can(user, "trading.facts", "view")
+    display_allowed = can(user, "data_visualization.display", "view")
+    market_allowed = trading_allowed and display_allowed
+    visible_tools = []
+    for item in tools.tool_schemas(include_market=True):
+        name = item["name"]
+        if name == "query_market_series" and not market_allowed:
+            continue
+        if name in tools.DATASET_TOOL_NAMES and not display_allowed:
+            continue
+        visible_tools.append(item)
     return {"enabled": True, "version": "2.0", "engine": "agent-v2", "account_scope": "宏源期货",
-            "tools": tools.tool_schemas(include_market=market_allowed), "dimensions": catalog.DIMENSIONS,
+            "tools": visible_tools, "dimensions": catalog.DIMENSIONS,
             "metrics": {kind: sorted(items) for kind, items in catalog.METRICS.items()},
             "datasets": {market_data.DATASET: market_data.dataset_catalog()} if market_allowed else {},
             "defaults": {"as_of": "latest", "timezone": "Asia/Shanghai"}}
