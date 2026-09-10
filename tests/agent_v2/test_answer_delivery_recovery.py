@@ -207,6 +207,28 @@ async def test_external_request_without_public_call_is_not_delivered_complete(qu
 
 
 @pytest.mark.asyncio
+async def test_tool_budget_fallback_keeps_public_research_limit_visible(queued, monkeypatch):
+    task = store.claim_next("public-budget")
+    _replace_current_question(task, "请分析近期铁矿石外部供需信息")
+    monkeypatch.setattr(harness, "public_tools_configured", lambda: True)
+    model = ScriptedModel([
+        ModelTurn(tool_calls=[
+            {"id": "q1", "name": "describe_dataset", "arguments": {"dataset": "inventory_summary"}},
+        ])
+    ])
+    result = await harness.run_task(
+        task,
+        harness.RuntimeDeps(
+            store, model, FakeMCP(), worker_id="public-budget",
+            limits=harness.RuntimeLimits(max_tools=1),
+        ),
+    )
+    assert result.delivery_status in {"partial", "failed"}
+    assert "公开搜索或正文读取不可用" in result.plain_text
+    assert any(x.code == "public_source_unavailable" for x in result.limitations)
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_can_repair_without_changing_protocol(queued):
     task = store.claim_next("repair21")
     model = ScriptedModel([ModelTurn(content="not json"), ModelTurn(content=GOOD_ANSWER21)])

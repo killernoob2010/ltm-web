@@ -488,7 +488,11 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 planned_searches = sum(call.name == "search_public" for call in turn.tool_calls)
                 if (budget.tool_calls + len(turn.tool_calls) > budget.max_tools
                         or budget.search_calls + planned_searches > budget.max_search):
-                    final = _fallback("partial", "已达到本次工具调用上限，以上已取得的证据不足以继续完成全部分析。")
+                    final = failure_fallback(
+                        "partial",
+                        "已达到本次工具调用上限，以上已取得的证据不足以继续完成全部分析。",
+                        "budget_exhausted",
+                    )
                     break
                 assistant_call = {"role":"assistant","tool_calls": [{"id": call.id,"type":"function","function":{"name":call.name,"arguments":json.dumps(call.arguments,ensure_ascii=False)}} for call in turn.tool_calls]}
                 messages.append(assistant_call)
