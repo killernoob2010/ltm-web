@@ -69,9 +69,17 @@ def test_explain_evidence_cannot_read_unknown_metric(queued):
 
 
 def test_rejected_public_query_crosses_tool_boundary_without_query_data(queued, monkeypatch):
-    from app.trading_agent import research
+    from app.trading_agent import research, research_policy
 
     principal = store.principal_for_task(store.claim_next("research-rejection-worker"))
+    monkeypatch.setattr(
+        research_policy,
+        "active_plan",
+        lambda current: research_policy.RequestPlan(
+            mode="research_allowed", reason="explicit_external", domains=["public"]
+        ),
+    )
+    monkeypatch.setattr(research_policy, "public_tools_configured", lambda: True)
 
     def reject(*args, **kwargs):
         raise research.QueryRejected("private query must not cross the tool boundary")
@@ -82,6 +90,22 @@ def test_rejected_public_query_crosses_tool_boundary_without_query_data(queued, 
     assert envelope.status == "temporarily_unavailable"
     assert envelope.payload == {"kind": "public_query_rejected", "query_sent": False}
     assert all("private query" not in warning for warning in envelope.warnings)
+
+
+def test_public_tool_fails_closed_when_current_research_plan_is_missing(queued, monkeypatch):
+    from app.trading_agent import research_policy, research
+
+    principal = store.principal_for_task(store.claim_next("missing-plan-worker"))
+    sent = []
+    monkeypatch.setattr(research_policy, "active_plan", lambda current: None)
+    monkeypatch.setattr(research_policy, "public_tools_configured", lambda: True)
+    monkeypatch.setattr(research, "search_public", lambda *args, **kwargs: sent.append(True))
+
+    envelope = tools.dispatch(principal, "search_public", {"public_query": "公开铁矿石新闻"})
+
+    assert envelope.status == "unsupported"
+    assert envelope.payload["code"] == "public_policy_unavailable"
+    assert sent == []
 
 
 def test_quote_wait_is_bounded_and_does_not_queue_more_requests(monkeypatch):

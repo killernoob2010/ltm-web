@@ -5,8 +5,9 @@ import pytest
 from fastapi import HTTPException
 
 from app import db
-from app.trading_agent import auth, store, tools
+from app.trading_agent import auth, dv_queries, store, tools
 from app.trading_agent.contracts import ToolEnvelope
+from app.trading_agent.dv_contracts import DatasetQuery
 from app.trading_agent.schema import migrate_agent_v2_schema
 
 
@@ -104,3 +105,21 @@ def test_revoking_one_parent_resource_blocks_derived_result_and_view(display_onl
     assert error.value.status_code == 403
     with pytest.raises(HTTPException):
         store.load_result_for_view(user_id, conversation_id, child)
+
+
+def test_dataset_default_projection_does_not_include_source_metadata(display_only_principal, monkeypatch):
+    _, _, principal = display_only_principal
+    monkeypatch.setattr(dv_queries, "_query_rows", lambda args: [{
+        "row_ref": "r1", "observation_date": "2026-09-01", "port": "青岛港",
+        "value": "100", "unit": "万吨", "source_file": "private.xlsx", "source_row": 17,
+        "package_id": "secret-package",
+    }])
+    envelope = dv_queries.query_dataset(
+        principal,
+        DatasetQuery(dataset="port_inventory", mode="latest", filters={}),
+    )
+    row = envelope.payload["preview"][0]
+    assert row["value"] == "100"
+    assert "source_file" not in row
+    assert "source_row" not in row
+    assert "package_id" not in row

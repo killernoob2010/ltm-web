@@ -11,7 +11,11 @@ from . import execution, progress, store
 from .auth import authorize, require_account_scope
 from .catalog import DIMENSIONS, METRICS, validate_summary
 from .contracts import FactQuery, MetricValue, ToolEnvelope
-from .semantic_catalog import allowed_fields as dataset_allowed_fields
+from .semantic_catalog import (
+    SENSITIVE_FIELDS,
+    allowed_fields as dataset_allowed_fields,
+    public_allowed_fields as dataset_public_fields,
+)
 
 VERSION = "effective-facts-live-pnl-v2"
 PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","price","average_price","fee","realized_close_pnl",
@@ -116,7 +120,7 @@ def project_dataset_row(dataset, row, fields=None):
     a field is visible only when the dataset adapter has registered it.
     """
     allowed = set(dataset_allowed_fields(dataset))
-    selected = list(fields) if fields is not None else [key for key in row if key in allowed]
+    selected = list(fields) if fields is not None else [key for key in row if key in set(dataset_public_fields(dataset))]
     if any(field not in allowed for field in selected):
         raise ValueError("字段不在当前数据集目录中")
     return {key: row.get(key) for key in sorted(set(selected)) if key in row}
@@ -284,6 +288,15 @@ def read_page(principal,result_ref,page,page_size,fields):
     if type(page) is not int or page<1 or page_size not in {20,50,100}:
         raise ValueError("分页无效")
     saved = store.load_result(principal,result_ref)
+    dataset = (saved.envelope.payload or {}).get("dataset")
+    if dataset:
+        selected = list(fields) if fields else list(dataset_public_fields(dataset))
+        if set(selected) & SENSITIVE_FIELDS:
+            authorize(principal, "data_visualization.data")
+        visible = saved.rows[(page-1)*page_size:page*page_size]
+        return saved.envelope.model_copy(deep=True,update={"payload":{**saved.envelope.payload,
+            "preview":[project_dataset_row(dataset,row,selected) for row in visible],
+            "page":page,"page_size":page_size}})
     visible = saved.rows[(page-1)*page_size:page*page_size]
     return saved.envelope.model_copy(deep=True,update={"payload":{**saved.envelope.payload,
         "preview":[_project(row,fields) for row in visible],"page":page,"page_size":page_size}})

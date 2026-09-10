@@ -22,6 +22,12 @@ DatasetId = Literal[
 ]
 
 
+SENSITIVE_FIELDS = frozenset({
+    "source_file", "source_sheet", "source_section", "source_row", "source_column", "source_cell",
+    "source_workbook_name", "source_workbook_sha256", "mapping_version", "package_id",
+})
+
+
 @dataclass(frozen=True)
 class DatasetSpec:
     dataset: str
@@ -228,4 +234,12 @@ def allowed_fields(dataset: str) -> tuple[str, ...]:
     return get_dataset_spec(dataset).allowed_fields
 
 
-__all__ = ["DatasetId", "DatasetSpec", "DATASET_SPECS", "get_dataset_spec", "dataset_registry", "allowed_fields"]
+def public_allowed_fields(dataset: str) -> tuple[str, ...]:
+    """Fields safe for the default Agent projection without source-data access."""
+    return tuple(field for field in get_dataset_spec(dataset).allowed_fields if field not in SENSITIVE_FIELDS)
+
+
+__all__ = [
+    "DatasetId", "DatasetSpec", "DATASET_SPECS", "SENSITIVE_FIELDS", "get_dataset_spec",
+    "dataset_registry", "allowed_fields", "public_allowed_fields",
+]

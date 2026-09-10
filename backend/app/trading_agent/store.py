@@ -244,7 +244,7 @@ def _result_row_payload(row):
 def _metadata_resources(metadata, kind):
     required = metadata.get("required_resources")
     if required is None:
-        required = _default_result_resources(kind)
+        raise HTTPException(403, "结果权限范围无法确认，请重新查询")
     if not isinstance(required, list) or not required or any(not isinstance(item, str) for item in required):
         raise HTTPException(403, "结果权限范围无法确认")
     return list(dict.fromkeys(required))

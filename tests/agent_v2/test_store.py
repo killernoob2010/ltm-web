@@ -93,6 +93,11 @@ def test_saved_result_freezes_required_resources_and_account_scope(queued):
     assert saved.envelope.payload["account_scope"] == list(principal.account_ids)
 
 
+def test_result_without_required_resource_metadata_is_not_reused():
+    with pytest.raises(HTTPException):
+        store._metadata_resources({}, "dataset_rows")
+
+
 def test_grant_revoked_at_terminal_task(queued):
     task = store.claim_next("a")
     principal = store.principal_for_task(task)

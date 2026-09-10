@@ -8,7 +8,7 @@ from . import store
 from .auth import authorize
 from .contracts import ToolEnvelope
 from .dv_contracts import DatasetQuery, OptimalWarrantArgs, validate_dataset_query
-from .semantic_catalog import DATASET_SPECS, DatasetId, get_dataset_spec
+from .semantic_catalog import DATASET_SPECS, DatasetId, SENSITIVE_FIELDS, get_dataset_spec, public_allowed_fields
 from .. import db
 
 
@@ -137,10 +137,7 @@ _FILTER_COLUMNS = {
     "ports": "port", "regions": "region", "mainstream_status": "mainstream_status", "scope_type": "scope_type",
     "slice_type": "slice_type", "arrival_kind": "arrival_kind", "grades": "grade", "summary_metrics": "summary_metric",
 }
-_SENSITIVE_FIELDS = {
-    "source_file", "source_sheet", "source_row", "source_column", "source_cell", "source_workbook_name",
-    "source_workbook_sha256", "mapping_version", "package_id",
-}
+_SENSITIVE_FIELDS = SENSITIVE_FIELDS
 
 
 def _state(value, source_value=None):
@@ -315,8 +312,7 @@ def _query_rows(args: DatasetQuery) -> list[dict]:
 
 
 def _project_rows(dataset: str, rows: list[dict], fields: list[str]) -> list[dict]:
-    allowed = get_dataset_spec(dataset).allowed_fields
-    selected = tuple(fields) if fields else allowed
+    selected = tuple(fields) if fields else public_allowed_fields(dataset)
     return [
         {field: row[field] for field in selected if field in row} | {"row_ref": row["row_ref"]}
         for row in rows

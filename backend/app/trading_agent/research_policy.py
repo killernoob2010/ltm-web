@@ -25,7 +25,12 @@ class RequestPlan(StrictModel):
     clarification: str | None = Field(default=None, max_length=240)
 
 
-_NO_WEB = re.compile(r"不要(?:联网|上网|搜索)|不(?:要|用)外部资料|只(?:根据|用)内部|仅(?:根据|用)数据库|不要查网页", re.I)
+_NO_WEB = re.compile(
+    r"不要(?:联网|上网|搜索|网络(?:查询|搜索)?)|"
+    r"(?:不需要|无需|不必|不用)[^，。；;]{0,16}(?:联网|上网|搜索|网络(?:查询|搜索)?)|"
+    r"不(?:要|用)外部资料|只(?:根据|用)内部|仅(?:根据|用)数据库|不要查网页",
+    re.I,
+)
 _EXTERNAL = re.compile(
     r"联网|上网|网上|网络(?:查询|搜索)|搜索|查(?:看|找|一下)?(?:新闻|政策|规则|公告|官网|资料)|"
     r"(?:外部|公开)(?:供需|信息|事件|资料|新闻|数据)|"
@@ -40,6 +45,7 @@ _INTERNAL = re.compile(
     re.I,
 )
 _AMBIGUOUS = re.compile(r"研究一下|分析一下|最新情况|最近怎么样|原因是什么|为什么变化", re.I)
+_CONFLICTING_EXTERNAL = re.compile(r"(?:但|但是|同时|并且|另外|还要|(?<!不)需要)[^，。；;]{0,16}(?:联网|上网|搜索|网络(?:查询|搜索)?)", re.I)
 
 
 def public_tools_configured() -> bool:
@@ -66,7 +72,7 @@ def enforce_research_policy(user_text: str, candidate: RequestPlan) -> RequestPl
     external = bool(_EXTERNAL.search(text))
     internal = bool(_INTERNAL.search(text))
     ambiguous = bool(_AMBIGUOUS.search(text))
-    if no_web and external:
+    if no_web and _CONFLICTING_EXTERNAL.search(text):
         return _plan(
             "clarification_required", "ambiguous", ["public"],
             clarification="这次请求同时要求联网和不联网。请明确是否允许查询公开资料；内部数据可先单独完成。",

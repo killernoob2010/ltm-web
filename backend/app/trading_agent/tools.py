@@ -224,7 +224,14 @@ def tool_schemas_for_user(user: dict, *, include_market: bool = True) -> list[di
 
 def _public_gate(principal):
     plan = research_policy.active_plan(principal)
-    if plan is None or research_policy.public_tools_allowed(plan, research_policy.public_tools_configured()):
+    if plan is None:
+        return ToolEnvelope(
+            status="unsupported", captured_at=datetime.now(timezone.utc).replace(microsecond=0),
+            calculation_version="research-policy-v1",
+            payload={"kind": "public_research_blocked", "code": "public_policy_unavailable"},
+            warnings=["当前任务缺少有效的公开检索授权计划，系统未发送外部请求。"],
+        )
+    if research_policy.public_tools_allowed(plan, research_policy.public_tools_configured()):
         return None
     if plan.mode == "research_allowed" and not research_policy.public_tools_configured():
         return ToolEnvelope(

@@ -48,3 +48,15 @@ def test_conflicting_no_web_instruction_fails_closed():
     assert plan.mode == "clarification_required"
     assert plan.clarification
     assert public_tools_allowed(plan, configured=True) is False
+
+
+@pytest.mark.parametrize("question", [
+    "不要联网，只查询系统库存",
+    "不需要实时估值或联网，只回答当前持仓手数",
+    "无需网络查询，请给出最新江阴港库存",
+])
+def test_negative_web_scope_forbids_public_research(question):
+    plan = enforce_research_policy(question, _candidate())
+    assert plan.mode == "internal_only"
+    assert plan.reason == "internal_lookup"
+    assert public_tools_allowed(plan, configured=True) is False
