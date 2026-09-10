@@ -1279,12 +1279,16 @@ def _position_fills_after_baseline(
         (account_id,),
     ).fetchall()
     result = []
+    coverage_by_date = {}
     for raw_row in rows:
         row = dict(raw_row)
         trade_date = _date_key(row.get("trade_date"))
         if not trade_date or trade_date <= baseline_date:
             continue
-        if reconciliation.statement_coverage_for_date(cur, account_id, row["trade_date"]):
+        if trade_date not in coverage_by_date:
+            coverage_by_date[trade_date] = reconciliation.statement_coverage_for_date(
+                cur, account_id, row["trade_date"])
+        if coverage_by_date[trade_date]:
             continue
         result.append(row)
     return result

@@ -1,4 +1,7 @@
 """One allow-listed registry for model tools and their business handlers."""
+from concurrent.futures import ThreadPoolExecutor
+from threading import BoundedSemaphore
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -6,7 +9,7 @@ from uuid import UUID
 from pydantic import Field
 
 from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
-from . import catalog, facts, risk, store
+from . import catalog, facts, risk, store, execution
 
 
 class ToolResponse(StrictModel):
@@ -92,10 +95,27 @@ def _query_from_position(args: PositionArgs) -> FactQuery:
     )
 
 
-def default_quote_provider(requests):
+_quote_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-quotes")
+_quote_slot = BoundedSemaphore(1)
+
+
+def default_quote_provider(requests, *, timeout_seconds=5):
     from ..trading_valuation import get_quote_snapshots
 
-    return get_quote_snapshots(requests)
+    execution.checkpoint()
+    scope = execution.current.get()
+    wait = timeout_seconds if scope is None else min(timeout_seconds, scope.deadline - time.monotonic() - 3)
+    if wait <= 0 or not _quote_slot.acquire(blocking=False):
+        raise TimeoutError("quote_wait_unavailable")
+    try:
+        future = _quote_executor.submit(get_quote_snapshots, requests)
+    except BaseException:
+        _quote_slot.release()
+        raise
+    # A cold provider may finish later and warm its own cache. Never enqueue
+    # more background fetches while it is still running, or persist late data.
+    future.add_done_callback(lambda _: _quote_slot.release())
+    return future.result(timeout=wait)
 
 
 def _capability_envelope(principal) -> ToolEnvelope:

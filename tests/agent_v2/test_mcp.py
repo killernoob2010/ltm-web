@@ -98,6 +98,16 @@ async def test_sdk_client_lists_and_calls_only_with_grant(queued, monkeypatch):
                 assert positions.input_schema["properties"]["as_of_mode"]["enum"] == ["latest", "settlement_date"]
                 envelope = await client.call_tool("describe_capabilities", {}, grant)
                 assert envelope.status == "complete"
+                # The next question must work after the previous grant is revoked.
+                from uuid import uuid4
+                store.finish(task_id, "mcp-sdk-worker", "succeeded", "合成回答")
+                store.enqueue({"id": queued[0]}, queued[1], str(uuid4()), "下一条合成问题", "web")
+                next_task = store.claim_next("mcp-sdk-worker")
+                next_grant = store.issue_grant(store.principal_for_task(next_task))
+                listed_again = await client.list_tools(next_grant)
+                assert any(tool.name == "query_positions" for tool in listed_again.tools)
+                next_envelope = await client.call_tool("describe_capabilities", {}, next_grant)
+                assert next_envelope.status == "complete"
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, 5)

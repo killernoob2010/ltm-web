@@ -38,3 +38,26 @@ def test_explain_evidence_cannot_read_unknown_metric(queued):
     ref = store.save_result(principal, ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc), calculation_version="t", payload={"kind":"positions"}), [])
     with pytest.raises(ValueError):
         tools.dispatch(principal, "explain_evidence", {"result_ref": str(ref), "metric_path": "/metrics/secret"})
+
+
+def test_quote_wait_is_bounded_and_does_not_queue_more_requests(monkeypatch):
+    import threading
+    from app import trading_valuation
+    from app.trading_agent import tools
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def slow(requests):
+        calls.append(1)
+        entered.set()
+        release.wait(2)
+        return {}
+    monkeypatch.setattr(trading_valuation, 'get_quote_snapshots', slow)
+    try:
+        with pytest.raises(TimeoutError):
+            tools.default_quote_provider([], timeout_seconds=.02)
+        assert entered.is_set()
+        with pytest.raises(TimeoutError):
+            tools.default_quote_provider([], timeout_seconds=.02)
+        assert calls == [1]
+    finally:
+        release.set()

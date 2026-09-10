@@ -53,11 +53,15 @@ async def worker_once(deps: harness.RuntimeDeps, *, heartbeat_seconds=execution.
 async def worker_loop(deps: harness.RuntimeDeps, *, stop_event: asyncio.Event | None = None,
                       idle_seconds=1, resource_guard=None):
     stop_event = stop_event or asyncio.Event()
+    last_admission_reason = None
     await asyncio.to_thread(deps.store.recover_interrupted)
     while not stop_event.is_set():
         await asyncio.to_thread(deps.store.recover_interrupted)
         if resource_guard is not None:
             decision = resource_guard.admit()
+            if decision.reason != last_admission_reason:
+                logger.warning("agent_admission reason=%s", decision.reason)
+                last_admission_reason = decision.reason
             if not decision.allowed:
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=idle_seconds)
