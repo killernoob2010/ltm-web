@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import vm from 'node:vm';
 
 import renderer from "../frontend/agent_answer_renderer.js";
 
 const source = readFileSync(new URL("../frontend/agent_answer_renderer.js", import.meta.url), "utf8");
+
+test('inventory display is concise without rounding small nonzero values to zero', () => {
+  const context = {asText: String, missingReason: () => '缺少数据'};
+  vm.runInNewContext(source.slice(source.indexOf('  function displayValue'), source.indexOf('  function appendSummary')), context);
+  assert.equal(context.displayValue('1604.06875819991', {}, 'current_value').text, '1,604.07');
+  assert.equal(context.displayValue('-0.170058186498', {}, 'delta_pct').text, '-0.17%');
+  assert.notEqual(context.displayValue('0.000001', {}, 'value').text, '0.00');
+  assert.equal(context.displayValue('missing_period', {}, 'comparison_status').text, '未取到上周基准');
+});
 const browserFixture = readFileSync(new URL("./agent_answer_renderer_fixture.html", import.meta.url), "utf8");
 const tableFixture = readFileSync(new URL("./agent_answer_renderer_table_fixture.html", import.meta.url), "utf8");
 const chartFixture = readFileSync(new URL("./agent_answer_renderer_chart_fixture.html", import.meta.url), "utf8");

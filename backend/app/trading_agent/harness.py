@@ -330,7 +330,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     async def finish_checked(result):
         checked = request_scope.assess(result, scope, query_envelopes, failed_data_tools,
             weekly_changes=bool(re.search(r'每周|逐周', user_text) and re.search(r'变化|环比|增减', user_text)))
-        issues = [item for item in checked.limitations if item.code in {'request_scope_unverified', 'query_incomplete'}]
+        issues = [item for item in checked.limitations if item.code in {
+            'request_scope_unverified', 'query_incomplete', 'reference_unavailable',
+            'uncovered_claim', 'unreferenced_number', 'missing_reference', 'invalid_reference',
+        }]
         if scope or issues:
             await asyncio.to_thread(deps.store.append_event, principal, 'business_validation',
                 status='failed' if issues else 'complete', error_code=issues[0].code if issues else None)

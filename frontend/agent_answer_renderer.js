@@ -216,6 +216,16 @@
 
   function displayValue(value, row, key) {
     if (value === null || value === undefined) return { text: `—（${missingReason(row, key)}）`, missing: true };
+    if (key === 'comparison_status') {
+      return {text: ({complete: '可比', missing_period: '未取到上周基准', data_anomaly: '数据异常', not_comparable: '口径不可比', unstable_base: '基数异常'})[value] || asText(value), missing: false};
+    }
+    if (['value', 'current_value', 'previous_value', 'delta', 'delta_pct'].includes(key)) {
+      const number = Number(value);
+      if (Number.isFinite(number)) {
+        const text = number !== 0 && Math.abs(number) < 0.01 ? asText(value) : number.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        return {text: text + (key === 'delta_pct' ? '%' : ''), missing: false, raw: asText(value)};
+      }
+    }
     return { text: asText(value), missing: false };
   }
 
@@ -224,6 +234,8 @@
     const coverage = pageData && pageData.coverage && typeof pageData.coverage === "object" ? pageData.coverage : {};
     const keys = Object.keys(summary);
     if (!keys.length && !Object.keys(coverage).length) return;
+    const unit = summary.unit || (Array.isArray(summary.units) ? summary.units.join('、') : '');
+    if (unit) appendText(doc, parent, 'p', `单位：${asText(unit)}`, 'agent-answer-view-chart-unit');
     const wrapper = doc.createElement("details");
     wrapper.className = "agent-answer-view-summary";
     appendText(doc, wrapper, "summary", "查看数据范围与统计口径", "agent-answer-view-summary-title");
@@ -748,6 +760,7 @@
         const value = displayValue(row && row[key], row, key);
         cell.textContent = value.text;
         if (value.missing) cell.title = `数据缺失：${missingReason(row, key)}`;
+        else if (value.raw) cell.title = `原始值：${value.raw}`;
         tr.appendChild(cell);
       });
       body.appendChild(tr);
