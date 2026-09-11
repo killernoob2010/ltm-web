@@ -1,6 +1,7 @@
 """Bounded, auditable model/tool loop shared by Web and WeCom workers."""
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import inspect
 import json
 import logging
@@ -8,7 +9,7 @@ import re
 import time
 from typing import Any, Literal
 
-from . import answer, prompts, progress, tools, execution, research_policy
+from . import answer, prompts, progress, tools, execution, research_policy, request_scope
 from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue, apply_policy_limits, policy_answer21
 from .contracts import AnswerDraft
@@ -321,10 +322,25 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             pass
         return final
     user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
+    current_time = datetime.now(timezone.utc)
+    scope = request_scope.resolve(user_text, current_time)
+    query_envelopes = []
+    failed_data_tools = set()
+
+    async def finish_checked(result):
+        checked = request_scope.assess(result, scope, query_envelopes, failed_data_tools)
+        issues = [item for item in checked.limitations if item.code in {'request_scope_unverified', 'query_incomplete'}]
+        if scope or issues:
+            await asyncio.to_thread(deps.store.append_event, principal, 'business_validation',
+                status='failed' if issues else 'complete', error_code=issues[0].code if issues else None)
+        await _finish21(deps, task_id, checked)
+        return checked
     plan = enforce_research_policy(
         user_text,
         RequestPlan(mode="clarification_required", reason="ambiguous", domains=["public"]),
     )
+    if not has_internal_request(user_text):
+        scope = {}
     configured = public_tools_configured()
     public_unavailable = {"policy": "public_not_configured"} if plan.mode == "research_allowed" and not configured else {}
     restricted_modules = restricted_module_requests(user_text)
@@ -635,6 +651,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             user_text=user_text,
             restricted_modules=restricted_modules,
             public_research_unavailable=bool(public_unavailable),
+            current_time=current_time,
+            request_scope=scope,
         )
         if preflight_context:
             messages.append({"role": "system", "content": "\n\n".join(preflight_context)})
@@ -767,6 +785,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         })
                         continue
                     try:
+                        if call.name == 'query_dataset':
+                            request_scope.check_query(scope, call.arguments)
+                            # Validate locally so bad fields can be repaired without an opaque MCP failure.
+                            tools.validate_dataset_query(tools.DatasetQuery.model_validate(call.arguments))
                         envelope = await _bounded_call(
                             lambda: deps.mcp.call_tool(call.name, call.arguments, grant),
                             clock=deps.clock,
@@ -779,6 +801,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         envelope_payload = getattr(envelope, "payload", None)
+                        if call.name == 'query_dataset':
+                            query_envelopes.append(envelope)
+                        if call.name in tools.DATASET_TOOL_NAMES - {'describe_dataset'}:
+                            if getattr(envelope, 'status', None) == 'complete':
+                                failed_data_tools.discard(call.name)
+                            else:
+                                failed_data_tools.add(call.name)
                         if call.name in {"search_public", "read_public"}:
                             public_unavailable[call.name] = getattr(envelope, "status", None) not in {"complete", "partial"}
                         if (call.name == "search_public" and isinstance(envelope_payload, dict)
@@ -799,6 +828,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                          "content":json.dumps({"status":"partial","error":"任务时间已用尽"}, ensure_ascii=False)})
                         break
                     except Exception as exc:
+                        if call.name in tools.DATASET_TOOL_NAMES - {'describe_dataset'}:
+                            failed_data_tools.add(call.name)
                         await asyncio.to_thread(deps.store.append_event, principal, "tool_error", tool_name=call.name, arguments=call.arguments, error_code=_safe_error_code(exc))
                         try:
                             from .research import QueryRejected
@@ -810,6 +841,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             content = json.dumps({"status": "rejected", "error": _PUBLIC_QUERY_REJECTED}, ensure_ascii=False)
                         elif public_query_rejected:
                             content = json.dumps({"status": "rejected", "error": "公开检索子问题未发送；请保留已有答案并明确说明公开研究受限。"}, ensure_ascii=False)
+                        elif str(exc) == 'request_scope_mismatch':
+                            content = json.dumps({'status': 'rejected', 'error': '查询范围与用户问题不符，未执行。请使用 mode=range 和指定的日期、港口。', 'required_scope': scope}, ensure_ascii=False)
+                        elif isinstance(exc, ValueError) and call.name == 'query_dataset':
+                            content = json.dumps({'status': 'rejected', 'error': '查询字段或筛选参数不符合该数据集目录。请只选目录中允许的字段，或省略 fields 使用默认字段；不要换日期或港口。'}, ensure_ascii=False)
                         else:
                             content = json.dumps({"status":"temporarily_unavailable","error":"工具暂时不可用"},ensure_ascii=False)
                         messages.append({"role":"tool","tool_call_id":call.id,"content":content})
@@ -876,8 +911,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 mark_public_source_gap()
                 final = apply_policy_limits(_with_source_limits(validated21, public_unavailable), restricted_modules)
                 await _record_stage(deps, principal, "validation", "complete")
-                await _finish21(deps, task_id, final)
-                return final
+                return await finish_checked(final)
             else:
                 await _record_stage(deps, principal, "composing", "complete")
                 await _record_stage(deps, principal, "validation", "running")
@@ -916,8 +950,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             final = failure_fallback("partial", "本次分析达到时间或调用预算上限，未能形成完整答案。", "budget_exhausted")
         if isinstance(final, ValidatedAnswer21):
             final = apply_policy_limits(_with_source_limits(final, public_unavailable), restricted_modules)
-            await _finish21(deps, task_id, final)
-            return final
+            return await finish_checked(final)
         rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
         await asyncio.to_thread(deps.store.finish, task_id, deps.worker_id, _task_state(final), rendered,
                           structured_payload=_draft_payload(final))

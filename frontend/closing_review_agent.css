@@ -32,7 +32,9 @@
   display: grid;
   grid-template-columns: minmax(210px, .34fr) minmax(0, 1fr);
   gap: 16px;
-  min-height: calc(100vh - 220px);
+  height: calc(100dvh - 180px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .closing-review-agent-panel {
@@ -43,12 +45,15 @@
   background: #fff;
 }
 
-.closing-review-agent-history-panel { display: flex; flex-direction: column; }
+.closing-review-agent-history-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .closing-review-agent-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .closing-review-agent-panel-header h2 { font-size: 16px; }
 .closing-review-agent-new { min-height: 30px; padding: 0 10px; font-size: 12px; }
 
-.closing-review-agent-history { display: grid; gap: 7px; overflow: auto; }
+.closing-review-agent-history { display: grid; gap: 7px; overflow: auto; min-height: 0; flex: 1; align-content: start; overscroll-behavior: contain; }
+.closing-review-agent-history-row { display: flex; min-width: 0; align-items: center; }
+.closing-review-agent-history-row .closing-review-agent-history-item { min-width: 0; flex: 1; }
+.closing-review-agent-delete { padding: 5px; min-height: 28px; font-size: 11px; flex-shrink: 0; }
 .closing-review-agent-history-item {
   display: grid;
   gap: 4px;
@@ -67,8 +72,8 @@
 .closing-review-agent-history-meta { color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-retention { margin-top: auto; padding-top: 14px; color: var(--cra-muted); font-size: 11px; line-height: 1.6; }
 
-.closing-review-agent-main { display: grid; grid-template-rows: minmax(260px, 1fr) auto; gap: 12px; min-width: 0; }
-.closing-review-agent-messages { min-height: 320px; max-height: calc(100vh - 420px); overflow: auto; display: grid; align-content: start; gap: 10px; padding: 4px; }
+.closing-review-agent-main { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-width: 0; min-height: 0; }
+.closing-review-agent-messages { min-height: 0; overflow: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 10px; padding: 4px; }
 .closing-review-agent-message { max-width: min(760px, 92%); padding: 13px 15px; border: 1px solid var(--cra-line); border-radius: 10px; background: #fff; box-shadow: 0 4px 14px rgba(15, 23, 42, .04); }
 .closing-review-agent-message.is-user { justify-self: end; border-color: #cbdaf6; background: var(--cra-blue-soft); }
 .closing-review-agent-message.is-sending { opacity: .86; }
@@ -140,31 +145,32 @@
 .closing-review-agent-answer .agent-answer-view-error { color: #b42318; }
 .closing-review-agent-answer .agent-answer-view-warnings { margin: 8px 0 0; padding-left: 17px; color: var(--cra-amber); font-size: 11px; }
 .closing-review-agent-status-chip { display: inline-flex; margin-top: 9px; padding: 3px 7px; border-radius: 5px; background: #eef2f7; color: #526076; font-size: 11px; }
-.closing-review-agent-status-chip.status-complete { color: var(--cra-green); background: #e9f7ef; }
+.closing-review-agent-status-chip.status-complete { color: var(--cra-muted); background: #eef2f7; }
 .closing-review-agent-status-chip.status-data_anomaly { color: #b42318; background: #fff0ef; }
 .closing-review-agent-status-chip.status-waiting_for_data { color: var(--cra-amber); background: #fff5dc; }
 .closing-review-agent-inline-progress { display: block; margin-top: 7px; color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-retry { min-height: 29px; margin-top: 10px; padding: 0 9px; font-size: 11px; }
 
-.closing-review-agent-evidence { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(148, 163, 184, .28); color: var(--cra-muted); font-size: 11px; }
+.closing-review-agent-evidence { margin-top: 10px; color: var(--cra-muted); font-size: 11px; }
+.closing-review-agent-evidence summary { cursor: pointer; }
+.closing-review-agent-limitation { margin-top: 7px; color: var(--cra-amber); font-size: 12px; }
 .closing-review-agent-evidence-list { margin: 0; padding-left: 16px; }
 
 .closing-review-agent-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: end; }
-.closing-review-agent-composer textarea { min-height: 74px; resize: vertical; }
+.closing-review-agent-composer textarea { min-height: 60px; height: 60px; resize: none; overflow-y: auto; }
 .closing-review-agent-composer button { min-width: 88px; }
 .closing-review-agent-composer-note { grid-column: 1 / -1; color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-empty { padding: 24px 12px; color: var(--cra-muted); text-align: center; font-size: 12px; }
 
 @media (max-width: 860px) {
-  .closing-review-agent-layout { grid-template-columns: 1fr; min-height: auto; }
+  .closing-review-agent-layout { grid-template-columns: 1fr; grid-template-rows: minmax(80px, 24%) minmax(0, 1fr); }
   .closing-review-agent-history { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .closing-review-agent-retention { margin-top: 10px; }
-  .closing-review-agent-messages { max-height: none; }
+  .closing-review-agent-retention { display: none; }
 }
 
 @media (max-width: 560px) {
   .closing-review-agent-header { display: grid; gap: 8px; }
   .closing-review-agent-history { grid-template-columns: 1fr; }
-  .closing-review-agent-composer { grid-template-columns: 1fr; }
-  .closing-review-agent-composer button { width: 100%; }
+  .closing-review-agent-layout { height: calc(100dvh - 205px); }
+  .closing-review-agent-composer button { min-width: 60px; }
 }

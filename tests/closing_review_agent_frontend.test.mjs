@@ -13,7 +13,7 @@ test("closing review Agent has one guarded workspace entry point", () => {
   assert.match(indexHtml, /vendor\/agent\/marked\.umd\.js/);
   assert.match(indexHtml, /vendor\/agent\/purify\.min\.js/);
   assert.match(indexHtml, /agent_answer_renderer\.js/);
-  assert.match(indexHtml, /closing_review_agent\.js\?v=trading-holdings-agent-20260910-status-v1/);
+  assert.match(indexHtml, /closing_review_agent\.js\?v=[^"\s]+/);
   assert.match(indexHtml, /closing_review_agent\.js/);
   assert.match(appJs, /const closingReviewAgentPage = document\.querySelector\("#closingReviewAgentPage"\)/);
   assert.match(appJs, /code === "closing_review_agent"/);
@@ -59,8 +59,8 @@ test("Agent renders server content as text and does not create a client-side tra
 
 test("Agent exposes seconds-only timestamps and evidence/status labels", () => {
   assert.match(agentJs, /slice\(0, 19\)/);
-  assert.match(agentJs, /数据状态/);
-  assert.match(agentJs, /证据/);
+  assert.match(agentJs, /statusLabel\(dataStatus\)/);
+  assert.match(agentJs, /evidenceBlock\(projection\)/);
   assert.match(agentJs, /最新来源|结果已更新/);
   assert.match(css, /\.closing-review-agent-page/);
   assert.match(css, /\.closing-review-agent-composer/);

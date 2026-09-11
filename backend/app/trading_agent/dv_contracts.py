@@ -93,6 +93,8 @@ def _normalize_list(values, field: str):
             normalized_value = int(value)
         else:
             normalized_value = str(value).strip()
+            if field == 'ports':
+                normalized_value = {'日照港': '日照'}.get(normalized_value, normalized_value)
             if not normalized_value:
                 raise ValueError(f"empty_filter:{field}")
         if normalized_value not in seen:

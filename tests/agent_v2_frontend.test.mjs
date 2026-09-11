@@ -36,13 +36,14 @@ const pollingFunction = source.slice(source.indexOf('  async function waitForTas
 function pollingHarness(api) {
   let now = 0;
   const context = {
-    state: { activation: 1, api: (url) => api(url, now) },
+    state: { activation: 1, requestSequence: 1, conversationId: 7, api: (url) => api(url, now) },
     endpoint: () => '/api/trading-agent-v2',
     setStatus: () => {},
     Date: { now: () => now },
     setTimeout: (resolve, delay) => { now += delay; resolve(); },
   };
-  vm.runInNewContext(pollingFunction, context);
+  const guard = source.slice(source.indexOf('  function requestIsCurrent'), source.indexOf('  function setStatus'));
+  vm.runInNewContext(guard + pollingFunction, context);
   return context.waitForTask;
 }
 

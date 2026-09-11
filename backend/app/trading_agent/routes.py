@@ -158,6 +158,33 @@ def list_messages(conversation_id: int, user: dict = Depends(trading_management_
     return {"conversation":_conversation(conversation),"items":items,"active_task":active_task}
 
 
+@router.delete("/conversations/{conversation_id}")
+def archive_conversation(conversation_id: int, user: dict = Depends(trading_management_current_user)):
+    _require(user, schema=True)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(cur, "SELECT id FROM closing_review_conversations WHERE id=? AND user_id=? AND channel='web' AND kind='v2_conversation' AND status='active'", (conversation_id, user['id'])).fetchone()
+        if not row:
+            raise HTTPException(404, '对话不存在')
+        active = db._exec(cur, "SELECT id FROM closing_review_tasks WHERE conversation_id=? AND state NOT IN ('succeeded','partial','failed','cancelled') LIMIT 1", (conversation_id,)).fetchone()
+        if active:
+            raise HTTPException(409, '对话仍在处理中，请结束后再删除')
+        db._exec(cur, "UPDATE closing_review_conversations SET status='archived',updated_at=? WHERE id=? AND user_id=?", (datetime.now(timezone.utc).isoformat(timespec='seconds'), conversation_id, user['id']))
+    return {'id': conversation_id, 'status': 'archived'}
+
+
+@router.post("/conversations/{conversation_id}/restore")
+def restore_conversation(conversation_id: int, user: dict = Depends(trading_management_current_user)):
+    _require(user, schema=True)
+    with db.connect() as conn:
+        cur = conn.cursor()
+        row = db._exec(cur, "SELECT id FROM closing_review_conversations WHERE id=? AND user_id=? AND channel='web' AND kind='v2_conversation' AND status='archived'", (conversation_id, user['id'])).fetchone()
+        if not row:
+            raise HTTPException(404, '对话不存在')
+        db._exec(cur, "UPDATE closing_review_conversations SET status='active',updated_at=? WHERE id=? AND user_id=?", (datetime.now(timezone.utc).isoformat(timespec='seconds'), conversation_id, user['id']))
+    return {'id': conversation_id, 'status': 'active'}
+
+
 @router.post("/conversations/{conversation_id}/messages")
 def post_message(conversation_id: int, payload: MessageIn, response: Response, user: dict = Depends(trading_management_current_user)):
     _require(user, schema=True)

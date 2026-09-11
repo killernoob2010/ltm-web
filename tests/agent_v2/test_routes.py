@@ -45,6 +45,25 @@ def test_foreign_conversation_is_not_disclosed(route_client):
     assert client.get("/trading-agent-v2/conversations/999999/messages").status_code==404
 
 
+def test_archive_only_owned_idle_conversation_and_restore(route_client):
+    client, uid = route_client
+    conversation = client.post('/trading-agent-v2/conversations', json={}).json()
+    url = f"/trading-agent-v2/conversations/{conversation['id']}"
+    assert client.delete(url).status_code == 200
+    assert client.get('/trading-agent-v2/conversations').json()['items'] == []
+    assert client.get(url + '/messages').status_code == 404
+    with db.connect() as conn:
+        assert conn.execute('SELECT status FROM closing_review_conversations WHERE id=?', (conversation['id'],)).fetchone()[0] == 'archived'
+    assert client.post(url + '/restore').status_code == 200
+    assert client.get(url + '/messages').status_code == 200
+    client.post(url + '/messages', json={'client_request_id': str(uuid4()), 'content': '查库存'})
+    assert client.delete(url).status_code == 409
+    with db.connect() as conn:
+        conn.execute('UPDATE closing_review_conversations SET user_id=99999 WHERE id=?', (conversation['id'],))
+    assert client.delete(url).status_code == 404
+    assert client.post(url + '/restore').status_code == 404
+
+
 def test_message_contract_rejects_unknown_fields_and_pair_code_is_not_cached(route_client):
     client, _ = route_client
     conversation = client.post("/trading-agent-v2/conversations", json={}).json()

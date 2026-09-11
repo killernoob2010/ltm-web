@@ -1,5 +1,7 @@
 """Prompt policy for flexible, evidence-bound business conversations."""
 import json
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .answer_contracts import AnswerDraft21, ModelAnswer21
 from .contracts import AnswerDraft
@@ -52,6 +54,8 @@ def build_messages(
     user_text=None,
     restricted_modules=None,
     public_research_unavailable=False,
+    current_time=None,
+    request_scope=None,
 ):
     messages = [{"role": "system", "content": SYSTEM_PROMPT +
                  "\n当前输出使用分段协议，替代旧 body_markdown/spans：只返回 schema_version、blocks、views。每段有稳定 id、kind、text、refs、depends_on；程序自动计算证据位置，禁止输出 start/end。前文的 spans 引用规则对应 blocks.refs。\nModelAnswer21 JSON Schema：" + json.dumps(ModelAnswer21.model_json_schema(), ensure_ascii=False, separators=(",", ":")) +
@@ -64,6 +68,16 @@ def build_messages(
                  "\n来源、筛选范围、账本时点未知等非数值事实说明，使用 kind=fact、refs=[真实result_ref#/metadata]。metadata 只支持来源说明，不能当数字占位符使用；业务数字仍使用真实 /metrics 或 /rows 引用。纯展示占位符单独用 kind=knowledge，不要创建没有refs的fact段落。不要在说明里重复具体时分秒，行情时间由视图列展示。" +
                  "\n联合研究先按能力目录读取匹配的内部数据，再搜索和读取公开资料；一个来源不可用不能阻止另一个来源交付。查询基差使用 query_market_series。没有 result_ref 的工具失败不得创建 fact/public_fact 引用，尤其不能用内部结果引用为外部失败或规则背书。公开搜索失败由系统统一追加限制说明，正文保留内部视图及有真实 metadata_ref 的来源说明即可；不编造链接、不假装已完成联合分析。未读取官方正文时，不得把交易所具体规则包装成通用知识。基差按现货减期货解释，不混用相反定义；标准化吨和湿吨不得直接相减。"},
                 {"role": "system", "content": "当前能力目录（服务端已过滤）：" + json.dumps(capability, ensure_ascii=False, separators=(",", ":"))}]
+    anchor = (current_time or datetime.now(timezone.utc)).astimezone(ZoneInfo('Asia/Shanghai'))
+    messages[0]['content'] += (
+        f'\n本次业务日期：{anchor.date().isoformat()}（Asia/Shanghai）。“今年”指{anchor.year}年，不能使用模型记忆的年份。'
+        '\n回答先给结论，再给用户要求的表格或图表；不展开分析过程、工具名、接口名、证据编号或逐项来源说明。'
+        '证据仍须按协议绑定，详情由界面折叠展示。必要的缺数、口径差异或查询失败用一句话提醒，不重复声明只读和不补零。'
+        '\n港口库存总量及其每周变化优先读取 inventory_summary，summary_metrics=["库存总量"]；'
+        '只有用户问品种明细时才读取 port_inventory。日照港登记名称为日照。字段必须来自该数据集目录，不能把其他数据集的字段套入。'
+    )
+    if request_scope:
+        messages[0]['content'] += '\n服务端已明确本次单月查询范围：' + json.dumps(request_scope, ensure_ascii=False) + '。query_dataset 必须使用 mode=range 及上述日期/港口；查不到不能换年或换港口。'
     if public_research_unavailable:
         messages.append({
             "role": "system",

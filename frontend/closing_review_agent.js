@@ -77,7 +77,7 @@
 
   function statusLabel(value) {
     return {
-      complete: "数据完整",
+      complete: "已回答 · 正确性未评估",
       partial: "部分结果",
       failed: "处理失败",
       waiting_for_data: "等待数据",
@@ -123,8 +123,42 @@
       addText(item, "strong", "closing-review-agent-history-title", displayConversationTitle(conversation.title));
       addText(item, "span", "closing-review-agent-history-meta", `${historyStatusLabel(conversation)} · ${timestampSeconds(conversation.updated_at || conversation.last_message_at) || "刚刚"}`);
       item.addEventListener("click", () => selectConversation(conversation.id));
-      history.appendChild(item);
+      const row = document.createElement("div");
+      row.className = "closing-review-agent-history-row";
+      row.appendChild(item);
+      if (state.v2) {
+        const remove = addText(row, "button", "secondary closing-review-agent-delete", "删除");
+        remove.type = "button";
+        remove.setAttribute("aria-label", `删除对话：${displayConversationTitle(conversation.title)}`);
+        remove.addEventListener("click", () => deleteConversation(conversation));
+      }
+      history.appendChild(row);
     });
+  }
+
+  async function deleteConversation(conversation) {
+    if (state.loading || state.activeTask) return setStatus("请等当前查询结束后再删除", "error");
+    if (!window.confirm("删除这段历史对话？仅从列表移除，不删除业务数据；删除后可撤销。")) return;
+    const activation = state.activation;
+    state.loading = true;
+    try {
+      await state.api(`${V2_ENDPOINT}/conversations/${conversation.id}`, { method: "DELETE" });
+      if (activation !== state.activation) return;
+      await loadConversations(activation);
+      setStatus("对话已删除 ");
+      const undo = addText(status, "button", "secondary closing-review-agent-delete", "撤销删除");
+      undo.type = "button";
+      undo.addEventListener("click", async () => {
+        try {
+          await state.api(`${V2_ENDPOINT}/conversations/${conversation.id}/restore`, { method: "POST" });
+          if (activation !== state.activation) return;
+          state.conversationId = conversation.id;
+          await loadConversations(activation);
+          setStatus("对话已恢复");
+        } catch (error) { setStatus(error.message || "恢复失败", "error"); }
+      });
+    } catch (error) { setStatus(error.message || "删除失败", "error"); }
+    finally { state.loading = false; }
   }
 
   function evidenceBlock(payload) {
@@ -134,9 +168,9 @@
     const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : null;
     const refs = metadata && Array.isArray(metadata.evidence_refs) ? metadata.evidence_refs : [];
     if (!evidence.length && !limitations.length && !metadata && !refs.length) return null;
-    const wrapper = document.createElement("div");
+    const wrapper = document.createElement("details");
     wrapper.className = "closing-review-agent-evidence";
-    addText(wrapper, "strong", "closing-review-agent-evidence-heading", "证据与限制");
+    addText(wrapper, "summary", "closing-review-agent-evidence-heading", "查看来源与校验详情");
     if (metadata && metadata.source) addText(wrapper, "span", "closing-review-agent-evidence-source", `最新来源：${metadata.source}`);
     const list = document.createElement("ul");
     list.className = "closing-review-agent-evidence-list";
@@ -205,7 +239,12 @@
       }
       if (supersededIds.has(Number(message.id))) addText(article, "span", "closing-review-agent-status-chip", "已被更新");
       const dataStatus = projection && (projection.delivery_status || projection.status);
-      if (dataStatus) addText(article, "span", `closing-review-agent-status-chip status-${dataStatus}`, `数据状态：${statusLabel(dataStatus)}`);
+      if (dataStatus && dataStatus !== "complete") addText(article, "span", `closing-review-agent-status-chip status-${dataStatus}`, statusLabel(dataStatus));
+      const limitations = Array.isArray(projection?.limitations) ? projection.limitations : [];
+      if (limitations.length && dataStatus !== "complete") {
+        const warning = limitations.find((item) => item.code === "request_scope_unverified" || item.code === "query_incomplete") || limitations[0];
+        if (warning.message && !(message.content || "").includes(warning.message)) addText(article, "p", "closing-review-agent-limitation", warning.message);
+      }
       const evidence = evidenceBlock(projection);
       if (evidence) article.appendChild(evidence);
       if (message.role !== "user" && message.message_type === "error") {
@@ -253,12 +292,12 @@
     const progress = article && article.querySelector(".closing-review-agent-inline-progress");
     if (progress) {
       const elapsed = Number(state.progress.elapsed_seconds);
-      progress.textContent = `${state.progress.summary || "处理中"}${Number.isFinite(elapsed) ? ` · ${elapsed} 秒` : ""}`;
+      progress.textContent = `正在处理${Number.isFinite(elapsed) ? ` · ${Math.floor(elapsed)} 秒` : ""}`;
     }
     const key = `${state.progress.sequence}:${state.progress.stage}:${state.progress.stage_status}`;
     if (key !== state.announcedProgress) {
       state.announcedProgress = key;
-      setStatus(state.progress.summary || "正在处理…");
+      setStatus(state.progress.terminal ? "" : "正在处理…");
     }
   }
 

@@ -94,6 +94,20 @@ GOOD_ANSWER21 = '{"schema_version":"2.1","body_markdown":"一般性说明。","s
 
 
 @pytest.mark.asyncio
+async def test_monthly_inventory_without_data_is_not_success_even_if_json_valid(queued):
+    from app import db
+    task = store.claim_next('harness-worker')
+    with db.connect() as conn:
+        conn.execute("UPDATE closing_review_messages SET content='日照港，今年8月份每周库存变化' WHERE id=(SELECT user_message_id FROM closing_review_tasks WHERE id=?)", (task,))
+    model = ScriptedModel([ModelTurn(content='{"schema_version":"2.1","blocks":[{"id":"s1","kind":"knowledge","text":"查询暂时不可用。"}],"views":[]}')])
+    result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id='harness-worker'))
+    assert result.delivery_status == 'partial'
+    with db.connect() as conn:
+        assert conn.execute('SELECT state FROM agent_v2_runs WHERE task_id=?', (task,)).fetchone()[0] == 'partial'
+        assert conn.execute("SELECT status FROM agent_v2_events WHERE task_id=? AND kind='business_validation'", (task,)).fetchone()[0] == 'failed'
+
+
+@pytest.mark.asyncio
 async def test_budget_stops_repeated_tool_requests(queued):
     task = store.claim_next("harness-worker")
     model, mcp = RepeatModel(), FakeMCP()

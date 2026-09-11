@@ -78,6 +78,14 @@ def test_query_dataset_reads_only_activated_package_and_saves_snapshot(dv_query_
     assert result.result_ref is not None
 
 
+def test_registered_rizhao_port_alias_returns_same_rows(dv_query_context):
+    _, _, principal = dv_query_context
+    result = dv_queries.query_dataset(principal, DatasetQuery(dataset='port_inventory', filters={'ports': ['日照港']}))
+    assert result.status == 'complete'
+    assert result.payload['row_count'] == 1
+    assert result.payload['preview'][0]['port'] == '日照'
+
+
 def test_query_dataset_latest_keeps_current_and_strict_previous_week(dv_query_context):
     _, _, principal = dv_query_context
     result = dv_queries.query_dataset(

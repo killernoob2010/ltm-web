@@ -35,12 +35,13 @@
   const labels = {
     queued: "排队",
     running: "运行中",
-    succeeded: "成功",
+    succeeded: "已交付",
     partial: "部分完成",
     failed: "失败",
     cancelled: "已取消",
     pending: "待运行",
     not_evaluated: "未评估",
+    auto_fail: "规则校验未通过",
     human_pass: "人工通过",
     human_fail: "人工未通过",
     human_review: "待人工复核",
@@ -73,8 +74,8 @@
 
   function statusChip(value) {
     const label = labels[value] || value || "--";
-    const tone = value === "succeeded" || value === "human_pass" ? "good"
-      : value === "failed" || value === "human_fail" ? "bad"
+    const tone = value === "human_pass" ? "good"
+      : value === "failed" || value === "human_fail" || value === "auto_fail" ? "bad"
         : value === "partial" || value === "needs_review" || value === "human_review" ? "warn" : "";
     return `<span class="agent-quality-status ${tone}">${escapeHtml(label)}</span>`;
   }

@@ -192,7 +192,7 @@ def _run_item(row: dict[str, Any], feedback: dict[str, Any] | None = None,
         "search_calls": int(row.get("search_calls") or 0),
         "last_error": str(row.get("last_error") or "")[:240] or None,
         "modules": modules if modules is not None else _module_codes(task_id),
-        "quality_status": _run_quality(state, feedback),
+        "quality_status": _run_quality(state, feedback) if feedback else 'auto_fail' if row.get('business_failed') else _run_quality(state, feedback),
         "feedback": feedback,
     }
 
@@ -219,7 +219,7 @@ def _run_query(start_date: str | None = None, end_date: str | None = None, modul
             f"AND me.tool_name IN ({placeholders}))"
         )
         params.extend(names)
-    sql = """SELECT r.*
+    sql = """SELECT r.*, EXISTS(SELECT 1 FROM agent_v2_events bv WHERE bv.task_id=r.task_id AND bv.kind='business_validation' AND bv.status='failed') AS business_failed
              FROM agent_v2_runs r
              WHERE """ + " AND ".join(clauses) + " ORDER BY r.created_at DESC,r.task_id DESC"
     with db.connect() as conn:
@@ -649,6 +649,8 @@ def get_run_detail(task_id: int) -> dict[str, Any] | None:
         return None
     feedback = _latest_feedback({task_id}).get(task_id)
     item = _run_item(dict(row), feedback)
+    if not feedback and any(event['kind'] == 'business_validation' and event['status'] == 'failed' for event in events):
+        item['quality_status'] = 'auto_fail'
     question = None
     answer = None
     payload = None

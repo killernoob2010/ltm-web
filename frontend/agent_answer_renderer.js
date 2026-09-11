@@ -224,9 +224,9 @@
     const coverage = pageData && pageData.coverage && typeof pageData.coverage === "object" ? pageData.coverage : {};
     const keys = Object.keys(summary);
     if (!keys.length && !Object.keys(coverage).length) return;
-    const wrapper = doc.createElement("div");
+    const wrapper = doc.createElement("details");
     wrapper.className = "agent-answer-view-summary";
-    appendText(doc, wrapper, "strong", "全量汇总", "agent-answer-view-summary-title");
+    appendText(doc, wrapper, "summary", "查看数据范围与统计口径", "agent-answer-view-summary-title");
     const list = doc.createElement("dl");
     keys.forEach((key) => {
       const labels = {
