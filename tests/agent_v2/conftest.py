@@ -14,6 +14,7 @@ def isolated_agent_test(tmp_path, monkeypatch):
     import socket
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "agent-test.db")
 

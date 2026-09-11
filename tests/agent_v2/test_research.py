@@ -6,6 +6,58 @@ from app.trading_agent.research import QueryRejected, UnsafeSource, validate_pub
 from test_store import queued
 
 
+@pytest.mark.parametrize("freshness", ["none", "day", "week", "month", "year"])
+def test_tavily_basic_search_preserves_sources_and_budget(queued, monkeypatch, freshness):
+    from urllib.parse import urlparse
+    from app.trading_agent.research_policy import public_provider_readiness
+
+    principal = store.principal_for_task(store.claim_next("tavily-worker"))
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-tavily")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "synthetic-brave")
+    monkeypatch.setattr(research, "_validate_url", urlparse)
+
+    class Session:
+        def post(self, url, **kwargs):
+            assert url == "https://api.tavily.com/search"
+            assert kwargs["headers"]["Authorization"] == "Bearer synthetic-tavily"
+            args = kwargs["json"]
+            assert args["query"] == "铁矿石供需"
+            assert args["search_depth"] == "basic"
+            assert args["auto_parameters"] is False
+            assert args["include_answer"] is False
+            assert args["include_raw_content"] is False
+            assert args.get("time_range") == (None if freshness == "none" else freshness)
+            assert kwargs["allow_redirects"] is False
+            return type("Response", (), {"status_code": 200, "json": lambda _: {
+                "results": [{"title": "供需", "url": "https://example.com/report",
+                             "content": "公开资料摘要", "published_date": "2026-09-10"}],
+            }})()
+
+    assert public_provider_readiness() == {"provider": "tavily", "status": "available"}
+    result = research.search_public(principal, "铁矿石供需", freshness=freshness, session=Session())
+    assert result.status == "complete"
+    assert result.payload["provider"] == "tavily"
+    source = result.payload["sources"][0]
+    assert source["description"] == "公开资料摘要"
+    assert source["published_label"] == "2026-09-10"
+    assert source["source_ref"]
+
+
+@pytest.mark.parametrize("status", [302, 401, 429, 432, 433, 500])
+def test_tavily_failure_does_not_fall_back_or_leak_response(queued, monkeypatch, status):
+    principal = store.principal_for_task(store.claim_next("tavily-failure-worker"))
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-tavily")
+
+    class Session:
+        def post(self, *args, **kwargs):
+            return type("Response", (), {"status_code": status})()
+
+    result = research.search_public(principal, "铁矿石供需", session=Session())
+    assert result.status == "temporarily_unavailable"
+    assert result.payload["provider"] == "tavily"
+    assert "synthetic-tavily" not in str(result)
+
+
 def test_public_query_rejects_private_amount_and_internal_context():
     import pytest
     for query in ("本账户亏损987654.32怎样评价", "近期天气如何影响订单ABC123456", "我的持仓风险如何"):

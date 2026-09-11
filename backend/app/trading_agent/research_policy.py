@@ -60,6 +60,8 @@ _RESTRICTED_MODULE_PATTERNS = (
 
 def public_provider_readiness() -> dict[str, str]:
     """Expose provider readiness without exposing credentials or making a request."""
+    if os.environ.get("TAVILY_API_KEY", "").strip():
+        return {"provider": "tavily", "status": "available"}
     if not os.environ.get("BRAVE_SEARCH_API_KEY", "").strip():
         return {"provider": "brave", "status": "not_configured"}
     endpoint = os.environ.get("BRAVE_SEARCH_ENDPOINT", "https://api.search.brave.com/res/v1/web/search").strip()
