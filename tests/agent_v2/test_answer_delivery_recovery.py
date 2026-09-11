@@ -349,10 +349,27 @@ async def test_external_request_without_public_call_is_not_delivered_complete(qu
     monkeypatch.setattr(harness, "public_tools_configured", lambda: True)
     result = await harness.run_task(
         task,
-        harness.RuntimeDeps(store, ScriptedModel([ModelTurn(content=GOOD_ANSWER21)]), FakeMCP(), worker_id="public-not-called"),
+        harness.RuntimeDeps(store, ScriptedModel([ModelTurn(content=GOOD_ANSWER21)] * 2), FakeMCP(), worker_id="public-not-called"),
     )
     assert result.delivery_status == "partial"
     assert any(x.code == "public_source_unavailable" for x in result.limitations)
+
+
+@pytest.mark.asyncio
+async def test_external_search_skipped_by_model_gets_one_execution_reminder(queued, monkeypatch):
+    task = store.claim_next("search-reminder")
+    _replace_current_question(task, "请联网搜索近期铁矿石供需新闻")
+    monkeypatch.setattr(harness, "public_tools_configured", lambda: True)
+    model = ScriptedModel([
+        ModelTurn(content=GOOD_ANSWER21),
+        ModelTurn(tool_calls=[{"id": "s1", "name": "search_public", "arguments": {"public_query": "铁矿石供需新闻"}}]),
+        ModelTurn(content=GOOD_ANSWER21),
+    ])
+    await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id="search-reminder"))
+    assert len(model.calls) == 3
+    assert "你尚未调用搜索" in model.calls[1][-1]["content"]
+    with store.db.connect() as conn:
+        assert conn.execute("SELECT search_calls FROM agent_v2_runs WHERE task_id=?", (task,)).fetchone()[0] == 1
 
 
 @pytest.mark.asyncio

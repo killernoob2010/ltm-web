@@ -660,6 +660,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             for item in schemas
             if isinstance(item, dict) and isinstance(item.get("function"), dict)
         }
+        await asyncio.to_thread(deps.store.append_event, principal, "model_tool_catalog",
+                                tool_name=",".join(sorted(allowed_tool_names)),
+                                status=research_policy.public_provider_readiness()["status"])
+        public_search_reminded = False
         repair_attempted = False
         recoverable_draft21 = None
         for _ in range(budget.max_models):
@@ -797,6 +801,18 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     messages = _bound_messages(messages)
                 if final:
                     break
+                continue
+            if (plan.mode == "research_allowed" and configured
+                    and "search_public" in allowed_tool_names and budget.search_calls == 0
+                    and not public_search_reminded and not repair_attempted
+                    and budget.model_calls < budget.max_models and budget.tool_calls < budget.max_tools):
+                public_search_reminded = True
+                messages.append({"role": "system", "content": (
+                    "用户明确要求公开检索，服务端已配置搜索服务，search_public 工具可用。"
+                    "你尚未调用搜索，不能将未执行描述成服务失败或未配置。"
+                    "请先调用 search_public，以不含账户、持仓数量或其他内部信息的公开子问题检索；"
+                    "根据返回的真实来源作答。无法安全拆分时才说明具体限制。"
+                )})
                 continue
             raw_answer = turn.content or ""
             if protocol21_mode or _looks_like_answer21(raw_answer):
