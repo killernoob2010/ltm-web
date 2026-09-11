@@ -102,6 +102,9 @@ async def test_monthly_inventory_without_data_is_not_success_even_if_json_valid(
     model = ScriptedModel([ModelTurn(content='{"schema_version":"2.1","blocks":[{"id":"s1","kind":"knowledge","text":"查询暂时不可用。"}],"views":[]}')])
     result = await harness.run_task(task, harness.RuntimeDeps(store, model, FakeMCP(), worker_id='harness-worker'))
     assert result.delivery_status == 'partial'
+    from app.trading_agent import quality
+    assert quality.get_run_detail(task)['quality_status'] == 'auto_fail'
+    assert quality.list_runs()['items'][0]['quality_status'] == 'auto_fail'
     with db.connect() as conn:
         assert conn.execute('SELECT state FROM agent_v2_runs WHERE task_id=?', (task,)).fetchone()[0] == 'partial'
         assert conn.execute("SELECT status FROM agent_v2_events WHERE task_id=? AND kind='business_validation'", (task,)).fetchone()[0] == 'failed'

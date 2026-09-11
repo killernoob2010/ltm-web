@@ -1,3 +1,21 @@
+.app-shell:has(.closing-review-agent-page:not(.hidden)) {
+  height: 100dvh;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+.app-shell:has(.closing-review-agent-page:not(.hidden)) > .sidebar {
+  min-height: 0;
+  overflow-y: auto;
+}
+.workspace:has(.closing-review-agent-page:not(.hidden)) {
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.closing-review-agent-page:not(.hidden) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .closing-review-agent-page {
   --cra-text: #172033;
   --cra-muted: #6b7687;
@@ -21,6 +39,7 @@
   justify-content: space-between;
   gap: 20px;
   margin-bottom: 18px;
+  flex-shrink: 0;
 }
 
 .closing-review-agent-header h1 { font-size: 25px; letter-spacing: -.02em; }
@@ -32,7 +51,7 @@
   display: grid;
   grid-template-columns: minmax(210px, .34fr) minmax(0, 1fr);
   gap: 16px;
-  height: calc(100dvh - 180px);
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
@@ -171,6 +190,5 @@
 @media (max-width: 560px) {
   .closing-review-agent-header { display: grid; gap: 8px; }
   .closing-review-agent-history { grid-template-columns: 1fr; }
-  .closing-review-agent-layout { height: calc(100dvh - 205px); }
   .closing-review-agent-composer button { min-width: 60px; }
 }

@@ -339,7 +339,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         user_text,
         RequestPlan(mode="clarification_required", reason="ambiguous", domains=["public"]),
     )
-    if not has_internal_request(user_text):
+    if not has_internal_request(user_text) or '库存' not in user_text:
         scope = {}
     configured = public_tools_configured()
     public_unavailable = {"policy": "public_not_configured"} if plan.mode == "research_allowed" and not configured else {}
