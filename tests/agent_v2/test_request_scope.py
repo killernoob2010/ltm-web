@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import pytest
 from app.trading_agent import request_scope
 from app.trading_agent.answer_contracts import ValidatedAnswer21
+from app.trading_agent.contracts import ToolEnvelope
 
 
 def test_relative_month_uses_shanghai_year_not_model_memory():
@@ -31,3 +32,13 @@ def test_failed_inventory_lookup_cannot_deliver_complete_knowledge_answer():
     assert '2025' not in result.plain_text
     assert '2026-08-01' in result.plain_text
     assert result.limitations[0].code == 'request_scope_unverified'
+
+
+def test_one_week_comparison_does_not_pass_a_whole_month_weekly_request():
+    scope = {'start_date': '2026-08-01', 'end_date': '2026-08-31', 'ports': ['日照']}
+    envelope = ToolEnvelope(status='complete', captured_at=datetime.now(timezone.utc), calculation_version='test',
+        payload={'kind': 'dataset_rows', 'row_count': 4, 'selection': {'mode': 'range', 'start_date': '2026-08-01', 'end_date': '2026-08-31', 'filters': {'ports': ['日照']}}})
+    answer = ValidatedAnswer21(delivery_status='complete', body_markdown='已完成每周变化', plain_text='已完成每周变化')
+    result = request_scope.assess(answer, scope, [envelope], weekly_changes=True)
+    assert result.delivery_status == 'partial'
+    assert result.limitations[0].code == 'query_incomplete'

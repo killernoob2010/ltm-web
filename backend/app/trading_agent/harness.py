@@ -328,7 +328,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     failed_data_tools = set()
 
     async def finish_checked(result):
-        checked = request_scope.assess(result, scope, query_envelopes, failed_data_tools)
+        checked = request_scope.assess(result, scope, query_envelopes, failed_data_tools,
+            weekly_changes=bool(re.search(r'每周|逐周', user_text) and re.search(r'变化|环比|增减', user_text)))
         issues = [item for item in checked.limitations if item.code in {'request_scope_unverified', 'query_incomplete'}]
         if scope or issues:
             await asyncio.to_thread(deps.store.append_event, principal, 'business_validation',
@@ -801,7 +802,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         envelope_payload = getattr(envelope, "payload", None)
-                        if call.name == 'query_dataset':
+                        if call.name in {'query_dataset', 'compare_dataset'}:
                             query_envelopes.append(envelope)
                         if call.name in tools.DATASET_TOOL_NAMES - {'describe_dataset'}:
                             if getattr(envelope, 'status', None) == 'complete':

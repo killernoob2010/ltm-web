@@ -49,7 +49,7 @@ class DatasetDescribeArgs(StrictModel):
 
 class DatasetCompare(StrictModel):
     result_ref: UUID
-    method: Literal["previous_week", "previous_observation", "explicit_periods"]
+    method: Literal["previous_week", "previous_observation", "explicit_periods", "all_previous_weeks"]
     measure: str = Field(min_length=1, max_length=80)
     group_by: list[str] = Field(default_factory=list, max_length=6)
     current_date: date | None = None

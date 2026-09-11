@@ -243,7 +243,9 @@
       const limitations = Array.isArray(projection?.limitations) ? projection.limitations : [];
       if (limitations.length && dataStatus !== "complete") {
         const warning = limitations.find((item) => item.code === "request_scope_unverified" || item.code === "query_incomplete") || limitations[0];
-        if (warning.message && !(message.content || "").includes(warning.message)) addText(article, "p", "closing-review-agent-limitation", warning.message);
+        const technicalCodes = ["uncovered_claim", "unreferenced_number", "missing_reference", "invalid_reference", "answer_validation_failed"];
+        const warningText = technicalCodes.includes(warning.code) ? "部分解释未通过校验，已保留可核对的数据。" : warning.message;
+        if (warningText && !(message.content || "").includes(warningText)) addText(article, "p", "closing-review-agent-limitation", warningText);
       }
       const evidence = evidenceBlock(projection);
       if (evidence) article.appendChild(evidence);

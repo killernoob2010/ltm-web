@@ -266,16 +266,7 @@ def _compatible(current: dict, previous: dict) -> bool:
     return True
 
 
-def compare_dataset(principal, args: DatasetCompare) -> ToolEnvelope:
-    if not isinstance(args, DatasetCompare):
-        args = DatasetCompare.model_validate(args)
-    saved = store.load_result(principal, args.result_ref)
-    dataset = _dataset(saved)
-    spec = get_dataset_spec(dataset)
-    authorize(principal, "data_visualization.display")
-    if args.measure not in spec.measure_fields:
-        raise ValueError(f"unsupported_measure:{args.measure}")
-    group_by = _validate_group_by(dataset, args.group_by)
+def _compare_period_rows(saved, args, dataset, group_by):
     current_date, previous_date = _selected_periods(saved.rows, args)
     current_rows = [row for row in saved.rows if _period_date(row) == current_date]
     previous_rows = [row for row in saved.rows if _period_date(row) == previous_date]
@@ -310,14 +301,42 @@ def compare_dataset(principal, args: DatasetCompare) -> ToolEnvelope:
             result = compare_values(current, previous, allow_pct=allow_pct, micro_base=MICRO_BASE)
             row.update({"current_value": _wire_decimal(current), "previous_value": _wire_decimal(previous), **result})
         output.append(row)
+    return output, current_date, previous_date, len(current_rows), len(previous_rows)
+
+
+def compare_dataset(principal, args: DatasetCompare) -> ToolEnvelope:
+    if not isinstance(args, DatasetCompare):
+        args = DatasetCompare.model_validate(args)
+    saved = store.load_result(principal, args.result_ref)
+    dataset = _dataset(saved)
+    spec = get_dataset_spec(dataset)
+    authorize(principal, 'data_visualization.display')
+    if args.measure not in spec.measure_fields:
+        raise ValueError(f'unsupported_measure:{args.measure}')
+    group_by = _validate_group_by(dataset, args.group_by)
+    if args.method == 'all_previous_weeks':
+        dates = sorted({_period_date(row) for row in saved.rows if _period_date(row)})
+        output, current_count, previous_count = [], 0, 0
+        for day in dates:
+            period_args = args.model_copy(update={'method': 'previous_week', 'current_date': date.fromisoformat(day)})
+            rows, _, _, current_n, previous_n = _compare_period_rows(saved, period_args, dataset, group_by)
+            output.extend(rows)
+            current_count += current_n
+            previous_count += previous_n
+        periods = {'method': args.method, 'start': dates[0] if dates else None, 'end': dates[-1] if dates else None}
+        for index, row in enumerate(output):
+            row['row_ref'] = f'comparison:{index + 1}'
+    else:
+        output, current_date, previous_date, current_count, previous_count = _compare_period_rows(saved, args, dataset, group_by)
+        periods = {'current': current_date, 'previous': previous_date}
     matched = sum(1 for row in output if row["comparison_status"] == "complete")
     payload = {
         "kind": "dataset_comparison", "dataset": dataset, "semantic_version": spec.semantic_version,
         "input_refs": [str(args.result_ref)], "required_resources": _resources(saved), "account_scope": [],
         "measure": args.measure, "group_by": group_by,
-        "periods": {"current": current_date, "previous": previous_date},
+        "periods": periods,
         "coverage": {
-            "current_rows": len(current_rows), "previous_rows": len(previous_rows),
+            "current_rows": current_count, "previous_rows": previous_count,
             "matched_rows": matched,
             "missing_previous": sum(1 for row in output if row["comparison_status"] == "missing_period" and row.get("current_value") is not None),
         },

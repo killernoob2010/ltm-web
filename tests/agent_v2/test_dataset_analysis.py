@@ -68,6 +68,22 @@ def test_compare_dataset_returns_delta_and_missing_period_as_registered_rows(mon
     assert result.status == "partial"
 
 
+def test_all_weekly_changes_include_every_observation_and_preserve_missing_baseline(monkeypatch):
+    saved = _saved([
+        {'observation_date': day, 'port': '日照', 'value': value, 'unit': '万吨', 'value_state': 'observed'}
+        for day, value in [('2026-08-04', 100), ('2026-08-11', 97), ('2026-08-18', 90), ('2026-08-25', 86)]
+    ])
+    monkeypatch.setattr(dv_analysis.store, 'load_result', lambda *a, **kw: saved)
+    monkeypatch.setattr(dv_analysis, 'authorize', lambda *a, **kw: None)
+    monkeypatch.setattr(dv_analysis, '_save_derived', lambda principal, envelope, rows, **kw: envelope)
+    result = dv_analysis.compare_dataset(object(), DatasetCompare(result_ref=uuid4(), method='all_previous_weeks', measure='value', group_by=['port']))
+    rows = result.payload['preview']
+    assert [r['current_date'] for r in rows] == ['2026-08-04', '2026-08-11', '2026-08-18', '2026-08-25']
+    assert [r['delta'] for r in rows] == [None, '-3', '-7', '-4']
+    assert rows[0]['comparison_status'] == 'missing_period'
+    assert result.payload['coverage']['missing_previous'] == 1
+
+
 def test_inventory_period_end_summary_groups_by_registered_business_year(monkeypatch):
     ref = uuid4()
     saved = _saved([

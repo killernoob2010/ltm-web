@@ -75,6 +75,9 @@ def build_messages(
         '证据仍须按协议绑定，详情由界面折叠展示。必要的缺数、口径差异或查询失败用一句话提醒，不重复声明只读和不补零。'
         '\n港口库存总量及其每周变化优先读取 inventory_summary，summary_metrics=["库存总量"]；'
         '只有用户问品种明细时才读取 port_inventory。日照港登记名称为日照。字段必须来自该数据集目录，不能把其他数据集的字段套入。'
+        '\n用户要求每周或逐周变化时，compare_dataset 使用 method=all_previous_weeks，一次返回每个观察日的库存及环比；不能只计算最后一周。'
+        '用一张表展示 current_date、current_value、delta、delta_pct；有缺失基准只简短说明首周环比无法计算。'
+        '具体年月和业务数字留在视图中，不在正文重复，正文只做简短非数值结论。'
     )
     if request_scope:
         messages[0]['content'] += '\n服务端已明确本次单月查询范围：' + json.dumps(request_scope, ensure_ascii=False) + '。query_dataset 必须使用 mode=range 及上述日期/港口；查不到不能换年或换港口。'

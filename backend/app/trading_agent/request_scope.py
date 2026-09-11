@@ -33,7 +33,7 @@ def check_query(scope, args):
         raise ValueError('request_scope_mismatch')
 
 
-def assess(result, scope, envelopes, failed_tools=()):
+def assess(result, scope, envelopes, failed_tools=(), *, weekly_changes=False):
     """Reject wrong-scope delivery; never equate these limited checks with full Eval."""
     matching = []
     if scope:
@@ -52,6 +52,17 @@ def assess(result, scope, envelopes, failed_tools=()):
             text = f"本次应查询 {scope['start_date']} 至 {scope['end_date']}，但未取得符合该范围的可用结果，请重试。"
             return result.model_copy(update={'delivery_status': 'partial', 'body_markdown': text, 'plain_text': text,
                 'views': [], 'evidence': [], 'limitations': [Limitation(code='request_scope_unverified', message=text)]})
+        if weekly_changes:
+            used_refs = {str(view.get('result_ref')) for view in result.views} | {item.result_ref for item in result.evidence}
+            full_changes = any(
+                (item.payload or {}).get('kind') == 'dataset_comparison'
+                and (item.payload.get('periods') or {}).get('method') == 'all_previous_weeks'
+                and str(item.result_ref) in used_refs
+                for item in envelopes
+            )
+            if not full_changes:
+                text = '已取得库存数据，但逐周变化尚未完整生成。'
+                return result.model_copy(update={'delivery_status': 'partial', 'limitations': [*result.limitations, Limitation(code='query_incomplete', message=text)]})
     if failed_tools and result.delivery_status == 'complete':
         text = '部分查询未完成，本次回答不能视为完整结果。'
         return result.model_copy(update={'delivery_status': 'partial', 'limitations': [*result.limitations, Limitation(code='query_incomplete', message=text)]})
