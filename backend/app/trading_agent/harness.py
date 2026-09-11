@@ -664,6 +664,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                 tool_name=",".join(sorted(allowed_tool_names)),
                                 status=research_policy.public_provider_readiness()["status"])
         public_search_reminded = False
+        compose_only = False
         repair_attempted = False
         recoverable_draft21 = None
         for _ in range(budget.max_models):
@@ -672,6 +673,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     final = failure_fallback("partial", _ANSWER_VALIDATION_FAILURE, "answer_validation_failed")
                 break
             budget.model_calls += 1
+            if not compose_only and budget.tool_calls >= budget.max_tools:
+                compose_only = True
+                messages.append({"role": "system", "content": (
+                    "本次工具调用额度已用尽，进入答案整理阶段，不再调用工具。"
+                    "请使用已返回的内部结果与已读取公开正文，按证据协议交付表格、来源及简短分析。"
+                    "失败的查询单独说明，不能丢弃成功取得的证据，也不能把搜索摘要当作正文。"
+                )})
             await asyncio.to_thread(deps.store.record_usage, task_id, model_calls=1)
             await _record_stage(deps, principal, "composing", "running")
             try:
@@ -679,7 +687,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     lambda: _model_call(
                         deps.model,
                         messages,
-                        schemas,
+                        [] if compose_only else schemas,
                         min(deps.limits.model_timeout_seconds,
                             budget.deadline_seconds - (deps.clock() - started)),
                     ),
@@ -720,6 +728,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 planned_searches = sum(call.name == "search_public" for call in turn.tool_calls)
                 if (budget.tool_calls + len(turn.tool_calls) > budget.max_tools
                         or budget.search_calls + planned_searches > budget.max_search):
+                    if not compose_only and budget.model_calls < budget.max_models:
+                        compose_only = True
+                        messages.append({"role": "system", "content": (
+                            "拟执行的查询超出本次额度，未执行。请停止调用工具，"
+                            "基于已取得结果整理答案，保留内部视图和已读取正文的引用，说明尚未完成部分。"
+                        )})
+                        continue
                     final = failure_fallback(
                         "partial",
                         "已达到本次工具调用上限，以上已取得的证据不足以继续完成全部分析。",

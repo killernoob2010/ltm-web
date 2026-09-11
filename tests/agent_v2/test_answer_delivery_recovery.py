@@ -395,6 +395,22 @@ async def test_tool_budget_fallback_keeps_public_research_limit_visible(queued, 
 
 
 @pytest.mark.asyncio
+async def test_exhausted_tools_still_compose_from_collected_evidence(queued):
+    task = store.claim_next("budget-compose")
+
+    class ComposeModel:
+        def next_turn(self, messages, schemas, timeout):
+            assert schemas == []
+            assert "答案整理阶段" in messages[-1]["content"]
+            return ModelTurn(content=GOOD_ANSWER21)
+
+    result = await harness.run_task(task, harness.RuntimeDeps(
+        store, ComposeModel(), FakeMCP(), worker_id="budget-compose",
+        limits=harness.RuntimeLimits(max_tools=1)))
+    assert result.delivery_status == "complete"
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_can_repair_without_changing_protocol(queued):
     task = store.claim_next("repair21")
     model = ScriptedModel([ModelTurn(content="not json"), ModelTurn(content=GOOD_ANSWER21)])

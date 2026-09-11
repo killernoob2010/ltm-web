@@ -97,6 +97,9 @@ class DeepSeekModel:
             "response_format": {"type": "json_object"},
             "max_tokens": 4096,
         }
+        if not tools:
+            payload.pop("tools")
+            payload.pop("tool_choice")
         try:
             response = self.session.post(
                 f"{self.base_url}/chat/completions",
