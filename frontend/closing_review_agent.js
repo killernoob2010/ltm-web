@@ -136,9 +136,18 @@
     });
   }
 
-  async function deleteConversation(conversation) {
+  async function deleteConversation(conversation, confirmed = false) {
     if (state.loading || state.activeTask) return setStatus("请等当前查询结束后再删除", "error");
-    if (!window.confirm("删除这段历史对话？仅从列表移除，不删除业务数据；删除后可撤销。")) return;
+    if (!confirmed) {
+      setStatus("删除这段对话？可撤销，不影响业务数据。 ");
+      const confirm = addText(status, "button", "secondary closing-review-agent-delete", "确认删除这段对话");
+      confirm.type = "button";
+      confirm.addEventListener("click", () => deleteConversation(conversation, true));
+      const cancel = addText(status, "button", "secondary closing-review-agent-delete", "取消");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => setStatus(""));
+      return;
+    }
     const activation = state.activation;
     state.loading = true;
     try {
