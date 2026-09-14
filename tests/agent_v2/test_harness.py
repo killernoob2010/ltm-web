@@ -3,6 +3,7 @@ import json
 from functools import partial
 from copy import deepcopy
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,6 +118,20 @@ class CapabilitySnapshotMCP(PlanningCatalogMCP):
                     },
                 },
             )
+        return await super().call_tool(name, args, grant)
+
+
+class ObjectCatalogMCP(PlanningCatalogMCP):
+    def __init__(self):
+        super().__init__()
+        self.call_names = []
+
+    async def list_tools(self, grant):
+        result = await super().list_tools(grant)
+        return SimpleNamespace(tools=result["tools"])
+
+    async def call_tool(self, name, args, grant):
+        self.call_names.append(name)
         return await super().call_tool(name, args, grant)
 
 
@@ -395,6 +410,34 @@ async def test_planner_refresh_adds_public_tools_after_initial_catalog_snapshot(
     )
 
     assert mcp.calls == 3
+    assert any(schema["function"]["name"] == "search_public" for schema in model.schemas[1])
+
+
+@pytest.mark.asyncio
+async def test_planner_refresh_adds_public_tools_from_mcp_sdk_catalog_object(queued, monkeypatch):
+    from app import db
+
+    task = store.claim_next("planner-object-catalog-worker")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE closing_review_messages SET content=? WHERE task_id=? AND role='user'",
+            ("结合近期的天气，帮我分析一下对矿石发运的影响", task),
+        )
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-key")
+    model = ScriptedModel([
+        ModelTurn(content=MIXED_PLAN),
+        ModelTurn(tool_calls=[{"id": "object-catalog-search", "name": "search_public", "arguments": {"public_query": "近期天气对矿石发运的影响"}}]),
+        ModelTurn(content=GOOD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
+    ])
+    mcp = ObjectCatalogMCP()
+
+    await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, model, mcp, worker_id="planner-object-catalog-worker", planning_enabled=True),
+    )
+
+    assert "search_public" in mcp.call_names
     assert any(schema["function"]["name"] == "search_public" for schema in model.schemas[1])
 
 

@@ -1241,8 +1241,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             if public_tools_allowed(plan, configured):
                 live_public_tools = (
                     live_tools.get("tools", []) if isinstance(live_tools, dict)
-                    else live_tools if isinstance(live_tools, (list, tuple)) else []
+                    else getattr(live_tools, "tools", live_tools)
                 )
+                if not isinstance(live_public_tools, (list, tuple)):
+                    live_public_tools = []
                 allowed_capability_tools.update(
                     (item.get("name") if isinstance(item, dict) else getattr(item, "name", None))
                     for item in live_public_tools
