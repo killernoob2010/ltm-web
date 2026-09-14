@@ -834,6 +834,29 @@ def _fallback_text_for_result(saved: Any) -> str:
     return "已保留已核验结果，但所需指标当前不可用。"
 
 
+def _fallback_public_excerpt(saved: Any) -> tuple[EvidenceItem, str] | None:
+    """Build a small, evidence-bound excerpt from an already-read public source."""
+    payload = _payload(saved)
+    if payload.get("kind") != "public_read":
+        return None
+    if str(_value(_envelope(saved), "status") or "") not in {"complete", "partial"}:
+        return None
+    if payload.get("fetch_status") not in {"full_text", "truncated"}:
+        return None
+    text = re.sub(r"\s+", " ", str(payload.get("text") or "")).strip()
+    source_ref = str(payload.get("source_ref") or "").strip()
+    if not text or not source_ref:
+        return None
+    ref = f"{saved.ref}#/payload/text"
+    evidence = _public_evidence(ref, saved)
+    if evidence is None:
+        return None
+    excerpt = text[:360].rstrip()
+    if len(text) > len(excerpt):
+        excerpt += "…"
+    return evidence, excerpt
+
+
 def reuse_presentation21(
     principal: Any,
     result_refs: list[str],
@@ -926,6 +949,7 @@ def build_fallback21(
     views = []
     evidence = []
     text_parts = []
+    public_text_parts = []
     text_mode = presentation_preference in {"text", "chart"} or "table" in set(prohibited_presentations or ())
     for value in result_refs:
         try:
@@ -936,6 +960,15 @@ def build_fallback21(
         if saved is None:
             continue
         metadata = _payload(saved)
+        if metadata.get("kind") == "public_read":
+            public_excerpt = _fallback_public_excerpt(saved)
+            if public_excerpt is None:
+                continue
+            public_item, excerpt = public_excerpt
+            evidence.append(public_item.model_dump(mode="json"))
+            title = re.sub(r"\s+", " ", public_item.title).strip() or "公开来源"
+            public_text_parts.append(f"来源：{title}\n已读取正文摘要：{excerpt}")
+            continue
         if metadata.get("kind") not in {
             "positions", "trades", "closes", "market_series", "dataset_rows", "dataset_summary",
             "dataset_comparison", "dataset_relation",
@@ -959,18 +992,33 @@ def build_fallback21(
         if len(views) == 8 or len(text_parts) == 8:
             break
     status = "partial" if views or text_parts or evidence else "failed"
-    if text_mode and text_parts:
+    if public_text_parts:
+        message_parts = list(text_parts)
+        message_parts.append(
+            "本次模型答案未通过校验；以下仅保留已读取的公开来源正文摘要，未核验内容未交付：\n\n"
+            + "\n\n".join(dict.fromkeys(public_text_parts))
+        )
+        message = "\n\n".join(dict.fromkeys(message_parts))
+    elif text_mode and text_parts:
         message = "\n\n".join(dict.fromkeys(text_parts))
     else:
         message = "已保留已核验数据，但本次回答未能完整交付。" if status == "partial" else "本次回答未通过格式或证据校验，系统未交付业务结论。"
     limitation = Limitation(code=failure_code, message="本次处理未完成，未核验内容未交付。")
+    limitations = [limitation]
+    if public_text_parts:
+        limitations.append(
+            Limitation(
+                code="public_evidence_partial",
+                message="已读取的公开正文已保留；未读取或未核验的公开内容未交付。",
+            )
+        )
     return ValidatedAnswer21(
         delivery_status=status,
         body_markdown=message,
         plain_text=message,
         evidence=evidence,
         views=views,
-        limitations=[limitation],
+        limitations=limitations,
         presentation_mode=presentation_preference,
     )
 

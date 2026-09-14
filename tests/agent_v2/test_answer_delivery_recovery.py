@@ -276,6 +276,84 @@ def test_budget_fallback_preserves_verified_dataset_result(queued):
     assert result.views[0]["kind"] == "table"
 
 
+def test_fallback_preserves_successful_public_reads_when_another_source_fails(queued):
+    task = store.claim_next("public-fallback")
+    principal = store.principal_for_task(task)
+    research_ref = uuid4()
+    source_ref = f"{research_ref}#/sources/0"
+    source = {
+        "title": "西澳天气公告",
+        "url": "https://example.com/weather",
+        "source_ref": source_ref,
+    }
+    store.save_result(
+        principal,
+        ToolEnvelope(
+            status="complete",
+            captured_at=datetime.now(timezone.utc),
+            calculation_version="public-research-v1",
+            payload={"kind": "research", "sources": [source]},
+        ),
+        [source],
+        kind="research",
+        result_ref=research_ref,
+    )
+    read_ref = uuid4()
+    store.save_result(
+        principal,
+        ToolEnvelope(
+            status="complete",
+            captured_at=datetime.now(timezone.utc),
+            calculation_version="public-research-v1",
+            payload={
+                "kind": "public_read",
+                "source_ref": source_ref,
+                "title": "西澳天气公告",
+                "url": "https://example.com/weather",
+                "text": "已读取正文：西澳沿岸近期有强风提示。",
+                "fetch_status": "full_text",
+            },
+        ),
+        [],
+        kind="public_read",
+        parent_ref=research_ref,
+        result_ref=read_ref,
+    )
+    failed_ref = uuid4()
+    store.save_result(
+        principal,
+        ToolEnvelope(
+            status="temporarily_unavailable",
+            captured_at=datetime.now(timezone.utc),
+            calculation_version="public-research-v1",
+            payload={
+                "kind": "public_read",
+                "source_ref": source_ref,
+                "code": "public_read_failed",
+            },
+        ),
+        [],
+        kind="public_read",
+        parent_ref=research_ref,
+        result_ref=failed_ref,
+    )
+
+    result = answer.build_fallback21(
+        principal,
+        [str(research_ref), str(read_ref), str(failed_ref)],
+        {},
+        "answer_validation_failed",
+        store,
+        presentation_preference="auto",
+    )
+
+    assert result.delivery_status == "partial"
+    assert "西澳天气公告" in result.plain_text
+    assert "西澳沿岸近期有强风提示" in result.plain_text
+    assert any(item.result_ref == str(read_ref) for item in result.evidence)
+    assert not any(item.result_ref == str(failed_ref) for item in result.evidence)
+
+
 @pytest.mark.asyncio
 async def test_invalid_json_keeps_current_protocol_and_verified_table(queued, caplog):
     task = store.claim_next("recovery")
