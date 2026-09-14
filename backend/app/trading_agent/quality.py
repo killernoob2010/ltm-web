@@ -625,6 +625,40 @@ def _preview_payload(raw: Any) -> dict[str, Any] | None:
     for key in ("limitations", "missing"):
         if isinstance(result.get(key), list):
             result[key] = result[key][:20]
+    context = payload.get("agent_context")
+    if isinstance(context, dict):
+        safe_context: dict[str, Any] = {}
+        planning = context.get("planning")
+        if isinstance(planning, dict):
+            safe_context["planning"] = {
+                key: planning[key]
+                for key in ("enabled", "status", "policy_mode", "policy_reason", "catalog_version", "error_code")
+                if key in planning
+            }
+        task_plan = context.get("task_plan")
+        if isinstance(task_plan, dict) and task_plan.get("schema_version"):
+            safe_context["task_plan"] = {"schema_version": str(task_plan["schema_version"])[:20]}
+        coverage = context.get("coverage")
+        if isinstance(coverage, dict):
+            safe_items = []
+            for item in coverage.get("items", [])[:8] if isinstance(coverage.get("items"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                safe_items.append({
+                    key: item[key]
+                    for key in (
+                        "requirement_id", "status", "missing_codes", "delivery_blocks",
+                        "actual_scope", "time_status",
+                    )
+                    if key in item
+                })
+            safe_context["coverage"] = {
+                "schema_version": str(coverage.get("schema_version") or "")[:20],
+                "complete": bool(coverage.get("complete")),
+                "items": safe_items,
+            }
+        if safe_context:
+            result["agent_context"] = safe_context
     return result
 
 

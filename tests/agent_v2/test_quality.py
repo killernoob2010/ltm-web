@@ -62,6 +62,46 @@ def test_quality_run_list_is_paged_and_does_not_include_raw_conversation_text(qu
     assert "查持仓" not in json.dumps(result["items"], ensure_ascii=False)
 
 
+def test_quality_detail_exposes_bounded_planning_coverage_and_schema_versions(queued):
+    _, _, task_id = queued
+    task_id = store.claim_next("quality-coverage-worker")
+    principal = store.principal_for_task(task_id)
+    store.finish(
+        task_id,
+        "quality-coverage-worker",
+        "partial",
+        "部分完成",
+        structured_payload={
+            "schema_version": "2.1",
+            "delivery_status": "partial",
+            "agent_context": {
+                "planning": {
+                    "enabled": True,
+                    "status": "approved",
+                    "catalog_version": "capability-catalog-v1",
+                },
+                "task_plan": {"schema_version": "1.0"},
+                "coverage": {
+                    "schema_version": "1.0",
+                    "complete": False,
+                    "items": [{
+                        "requirement_id": "weather",
+                        "status": "partial",
+                        "missing_codes": ["full_text_required"],
+                        "delivery_blocks": [],
+                    }],
+                },
+            },
+        },
+    )
+
+    detail = quality.get_run_detail(task_id)
+
+    context = detail["answer_payload"]["agent_context"]
+    assert context["planning"]["catalog_version"] == "capability-catalog-v1"
+    assert context["coverage"]["items"][0]["missing_codes"] == ["full_text_required"]
+
+
 def test_quality_feedback_is_audited_without_mutating_agent_answer(queued):
     uid, _, task_id = queued
     answer_before = store.task_answer(task_id)

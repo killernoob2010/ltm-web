@@ -95,3 +95,66 @@ def test_public_provider_readiness_does_not_expose_credentials(monkeypatch):
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "secret-value")
     assert public_provider_readiness()["status"] == "available"
     assert "secret-value" not in str(public_provider_readiness())
+
+
+def test_task_plan_can_authorize_public_part_of_a_mixed_request():
+    from app.trading_agent.planning_contracts import TaskPlan
+    from app.trading_agent.research_policy import policy_from_task_plan
+
+    task_plan = TaskPlan.model_validate({
+        "objective": "结合天气分析发运",
+        "topic_action": "new_topic",
+        "requirements": [
+            {
+                "id": "shipping", "question": "查询内部发运", "source_intent": "internal",
+                "targets": [{"id": "s", "domain": "dataset", "filters": {}, "metrics": ["value"], "group_by": [], "label": "发运"}],
+            },
+            {
+                "id": "weather", "question": "查询天气", "source_intent": "public",
+                "needs_full_text": True,
+                "targets": [{"id": "w", "domain": "public", "filters": {}, "metrics": [], "group_by": [], "label": "天气"}],
+            },
+        ],
+    })
+    policy = policy_from_task_plan(task_plan, configured=True)
+    assert policy.mode == "research_allowed"
+    assert policy.reason == "mixed_research"
+    assert "public" in policy.domains
+
+
+def test_task_plan_no_web_restriction_overrides_public_intent():
+    from app.trading_agent.planning_contracts import TaskPlan
+    from app.trading_agent.research_policy import policy_from_task_plan
+
+    task_plan = TaskPlan.model_validate({
+        "objective": "只用内部资料",
+        "topic_action": "new_topic",
+        "requirements": [{
+            "id": "weather", "question": "天气", "source_intent": "public",
+            "targets": [{"id": "w", "domain": "public", "filters": {}, "metrics": [], "group_by": [], "label": "天气"}],
+        }],
+        "restrictions": [{"kind": "no_web", "scope": "turn", "evidence": "只用内部资料"}],
+    })
+    policy = policy_from_task_plan(task_plan, configured=True)
+    assert policy.mode == "internal_only"
+    assert policy.reason == "ambiguous"
+
+
+def test_task_plan_cannot_cancel_explicit_no_web_from_user_text():
+    from app.trading_agent.planning_contracts import TaskPlan
+    from app.trading_agent.research_policy import policy_from_task_plan
+
+    task_plan = TaskPlan.model_validate({
+        "objective": "查询近期天气",
+        "topic_action": "new_topic",
+        "requirements": [{
+            "id": "weather", "question": "查询公开天气", "source_intent": "public",
+            "targets": [{"id": "w", "domain": "public", "filters": {"topic": "天气"}, "label": "天气"}],
+        }],
+    })
+    policy = policy_from_task_plan(
+        task_plan, configured=True, user_text="不要联网，只根据内部资料回答"
+    )
+
+    assert policy.mode == "internal_only"
+    assert policy.reason == "ambiguous"

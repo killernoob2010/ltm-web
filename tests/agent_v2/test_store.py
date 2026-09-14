@@ -68,6 +68,39 @@ def test_followup_history_keeps_internal_evidence_when_previous_answer_has_no_vi
     assert "2701" in content
 
 
+def test_followup_history_exposes_only_bounded_conversation_state(queued):
+    uid, cid, _ = queued
+    task = store.claim_next("history-state")
+    store.finish(
+        task,
+        "history-state",
+        "partial",
+        "状态摘要",
+        structured_payload={
+            "schema_version": "2.1",
+            "delivery_status": "partial",
+            "request": {"domain": "positions", "presentation": "text"},
+            "agent_context": {
+                "conversation_state": {
+                    "schema_version": "1.0",
+                    "topic": "2701期权",
+                    "targets": [{"id": "put", "domain": "positions"}],
+                    "result_refs": ["safe-result"],
+                    "open_requirements": ["weather"],
+                },
+                "task_plan": {"objective": "不要把原始计划直接注入历史"},
+            },
+        },
+    )
+    followup = store.enqueue({"id": uid}, cid, str(uuid4()), "只看Put", "web")
+    content = store.task_history(followup, uid)[-1]["content"]
+
+    assert "conversation_state=" in content
+    assert "2701期权" in content
+    assert "safe-result" in content
+    assert "不要把原始计划直接注入历史" not in content
+
+
 @pytest.fixture
 def queued(pilot):
     with db.connect() as conn:

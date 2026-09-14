@@ -100,7 +100,13 @@ async def worker_main():
             wecom_client = wecom.build_client()
             await wecom_client.connect()
         async with mcp_client.MCPToolClient() as mcp:
-            deps = harness.RuntimeDeps(store=store, model=model.DeepSeekModel(), mcp=mcp, worker_id=os.environ.get("AGENT_V2_WORKER_ID", "agent-v2"))
+            deps = harness.RuntimeDeps(
+                store=store,
+                model=model.DeepSeekModel(),
+                mcp=mcp,
+                worker_id=os.environ.get("AGENT_V2_WORKER_ID", "agent-v2"),
+                planning_enabled=True,
+            )
             await worker_loop(deps, resource_guard=resources.default_resource_guard())
     finally:
         if wecom_client is not None:

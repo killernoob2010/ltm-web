@@ -58,6 +58,9 @@ def test_capability_catalog_is_authorized_and_versioned(queued):
     assert envelope.status == "complete"
     assert envelope.payload["defaults"]["as_of"] == "latest"
     assert "query_positions" in envelope.payload["tools"]
+    business_tools = {item["id"] for item in envelope.payload["business_capabilities"]["tools"]}
+    assert "query_positions" in business_tools
+    assert "search_public" not in business_tools
     assert envelope.payload["datasets"]["iron_ore_basis"]["source"] == "iron_ore_basis_results"
 
 

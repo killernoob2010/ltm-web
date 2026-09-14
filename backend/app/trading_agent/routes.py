@@ -52,7 +52,9 @@ def _seconds(value):
 
 def _conversation(row):
     return {"id": row["id"], "channel": row["channel"], "kind": row["kind"], "title": row["title"],
-            "status": row["status"], "created_at": _seconds(row.get("created_at")), "updated_at": _seconds(row.get("updated_at"))}
+            "status": row["status"], "created_at": _seconds(row.get("created_at")),
+            "updated_at": _seconds(row.get("updated_at")),
+            "last_message_at": _seconds(row.get("last_message_at"))}
 
 
 def _readable_answer(user_id, conversation_id, content, payload):
@@ -113,7 +115,8 @@ def list_conversations(user: dict = Depends(trading_management_current_user)):
     _require(user, schema=True)
     with db.connect() as conn:
         rows = db._exec(conn.cursor(), """SELECT * FROM closing_review_conversations
-            WHERE user_id=? AND channel='web' AND kind='v2_conversation' AND status='active' ORDER BY id DESC""", (user["id"],)).fetchall()
+            WHERE user_id=? AND channel='web' AND kind='v2_conversation' AND status='active'
+            ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC, id DESC""", (user["id"],)).fetchall()
     return {"items": [_conversation(dict(row)) for row in rows]}
 
 

@@ -632,6 +632,21 @@ def task_history(task_id, user_id=None, limit=12):
                 request_contract = payload.get("request")
                 if isinstance(request_contract, dict):
                     content += "；resolved_request=" + json.dumps(request_contract, ensure_ascii=False, separators=(",", ":"))
+                agent_context = payload.get("agent_context") if isinstance(payload, dict) else None
+                state = agent_context.get("conversation_state") if isinstance(agent_context, dict) else None
+                if isinstance(state, dict):
+                    try:
+                        from .planning_contracts import ConversationState
+
+                        bounded_state = ConversationState.model_validate(state).model_dump(
+                            mode="json"
+                        )
+                    except (TypeError, ValueError):
+                        bounded_state = None
+                    if bounded_state is not None:
+                        content += "；conversation_state=" + json.dumps(
+                            bounded_state, ensure_ascii=False, separators=(",", ":")
+                        )
         else:
             content = str(row["content"] or "")
         history.append({"role": row["role"], "content": content})

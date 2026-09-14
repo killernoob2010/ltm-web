@@ -57,6 +57,22 @@ def test_regression_and_holdout_definitions_cover_general_capabilities():
     assert all(result["definition_pass"] for result in results)
 
 
+def test_catalog_includes_planner_source_and_coverage_regressions():
+    regression = {case["id"]: case for case in load_cases("regression")}
+    holdout = {case["id"]: case for case in load_cases("holdout")}
+
+    assert {"reg-50", "reg-51", "reg-52"}.issubset(regression)
+    assert {"hold-16", "hold-17", "hold-18"}.issubset(holdout)
+    assert "public_research_egress" in regression["reg-50"]["capabilities"]
+    assert "permission_boundary" in regression["reg-51"]["capabilities"]
+    assert "evidence_bound_answer" in regression["reg-52"]["capabilities"]
+    assert regression["reg-50"]["oracle"]["source_mode"] == "mixed"
+    assert regression["reg-51"]["oracle"]["search_requests"] == 0
+    assert regression["reg-52"]["oracle"]["required_metrics"] == [
+        "gross_quantity", "net_quantity", "floating_pnl"
+    ]
+
+
 def test_junit_statuses_mark_missing_duplicate_and_skipped_cases(tmp_path):
     xml = tmp_path / "results.xml"
     xml.write_text(

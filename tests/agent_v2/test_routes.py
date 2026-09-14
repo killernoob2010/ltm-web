@@ -40,6 +40,25 @@ def test_v2_routes_are_async_and_idempotent(route_client):
     assert first.json()["task_id"]==second.json()["task_id"]
 
 
+def test_conversations_sort_by_latest_business_activity_then_id(route_client):
+    client, _ = route_client
+    first = client.post("/trading-agent-v2/conversations", json={"title": "first"}).json()
+    second = client.post("/trading-agent-v2/conversations", json={"title": "second"}).json()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE closing_review_conversations SET last_message_at=?, updated_at=? WHERE id=?",
+            ("2026-09-14T18:00:00+00:00", "2026-09-14T18:00:00+00:00", first["id"]),
+        )
+        conn.execute(
+            "UPDATE closing_review_conversations SET last_message_at=?, updated_at=? WHERE id=?",
+            ("2026-09-14T17:00:00+00:00", "2026-09-14T17:00:00+00:00", second["id"]),
+        )
+
+    items = client.get("/trading-agent-v2/conversations").json()["items"]
+
+    assert [item["id"] for item in items[:2]] == [first["id"], second["id"]]
+
+
 def test_foreign_conversation_is_not_disclosed(route_client):
     client,_=route_client
     assert client.get("/trading-agent-v2/conversations/999999/messages").status_code==404

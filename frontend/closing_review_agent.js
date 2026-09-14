@@ -531,7 +531,7 @@
         body: JSON.stringify({ title: DEFAULT_CONVERSATION_TITLE }),
       });
       if (activation !== state.activation) return;
-      state.conversations = [...state.conversations, conversation];
+      state.conversations = [conversation, ...state.conversations];
       state.conversationId = conversation.id;
       conversationState(conversation.id);
       renderHistory();

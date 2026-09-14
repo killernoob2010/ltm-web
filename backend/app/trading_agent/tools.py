@@ -10,7 +10,7 @@ from pydantic import Field
 from fastapi import HTTPException
 
 from .contracts import FactQuery, PositionFilter, Shock, StrictModel, ToolEnvelope
-from . import catalog, facts, market_data, risk, store, execution, dv_queries, dv_analysis, research_policy
+from . import capability_catalog, catalog, facts, market_data, risk, store, execution, dv_queries, dv_analysis, research_policy
 from .dv_contracts import (
     DatasetCompare,
     DatasetDescribeArgs,
@@ -333,6 +333,17 @@ def _capability_envelope(principal) -> ToolEnvelope:
         "datasets": datasets,
         "modules": agent_module_catalog(),
     }
+    data["business_capabilities"] = capability_catalog.build_catalog(principal, {
+        "tools": [
+            item for item in tool_schemas()
+            if item.get("name") in set(visible_tools)
+        ],
+        "modules": data["modules"],
+        "research_policy": {
+            "mode": plan.mode if plan else "none",
+            "configured": research_policy.public_tools_configured(),
+        },
+    })
     return ToolEnvelope(status="complete", captured_at=now, calculation_version="catalog-v2", payload=data)
 
 

@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const agentJs = readFileSync(new URL("../frontend/closing_review_agent.js", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../frontend/app.js", import.meta.url), "utf8");
+const agentQualityJs = readFileSync(new URL("../frontend/agent_quality.js", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../frontend/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../frontend/closing_review_agent.css", import.meta.url), "utf8");
 
@@ -82,8 +83,8 @@ test("Agent keeps the message area wide and lets only the tab rail scroll", () =
 });
 
 test("Agent changes asset versions when the conversation shell changes", () => {
-  assert.match(indexHtml, /closing_review_agent\.css\?v=agent-answer-research-repair-20260914/);
-  assert.match(indexHtml, /closing_review_agent\.js\?v=agent-answer-research-repair-20260914/);
+  assert.match(indexHtml, /closing_review_agent\.css\?v=agent-flexible-planner-20260914/);
+  assert.match(indexHtml, /closing_review_agent\.js\?v=agent-flexible-planner-20260914/);
 });
 
 test("Agent exposes seconds-only timestamps and evidence/status labels", () => {
@@ -96,4 +97,16 @@ test("Agent exposes seconds-only timestamps and evidence/status labels", () => {
   assert.match(css, /\.agent-answer-view-table/);
   assert.match(css, /overflow-x: auto/);
   assert.doesNotMatch(css, /\.closing-review-agent-suggestion/);
+});
+
+test("Agent keeps the newly created conversation at the leftmost position", () => {
+  assert.match(agentJs, /state\.conversations\s*=\s*\[conversation, \.\.\.state\.conversations\]/);
+  assert.match(agentJs, /last_message_at/);
+});
+
+test("Agent quality detail exposes bounded plan versions and coverage gaps", () => {
+  assert.match(indexHtml, /agent_quality\.js\?v=agent-quality-planning-20260914/);
+  assert.match(agentQualityJs, /agent_context/);
+  assert.match(agentQualityJs, /catalog_version/);
+  assert.match(agentQualityJs, /missing_codes/);
 });

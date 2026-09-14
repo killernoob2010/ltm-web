@@ -89,7 +89,7 @@ def build_messages(
         '\n回答先给结论；只有用户明确要求时才增加表格或图表。不展开分析过程、工具名、接口名、证据编号或逐项来源说明。'
         '证据仍须按协议绑定，详情由界面折叠展示。必要的缺数、口径差异或查询失败用一句话提醒，不重复声明只读和不补零。'
     )
-    if re.search(r"库存|到港|发运|每周|逐周", str(user_text or ""), re.I):
+    if re.search(r"库存", str(user_text or ""), re.I):
         messages[0]['content'] += (
             '\n港口库存总量及其每周变化优先读取 inventory_summary，summary_metrics=["库存总量"]；'
             '只有用户问品种明细时才读取 port_inventory。日照港登记名称为日照。字段必须来自该数据集目录，不能把其他数据集的字段套入。'

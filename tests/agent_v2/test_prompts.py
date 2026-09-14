@@ -68,6 +68,16 @@ def test_unconfigured_public_research_gets_explicit_bounded_fallback_guidance():
     assert "内部结果仍需继续完成" in content
 
 
+def test_shipping_weather_prompt_does_not_inject_inventory_weekly_template():
+    messages = prompts.build_messages(
+        [],
+        {"tools": ["query_dataset", "search_public", "read_public"]},
+        user_text="结合近期的天气，分析它对矿石发运的影响",
+    )
+    content = "\n".join(item.get("content", "") for item in messages if item.get("role") == "system")
+    assert "inventory_summary" not in content
+
+
 def test_malformed_reference_repair_distinguishes_refs_from_text_tokens():
     repair = prompts.build_answer_repair_messages("{}", [{"code": "invalid_reference"}])[-1]["content"]
     assert "blocks.refs 内不得包含 {{fact:" in repair

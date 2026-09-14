@@ -86,6 +86,46 @@ def public_tools_allowed(plan: RequestPlan | None, configured: bool) -> bool:
     return bool(plan and configured and plan.mode == "research_allowed")
 
 
+def policy_from_task_plan(task_plan, *, configured: bool, user_text: str = "") -> RequestPlan:
+    """Project a validated task plan into the server-side research grant.
+
+    This is an execution policy projection, not a second natural-language
+    classifier.  The planner may request public evidence; it cannot grant
+    itself access, and the caller still rechecks provider readiness and the
+    live principal at the tool boundary.
+    """
+    requirements = list(getattr(task_plan, "requirements", []) or [])
+    restrictions = list(getattr(task_plan, "restrictions", []) or [])
+    # The model's plan may preserve a restriction, but it may never cancel an
+    # explicit user restriction by omitting it from the JSON plan.
+    no_web = bool(_NO_WEB.search(str(user_text or ""))) or any(
+        getattr(item, "kind", None) == "no_web" for item in restrictions
+    )
+    intents = {getattr(item, "source_intent", "") for item in requirements}
+    target_domains = {
+        getattr(target, "domain", "")
+        for item in requirements
+        for target in (getattr(item, "targets", []) or [])
+    }
+    domains: list[str] = []
+    if "positions" in target_domains:
+        domains.append("trading")
+    if "dataset" in target_domains:
+        domains.extend(["spot", "basis"])
+    if "public" in intents or "both" in intents or "public" in target_domains:
+        domains.append("public")
+    domains = list(dict.fromkeys(domains))
+    if no_web:
+        return _plan(
+            "internal_only", "ambiguous", [item for item in domains if item != "public"],
+            clarification="本轮已要求不联网，公开资料部分未执行。",
+        )
+    if "public" in intents or "both" in intents or "public" in target_domains:
+        reason = "mixed_research" if ("internal" in intents or "both" in intents or len(domains) > 1) else "external_current_fact"
+        return _plan("research_allowed", reason, domains or ["public"], purpose=str(getattr(task_plan, "objective", "")))
+    return _plan("internal_only", "internal_lookup", domains or ["trading"])
+
+
 def _plan(mode, reason, domains, *, purpose="", clarification=None):
     return RequestPlan(
         mode=mode, reason=reason, domains=list(dict.fromkeys(domains)),
@@ -171,7 +211,7 @@ def active_plan(principal) -> RequestPlan | None:
 
 
 __all__ = [
-    "POLICY_VERSION", "RequestPlan", "active_plan", "enforce_research_policy",
+    "POLICY_VERSION", "RequestPlan", "active_plan", "enforce_research_policy", "policy_from_task_plan",
     "public_tools_allowed", "public_tools_configured", "public_provider_readiness",
     "restricted_module_requests", "has_internal_request",
 ]

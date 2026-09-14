@@ -10,6 +10,7 @@ import time
 from typing import Any, Literal
 
 from . import answer, prompts, progress, tools, execution, research_policy, request_scope, request_contract
+from . import capability_catalog, planner, coverage as task_coverage, conversation_state
 from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue, apply_policy_limits, policy_answer21
 from .contracts import AnswerDraft
@@ -45,6 +46,9 @@ class RuntimeDeps:
     worker_id: str = "agent-v2"
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
     answer_protocol: Literal["2.0", "2.1"] = "2.1"
+    # Keep the legacy harness path deterministic for existing callers; the
+    # production worker opts into the bounded planner explicitly.
+    planning_enabled: bool = False
 
 
 @dataclass
@@ -91,6 +95,83 @@ def _position_preflight_args(user_text: str) -> dict[str, Any] | None:
         "classification": "all",
         "valuation_mode": "quantity_only",
         "required_metrics": ["quantity"],
+    }
+
+
+def _position_plan_preflight_args(task_plan: Any, presentation: str = "auto") -> dict[str, Any] | None:
+    """Translate approved position targets into one bounded read-only snapshot."""
+    targets = [
+        target
+        for requirement in getattr(task_plan, "requirements", []) or []
+        for target in getattr(requirement, "targets", []) or []
+        if getattr(target, "domain", None) == "positions"
+    ]
+    if not targets:
+        return None
+    filters: dict[str, Any] = {}
+    list_fields = {"products", "contract_months", "contracts"}
+    for target in targets:
+        source = getattr(target, "filters", {}) or {}
+        for field in list_fields:
+            values = source.get(field) if isinstance(source, dict) else None
+            if values:
+                filters[field] = list(dict.fromkeys([*(filters.get(field) or []), *values]))
+    for field in ("strike_min", "strike_max", "strike_min_inclusive", "strike_max_inclusive"):
+        values = [
+            (getattr(target, "filters", {}) or {}).get(field)
+            for target in targets
+            if isinstance(getattr(target, "filters", {}), dict)
+            and (getattr(target, "filters", {}) or {}).get(field) is not None
+        ]
+        if values and len({str(value) for value in values}) == 1:
+            filters[field] = values[0]
+    option_types = {
+        (getattr(target, "filters", {}) or {}).get("option_type", "all")
+        for target in targets
+        if isinstance(getattr(target, "filters", {}), dict)
+    }
+    filters["option_type"] = next(iter(option_types)) if len(option_types) == 1 else "all"
+    asset_types = {
+        (getattr(target, "filters", {}) or {}).get("asset_type", "all")
+        for target in targets
+        if isinstance(getattr(target, "filters", {}), dict)
+    }
+    asset_type = next(iter(asset_types)) if len(asset_types) == 1 else "all"
+    directions = {
+        (getattr(target, "filters", {}) or {}).get("direction", "all")
+        for target in targets
+        if isinstance(getattr(target, "filters", {}), dict)
+    }
+    direction = next(iter(directions)) if len(directions) == 1 else "all"
+    metrics = {
+        str(metric)
+        for target in targets
+        for metric in (getattr(target, "metrics", []) or [])
+    }
+    if not metrics:
+        metrics = {"quantity"}
+    if any(getattr(target, "net_intent", "none") != "none" for target in targets) or "net_quantity" in metrics:
+        metrics.update({"gross_quantity", "gross_buy_quantity", "gross_sell_quantity", "net_quantity"})
+    allowed_metrics = {
+        "count", "quantity", "floating_pnl", "gross_quantity", "gross_buy_quantity",
+        "gross_sell_quantity", "net_quantity", "net_sell_quantity", "net_tons",
+        "net_signed_tons", "net_wan_tons", "strike_min", "strike_max",
+        "covered_rows", "eligible_rows",
+    }
+    metrics &= allowed_metrics
+    if not metrics:
+        metrics = {"quantity"}
+    return {
+        "as_of_mode": "latest",
+        "as_of_date": None,
+        "asset_type": asset_type,
+        "contracts": filters.pop("contracts", []),
+        "direction": direction,
+        "classification": "all",
+        "valuation_mode": "mark_to_market" if "floating_pnl" in metrics else "quantity_only",
+        "required_metrics": sorted(metrics),
+        "filters": filters,
+        "presentation": presentation,
     }
 
 
@@ -273,14 +354,23 @@ def _fallback21(
     )
 
 
-async def _finish21(deps: RuntimeDeps, task_id: int, result: ValidatedAnswer21):
+async def _finish21(
+    deps: RuntimeDeps,
+    task_id: int,
+    result: ValidatedAnswer21,
+    *,
+    context: dict[str, Any] | None = None,
+):
+    payload = result.model_dump(mode="json")
+    if context:
+        payload["agent_context"] = context
     await asyncio.to_thread(
         deps.store.finish,
         task_id,
         deps.worker_id,
         answer.task_state21(result.delivery_status),
         result.plain_text,
-        structured_payload=result.model_dump(mode="json"),
+        structured_payload=payload,
     )
 
 
@@ -344,8 +434,14 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     current_time = datetime.now(timezone.utc)
     scope = request_scope.resolve(user_text, current_time)
     query_envelopes = []
+    evidence_envelopes = []
     failed_data_tools = set()
     inherited_request = {}
+    previous_conversation_state: dict[str, Any] = {}
+    task_plan = None
+    task_context: dict[str, Any] = {
+        "planning": {"enabled": bool(deps.planning_enabled), "status": "not_run"},
+    }
 
     async def finish_checked(result):
         checked = request_scope.assess(result, scope, query_envelopes, failed_data_tools,
@@ -358,6 +454,14 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 except Exception:
                     continue
                 coverage_envelopes.append(saved.envelope)
+        requirement_envelopes = list(evidence_envelopes)
+        if not requirement_envelopes and inherited_request.get("inherited_result_refs"):
+            for result_ref in inherited_request.get("inherited_result_refs", [])[:8]:
+                try:
+                    saved = await asyncio.to_thread(deps.store.load_result, principal, result_ref)
+                except Exception:
+                    continue
+                requirement_envelopes.append(saved.envelope)
         resolved_request, coverage = request_contract.assess_position_coverage(
             user_text, coverage_envelopes, checked, inherited=inherited_request
         )
@@ -382,21 +486,64 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 "coverage": coverage,
                 "presentation_mode": presentation_preference,
             })
+        if task_plan is not None:
+            requirement_report = task_coverage.assess_evidence(task_plan, requirement_envelopes)
+            requirement_report = task_coverage.assess_delivery(task_plan, requirement_report, checked)
+            task_context["coverage"] = requirement_report.model_dump(mode="json")
+            next_state = conversation_state.update_conversation_state(
+                previous_conversation_state,
+                task_plan,
+                requirement_report,
+                list(dict.fromkeys([
+                    *[str(item.result_ref) for item in checked.evidence if getattr(item, "result_ref", None)],
+                    *[str(view.get("result_ref")) for view in checked.views
+                      if isinstance(view, dict) and view.get("result_ref")],
+                ])),
+                source_task_id=task_id,
+            )
+            task_context["conversation_state"] = next_state.model_dump(mode="json")
+            if not requirement_report.complete:
+                incomplete = [
+                    item.requirement_id
+                    for item in requirement_report.items
+                    if item.status != "answered"
+                ]
+                checked = checked.model_copy(update={
+                    "delivery_status": "partial" if checked.delivery_status == "complete" else checked.delivery_status,
+                    "limitations": [
+                        *checked.limitations,
+                        Limitation(
+                            code="requirement_coverage_incomplete",
+                            message="部分业务需求未被独立证据和答案引用完整覆盖：" + "、".join(incomplete) + "。",
+                        ),
+                    ],
+                })
         issues = [item for item in checked.limitations if item.code in {
             'request_scope_unverified', 'query_incomplete', 'reference_unavailable',
             'uncovered_claim', 'unreferenced_number', 'missing_reference', 'invalid_reference',
             'presentation_mismatch',
             'request_coverage_incomplete',
+            'requirement_coverage_incomplete',
         }]
         if scope or issues:
             await asyncio.to_thread(deps.store.append_event, principal, 'business_validation',
                 status='failed' if issues else 'complete', error_code=issues[0].code if issues else None)
-        await _finish21(deps, task_id, checked)
+        await _finish21(deps, task_id, checked, context=task_context)
         return checked
-    plan = enforce_research_policy(
+    candidate_plan = enforce_research_policy(
         user_text,
         RequestPlan(mode="clarification_required", reason="ambiguous", domains=["public"]),
     )
+    # In the planner-enabled worker, the legacy classifier is only a safe
+    # fallback/context hint.  Public access starts closed and can be reopened
+    # only after the validated plan and its server event are both recorded.
+    plan = candidate_plan
+    if deps.planning_enabled:
+        plan = RequestPlan(
+            mode="internal_only",
+            reason="ambiguous",
+            domains=[item for item in candidate_plan.domains if item != "public"] or ["trading"],
+        )
     if not has_internal_request(user_text) or '库存' not in user_text:
         scope = {}
     configured = public_tools_configured()
@@ -418,7 +565,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     if restricted_modules and not has_internal_request(user_text):
         if deps.answer_protocol == "2.1":
             final = policy_answer21(restricted_modules)
-            await _finish21(deps, task_id, final)
+            await _finish21(deps, task_id, final, context=task_context)
             return final
         final = _fallback("partial", policy_answer21(restricted_modules).plain_text)
         rendered = await asyncio.to_thread(answer.render_answer, principal, final, deps.store)
@@ -533,6 +680,152 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
         inherited_request = request_contract.inherited_request_from_history(history)
+        previous_conversation_state = conversation_state.extract_conversation_state(history)
+        if deps.planning_enabled:
+            planner_catalog = None
+            if isinstance(capability_payload, dict):
+                candidate_catalog = capability_payload.get("business_capabilities")
+                if isinstance(candidate_catalog, dict):
+                    planner_catalog = candidate_catalog
+            if planner_catalog is None:
+                visible_catalog_tools = live_tools
+                if isinstance(visible_catalog_tools, dict):
+                    visible_catalog_tools = visible_catalog_tools.get("tools", [])
+                planner_catalog = capability_catalog.build_catalog({
+                    "tools": visible_catalog_tools if isinstance(visible_catalog_tools, list) else [],
+                    "modules": capability_payload.get("modules", {}) if isinstance(capability_payload, dict) else {},
+                    "research_policy": capability_payload.get("research_policy", {}) if isinstance(capability_payload, dict) else {},
+                })
+            planner_state = {
+                "inherited_request": inherited_request,
+                "conversation_state": previous_conversation_state,
+                "topic_action": "continue" if inherited_request or previous_conversation_state else "new_topic",
+            }
+            planner_before = budget.model_calls
+            try:
+                task_plan = await _bounded_call(
+                    lambda: planner.create_plan(
+                        user_text,
+                        planner_state,
+                        planner_catalog,
+                        deps.model,
+                        budget,
+                        timeout=deps.limits.model_timeout_seconds,
+                    ),
+                    clock=deps.clock,
+                    started=started,
+                    total_seconds=budget.deadline_seconds,
+                    call_seconds=deps.limits.model_timeout_seconds,
+                )
+                planner.validate_plan(
+                    task_plan,
+                    planner_catalog,
+                    restrictions=[item.model_dump(mode="json") for item in task_plan.restrictions],
+                )
+                plan = research_policy.policy_from_task_plan(
+                    task_plan, configured=configured, user_text=user_text,
+                )
+                task_context["planning"] = {
+                    "enabled": True,
+                    "status": "approved",
+                    "policy_mode": plan.mode,
+                    "policy_reason": plan.reason,
+                    "catalog_version": planner_catalog.get("version"),
+                }
+                task_context["task_plan"] = task_plan.model_dump(mode="json")
+                task_context["conversation_state"] = planner_state
+                try:
+                    await asyncio.to_thread(
+                        deps.store.append_event,
+                        principal,
+                        "task_plan",
+                        status="complete",
+                        error_code=plan.reason,
+                    )
+                    await asyncio.to_thread(
+                        deps.store.append_event,
+                        principal,
+                        "research_policy",
+                        tool_name=",".join(plan.domains),
+                        status=plan.mode,
+                        error_code=plan.reason,
+                    )
+                except Exception as exc:
+                    # A local plan is not an authorization record.  Keep the
+                    # initial closed policy and continue only with internal
+                    # evidence if either audit write cannot be confirmed.
+                    task_plan = None
+                    plan = candidate_plan if candidate_plan.mode == "internal_only" else RequestPlan(
+                        mode="internal_only", reason="ambiguous", domains=["trading", "spot", "basis"],
+                    )
+                    raise planner.PlannerError("任务批准记录未成功保存") from exc
+            except planner.PlannerError as exc:
+                task_context["planning"] = {
+                    "enabled": True,
+                    "status": "failed_closed",
+                    "error_code": "planner_unavailable",
+                }
+                task_context["conversation_state"] = planner_state
+                await asyncio.to_thread(
+                    deps.store.append_event,
+                    principal,
+                    "task_plan",
+                    status="failed",
+                    error_code="planner_unavailable",
+                )
+                # The deterministic policy already recorded above remains the
+                # only grant. A failed planner can never open public access.
+                logging.getLogger(__name__).warning(
+                    "agent_task_planning_failed task_id=%s error_type=%s",
+                    task_id,
+                    type(exc).__name__,
+                )
+            finally:
+                planner_calls = budget.model_calls - planner_before
+                if planner_calls > 0:
+                    await asyncio.to_thread(
+                        deps.store.record_usage,
+                        task_id,
+                        model_calls=planner_calls,
+                    )
+            public_unavailable.clear()
+            if plan.mode == "research_allowed" and not configured:
+                public_unavailable["policy"] = "public_not_configured"
+            if (
+                plan.mode == "research_allowed"
+                and configured
+                and hasattr(deps.mcp, "list_tools")
+            ):
+                if budget.tool_calls >= budget.max_tools:
+                    public_unavailable["catalog"] = "tool_budget_exhausted"
+                else:
+                    budget.tool_calls += 1
+                    await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
+                    try:
+                        live_tools = await _bounded_call(
+                            lambda: deps.mcp.list_tools(grant),
+                            clock=deps.clock,
+                            started=started,
+                            total_seconds=budget.deadline_seconds,
+                            call_seconds=deps.limits.tool_timeout_seconds,
+                        )
+                        await asyncio.to_thread(
+                            deps.store.append_event,
+                            principal,
+                            "tool_catalog",
+                            status="complete",
+                        )
+                    except ExecutionDeadline:
+                        public_unavailable["catalog"] = "public_catalog_timeout"
+                    except Exception as exc:
+                        public_unavailable["catalog"] = "public_catalog_unavailable"
+                        await asyncio.to_thread(
+                            deps.store.append_event,
+                            principal,
+                            "tool_error",
+                            tool_name="list_tools",
+                            error_code=_safe_error_code(exc),
+                        )
         if presentation_preference == "auto":
             inherited_display = inherited_request.get("presentation")
             if inherited_display in {"text", "table", "chart"}:
@@ -556,6 +849,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         preflight_context = []
         position_preflight_result = None
         preflight_args = (
+            _position_plan_preflight_args(task_plan, presentation_preference)
+            if task_plan is not None else
             _position_preflight_args(user_text)
             if restricted_modules and has_internal_request(user_text) else None
         )
@@ -573,6 +868,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 position_preflight_result = preflight
                 if getattr(preflight, "status", None) in {"complete", "partial"}:
                     query_envelopes.append(preflight)
+                    evidence_envelopes.append(preflight)
                 if getattr(preflight, "result_ref", None):
                     known_result_refs.append(str(preflight.result_ref))
                 await asyncio.to_thread(
@@ -586,7 +882,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 )
                 if getattr(preflight, "status", None) in {"complete", "partial"}:
                     preflight_context.append(
-                        "服务端已为当前混合请求预取仅限授权账户的持仓证据；请优先使用该结果回答持仓部分，"
+                        "服务端已按当前任务计划预取仅限授权账户的持仓证据；请优先使用该结果回答持仓部分，"
                         "不要查询或推断受限模块：" + prompts.project_tool_result(preflight)
                     )
             except ExecutionDeadline:
@@ -632,6 +928,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     status=getattr(annual_query, "status", None),
                 )
                 if getattr(annual_query, "status", None) in {"complete", "partial"}:
+                    query_envelopes.append(annual_query)
+                    evidence_envelopes.append(annual_query)
                     preflight_context.append(
                         "服务端已按用户明确的完整日期范围预取库存原始证据；不得把该范围改写成365天或缩短年份："
                         + prompts.project_tool_result(annual_query)
@@ -651,6 +949,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             call_seconds=deps.limits.tool_timeout_seconds,
                         )
                         annual_summary_result = annual_summary
+                        if getattr(annual_summary, "status", None) in {"complete", "partial"}:
+                            evidence_envelopes.append(annual_summary)
                         if getattr(annual_summary, "result_ref", None):
                             known_result_refs.append(str(annual_summary.result_ref))
                         await asyncio.to_thread(
@@ -716,8 +1016,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         *limitations,
                     ],
                 })
-                await _finish21(deps, task_id, final)
-                return final
+                return await finish_checked(final)
         if (position_preflight_result is not None
                 and getattr(position_preflight_result, "result_ref", None)
                 and restricted_modules
@@ -734,16 +1033,14 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             if direct.views or (presentation_preference == "text" and direct.plain_text):
                 if presentation_preference == "text":
                     final = apply_policy_limits(direct, restricted_modules)
-                    await _finish21(deps, task_id, final)
-                    return final
+                    return await finish_checked(final)
                 direct = direct.model_copy(update={
                     "body_markdown": "当前授权账户范围内的持仓结果见下方表格。",
                     "plain_text": "当前授权账户范围内的持仓结果见下方表格。",
                     "limitations": [],
                 })
                 final = apply_policy_limits(direct, restricted_modules)
-                await _finish21(deps, task_id, final)
-                return final
+                return await finish_checked(final)
         messages = prompts.build_messages(
             history,
             capability_payload,
@@ -755,6 +1052,18 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             presentation_preference=presentation_preference,
             prohibited_presentations=prohibited_presentations,
         )
+        if task_plan is not None:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "服务器已批准以下任务计划。请逐项完成 requirements；每个内部或公开目标都必须有对应工具证据，"
+                    "不得把未执行的目标写成已完成，也不得自行增加计划外权限或来源：\n"
+                    + json.dumps({
+                        "task_plan": task_plan.model_dump(mode="json"),
+                        "conversation_state": task_context.get("conversation_state", {}),
+                    }, ensure_ascii=False, separators=(",", ":"))
+                ),
+            })
         if preflight_context:
             messages.append({"role": "system", "content": "\n\n".join(preflight_context)})
         if live_tools is not None and hasattr(deps.mcp, "endpoint"):
@@ -773,6 +1082,22 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 if isinstance(item, str) or isinstance(item, dict)
             }
             allowed_capability_tools.discard(None)
+            # The first capability snapshot is intentionally taken before the
+            # planner approves public research.  After that approval, the
+            # refreshed server catalog is the authority for the two public
+            # tools; do not let the stale initial snapshot hide them again.
+            if public_tools_allowed(plan, configured):
+                live_public_tools = (
+                    live_tools.get("tools", []) if isinstance(live_tools, dict)
+                    else live_tools if isinstance(live_tools, (list, tuple)) else []
+                )
+                allowed_capability_tools.update(
+                    (item.get("name") if isinstance(item, dict) else getattr(item, "name", None))
+                    for item in live_public_tools
+                    if (item.get("name") if isinstance(item, dict) else getattr(item, "name", None))
+                    in {"search_public", "read_public"}
+                )
+                allowed_capability_tools.discard(None)
         schemas = _model_schemas(live_tools, allowed_names=allowed_capability_tools)
         allowed_tool_names = {
             item.get("function", {}).get("name")
@@ -786,7 +1111,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         compose_only = False
         repair_attempted = False
         recoverable_draft21 = None
-        for _ in range(budget.max_models):
+        for _ in range(max(0, budget.max_models - budget.model_calls)):
             if deps.clock() - started >= budget.deadline_seconds:
                 if repair_attempted:
                     final = failure_fallback("partial", _ANSWER_VALIDATION_FAILURE, "answer_validation_failed")
@@ -904,6 +1229,11 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         envelope_payload = getattr(envelope, "payload", None)
                         if call.name in {'query_dataset', 'compare_dataset', 'query_positions'}:
                             query_envelopes.append(envelope)
+                        if call.name in {
+                            'query_dataset', 'compare_dataset', 'query_positions',
+                            'summarize_dataset', 'search_public', 'read_public',
+                        }:
+                            evidence_envelopes.append(envelope)
                         if call.name in tools.DATASET_TOOL_NAMES - {'describe_dataset'}:
                             if getattr(envelope, 'status', None) == 'complete':
                                 failed_data_tools.discard(call.name)

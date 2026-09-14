@@ -145,6 +145,24 @@
       <button type="button" class="secondary" data-run-page="next" ${state.page >= totalPages ? "disabled" : ""}>下一页</button>`;
   }
 
+  function coverageSummary(item) {
+    const context = item.answer_payload?.agent_context || {};
+    const planning = context.planning || {};
+    const coverage = context.coverage;
+    if (!coverage) return "本次运行未记录任务覆盖摘要（旧运行或非规划路径）。";
+    const version = coverage.schema_version || context.task_plan?.schema_version || "--";
+    const catalogVersion = planning.catalog_version || "--";
+    const items = (coverage.items || []).map((entry) => {
+      const gaps = [...(entry.missing_codes || []), ...(entry.delivery_blocks || [])];
+      return `${entry.requirement_id || "未命名需求"}：${entry.status || "--"}${gaps.length ? `；缺口：${gaps.join("、")}` : ""}`;
+    });
+    return [
+      `计划状态：${planning.status || "--"}；能力目录版本：${catalogVersion}；覆盖合同版本：${version}`,
+      `总体覆盖：${coverage.complete ? "完整" : "不完整"}`,
+      ...(items.length ? items : ["没有逐项覆盖记录"]),
+    ].map(escapeHtml).join("<br>");
+  }
+
   function renderDetail(item) {
     if (!item) {
       detail.classList.add("hidden");
@@ -159,6 +177,7 @@
         <div class="agent-quality-detail-block"><strong>Agent回答</strong><p>${escapeHtml(item.answer || "尚未生成回答")}</p></div>
         <div class="agent-quality-detail-block"><strong>执行轨迹</strong><p><ul>${events || "<li>暂无事件</li>"}</ul></p></div>
         <div class="agent-quality-detail-block"><strong>运行状态</strong><p>${statusChip(item.state)}｜投递：${escapeHtml(item.delivery_state || "--")}<br>结束时间：${escapeHtml(formatTimestamp(item.finished_at))}</p></div>
+        <div class="agent-quality-detail-block"><strong>计划与字段覆盖</strong><p>${coverageSummary(item)}</p></div>
       </div>
       <div class="agent-quality-feedback">${feedback}
         <button type="button" class="secondary" data-feedback="correct" data-task-id="${escapeHtml(item.task_id)}">标记通过</button>

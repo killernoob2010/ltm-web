@@ -55,6 +55,31 @@
       "id": "offline-dataset-evidence",
       "nodeid": "tests/agent_v2/test_dataset_presentation.py::test_dataset_row_delta_reference_is_allowed_but_hidden_or_invalid_values_are_not",
       "capabilities": ["evidence_bound_answer", "permission_boundary"]
+    },
+    {
+      "id": "offline-planner-weather-shipping",
+      "nodeid": "tests/agent_v2/test_harness.py::test_enabled_planner_reclassifies_weather_shipping_as_mixed_research",
+      "capabilities": ["intent_understanding", "public_research_egress", "permission_boundary"]
+    },
+    {
+      "id": "offline-planner-position-preflight",
+      "nodeid": "tests/agent_v2/test_harness.py::test_enabled_planner_prefetches_position_plan_with_required_metrics",
+      "capabilities": ["composable_fact_query", "full_scope_calculation", "evidence_bound_answer"]
+    },
+    {
+      "id": "offline-coverage-public-fulltext",
+      "nodeid": "tests/agent_v2/test_task_coverage.py::test_assess_evidence_requires_public_full_text_and_tracks_each_requirement",
+      "capabilities": ["evidence_bound_answer", "public_research_egress", "uncertainty_and_clarification"]
+    },
+    {
+      "id": "offline-no-web-plan",
+      "nodeid": "tests/agent_v2/test_research_policy.py::test_task_plan_no_web_restriction_overrides_public_intent",
+      "capabilities": ["permission_boundary", "public_research_egress"]
+    },
+    {
+      "id": "offline-planner-public-read",
+      "nodeid": "tests/agent_v2/test_harness.py::test_public_research_plan_allows_reading_a_registered_source_after_search",
+      "capabilities": ["public_research_egress", "evidence_bound_answer"]
     }
   ]
 }
