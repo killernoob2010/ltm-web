@@ -115,6 +115,27 @@ def test_partial_public_evidence_gets_partial_source_limit_message():
     assert any(item.code == "public_source_unavailable" for item in limited.limitations)
 
 
+def test_public_failure_is_not_cleared_by_later_success():
+    unavailable = {}
+    failed = ToolEnvelope(
+        status="temporarily_unavailable",
+        captured_at=datetime.now(timezone.utc),
+        calculation_version="public-research-v1",
+        payload={"kind": "public_read", "code": "public_read_failed"},
+    )
+    recovered = ToolEnvelope(
+        status="complete",
+        captured_at=datetime.now(timezone.utc),
+        calculation_version="public-research-v1",
+        payload={"kind": "public_read", "fetch_status": "full_text"},
+    )
+
+    harness._remember_public_failure(unavailable, "read_public", failed)
+    harness._remember_public_failure(unavailable, "read_public", recovered)
+
+    assert unavailable == {"read_public": "public_read_failed"}
+
+
 def test_mixed_restricted_prompt_requires_supported_part_to_be_completed():
     messages = prompts.build_messages(
         [],

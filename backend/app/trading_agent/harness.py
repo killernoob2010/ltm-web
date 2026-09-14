@@ -94,6 +94,24 @@ def _envelope_error_code(envelope: Any) -> str | None:
     return None
 
 
+def _remember_public_failure(unavailable: dict[str, str], tool_name: str, envelope: Any) -> None:
+    """Keep a public-source failure visible after a later retry succeeds."""
+    payload = getattr(envelope, "payload", {})
+    payload_kind = payload.get("kind") if isinstance(payload, dict) else None
+    no_sources = (
+        tool_name == "search_public"
+        and payload_kind in {"research", "public_search", "public"}
+        and not (payload.get("sources") or [])
+    )
+    issue = (
+        _envelope_error_code(envelope)
+        or ("public_no_results" if no_sources else None)
+        or ("public_source_unavailable" if getattr(envelope, "status", None) not in {"complete", "partial"} else None)
+    )
+    if issue:
+        unavailable[tool_name] = issue
+
+
 def _position_preflight_args(user_text: str) -> dict[str, Any] | None:
     """Build the narrow, read-only position query needed by mixed requests."""
     text = str(user_text or "")
@@ -1416,17 +1434,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             else:
                                 failed_data_tools.add(call.name)
                         if call.name in {"search_public", "read_public"}:
-                            payload_kind = envelope_payload.get("kind") if isinstance(envelope_payload, dict) else None
-                            no_sources = (
-                                call.name == "search_public"
-                                and payload_kind in {"research", "public_search", "public"}
-                                and not (envelope_payload.get("sources") or [])
-                            )
-                            public_unavailable[call.name] = (
-                                _envelope_error_code(envelope)
-                                or ("public_no_results" if no_sources else None)
-                                or (getattr(envelope, "status", None) not in {"complete", "partial"})
-                            )
+                            _remember_public_failure(public_unavailable, call.name, envelope)
                         if (call.name == "search_public" and isinstance(envelope_payload, dict)
                                 and envelope_payload.get("kind") == "public_query_rejected"):
                             if (not public_query_repair_attempted
