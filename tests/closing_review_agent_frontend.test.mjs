@@ -81,6 +81,11 @@ test("Agent keeps the message area wide and lets only the tab rail scroll", () =
   assert.match(css, /agent-answer-view-table-scroll[^\{]*\{[^}]*overflow-x: auto/s);
 });
 
+test("Agent changes asset versions when the conversation shell changes", () => {
+  assert.match(indexHtml, /closing_review_agent\.css\?v=agent-answer-research-repair-20260914/);
+  assert.match(indexHtml, /closing_review_agent\.js\?v=agent-answer-research-repair-20260914/);
+});
+
 test("Agent exposes seconds-only timestamps and evidence/status labels", () => {
   assert.match(agentJs, /slice\(0, 19\)/);
   assert.match(agentJs, /statusLabel\(dataStatus\)/);
