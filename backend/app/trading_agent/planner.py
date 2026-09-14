@@ -12,11 +12,15 @@ from pydantic import TypeAdapter, ValidationError
 
 from .contracts import FactQuery, PositionFilter
 from .dv_contracts import DataFilters, DatasetQuery, validate_dataset_query
-from .planning_contracts import TaskPlan, TimeWindow
+from .planning_contracts import AnalysisTarget, Requirement, TaskPlan, TimeWindow
 
 
 class PlannerError(ValueError):
     """A planning response cannot be safely used for execution."""
+
+
+class PlannerAuditError(PlannerError):
+    """A validated plan could not be durably recorded as an authorization event."""
 
 
 _POSITION_FILTER_FIELDS = {
@@ -58,7 +62,7 @@ PLANNER_SYSTEM = """你是受控业务 Agent 的任务规划器。
 模型不能填写 user_id、account_id、权限、执行令牌、SQL、代码、预算或工具调用。只输出符合给定 JSON Schema 的 JSON，不要输出解释、Markdown 围栏或工具调用。
 """
 
-_RECENT_TIME = re.compile(r"近期|最近|近两周|近一个月|本期|截至目前", re.I)
+_RECENT_TIME = re.compile(r"近期|最近|近两周|近一个月|本期|截至目前|最新|目前|当前|今天|今日|昨日", re.I)
 _BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -95,6 +99,81 @@ def apply_time_windows(task_plan: TaskPlan, user_text: str, *, now: datetime | N
             ),
         }))
     return task_plan.model_copy(update={"requirements": requirements})
+
+
+def build_policy_fallback_plan(
+    user_text: str,
+    candidate,
+    *,
+    conversation_state: dict[str, Any] | None = None,
+) -> TaskPlan:
+    """Build a minimal server-owned plan when the model planner is unavailable.
+
+    This is intentionally narrower than model planning: it can preserve only a
+    deterministic public intent already approved by ``enforce_research_policy``
+    and, for a mixed request, one generic internal context target.  It never
+    copies the user's text into public filters or creates identity/permission
+    fields.  The caller must still run ``apply_time_windows`` and
+    ``validate_plan`` before opening the public tool grant.
+    """
+    if getattr(candidate, "mode", None) != "research_allowed":
+        raise PlannerError("确定性策略没有批准公开研究，不能生成兜底计划")
+    state = conversation_state if isinstance(conversation_state, dict) else {}
+    restrictions = state.get("restrictions") or []
+    if any(isinstance(item, dict) and item.get("kind") == "no_web" for item in restrictions):
+        raise PlannerError("历史会话仍禁止联网，不能生成公开兜底计划")
+
+    text = str(user_text or "")
+    recent_request = bool(_RECENT_TIME.search(text))
+    explicit_dates = re.findall(r"20\d{2}-\d{2}-\d{2}", text)
+    time_requirement = "近期" if recent_request else "用户指定范围" if explicit_dates else "当前公开事实"
+    requirements: list[Requirement] = []
+
+    if getattr(candidate, "reason", None) == "mixed_research":
+        internal_domain = "positions" if re.search(r"持仓|期权|期货|合约|盈亏|手数", text, re.I) else "dataset"
+        internal_target = AnalysisTarget(
+            id="internal_context_target",
+            domain=internal_domain,
+            filters={},
+            metrics=[],
+            group_by=[],
+            label="内部业务数据",
+        )
+        requirements.append(Requirement(
+            id="internal_context",
+            question="完成用户明确要求的内部业务数据部分",
+            targets=[internal_target],
+            source_intent="internal",
+            time_requirement=time_requirement,
+        ))
+
+    requirements.append(Requirement(
+        id="public_research",
+        question="查询与用户问题相关的公开资料并读取可引用正文",
+        targets=[AnalysisTarget(
+            id="public_research_target",
+            domain="public",
+            filters={},
+            metrics=[],
+            group_by=[],
+            label="公开资料",
+        )],
+        source_intent="public",
+        needs_full_text=True,
+        time_requirement=time_requirement,
+    ))
+    topic_action = state.get("topic_action")
+    if topic_action not in {"continue", "refine", "presentation_only", "refresh", "new_topic"}:
+        topic_action = "new_topic"
+    return TaskPlan(
+        objective="按已识别的内部与公开证据完成本次请求",
+        topic_action=topic_action,
+        requirements=requirements,
+        restrictions=[],
+        presentation="auto",
+        prohibited_presentations=[],
+        clarification=None,
+    )
 
 
 def _json_schema() -> dict[str, Any]:

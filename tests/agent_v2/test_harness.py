@@ -324,6 +324,53 @@ async def test_enabled_planner_reclassifies_weather_shipping_as_mixed_research(q
 
 
 @pytest.mark.asyncio
+async def test_planner_failure_uses_server_owned_public_fallback_and_reads_registered_source(queued, monkeypatch):
+    from app import db
+
+    task = store.claim_next("planner-fallback-worker")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE closing_review_messages SET content=? WHERE task_id=? AND role='user'",
+            ("结合近期的天气，帮我分析一下对矿石发运的影响", task),
+        )
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-key")
+    model = ScriptedModel([
+        ModelTurn(content="不是合法规划 JSON"),
+        ModelTurn(content="仍然不是合法规划 JSON"),
+        ModelTurn(tool_calls=[{"id": "fallback-search", "name": "search_public", "arguments": {"public_query": "近期天气对矿石发运的影响"}}]),
+        ModelTurn(content=GOOD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
+    ])
+    mcp = RegisteredPublicEvidenceMCP()
+
+    await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, model, mcp, worker_id="planner-fallback-worker", planning_enabled=True),
+    )
+
+    assert "search_public" in mcp.call_names
+    assert "read_public" in mcp.call_names
+    with db.connect() as conn:
+        policy = conn.execute(
+            "SELECT status,error_code FROM agent_v2_events WHERE task_id=? AND kind='research_policy' ORDER BY seq DESC LIMIT 1",
+            (task,),
+        ).fetchone()
+        plan_event = conn.execute(
+            "SELECT status,error_code FROM agent_v2_events WHERE task_id=? AND kind='task_plan' ORDER BY seq DESC LIMIT 1",
+            (task,),
+        ).fetchone()
+        catalog = conn.execute(
+            "SELECT tool_name FROM agent_v2_events WHERE task_id=? AND kind='model_tool_catalog'",
+            (task,),
+        ).fetchone()
+    assert policy["status"] == "research_allowed"
+    assert policy["error_code"] == "mixed_research"
+    assert plan_event["status"] == "fallback"
+    assert plan_event["error_code"] == "planner_unavailable"
+    assert "search_public" in catalog["tool_name"]
+
+
+@pytest.mark.asyncio
 async def test_planner_refresh_adds_public_tools_after_initial_catalog_snapshot(queued, monkeypatch):
     from app import db
 

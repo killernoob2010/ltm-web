@@ -4,9 +4,16 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from app.trading_agent.planner import PlannerError, apply_time_windows, create_plan, validate_plan
+from app.trading_agent.planner import (
+    PlannerError,
+    apply_time_windows,
+    build_policy_fallback_plan,
+    create_plan,
+    validate_plan,
+)
 from app.trading_agent.model import ModelTurn
 from app.trading_agent.planning_contracts import TaskPlan
+from app.trading_agent.research_policy import RequestPlan
 
 
 class PlanModel:
@@ -114,6 +121,39 @@ def test_apply_time_windows_preserves_explicit_user_dates():
     assert window.start_date == date(2026, 8, 1)
     assert window.end_date == date(2026, 8, 14)
     assert window.origin == "user"
+
+
+def test_policy_fallback_plan_is_bounded_and_keeps_recent_public_evidence_required():
+    candidate = RequestPlan(
+        mode="research_allowed",
+        reason="mixed_research",
+        domains=["trading", "public"],
+    )
+    plan = build_policy_fallback_plan(
+        "结合近期天气分析矿石发运影响",
+        candidate,
+        conversation_state={"topic_action": "new_topic"},
+    )
+    resolved = apply_time_windows(
+        plan,
+        "结合近期天气分析矿石发运影响",
+        now=datetime(2026, 9, 14, 9, 0, tzinfo=timezone.utc),
+    )
+    validate_plan(resolved, {"tools": [], "conditional_sources": ["public_research"]})
+
+    assert [item.source_intent for item in resolved.requirements] == ["internal", "public"]
+    public = resolved.requirements[-1]
+    assert public.needs_full_text is True
+    assert public.targets[0].filters == {}
+    assert public.time_window.start_date == date(2026, 9, 1)
+    assert public.time_window.end_date == date(2026, 9, 14)
+    assert public.time_window.origin == "default"
+
+
+def test_policy_fallback_plan_cannot_open_public_access_for_non_public_candidate():
+    candidate = RequestPlan(mode="internal_only", reason="internal_lookup", domains=["trading"])
+    with pytest.raises(PlannerError, match="没有批准公开研究"):
+        build_policy_fallback_plan("查询内部库存", candidate)
 
 
 def test_create_plan_rejects_tool_calls_from_planning_turn():

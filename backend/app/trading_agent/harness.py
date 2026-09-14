@@ -819,12 +819,12 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     plan = candidate_plan if candidate_plan.mode == "internal_only" else RequestPlan(
                         mode="internal_only", reason="ambiguous", domains=["trading", "spot", "basis"],
                     )
-                    raise planner.PlannerError("任务批准记录未成功保存") from exc
-            except planner.PlannerError as exc:
+                    raise planner.PlannerAuditError("任务批准记录未成功保存") from exc
+            except planner.PlannerAuditError as exc:
                 task_context["planning"] = {
                     "enabled": True,
                     "status": "failed_closed",
-                    "error_code": "planner_unavailable",
+                    "error_code": "planner_audit_unavailable",
                 }
                 task_context["conversation_state"] = planner_state
                 await asyncio.to_thread(
@@ -832,15 +832,106 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     principal,
                     "task_plan",
                     status="failed",
-                    error_code="planner_unavailable",
+                    error_code="planner_audit_unavailable",
                 )
-                # The deterministic policy already recorded above remains the
-                # only grant. A failed planner can never open public access.
+                # A validated plan is not an authorization record until both
+                # audit writes are durable. Keep the public grant closed.
                 logging.getLogger(__name__).warning(
                     "agent_task_planning_failed task_id=%s error_type=%s",
                     task_id,
                     type(exc).__name__,
                 )
+            except planner.PlannerError as exc:
+                fallback_approved = False
+                if candidate_plan.mode == "research_allowed":
+                    try:
+                        fallback_task_plan = planner.build_policy_fallback_plan(
+                            user_text,
+                            candidate_plan,
+                            conversation_state=planner_state.get("conversation_state"),
+                        )
+                        fallback_task_plan = planner.apply_time_windows(
+                            fallback_task_plan, user_text, now=current_time,
+                        )
+                        planner.validate_plan(
+                            fallback_task_plan,
+                            planner_catalog,
+                            restrictions=[
+                                item.model_dump(mode="json")
+                                for item in fallback_task_plan.restrictions
+                            ],
+                        )
+                        fallback_policy = research_policy.policy_from_task_plan(
+                            fallback_task_plan,
+                            configured=configured,
+                            user_text=user_text,
+                        )
+                        if fallback_policy.mode != "research_allowed":
+                            raise planner.PlannerError("兜底计划未保留公开研究意图")
+                        try:
+                            await asyncio.to_thread(
+                                deps.store.append_event,
+                                principal,
+                                "task_plan",
+                                status="fallback",
+                                error_code="planner_unavailable",
+                            )
+                            await asyncio.to_thread(
+                                deps.store.append_event,
+                                principal,
+                                "research_policy",
+                                tool_name=",".join(fallback_policy.domains),
+                                status=fallback_policy.mode,
+                                error_code=fallback_policy.reason,
+                            )
+                        except Exception as audit_exc:
+                            raise planner.PlannerAuditError("兜底计划批准记录未成功保存") from audit_exc
+                        task_plan = fallback_task_plan
+                        plan = fallback_policy
+                        task_context["planning"] = {
+                            "enabled": True,
+                            "status": "fallback_approved",
+                            "error_code": "planner_unavailable",
+                            "policy_mode": plan.mode,
+                            "policy_reason": plan.reason,
+                            "catalog_version": planner_catalog.get("version"),
+                        }
+                        task_context["task_plan"] = task_plan.model_dump(mode="json")
+                        task_context["conversation_state"] = planner_state
+                        fallback_approved = True
+                    except planner.PlannerError:
+                        # Do not let a malformed fallback or an unavailable
+                        # audit path reopen public access.
+                        task_plan = None
+                        plan = RequestPlan(
+                            mode="internal_only",
+                            reason="ambiguous",
+                            domains=[item for item in candidate_plan.domains if item != "public"]
+                                    or ["trading", "spot", "basis"],
+                        )
+                if not fallback_approved:
+                    task_context["planning"] = {
+                        "enabled": True,
+                        "status": "failed_closed",
+                        "error_code": "planner_unavailable",
+                    }
+                    task_context["conversation_state"] = planner_state
+                    await asyncio.to_thread(
+                        deps.store.append_event,
+                        principal,
+                        "task_plan",
+                        status="failed",
+                        error_code="planner_unavailable",
+                    )
+                    # A non-public request remains safely usable internally;
+                    # an external request is reported as incomplete rather
+                    # than being silently represented as fully internal.
+                    logging.getLogger(__name__).warning(
+                        "agent_task_planning_failed task_id=%s error_type=%s fallback=%s",
+                        task_id,
+                        type(exc).__name__,
+                        fallback_approved,
+                    )
             finally:
                 planner_calls = budget.model_calls - planner_before
                 if planner_calls > 0:
