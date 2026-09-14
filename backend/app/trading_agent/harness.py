@@ -313,7 +313,16 @@ def _with_source_limits(result, unavailable):
     if not any(unavailable.values()):
         return result
     code = "public_not_configured" if unavailable.get("policy") == "public_not_configured" else "public_source_unavailable"
-    message = "公开搜索尚未配置授权服务，联合研究尚未执行；已核验的内部结果仍可查看。" if code == "public_not_configured" else "公开搜索或正文读取不可用，联合研究尚未完成；已核验的内部结果仍可查看。"
+    public_evidence = any(
+        (item.get("kind") if isinstance(item, dict) else getattr(item, "kind", None)) == "public"
+        for item in (getattr(result, "evidence", []) or [])
+    )
+    if code == "public_not_configured":
+        message = "公开搜索尚未配置授权服务，联合研究尚未执行；已核验的内部结果仍可查看。"
+    elif public_evidence:
+        message = "部分公开来源暂时不可读取或未通过校验，已保留已读取来源；未核验内容未交付。"
+    else:
+        message = "公开搜索或正文读取不可用，联合研究尚未完成；已核验的内部结果仍可查看。"
     limitation = Limitation(code=code, message=message)
     body = result.body_markdown
     if message not in body:

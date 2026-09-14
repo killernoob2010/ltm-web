@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.trading_agent import answer, harness, store
-from app.trading_agent.answer_contracts import ValidatedAnswer21
+from app.trading_agent.answer_contracts import EvidenceItem, ValidatedAnswer21
 from app.trading_agent.answer_v21 import apply_policy_limits
 from app.trading_agent import prompts
 from app.trading_agent.contracts import ToolEnvelope
@@ -86,6 +86,33 @@ def test_public_unavailable_limit_is_visible_in_delivered_answer():
     assert "公开搜索尚未配置授权服务" in limited.body_markdown
     assert "公开搜索尚未配置授权服务" in limited.plain_text
     assert any(item.code == "public_not_configured" for item in limited.limitations)
+
+
+def test_partial_public_evidence_gets_partial_source_limit_message():
+    result = ValidatedAnswer21(
+        delivery_status="partial",
+        body_markdown="已读取公开正文。",
+        plain_text="已读取公开正文。",
+        evidence=[EvidenceItem(
+            id="public:read",
+            kind="public",
+            result_ref=str(uuid4()),
+            source_ref=f"{uuid4()}#/sources/0",
+            title="公开来源",
+            url="https://example.com/source",
+            excerpt="正文摘要",
+            fetch_status="full_text",
+            captured_at=datetime.now(timezone.utc),
+        )],
+        views=[],
+        limitations=[],
+    )
+
+    limited = harness._with_source_limits(result, {"read_public": "public_read_failed"})
+
+    assert "部分公开来源暂时不可读取" in limited.plain_text
+    assert "公开搜索或正文读取不可用" not in limited.plain_text
+    assert any(item.code == "public_source_unavailable" for item in limited.limitations)
 
 
 def test_mixed_restricted_prompt_requires_supported_part_to_be_completed():
