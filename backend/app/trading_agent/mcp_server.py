@@ -125,8 +125,10 @@ def build_mcp_server() -> MCPServer:
                         direction: Literal["all", "buy", "sell"] = "all",
                         classification: Literal["all", "unclassified", "classified"] = "all",
                         valuation_mode: Literal["auto", "quantity_only", "mark_to_market"] = "auto",
-                        required_metrics: list[Literal["quantity", "floating_pnl"]] | None = None) -> tools.ToolResponse:
-        return _response("query_positions", {**locals(), "contracts": contracts or []})
+                        required_metrics: list[str] | None = None,
+                        filters: dict[str, Any] | None = None,
+                        presentation: Literal["auto", "text", "table", "chart"] = "auto") -> tools.ToolResponse:
+        return _response("query_positions", {**locals(), "contracts": contracts or [], "filters": filters or {}})
 
     def query_market_series(dataset: Literal["iron_ore_basis"], start_date: str, end_date: str,
                              metrics: list[str], ports: list[str] | None = None,

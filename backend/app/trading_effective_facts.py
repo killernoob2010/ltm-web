@@ -261,10 +261,20 @@ def _position_provenance(
 
 
 def _group_position_items(items: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    grouped = _baseline_position_items(items)
+    # Position rows from different authorized accounts may legitimately share
+    # the same exchange/contract/asset/direction key.  Keep each account's
+    # baseline aggregation independent; the previous global grouping silently
+    # overwrote one account when the keys matched.
+    partitions: Dict[object, List[Mapping[str, Any]]] = {}
+    for item in items:
+        partitions.setdefault(item.get("account_id"), []).append(item)
+    grouped_rows: List[Dict[str, Any]] = []
+    for partition in partitions.values():
+        grouped_rows.extend(_baseline_position_items(partition).values())
     return sorted(
-        grouped.values(),
+        grouped_rows,
         key=lambda row: (
+            str(row.get("account_id") or ""),
             str(row.get("contract") or ""),
             str(row.get("direction") or ""),
             str(row.get("asset_type") or ""),
@@ -353,9 +363,21 @@ def infer_positions_from_fills(
 ) -> Dict[str, Any]:
     """Apply valid WH6 fills to a confirmed position baseline without clipping errors."""
     baseline = list(baseline_rows)
+    fill_rows = list(fills)
+    fill_account_ids = {row.get("account_id") for row in fill_rows if row.get("account_id") is not None}
+    # Unit callers historically supplied account-less baseline dictionaries,
+    # while the database fill rows still carried the account scope.  When the
+    # fill stream is unambiguous, attach that identity before partitioning so
+    # the inferred lots merge back into the baseline for the same account.
+    if len(fill_account_ids) == 1:
+        account_id = next(iter(fill_account_ids))
+        baseline = [
+            ({**row, "account_id": account_id} if row.get("account_id") is None else dict(row))
+            for row in baseline
+        ]
     lots = _position_lots(baseline)
     ordered_fills = sorted(
-        list(fills),
+        fill_rows,
         key=_fill_order_key,
     )
     changed_keys: set[tuple[str, str, str, str]] = set()
@@ -393,8 +415,12 @@ def infer_positions_from_fills(
             if not _close_lots(lots, key, quantity, _hedge_flag(fill.get("hedge_flag"))):
                 return _position_projection_error(baseline, f"成交平仓超过已有持仓：{contract}/{direction}")
         else:
+            account_id = fill.get("account_id")
+            if account_id is None and baseline:
+                account_id = baseline[0].get("account_id")
             lots.append(
                 {
+                    "account_id": account_id,
                     "exchange": exchange.upper(),
                     "contract": contract,
                     "asset_type": asset_type,

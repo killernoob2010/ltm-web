@@ -597,21 +597,37 @@ def task_history(task_id, user_id=None, limit=12):
             except (TypeError, ValueError):
                 payload = {}
             refs = payload.get("fact_refs", []) if isinstance(payload, dict) else []
+            # Protocol 2.1 stores immutable evidence items instead of the old
+            # ``fact_refs`` array.  Keep their internal result ids in the
+            # conversation context so a follow-up can change grouping or
+            # presentation without taking a new snapshot.
+            if isinstance(payload, dict):
+                for item in payload.get("evidence", []) or []:
+                    if isinstance(item, dict) and item.get("kind") == "internal" and item.get("result_ref"):
+                        refs = [*refs, str(item["result_ref"])]
+            refs = list(dict.fromkeys(str(value) for value in refs if value))
             status = payload.get("status", "") if isinstance(payload, dict) else ""
             content = f"上次回答状态：{status}；可追问的证据引用：{json.dumps(refs, ensure_ascii=False)}"
             if isinstance(payload, dict) and payload.get("schema_version") == "2.1":
                 reusable = []
-                for view in payload.get("views", [])[:8]:
+                views_by_ref = {
+                    str(view.get("result_ref")): view
+                    for view in payload.get("views", [])[:8]
+                    if isinstance(view, dict) and view.get("result_ref")
+                }
+                reusable_refs = list(dict.fromkeys([*views_by_ref, *refs]))
+                for result_ref in reusable_refs[:8]:
                     try:
-                        saved = load_result_for_view(row["user_id"], row["conversation_id"], view["result_ref"])
+                        saved = load_result_for_view(row["user_id"], row["conversation_id"], result_ref)
                     except (HTTPException, ResultExpired, KeyError, ValueError, TypeError):
                         continue
                     metadata = saved.envelope.payload or {}
+                    view = views_by_ref.get(str(result_ref))
                     reusable.append({"result_ref": str(saved.envelope.result_ref), "kind": metadata.get("kind"),
                         "selection": metadata.get("selection"), "date_range": metadata.get("date_range"),
                         "captured_at": saved.envelope.captured_at.isoformat(timespec="seconds"),
                         "data_as_of": str(saved.envelope.data_as_of) if saved.envelope.data_as_of else None,
-                        "view": {key: view.get(key) for key in ("id", "kind", "fields", "title")}})
+                        "view": ({key: view.get(key) for key in ("id", "kind", "fields", "title")} if view else None)})
                 content = "上次回答状态：" + str(payload.get("delivery_status", "")) + "；当前仍可访问的原结果（改变展示可直接复用，不需重新查询）：" + json.dumps(reusable, ensure_ascii=False)
         else:
             content = str(row["content"] or "")

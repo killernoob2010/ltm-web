@@ -129,3 +129,24 @@ def test_projected_tool_result_is_valid_json_and_marks_group_truncation():
     assert len(prompts.project_tool_result(envelope)) <= 16000
     assert projected["payload"]["groups_truncated"] is True
     assert len(projected["payload"]["groups"]) < len(groups)
+
+
+def test_prompt_carries_text_only_preference_into_model_contract():
+    messages = prompts.build_messages(
+        [],
+        {"tools": ["query_positions"]},
+        user_text="请纯文字说明2701铁矿石期权的净卖和浮盈亏",
+        presentation_preference="text",
+    )
+    system_text = "\n".join(item["content"] for item in messages if item["role"] == "system")
+    assert "不要创建任何 views" in system_text
+    assert "纯文字展示" in system_text
+
+
+def test_repair_prompt_preserves_text_only_constraint():
+    messages = prompts.build_answer_repair_messages(
+        "{}",
+        [{"code": "presentation_mismatch", "path": "/views", "message": "不要表格"}],
+        presentation_preference="text",
+    )
+    assert "删除全部 views" in messages[-1]["content"]

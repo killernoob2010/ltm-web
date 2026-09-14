@@ -30,6 +30,42 @@ def test_followup_history_keeps_authorized_v21_view_and_scope(queued):
     assert str(ref) not in store.task_history(followup, uid)[-1]["content"]
 
 
+def test_followup_history_keeps_internal_evidence_when_previous_answer_has_no_view(queued):
+    import json
+
+    uid, cid, _ = queued
+    task = store.claim_next("history-text")
+    principal = store.principal_for_task(task)
+    ref = store.save_result(
+        principal,
+        ToolEnvelope(
+            status="partial",
+            captured_at=datetime.now(timezone.utc),
+            calculation_version="test",
+            payload={"kind": "positions", "selection": {"filters": {"contract_months": ["2701"]}}},
+        ),
+        [{"contract": "i2701-c-700", "quantity": 2}],
+        kind="positions",
+    )
+    store.finish(
+        task,
+        "history-text",
+        "partial",
+        "纯文字结果",
+        structured_payload={
+            "schema_version": "2.1",
+            "delivery_status": "partial",
+            "evidence": [{"kind": "internal", "result_ref": str(ref)}],
+            "views": [],
+        },
+    )
+    followup = store.enqueue({"id": uid}, cid, str(uuid4()), "改成只看Put", "web")
+    content = store.task_history(followup, uid)[-1]["content"]
+
+    assert str(ref) in content
+    assert "2701" in content
+
+
 @pytest.fixture
 def queued(pilot):
     with db.connect() as conn:

@@ -175,6 +175,42 @@ def test_validate_does_not_deliver_uncovered_business_number():
     assert any(item.code == "uncovered_claim" for item in result.limitations)
 
 
+def test_text_only_validation_removes_views_and_marks_mismatch():
+    from app.trading_agent.answer_v21 import validate_answer21
+
+    ref = uuid4()
+    saved = SimpleNamespace(
+        ref=ref,
+        envelope=SimpleNamespace(
+            metrics={},
+            payload={"kind": "positions"},
+            captured_at=datetime.now(timezone.utc),
+            data_as_of=None,
+            calculation_version="test",
+        ),
+        rows=[{"contract": "i2701-c-700", "quantity": "2"}],
+        parent_ref=None,
+    )
+    store_api = SimpleNamespace(load_result=lambda principal, value, **kwargs: saved)
+    body = "以下结果见{{view:v1}}。"
+    draft = {
+        "schema_version": "2.1",
+        "body_markdown": body,
+        "spans": [],
+        "views": [{
+            "id": "v1", "kind": "table", "result_ref": str(ref),
+            "fields": ["contract", "quantity"], "title": "持仓",
+        }],
+    }
+
+    result = validate_answer21(SimpleNamespace(), draft, store_api, presentation_preference="text")
+
+    assert result.views == []
+    assert result.delivery_status == "partial"
+    assert any(item.code == "presentation_mismatch" for item in result.limitations)
+    assert "{{view:" not in result.plain_text
+
+
 def test_task_state_is_separate_from_data_status():
     from app.trading_agent.answer_v21 import task_state21
 

@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -32,6 +32,45 @@ class AsOf(StrictModel):
         return self
 
 
+class PositionFilter(StrictModel):
+    """Composable contract attributes; values are data, never expressions."""
+
+    products: list[str] = Field(default_factory=list, max_length=20)
+    contract_months: list[str] = Field(default_factory=list, max_length=20)
+    option_type: Literal["all", "call", "put"] = "all"
+    strike_min: Decimal | None = None
+    strike_max: Decimal | None = None
+    strike_min_inclusive: bool = True
+    strike_max_inclusive: bool = True
+
+    @field_validator("products", "contract_months")
+    @classmethod
+    def normalize_values(cls, values):
+        result = []
+        for value in values:
+            text = str(value).strip().lower()
+            if not text:
+                raise ValueError("筛选值不能为空")
+            result.append(text)
+        return list(dict.fromkeys(result))
+
+    @field_validator("contract_months")
+    @classmethod
+    def validate_months(cls, values):
+        if any(not text.isdigit() or len(text) not in {3, 4} for text in values):
+            raise ValueError("合约月份必须是三位或四位数字")
+        return values
+
+    @model_validator(mode="after")
+    def coherent_strike_range(self):
+        if self.strike_min is not None and self.strike_max is not None:
+            if self.strike_min > self.strike_max:
+                raise ValueError("行权价下限不能大于上限")
+            if self.strike_min == self.strike_max and not (self.strike_min_inclusive and self.strike_max_inclusive):
+                raise ValueError("相同行权价必须包含边界")
+        return self
+
+
 class FactQuery(StrictModel):
     as_of: AsOf = Field(default_factory=AsOf)
     asset_type: Literal["all", "future", "option"] = "all"
@@ -39,7 +78,14 @@ class FactQuery(StrictModel):
     direction: Literal["all", "buy", "sell"] = "all"
     classification: Literal["all", "unclassified", "classified"] = "all"
     valuation_mode: Literal["auto", "quantity_only", "mark_to_market"] = "auto"
-    required_metrics: list[Literal["quantity", "floating_pnl"]] = Field(default_factory=list, max_length=4)
+    required_metrics: list[Literal[
+        "count", "quantity", "floating_pnl", "gross_quantity", "gross_buy_quantity",
+        "gross_sell_quantity", "net_quantity", "net_sell_quantity", "net_tons",
+        "net_signed_tons", "net_wan_tons", "strike_min", "strike_max",
+        "covered_rows", "eligible_rows",
+    ]] = Field(default_factory=list, max_length=8)
+    filters: PositionFilter = Field(default_factory=PositionFilter)
+    presentation: Literal["auto", "text", "table", "chart"] = "auto"
 
 
 class MetricValue(StrictModel):

@@ -7,7 +7,7 @@ import re
 
 from .. import db, trading_effective_facts as effective
 from ..trading_valuation import QuoteRequest, QuoteSnapshot, select_live_trade_price, calculate_live_position_floating_pnl
-from . import execution, progress, store
+from . import execution, position_semantics as position_domain, progress, store
 from .auth import authorize, require_account_scope
 from .catalog import DIMENSIONS, METRICS, validate_summary
 from .contracts import FactQuery, MetricValue, ToolEnvelope
@@ -21,6 +21,8 @@ VERSION = "effective-facts-live-pnl-v2"
 PUBLIC_FIELDS = set(DIMENSIONS) | {"row_ref","quantity","price","average_price","fee","realized_close_pnl",
     "floating_pnl","group_key","valuation_price","valuation_status","market_time","contract_multiplier",
     "underlying_symbol","underlying_price","expiry_date","formation_method","settlement_type","count",
+    "gross_quantity","gross_buy_quantity","gross_sell_quantity","net_quantity","net_sell_quantity",
+    "net_tons","net_signed_tons","net_wan_tons","strike_min","strike_max","covered_rows","eligible_rows",
     "iv","delta","gamma","theta","vega","rho","unit_greeks","display_greeks","position_exposures",
     "business_date","business_year","business_week","week_label","port","futures_series","basis",
     "futures_close","wet_spot_price","data_status","quality_adjustment","brand_adjustment",
@@ -59,17 +61,27 @@ def _position_groups(rows, *, limit=100):
     group_by = ("account", "contract", "asset_type", "direction")
     grouped = {}
     for row in rows:
-        key = tuple(row.get(field) for field in group_by)
+        # Account labels are presentation data and may be absent or duplicated;
+        # partition by the server-owned account id while retaining the label in
+        # the returned dimensions.
+        key = tuple(
+            (row.get("account_id"), row.get(field)) if field == "account" else row.get(field)
+            for field in group_by
+        )
         grouped.setdefault(key, []).append(row)
     ordered = sorted(grouped.items(), key=lambda item: tuple(str(value or "") for value in item[0]))
     groups = []
     for key, items in ordered[:limit]:
         groups.append({
-            "dimensions": dict(zip(group_by, key)),
-            "metrics": {
-                name: _metric(items, name, unit).model_dump()
-                for name, unit in METRICS["positions"].items()
+            "dimensions": {
+                field: (items[0].get(field) if field == "account" else key[index])
+                for index, field in enumerate(group_by)
             },
+            "metrics": {
+                name: position_domain.metric_for_positions(items, name).model_dump(mode="json")
+                for name in METRICS["positions"]
+            },
+            "row_refs": [str(item.get("row_ref")) for item in items if item.get("row_ref") is not None],
         })
     return groups, len(ordered), len(ordered) > limit
 
@@ -104,6 +116,56 @@ def _filters(principal, query):
 def _select_contracts(rows, contracts):
     selected = {s.strip().lower() for s in contracts}
     return [row for row in rows if not selected or str(row.get("contract","")).lower() in selected]
+
+
+def _quote_key(row):
+    return (
+        str(row.get("exchange") or "").strip().lower(),
+        str(row.get("contract") or "").strip().lower(),
+        str(row.get("asset_type") or "").strip().lower(),
+    )
+
+
+def _quote_key_text(key):
+    return ":".join(str(value or "").strip().lower() for value in key)
+
+
+def _quote_for_row(quotes, row, contract_keys):
+    """Resolve a quote without allowing same-code contracts to cross wires."""
+    key = _quote_key(row)
+    for candidate in (key, _quote_key_text(key)):
+        if candidate in quotes:
+            return quotes[candidate], None
+    contract = key[1]
+    keys = contract_keys.get(contract, set())
+    if len(keys) == 1 and contract in quotes:
+        return quotes[contract], None
+    if len(keys) > 1 and contract in quotes:
+        return QuoteSnapshot(), f"{contract}存在多个交易所/资产行情键，未使用无法区分的行情"
+    return QuoteSnapshot(), None
+
+
+def _normalize_quote_map(supplied, requests, rows):
+    if not isinstance(supplied, dict):
+        return {}, ["行情提供方返回格式无效；浮盈亏及Greeks未覆盖"]
+    result = {}
+    for key, value in supplied.items():
+        if isinstance(key, tuple):
+            result[key] = value
+            continue
+        text = str(key).strip().lower()
+        if text in requests:
+            result[text] = value
+            continue
+        matches = [request_key for request_key, request in requests.items()
+                   if request.contract.lower() == text]
+        if len(matches) == 1:
+            result[text] = value
+        elif len(matches) > 1:
+            # Keep the ambiguous raw contract key so the row resolver can
+            # explicitly mark it unavailable instead of choosing arbitrarily.
+            result[text] = value
+    return result, []
 
 
 def _project(row, fields=None):
@@ -176,27 +238,57 @@ def capture_positions(principal, query: FactQuery, quote_provider):
         progress.record_stage(principal, "internal_data", "failed")
         raise
     progress.record_stage(principal, "internal_data", "complete")
-    rows = deepcopy(_select_contracts(raw.get("all_items",[]),query.contracts))
+    source_rows = deepcopy(raw.get("all_items", []))
+    rows, unresolved_rows = position_domain.select_positions(source_rows, query)
     _attach_account_labels(rows, account_labels)
-    if len(rows)>20000:
-        return _persist(principal,rows,"positions")
-    requests = {str(row["contract"]):QuoteRequest(contract=str(row["contract"]),exchange=str(row.get("exchange") or ""),asset_type=str(row.get("asset_type") or "")) for row in rows}
-    historical = query.as_of.mode=="settlement_date"
+    for index, row in enumerate(rows):
+        row.setdefault("row_ref", str(index))
     warnings = list(raw.get("warnings",[]))
+    if unresolved_rows:
+        warnings.append(f"有{len(unresolved_rows)}条持仓缺少可靠合约属性，未纳入本次领域筛选；结果范围可能不完整")
+    if len(rows)>20000:
+        return _persist(principal,rows,"positions",status="partial" if unresolved_rows else "complete",warnings=warnings)
+    requests = {
+        _quote_key_text(_quote_key(row)): QuoteRequest(
+            contract=str(row["contract"]), exchange=str(row.get("exchange") or ""),
+            asset_type=str(row.get("asset_type") or ""),
+        )
+        for row in rows
+    }
+    contract_keys = {}
+    for row in rows:
+        contract = str(row.get("contract") or "").lower()
+        contract_keys.setdefault(contract, set()).add(_quote_key_text(_quote_key(row)))
+    historical = query.as_of.mode=="settlement_date"
     quotes = {}
-    requested_metrics = set(query.required_metrics or ("quantity",) if query.valuation_mode == "quantity_only" else
-                            query.required_metrics or METRICS["positions"].keys())
-    needs_quotes = bool(requests and not historical and query.valuation_mode != "quantity_only")
+    # The result envelope exposes every registered position metric so a later
+    # summary/follow-up can reuse the same immutable snapshot.  Only metrics
+    # explicitly requested by the caller (or the two defaults below) gate the
+    # top-level status; optional fields such as strike range must not turn a
+    # perfectly usable quantity result into ``partial`` just because they do
+    # not apply to futures.
+    requested_metrics = set(
+        query.required_metrics
+        or (("quantity",) if query.valuation_mode == "quantity_only" else ("quantity", "floating_pnl"))
+    )
+    needs_quotes = bool(
+        requests
+        and not historical
+        and query.valuation_mode != "quantity_only"
+        and (
+            query.valuation_mode == "mark_to_market"
+            or not query.required_metrics
+            or "floating_pnl" in query.required_metrics
+        )
+    )
     if needs_quotes:
         progress.record_stage(principal, "quotes", "running")
         quote_status = "complete"
         try:
             with execution.phase("positions_quotes"):
                 supplied_quotes = quote_provider(list(requests.values()))
-            if isinstance(supplied_quotes, dict):
-                quotes = deepcopy(supplied_quotes)
-            else:
-                warnings.append("行情提供方返回格式无效；浮盈亏及Greeks未覆盖")
+            quotes, quote_warnings = _normalize_quote_map(supplied_quotes, requests, rows)
+            warnings.extend(quote_warnings)
         except Exception:
             quote_status = "failed"
             warnings.append("行情提供方暂时不可用；浮盈亏及Greeks未覆盖")
@@ -208,10 +300,11 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     quote_times = {}
     for index,row in enumerate(rows):
         contract = str(row["contract"])
-        quote = quotes.get(contract,QuoteSnapshot())
+        quote, quote_warning = _quote_for_row(quotes, row, contract_keys)
+        if quote_warning:
+            warnings.append(quote_warning)
         price,source,status = select_live_trade_price(quote)
-        product = re.match(r"[a-zA-Z]+",contract)
-        product = product.group().lower() if product else ""
+        product = row.get("product") or (re.match(r"[a-zA-Z]+",contract).group().lower() if re.match(r"[a-zA-Z]+",contract) else "")
         multiplier = quote.multiplier or specs.get((str(row.get("exchange","")).lower(),product,row.get("asset_type")))
         row.update(row_ref=str(index),product=product,group_key=None,valuation_price=price,valuation_status=status,
             market_time=quote.market_time,contract_multiplier=multiplier,underlying_symbol=quote.underlying_symbol,
@@ -226,16 +319,38 @@ def capture_positions(principal, query: FactQuery, quote_provider):
             row["floating_pnl"] = calculate_live_position_floating_pnl(open_price=float(row["average_price"]),market_price=price,
                 direction=row["direction"],remaining_quantity=float(row["quantity"]),multiplier=multiplier)
     valid = raw["data_status"]=="ok"
-    metrics = {name:_metric(rows,name,unit,available=valid and (name!="floating_pnl" or not historical)) for name,unit in METRICS["positions"].items()}
+    empty_status = "complete" if valid and source_rows and not rows and not unresolved_rows else "unavailable"
+    metrics = {}
+    for name, unit in METRICS["positions"].items():
+        if name in {"floating_pnl", "covered_rows", "eligible_rows", "net_tons", "net_signed_tons", "net_wan_tons",
+                    "gross_buy_quantity", "gross_sell_quantity", "net_quantity", "net_sell_quantity",
+                    "gross_quantity", "quantity", "count", "strike_min", "strike_max"}:
+            metrics[name] = position_domain.metric_for_positions(
+                rows, name, empty_status=empty_status if name not in {"strike_min", "strike_max"} else "unavailable"
+            )
+        else:
+            metrics[name] = _metric(rows, name, unit, available=valid and (name != "floating_pnl" or not historical))
     status = "complete" if valid and all(metrics[name].status == "complete" for name in requested_metrics) and not warnings else "partial" if valid else "waiting_for_data"
     metadata = {"as_of":query.as_of.model_dump(mode="json"),"valuation_basis":"historical_unavailable" if historical else "latest_trade",
         "assignment_basis":"unavailable" if historical else "current","data_status":raw["data_status"],"quote_times":quote_times,
         "selection":query.model_dump(mode="json",exclude={"as_of"}),
+        "unresolved_rows": unresolved_rows,
+        "presentation": query.presentation,
         "provenance":raw.get("provenance") or {"data_as_of":None,"precision":None,"source_observations":[]}}
     if query.valuation_mode == "quantity_only":
         metadata["valuation_basis"] = "not_requested"
     position_groups, group_count, groups_truncated = _position_groups(rows)
-    metadata.update({"groups": position_groups, "group_count": group_count, "groups_truncated": groups_truncated})
+    semantic_metrics = ["quantity", "gross_buy_quantity", "gross_sell_quantity", "net_quantity",
+                        "net_sell_quantity", "floating_pnl", "net_tons", "net_wan_tons", "strike_min", "strike_max"]
+    semantic = position_domain.aggregate_positions(
+        rows, ("contract_month", "option_type"), semantic_metrics,
+        empty_status=empty_status,
+    )
+    metadata.update({
+        "groups": position_groups, "group_count": group_count, "groups_truncated": groups_truncated,
+        "semantic_groups": semantic["groups"][:100], "semantic_group_count": semantic["group_count"],
+        "semantic_groups_truncated": semantic["group_count"] > 100,
+    })
     if groups_truncated:
         warnings.append("持仓分组超过100组；总量仍按全量快照计算，逐组合约明细仅返回受限预览。")
     return _persist(principal,rows,"positions",status=status,warnings=warnings,metrics=metrics,metadata=metadata)
@@ -313,19 +428,52 @@ def summarize(principal,result_ref,group_by,metrics,order_by=None,descending=Tru
     validate_summary(kind,group_by,metrics,order_by)
     if saved.envelope.payload.get("assignment_basis")=="unavailable" and "assignment_status" in group_by:
         raise ValueError("历史归属缺少版本证据")
-    groups={}
-    for row in saved.rows:
-        groups.setdefault(tuple(row.get(field) for field in group_by),[]).append(row)
-    rows=[]
-    for key,items in groups.items():
-        values={name:_metric(items,name,METRICS[kind][name]) for name in metrics}
-        rows.append({**dict(zip(group_by,key)),**{name:value.value for name,value in values.items()},"_coverage":{name:value.model_dump() for name,value in values.items()}})
+    if kind == "positions":
+        saved_count = (saved.envelope.payload or {}).get("count")
+        quantity_metric = saved.envelope.metrics.get("quantity")
+        empty_status = (
+            "complete"
+            if not saved.rows
+            and saved_count == 0
+            and saved.envelope.status == "complete"
+            and quantity_metric is not None
+            and quantity_metric.status == "complete"
+            else "unavailable"
+        )
+        aggregate = position_domain.aggregate_positions(
+            saved.rows,
+            group_by,
+            metrics,
+            empty_status=empty_status,
+        )
+        rows = []
+        for group in aggregate["groups"]:
+            values = group["metrics"]
+            rows.append({
+                **group["dimensions"],
+                **{name: value.get("value") for name, value in values.items()},
+                "_coverage": values,
+                "_row_refs": group.get("row_refs", []),
+            })
+        total_values = aggregate["metrics"]
+    else:
+        groups={}
+        for row in saved.rows:
+            groups.setdefault(tuple(row.get(field) for field in group_by),[]).append(row)
+        rows=[]
+        for key,items in groups.items():
+            values={name:_metric(items,name,METRICS[kind][name]) for name in metrics}
+            rows.append({**dict(zip(group_by,key)),**{name:value.value for name,value in values.items()},"_coverage":{name:value.model_dump() for name,value in values.items()}})
+        total_values = {name:_metric(saved.rows,name,METRICS[kind][name]) for name in metrics}
     if order_by:
         present=[row for row in rows if row.get(order_by) is not None]
         present.sort(key=lambda row:Decimal(row[order_by]) if order_by in metrics else str(row[order_by]),reverse=descending)
         rows=present+[row for row in rows if row.get(order_by) is None]
     available = saved.envelope.status not in {"waiting_for_data","data_anomaly"}
-    totals = {name:_metric(saved.rows,name,METRICS[kind][name],available=available) for name in metrics}
+    totals = {
+        name: (value if kind == "positions" else _metric(saved.rows,name,METRICS[kind][name],available=available))
+        for name, value in total_values.items()
+    }
     warnings = list(saved.envelope.warnings)
     if len(rows) > 100:
         warnings.append("分组超过100组；保留完整结果引用并只返回受限预览，可通过结果引用继续分页读取。")

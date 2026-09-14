@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import Field
 from fastapi import HTTPException
 
-from .contracts import FactQuery, Shock, StrictModel, ToolEnvelope
+from .contracts import FactQuery, PositionFilter, Shock, StrictModel, ToolEnvelope
 from . import catalog, facts, market_data, risk, store, execution, dv_queries, dv_analysis, research_policy
 from .dv_contracts import (
     DatasetCompare,
@@ -48,7 +48,14 @@ class PositionArgs(StrictModel):
     direction: Literal["all", "buy", "sell"] = "all"
     classification: Literal["all", "unclassified", "classified"] = "all"
     valuation_mode: Literal["auto", "quantity_only", "mark_to_market"] = "auto"
-    required_metrics: list[Literal["quantity", "floating_pnl"]] = Field(default_factory=list, max_length=4)
+    required_metrics: list[Literal[
+        "count", "quantity", "floating_pnl", "gross_quantity", "gross_buy_quantity",
+        "gross_sell_quantity", "net_quantity", "net_sell_quantity", "net_tons",
+        "net_signed_tons", "net_wan_tons", "strike_min", "strike_max",
+        "covered_rows", "eligible_rows",
+    ]] = Field(default_factory=list, max_length=8)
+    filters: PositionFilter = Field(default_factory=PositionFilter)
+    presentation: Literal["auto", "text", "table", "chart"] = "auto"
 
 
 class SummaryArgs(StrictModel):
@@ -260,6 +267,8 @@ def _query_from_position(args: PositionArgs) -> FactQuery:
         classification=args.classification,
         valuation_mode=args.valuation_mode,
         required_metrics=args.required_metrics,
+        filters=args.filters,
+        presentation=args.presentation,
     )
 
 
@@ -426,7 +435,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "describe_capabilities": {"model": EmptyArgs, "description": "返回当前授权范围内实际支持的属性、指标和限制。"},
     "query_trade_facts": {"model": FactArgs, "description": "按事实交易日读取宏源去重后的全量成交事实。"},
     "query_close_facts": {"model": FactArgs, "description": "读取已核验的平仓、行权、履约或放弃事实。"},
-    "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。只询问手数时传 valuation_mode=quantity_only、required_metrics=[quantity]，不调用行情；需要浮盈亏时传 mark_to_market 并返回最新成交价时点。返回 metrics.quantity 是全量持仓总手数；payload.groups 提供按账户、合约、期货或期权、多空方向的可引用分组指标。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失，应按每个指标自身的 status 判断可用性。"},
+    "query_positions": {"model": PositionArgs, "description": "读取当前授权账户范围内全部有效期货与期权持仓，并按受控领域条件筛选。filters.contract_months 表示合约月份（例如 2701，不是查询日期），filters.products 可传铁矿石或 i，filters.option_type=call/put 可分别筛选期权类型，strike_min/strike_max 默认包含端点；资产、方向和精确合约沿用顶层字段。as_of_mode=latest 时必须省略 as_of_date 或传 null；仅 settlement_date 模式需要 YYYY-MM-DD 日期，不支持精确历史时刻。只询问手数时传 valuation_mode=quantity_only、required_metrics=[quantity]，不调用行情；需要浮盈亏时传 mark_to_market 并返回最新成交价时点。返回 metrics.quantity 是全量筛选结果总手数；payload.groups 提供按账户、合约和方向的可引用分组，payload.semantic_groups 提供按月份/期权类型的受控汇总。preview_truncated 或 groups_truncated 为 true 时不得把预览当成全量明细。partial 可能仅因行情缺失或属性不完整，应按每个指标自身的 status 判断可用性。presentation=text 表示只返回纯文字，不能生成表格或图表。"},
     "query_market_series": {"model": market_data.MarketSeriesArgs, "description": "按已登记日期、港口和品种读取铁矿石期现结果；metrics 只允许 basis、futures_close、wet_spot_price。data_status 自动随数据返回，不得放入 metrics。只返回源表已保存的数值，不重新计算。非有效状态保留为异常或缺失。"},
     "describe_dataset": {"model": DatasetDescribeArgs, "description": "返回一个已登记现货或期现数据集的字段、筛选维度和覆盖语义。"},
     "query_dataset": {"model": DatasetQuery, "description": "按已登记字段和筛选读取现货、到港、库存或期现只读事实；不接受 SQL、代码或任意连接条件。"},
@@ -434,7 +443,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "compare_dataset": {"model": DatasetCompare, "description": "基于不可变数据集快照按已登记周期计算变化量和适用变化率。"},
     "relate_datasets": {"model": DatasetRelation, "description": "按已登记关系匹配两个授权数据集并返回可比或未匹配观察。"},
     "get_optimal_warrant": {"model": OptimalWarrantArgs, "description": "读取当前年度全局固定范围内的系统最优仓单候选；不接受任意港口或品种筛选，也不构成交易承诺。"},
-    "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总；逐项持仓请使用 group_by=['account','contract','asset_type','direction'] 和 metrics=['quantity']（需要时再加 floating_pnl），每个分组可用 /payload/groups/{index}/metrics/{metric} 引用。"},
+    "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总；可按 account、contract、product、exchange、asset_type、direction、contract_month、option_type、strike_price 分组。除 quantity/floating_pnl 外，期权净额使用 net_quantity 或 net_sell_quantity（卖出减买入，负数表示净买，零表示净平），需要单位换算时使用 net_tons/net_wan_tons；每个分组可用 /payload/groups/{index}/metrics/{metric} 引用，query_positions 的月份/Call/Put 受控汇总可用 /payload/semantic_groups/{index}/metrics/{metric} 引用。分页和 preview 不改变全量汇总。"},
     "summarize_facts": {"model": SummaryArgs, "description": "基于完整事实结果按白名单属性汇总。"},
     "read_result_page": {"model": PageArgs, "description": "读取已授权不可变结果的下一页。"},
     "compare_results": {"model": CompareArgs, "description": "比较单位和估值口径一致的两个结果。"},

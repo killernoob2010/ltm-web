@@ -9,7 +9,7 @@ import re
 import time
 from typing import Any, Literal
 
-from . import answer, prompts, progress, tools, execution, research_policy, request_scope
+from . import answer, prompts, progress, tools, execution, research_policy, request_scope, position_semantics
 from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue, apply_policy_limits, policy_answer21
 from .contracts import AnswerDraft
@@ -253,8 +253,22 @@ def _log_model_diagnostic(task_id, turn, *, attempt, repair):
     logging.getLogger(__name__).warning("agent_model_diagnostic %s", json.dumps(data))
 
 
-def _fallback21(store_api, principal, result_refs, code: str) -> ValidatedAnswer21:
-    return answer.build_fallback21(principal, result_refs, {}, code, store_api)
+def _fallback21(
+    store_api,
+    principal,
+    result_refs,
+    code: str,
+    *,
+    presentation_preference: str = "auto",
+) -> ValidatedAnswer21:
+    return answer.build_fallback21(
+        principal,
+        result_refs,
+        {},
+        code,
+        store_api,
+        presentation_preference=presentation_preference,
+    )
 
 
 async def _finish21(deps: RuntimeDeps, task_id: int, result: ValidatedAnswer21):
@@ -322,6 +336,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             pass
         return final
     user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
+    presentation_preference = position_semantics.presentation_preference(user_text)
     current_time = datetime.now(timezone.utc)
     scope = request_scope.resolve(user_text, current_time)
     query_envelopes = []
@@ -333,6 +348,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
         issues = [item for item in checked.limitations if item.code in {
             'request_scope_unverified', 'query_incomplete', 'reference_unavailable',
             'uncovered_claim', 'unreferenced_number', 'missing_reference', 'invalid_reference',
+            'presentation_mismatch',
         }]
         if scope or issues:
             await asyncio.to_thread(deps.store.append_event, principal, 'business_validation',
@@ -394,7 +410,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
 
     def failure_fallback(status: str, text: str, code: str) -> Any:
         if protocol21_mode:
-            return _fallback21(deps.store, principal, known_result_refs, code)
+            return _fallback21(
+                deps.store,
+                principal,
+                known_result_refs,
+                code,
+                presentation_preference=presentation_preference,
+            )
         return _fallback(status, text)
 
     try:
@@ -608,12 +630,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 principal,
                 [str(annual_summary_result.result_ref)],
                 "annual_period_end_preflight",
+                presentation_preference=presentation_preference,
             )
-            if direct.views:
+            if direct.views or (presentation_preference == "text" and direct.plain_text):
                 payload = getattr(annual_summary_result, "payload", {}) or {}
                 missing_years = payload.get("missing_years") or [] if isinstance(payload, dict) else []
                 complete = getattr(annual_summary_result, "status", None) == "complete" and not missing_years
-                body = (
+                body = direct.body_markdown if presentation_preference == "text" else (
                     "各业务年度最后可用观察日的库存总量见下方表格；查询范围按用户给定日期执行。"
                     if complete else
                     "各业务年度最后可用观察日的库存总量见下方表格；缺失年度未补零。"
@@ -625,7 +648,10 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     "delivery_status": "complete" if complete else "partial",
                     "body_markdown": body,
                     "plain_text": body,
-                    "limitations": limitations,
+                    "limitations": limitations if presentation_preference != "text" else [
+                        *direct.limitations,
+                        *limitations,
+                    ],
                 })
                 await _finish21(deps, task_id, final)
                 return final
@@ -639,8 +665,13 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 principal,
                 [str(position_preflight_result.result_ref)],
                 "mixed_position_preflight",
+                presentation_preference=presentation_preference,
             )
-            if direct.views:
+            if direct.views or (presentation_preference == "text" and direct.plain_text):
+                if presentation_preference == "text":
+                    final = apply_policy_limits(direct, restricted_modules)
+                    await _finish21(deps, task_id, final)
+                    return final
                 direct = direct.model_copy(update={
                     "body_markdown": "当前授权账户范围内的持仓结果见下方表格。",
                     "plain_text": "当前授权账户范围内的持仓结果见下方表格。",
@@ -657,6 +688,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             public_research_unavailable=bool(public_unavailable),
             current_time=current_time,
             request_scope=scope,
+            presentation_preference=presentation_preference,
         )
         if preflight_context:
             messages.append({"role": "system", "content": "\n\n".join(preflight_context)})
@@ -879,11 +911,22 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         raise answer.Answer21ValidationError([Answer21Issue("output_truncated", "/", "输出达到长度上限，请缩短解释并使用表格引用。")])
                     draft21 = answer.parse_answer21(raw_answer)
                     validated21 = await asyncio.to_thread(
-                        answer.validate_answer21, principal, draft21, deps.store
+                        answer.validate_answer21,
+                        principal,
+                        draft21,
+                        deps.store,
+                        presentation_preference=presentation_preference,
                     )
                     if validated21.views:
                         recoverable_draft21 = draft21
-                    evidence_errors = {"uncovered_claim", "unreferenced_number", "missing_reference", "invalid_reference", "reference_unavailable"}
+                    evidence_errors = {
+                        "uncovered_claim",
+                        "unreferenced_number",
+                        "missing_reference",
+                        "invalid_reference",
+                        "reference_unavailable",
+                        "presentation_mismatch",
+                    }
                     if validated21.delivery_status == "failed" or any(item.code in evidence_errors for item in validated21.limitations):
                         v21_issues = _validated21_issues(validated21)
                 except answer.Answer21ValidationError as exc:
@@ -900,17 +943,52 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         error_code=v21_issues[0].get("code", "invalid_value"),
                     )
                     if not repair_attempted and budget.model_calls < budget.max_models:
-                        repair_messages = prompts.build_answer_repair_messages(raw_answer, v21_issues, finish_reason=turn.finish_reason)
+                        repair_messages = prompts.build_answer_repair_messages(
+                            raw_answer,
+                            v21_issues,
+                            finish_reason=turn.finish_reason,
+                            presentation_preference=presentation_preference,
+                        )
                         bounded = _bound_messages(messages)
                         if _messages_size(bounded + repair_messages) > 48000:
-                            final = (await asyncio.to_thread(answer.validate_answer21, principal, recoverable_draft21, deps.store)
-                                     if recoverable_draft21 is not None else _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed"))
+                            final = (
+                                await asyncio.to_thread(
+                                    answer.validate_answer21,
+                                    principal,
+                                    recoverable_draft21,
+                                    deps.store,
+                                    presentation_preference=presentation_preference,
+                                )
+                                if recoverable_draft21 is not None
+                                else _fallback21(
+                                    deps.store,
+                                    principal,
+                                    known_result_refs,
+                                    "answer_validation_failed",
+                                    presentation_preference=presentation_preference,
+                                )
+                            )
                             break
                         messages = bounded + repair_messages
                         repair_attempted = True
                         continue
-                    final = (await asyncio.to_thread(answer.validate_answer21, principal, recoverable_draft21, deps.store)
-                             if recoverable_draft21 is not None else _fallback21(deps.store, principal, known_result_refs, "answer_validation_failed"))
+                    final = (
+                        await asyncio.to_thread(
+                            answer.validate_answer21,
+                            principal,
+                            recoverable_draft21,
+                            deps.store,
+                            presentation_preference=presentation_preference,
+                        )
+                        if recoverable_draft21 is not None
+                        else _fallback21(
+                            deps.store,
+                            principal,
+                            known_result_refs,
+                            "answer_validation_failed",
+                            presentation_preference=presentation_preference,
+                        )
+                    )
                     break
                 mark_public_source_gap()
                 final = apply_policy_limits(_with_source_limits(validated21, public_unavailable), restricted_modules)
@@ -932,7 +1010,9 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     )
                     if not repair_attempted and budget.model_calls < budget.max_models:
                         repair_messages = prompts.build_answer_repair_messages(
-                            raw_answer, exc.issues
+                            raw_answer,
+                            exc.issues,
+                            presentation_preference=presentation_preference,
                         )
                         bounded = _bound_messages(messages)
                         if _messages_size(bounded + repair_messages) > 48000:

@@ -6,6 +6,7 @@ DIMENSIONS = {
     "account": "账户", "contract": "合约", "product": "品种", "exchange": "交易所",
     "asset_type": "期货或期权", "direction": "买卖方向", "trade_date": "交易日",
     "fact_status": "事实确认状态", "assignment_status": "归类状态",
+    "contract_month": "合约月份", "option_type": "期权类型", "strike_price": "行权价",
 }
 
 MARKET_DATASETS = {
@@ -54,7 +55,13 @@ MARKET_DATASETS = {
 }
 
 METRICS = {
-    "positions": {"count": "条", "quantity": "手", "floating_pnl": "CNY"},
+    "positions": {
+        "count": "条", "quantity": "手", "floating_pnl": "CNY",
+        "gross_quantity": "手", "gross_buy_quantity": "手", "gross_sell_quantity": "手",
+        "net_quantity": "手", "net_sell_quantity": "手", "net_tons": "吨", "net_signed_tons": "吨",
+        "net_wan_tons": "万吨", "strike_min": "点", "strike_max": "点",
+        "covered_rows": "条", "eligible_rows": "条",
+    },
     "trades": {"count": "笔", "quantity": "手", "fee": "CNY"},
     "closes": {"count": "笔", "quantity": "手", "realized_close_pnl": "CNY"},
 }

@@ -20,7 +20,8 @@ _LABELS = {
     "trade_date": "交易日期", "quantity": "手数", "average_price": "开仓均价",
     "price": "成交价格", "valuation_price": "最新成交价", "floating_pnl": "浮盈亏", "realized_close_pnl": "平仓盈亏",
     "fee": "手续费", "market_time": "行情时间", "valuation_status": "估值状态",
-    "assignment_status": "归属状态", "basis": "基差", "futures_close": "期货收盘价",
+    "assignment_status": "归属状态", "contract_month": "合约月份", "option_type": "期权类型",
+    "strike_price": "行权价", "basis": "基差", "futures_close": "期货收盘价",
     "wet_spot_price": "湿吨现货价", "business_date": "业务日期", "port": "港口",
     "product": "品种", "data_status": "数据状态", "row_ref": "行号", "futures_series": "期货序列",
     "business_year": "业务年份", "business_week": "业务周次", "week_label": "周次标签",
@@ -40,10 +41,17 @@ _LABELS = {
     "left_wet_spot_price": "左侧湿吨现货价", "right_wet_spot_price": "右侧湿吨现货价",
     "relation_status": "关联状态", "covered_rows": "已覆盖行数", "eligible_rows": "纳入行数",
     "status": "状态", "row_count": "行数", "matched_rows": "匹配行数", "missing_previous": "缺少基准行数",
+    "gross_quantity": "总手数", "gross_buy_quantity": "买入手数", "gross_sell_quantity": "卖出手数",
+    "net_quantity": "净卖手数", "net_sell_quantity": "净卖手数", "net_tons": "净吨数",
+    "net_signed_tons": "净吨数", "net_wan_tons": "净万吨", "strike_min": "最低行权价",
+    "strike_max": "最高行权价",
 }
 _UNITS = {
     "quantity": "手", "price": "元", "average_price": "元", "valuation_price": "元",
-    "floating_pnl": "元", "realized_close_pnl": "元", "fee": "元",
+    "floating_pnl": "元", "realized_close_pnl": "元", "fee": "元", "gross_quantity": "手",
+    "gross_buy_quantity": "手", "gross_sell_quantity": "手", "net_quantity": "手",
+    "net_sell_quantity": "手", "net_tons": "吨", "net_signed_tons": "吨", "net_wan_tons": "万吨",
+    "strike_price": "点", "strike_min": "点", "strike_max": "点",
     "basis": "元/标准化吨", "futures_close": "元/吨", "wet_spot_price": "元/湿吨",
 }
 _DATE_FIELDS = {"trade_date", "business_date", "expiry_date"}
@@ -51,6 +59,8 @@ _DATETIME_FIELDS = {"market_time", "captured_at", "data_as_of"}
 _STATUS_FIELDS = {"valuation_status", "assignment_status", "data_status", "fact_status"}
 _DECIMAL_FIELDS = {
     "quantity", "price", "average_price", "valuation_price", "floating_pnl", "realized_close_pnl", "fee",
+    "gross_quantity", "gross_buy_quantity", "gross_sell_quantity", "net_quantity", "net_sell_quantity",
+    "net_tons", "net_signed_tons", "net_wan_tons", "strike_price", "strike_min", "strike_max",
     "contract_multiplier", "underlying_price", "iv", "delta", "gamma", "theta", "vega", "rho",
     "basis", "futures_close", "wet_spot_price", "standardized_spot_price", "quality_adjustment",
     "brand_adjustment", "value", "count",
@@ -269,7 +279,8 @@ def _column(field: str) -> dict:
         data_type = "decimal"
     else:
         data_type = "text"
-    scale = 0 if field in {"quantity", "count"} else 2 if data_type == "decimal" else None
+    scale = 0 if field in {"quantity", "count", "gross_quantity", "gross_buy_quantity", "gross_sell_quantity",
+                          "net_quantity", "net_sell_quantity", "covered_rows", "eligible_rows"} else 2 if data_type == "decimal" else None
     return {
         "key": field,
         "label": _LABELS.get(field, field),

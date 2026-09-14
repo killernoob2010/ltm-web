@@ -53,6 +53,29 @@ def test_historical_settlement_positions_are_scoped(two_accounts):
     assert sum(row["quantity"] for row in result["all_items"]) == 2
 
 
+def test_authorized_accounts_keep_same_contract_positions_separate(two_accounts):
+    from test_trading_effective_facts import _insert_wh6_snapshot
+
+    own, other = two_accounts
+    for account, quantity in ((own, 2), (other, 30)):
+        _insert_wh6_snapshot(
+            account,
+            rows=[dict(contract="i2701-c-700", asset_type="option", exchange="DCE", direction="买",
+                       quantity=quantity, average_price=10)],
+        )
+
+    with db.connect() as conn:
+        result = query_effective_positions(
+            conn.cursor(),
+            EffectiveFactFilters(account_ids=(own, other)),
+            include_all_items=True,
+        )
+
+    assert len(result["all_items"]) == 2
+    assert {row["account_id"] for row in result["all_items"]} == {own, other}
+    assert {row["quantity"] for row in result["all_items"]} == {2, 30}
+
+
 def test_legacy_unscoped_call_retains_all_accounts(two_accounts):
     with db.connect() as conn:
         result = query_effective_trades(conn.cursor(), EffectiveFactFilters())

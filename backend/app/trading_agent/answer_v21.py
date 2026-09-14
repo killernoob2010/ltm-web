@@ -46,6 +46,7 @@ _FACT_TOKEN = re.compile(
     r"\{\{fact:([0-9a-fA-F-]{36})#("
     r"/metrics/[A-Za-z][A-Za-z0-9_]*"
     r"|/payload/groups/[0-9]{1,3}/metrics/[A-Za-z][A-Za-z0-9_]*"
+    r"|/payload/semantic_groups/[0-9]{1,3}/metrics/[A-Za-z][A-Za-z0-9_]*"
     r"|/rows/[0-9]{1,5}/[A-Za-z][A-Za-z0-9_]*"
     r")\}\}"
 )
@@ -228,9 +229,11 @@ def _metric(saved: Any, path: str):
         metrics = _value(envelope, "metrics", {}) or {}
         return _value(metrics, name)
     parts = path.strip("/").split("/")
-    if len(parts) == 5 and parts[:2] == ["payload", "groups"] and parts[3] == "metrics":
+    if len(parts) == 5 and parts[3] == "metrics" and tuple(parts[:2]) in {
+        ("payload", "groups"), ("payload", "semantic_groups")
+    }:
         try:
-            group = _payload(saved).get("groups", [])[int(parts[2])]
+            group = _payload(saved).get(parts[1], [])[int(parts[2])]
             return (group.get("metrics", {}) if isinstance(group, dict) else {}).get(parts[4])
         except (IndexError, KeyError, TypeError, ValueError):
             return None
@@ -471,7 +474,13 @@ def _reference_for_span(ref: str, kind: str, principal: Any, store_api: Any):
     return _internal_evidence(match.group(1), saved, unit), None
 
 
-def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any], store_api: Any) -> ValidatedAnswer21:
+def validate_answer21(
+    principal: Any,
+    draft: AnswerDraft21 | str | dict[str, Any],
+    store_api: Any,
+    *,
+    presentation_preference: str = "auto",
+) -> ValidatedAnswer21:
     draft = parse_answer21(draft)
     spans_by_id = {span.id: span for span in draft.spans}
     invalid: set[str] = set()
@@ -547,6 +556,11 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
             incomplete_views = True
             limitation_rows.append(_limitation("view_data_unavailable", "所展示字段存在缺失值；记录读取完整不代表所需字段完整。", views=[view.id]))
 
+    if presentation_preference == "text" and draft.views:
+        limitation_rows.append(
+            _limitation("presentation_mismatch", "用户要求纯文字展示，答案不能包含表格或图表。", views=[view.id for view in draft.views])
+        )
+
     uncovered_ranges = _uncovered_claims(draft.body_markdown, draft.spans)
     for _ in uncovered_ranges:
         limitation_rows.append(
@@ -571,6 +585,12 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
         return ""
 
     body = _VIEW_TOKEN.sub(drop_invalid_view, body)
+    if presentation_preference == "text":
+        # A view can be valid as data but still violate an explicit text-only
+        # request.  Keep the data out of the delivered answer and let the
+        # bounded repair/fallback path compose text from its fact references.
+        valid_views = []
+        body = _VIEW_TOKEN.sub("", body)
     view_markers = set(_VIEW_TOKEN.findall(body))
     if any(view.id in valid_view_ids and f"{{{{view:{view.id}}}}}" not in body for view in draft.views):
         # A server-validated view is still an independently readable business result.
@@ -587,7 +607,8 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
     has_body = bool(body.strip())
     has_view = bool(valid_views)
     has_business_content = has_body or has_view or bool(evidence)
-    has_failures = bool(invalid or uncovered_ranges or len(valid_views) != len(draft.views) or token_issues or incomplete_views)
+    has_failures = bool(invalid or uncovered_ranges or len(valid_views) != len(draft.views) or token_issues or incomplete_views
+                        or (presentation_preference == "text" and draft.views))
     if not has_business_content:
         delivery_status = "failed"
     elif has_failures:
@@ -608,9 +629,109 @@ def validate_answer21(principal: Any, draft: AnswerDraft21 | str | dict[str, Any
     )
 
 
-def build_fallback21(principal: Any, result_refs: list[str], query_scope: dict, failure_code: str, store_api: Any) -> ValidatedAnswer21:
+def _fallback_text_for_result(saved: Any) -> str:
+    """Render a compact, evidence-preserving text result for a failed model turn."""
+    payload = _payload(saved)
+    kind = payload.get("kind")
+    metrics = _value(_envelope(saved), "metrics", {}) or {}
+    labels = {
+        "quantity": "总手数", "floating_pnl": "浮盈亏", "net_quantity": "净卖手数",
+        "net_sell_quantity": "净卖手数", "net_tons": "净吨数", "net_wan_tons": "净万吨",
+    }
+
+    def net_note(value: str | None) -> str:
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return ""
+        if number < 0:
+            return "（净买）"
+        if number == 0:
+            return "（净平）"
+        return "（净卖）"
+
+    def coverage_note(metric: Any) -> str:
+        """Keep partial quote/field coverage visible in a text fallback."""
+        status = _value(metric, "status")
+        if status not in {"partial", "unavailable"}:
+            return ""
+        covered = _value(metric, "covered_rows")
+        eligible = _value(metric, "eligible_rows")
+        try:
+            covered_number = int(covered or 0)
+            eligible_number = int(eligible or 0)
+        except (TypeError, ValueError):
+            return ""
+        if eligible_number <= 0:
+            return "（当前无可用数据）" if status == "unavailable" else ""
+        if status == "partial":
+            return f"（覆盖{covered_number}/{eligible_number}行）"
+        return f"（0/{eligible_number}行可用）"
+
+    parts = []
+    net_name = None
+    if isinstance(metrics, dict):
+        for candidate in ("net_quantity", "net_sell_quantity"):
+            candidate_value, _ = _metric_value(metrics.get(candidate))
+            if candidate_value is not None:
+                net_name = candidate
+                break
+    metric_names = ["quantity"]
+    if net_name:
+        metric_names.append(net_name)
+    metric_names.extend(("floating_pnl", "net_tons", "net_wan_tons"))
+    for name in metric_names:
+        metric = metrics.get(name) if isinstance(metrics, dict) else None
+        value, unit = _metric_value(metric)
+        if value is not None:
+            suffix = net_note(value) if name in {"net_quantity", "net_sell_quantity"} else ""
+            parts.append(f"{labels[name]} {value}{unit or ''}{suffix}{coverage_note(metric)}")
+    if kind == "positions":
+        groups = payload.get("semantic_groups") or []
+        group_parts = []
+        for group in groups[:20]:
+            dimensions = group.get("dimensions", {}) if isinstance(group, dict) else {}
+            option_type = dimensions.get("option_type")
+            if option_type not in {"call", "put"}:
+                continue
+            metric_map = group.get("metrics", {}) if isinstance(group, dict) else {}
+            net = metric_map.get("net_quantity")
+            if _metric_value(net)[0] is None:
+                net = metric_map.get("net_sell_quantity")
+            pnl = metric_map.get("floating_pnl")
+            net_value, net_unit = _metric_value(net)
+            pnl_value, pnl_unit = _metric_value(pnl)
+            detail = (
+                f"{str(option_type).title()} 净卖手数 {net_value}{net_unit or ''}{net_note(net_value)}{coverage_note(net)}"
+                if net_value is not None
+                else f"{str(option_type).title()} 净额不可用"
+            )
+            if pnl_value is not None:
+                detail += f"，对应实际持仓浮盈亏 {pnl_value}{pnl_unit or ''}{coverage_note(pnl)}"
+            elif _value(pnl, "status") == "unavailable":
+                detail += "，对应实际持仓浮盈亏当前不可用"
+            group_parts.append(detail)
+        if group_parts:
+            parts.extend(group_parts)
+    if parts:
+        return "；".join(parts) + "。"
+    if payload.get("count") == 0 and _value(_envelope(saved), "status") == "complete":
+        return "在当前查询范围内没有有效持仓。"
+    return "已保留已核验结果，但所需指标当前不可用。"
+
+
+def build_fallback21(
+    principal: Any,
+    result_refs: list[str],
+    query_scope: dict,
+    failure_code: str,
+    store_api: Any,
+    *,
+    presentation_preference: str = "auto",
+) -> ValidatedAnswer21:
     views = []
     evidence = []
+    text_parts = []
     for value in result_refs:
         try:
             ref = str(UUID(str(value)))
@@ -635,12 +756,18 @@ def build_fallback21(principal: Any, result_refs: list[str], query_scope: dict, 
                 store_api.load_result_for_view(principal.user_id, principal.conversation_id, ref)
             except Exception:
                 continue
-        views.append({"id": f"v{len(views) + 1}", "kind": "table", "result_ref": ref, "fields": [], "title": "已核验数据"})
+        if presentation_preference == "text":
+            text_parts.append(_fallback_text_for_result(saved))
+        else:
+            views.append({"id": f"v{len(views) + 1}", "kind": "table", "result_ref": ref, "fields": [], "title": "已核验数据"})
         evidence.append(_internal_evidence(ref, saved, None).model_dump(mode="json"))
-        if len(views) == 8:
+        if len(views) == 8 or len(text_parts) == 8:
             break
-    status = "partial" if views or evidence else "failed"
-    message = "已保留已核验数据，但本次回答未能完整交付。" if status == "partial" else "本次回答未通过格式或证据校验，系统未交付业务结论。"
+    status = "partial" if views or text_parts or evidence else "failed"
+    if presentation_preference == "text" and text_parts:
+        message = "\n\n".join(dict.fromkeys(text_parts))
+    else:
+        message = "已保留已核验数据，但本次回答未能完整交付。" if status == "partial" else "本次回答未通过格式或证据校验，系统未交付业务结论。"
     limitation = Limitation(code=failure_code, message="本次处理未完成，未核验内容未交付。")
     return ValidatedAnswer21(
         delivery_status=status,
