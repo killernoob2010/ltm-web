@@ -58,6 +58,28 @@ def test_tavily_failure_does_not_fall_back_or_leak_response(queued, monkeypatch,
     assert "synthetic-tavily" not in str(result)
 
 
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(401, "public_auth_failed"), (403, "public_auth_failed"),
+     (429, "public_rate_limited"), (500, "public_http_error")],
+)
+def test_search_failure_preserves_diagnostic_code_and_http_status(queued, monkeypatch, status, code):
+    principal = store.principal_for_task(store.claim_next("research-diagnostic-worker"))
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-tavily")
+
+    class Session:
+        def post(self, *args, **kwargs):
+            return type("Response", (), {"status_code": status})()
+
+    result = research.search_public(principal, "铁矿石供需", session=Session())
+
+    assert result.status == "temporarily_unavailable"
+    assert result.payload["code"] == code
+    assert result.payload["http_status"] == status
+    assert result.result_ref
+    assert result.payload["search_status"] == "failed"
+
+
 def test_public_query_rejects_private_amount_and_internal_context():
     import pytest
     for query in ("本账户亏损987654.32怎样评价", "近期天气如何影响订单ABC123456", "我的持仓风险如何"):
@@ -172,7 +194,55 @@ def test_empty_search_results_are_partial_and_not_a_public_success(queued, monke
     assert result.status == "partial"
     assert result.payload["search_status"] == "no_results"
     assert result.payload["source_count"] == 0
+    assert result.payload["code"] == "public_no_results"
+    assert result.result_ref
     assert any("没有返回" in warning for warning in result.warnings)
+
+
+def test_search_distinguishes_unsafe_candidates_from_provider_empty_results(queued, monkeypatch):
+    principal = store.principal_for_task(store.claim_next("research-unsafe-candidates-worker"))
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "synthetic")
+
+    class UnsafeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"web": {"results": [{"title": "内网", "url": "http://127.0.0.1/private", "description": "blocked"}]}}
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return UnsafeResponse()
+
+    monkeypatch.setattr(research, "_validate_url", lambda url: (_ for _ in ()).throw(UnsafeSource("blocked")))
+    result = research.search_public(principal, "铁矿石供需", session=Session())
+
+    assert result.status == "partial"
+    assert result.payload["candidate_count"] == 1
+    assert result.payload["registered_source_count"] == 0
+    assert result.payload["code"] == "public_no_usable_sources"
+    assert result.payload["search_status"] == "no_results"
+
+
+@pytest.mark.parametrize("body", [{}, {"web": {"results": {}}}, {"web": {"results": "bad"}}])
+def test_search_invalid_response_is_not_reported_as_no_results(queued, monkeypatch, body):
+    principal = store.principal_for_task(store.claim_next("research-invalid-response-worker"))
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "synthetic")
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return body
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    result = research.search_public(principal, "铁矿石供需", session=Session())
+
+    assert result.status == "temporarily_unavailable"
+    assert result.payload["code"] == "public_invalid_response"
+    assert result.payload["search_status"] == "failed"
 
 
 def test_private_context_reads_only_current_authorized_result_values(queued):

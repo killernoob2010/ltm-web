@@ -24,4 +24,8 @@ test("quality page does not render raw values without escaping and formats times
   assert.match(source, /function escapeHtml/);
   assert.match(source, /function formatTimestamp/);
   assert.match(source, /slice\(0, 19\)/);
+  assert.match(source, /event\.status/);
+  assert.match(source, /event\.error_code/);
+  assert.match(source, /formatDuration/);
+  assert.match(source, /结果已登记/);
 });

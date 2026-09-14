@@ -1,6 +1,7 @@
 """Strict contracts for planning a bounded, multi-source Agent task."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -18,6 +19,19 @@ class AnalysisTarget(StrictModel):
     label: str = Field(min_length=1, max_length=120)
 
 
+class TimeWindow(StrictModel):
+    start_date: date
+    end_date: date
+    timezone: Literal["Asia/Shanghai"] = "Asia/Shanghai"
+    origin: Literal["user", "default", "inherited"]
+
+    @model_validator(mode="after")
+    def ordered(self):
+        if self.start_date > self.end_date:
+            raise ValueError("时间范围开始日期不能晚于结束日期")
+        return self
+
+
 class Requirement(StrictModel):
     id: str = Field(min_length=1, max_length=40)
     question: str = Field(min_length=1, max_length=400)
@@ -26,6 +40,7 @@ class Requirement(StrictModel):
     depends_on: list[str] = Field(default_factory=list, max_length=8)
     needs_full_text: bool = False
     time_requirement: str = Field(default="", max_length=160)
+    time_window: TimeWindow | None = None
 
 
 class ConditionOrigin(StrictModel):

@@ -14,7 +14,8 @@ from .planning_contracts import CoverageReport, RequirementCoverage, TaskPlan
 
 _POSITION_KINDS = {"positions", "trades", "closes"}
 _DATASET_KINDS = {"dataset_rows", "dataset_summary", "dataset_comparison", "dataset_relation", "market_series"}
-_PUBLIC_KINDS = {"research", "public_read", "public"}
+_PUBLIC_KINDS = {"research", "public_search", "public_read", "public"}
+_PUBLIC_SEARCH_KINDS = {"research", "public_search", "public"}
 
 
 def _payload(envelope: Any) -> dict[str, Any]:
@@ -33,6 +34,93 @@ def _status(envelope: Any) -> str:
 def _result_ref(envelope: Any) -> str | None:
     value = getattr(envelope, "result_ref", None)
     return str(value) if value else None
+
+
+def _source_ref(envelope: Any) -> str | None:
+    value = _payload(envelope).get("source_ref")
+    return str(value) if value else None
+
+
+def _registered_public_source_refs(envelopes: list[Any]) -> set[str]:
+    refs: set[str] = set()
+    for envelope in envelopes:
+        if _kind(envelope) not in _PUBLIC_SEARCH_KINDS:
+            continue
+        sources = _payload(envelope).get("sources")
+        if not isinstance(sources, list):
+            continue
+        for source in sources:
+            if isinstance(source, dict) and source.get("source_ref"):
+                refs.add(str(source["source_ref"]))
+    return refs
+
+
+def _is_registered_public_read(envelope: Any, envelopes: list[Any]) -> bool:
+    if _kind(envelope) != "public_read":
+        return True
+    source_ref = _source_ref(envelope)
+    return bool(source_ref and source_ref in _registered_public_source_refs(envelopes))
+
+
+def _requirement_ids(envelope: Any) -> set[str] | None:
+    value = _payload(envelope).get("requirement_ids")
+    if not isinstance(value, list):
+        return None
+    return {str(item) for item in value if str(item).strip()}
+
+
+def _public_association_enabled(envelopes: list[Any]) -> bool:
+    return any(_requirement_ids(item) is not None for item in envelopes)
+
+
+def _source_requirement_ids(source_ref: str | None, envelopes: list[Any]) -> set[str]:
+    if not source_ref:
+        return set()
+    result: set[str] = set()
+    for envelope in envelopes:
+        if _kind(envelope) not in _PUBLIC_SEARCH_KINDS:
+            continue
+        source_refs = {
+            str(source.get("source_ref"))
+            for source in (_payload(envelope).get("sources") or [])
+            if isinstance(source, dict) and source.get("source_ref")
+        }
+        if source_ref in source_refs:
+            result.update(_requirement_ids(envelope) or ())
+    return result
+
+
+def _public_item_matches(requirement: Any, envelope: Any, envelopes: list[Any]) -> bool:
+    if not _public_association_enabled(envelopes):
+        return True
+    requirement_id = str(getattr(requirement, "id", ""))
+    ids = _requirement_ids(envelope)
+    if ids is None and _kind(envelope) == "public_read":
+        ids = _source_requirement_ids(_source_ref(envelope), envelopes)
+    return bool(ids and requirement_id in ids)
+
+
+def _public_source_refs_for_requirement(requirement: Any, envelopes: list[Any]) -> set[str]:
+    refs: set[str] = set()
+    for envelope in envelopes:
+        if _kind(envelope) not in _PUBLIC_SEARCH_KINDS:
+            continue
+        if not _public_item_matches(requirement, envelope, envelopes):
+            continue
+        for source in (_payload(envelope).get("sources") or []):
+            if isinstance(source, dict) and source.get("source_ref"):
+                refs.add(str(source["source_ref"]))
+    return refs
+
+
+def _is_full_text(envelope: Any) -> bool:
+    fetch_status = _payload(envelope).get("fetch_status")
+    return (
+        _kind(envelope) == "public_read"
+        and bool(str(_payload(envelope).get("text") or "").strip())
+        and _status(envelope) in {"complete", "partial"}
+        and fetch_status in {"full_text", "truncated"}
+    )
 
 
 def _metric_names(envelope: Any) -> set[str]:
@@ -83,21 +171,58 @@ def _candidate_envelopes(requirement: Any, envelopes: list[Any]) -> list[Any]:
         allowed_kinds &= _PUBLIC_KINDS
     elif requirement.source_intent == "internal":
         allowed_kinds -= _PUBLIC_KINDS
-    return [item for item in envelopes if _kind(item) in allowed_kinds]
+    return [
+        item for item in envelopes
+        if _kind(item) in allowed_kinds
+        and _is_registered_public_read(item, envelopes)
+        and (_kind(item) not in _PUBLIC_KINDS or _public_item_matches(requirement, item, envelopes))
+    ]
 
 
-def _target_envelopes(target: Any, envelopes: list[Any]) -> list[Any]:
+def _target_envelopes(target: Any, envelopes: list[Any], requirement: Any | None = None) -> list[Any]:
     allowed_kinds = _target_kinds(str(getattr(target, "domain", "")))
-    return [item for item in envelopes if _kind(item) in allowed_kinds]
+    return [
+        item for item in envelopes
+        if _kind(item) in allowed_kinds
+        and _is_registered_public_read(item, envelopes)
+        and (
+            str(getattr(target, "domain", "")) != "public"
+            or requirement is None
+            or _public_item_matches(requirement, item, envelopes)
+        )
+    ]
 
 
 def _has_full_text(envelopes: list[Any]) -> bool:
-    return any(
-        _kind(item) == "public_read"
-        and bool(str(_payload(item).get("text") or "").strip())
-        and _status(item) in {"complete", "partial"}
-        for item in envelopes
-    )
+    return any(_is_full_text(item) for item in envelopes)
+
+
+def public_source_refs_needing_read(plan: TaskPlan, envelopes: list[Any]) -> list[str]:
+    """Return registered public sources whose required正文 has not been read."""
+    if not any(
+        bool(getattr(requirement, "needs_full_text", False))
+        and any(getattr(target, "domain", None) == "public" for target in (getattr(requirement, "targets", []) or []))
+        for requirement in plan.requirements
+    ):
+        return []
+    all_envelopes = list(envelopes or [])
+    missing: list[str] = []
+    for requirement in plan.requirements:
+        if not (
+            bool(getattr(requirement, "needs_full_text", False))
+            and any(getattr(target, "domain", None) == "public" for target in (getattr(requirement, "targets", []) or []))
+        ):
+            continue
+        registered = _public_source_refs_for_requirement(requirement, all_envelopes)
+        read = {
+            _source_ref(item)
+            for item in all_envelopes
+            if _is_registered_public_read(item, all_envelopes)
+            and _public_item_matches(requirement, item, all_envelopes)
+            and _is_full_text(item)
+        }
+        missing.extend(ref for ref in sorted(registered) if ref not in read)
+    return list(dict.fromkeys(missing))
 
 
 def _actual_scope(requirement: Any, candidates: list[Any]) -> dict[str, Any]:
@@ -188,7 +313,7 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
             target_candidates: dict[str, list[Any]] = {}
             for target in requirement.targets:
                 target_id = str(target.id)
-                target_candidates[target_id] = _target_envelopes(target, list(envelopes or []))
+                target_candidates[target_id] = _target_envelopes(target, list(envelopes or []), requirement)
                 if target.domain in {"positions", "dataset", "public"} and not target_candidates[target_id]:
                     missing.append(f"target.{target_id}.result_missing")
                 if target_candidates[target_id] and _scope_status(target, target_candidates[target_id]) == "mismatch":
@@ -219,9 +344,9 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
 
         scope = _actual_scope(requirement, candidates)
         scope["targets"] = {
-            str(target.id): {
-                **_target_scope(target, _target_envelopes(target, list(envelopes or []))),
-                "filter_status": _scope_status(target, _target_envelopes(target, list(envelopes or []))),
+                str(target.id): {
+                **_target_scope(target, _target_envelopes(target, list(envelopes or []), requirement)),
+                "filter_status": _scope_status(target, _target_envelopes(target, list(envelopes or []), requirement)),
             }
             for target in requirement.targets
         }
@@ -273,4 +398,4 @@ def assess_delivery(plan: TaskPlan, coverage: CoverageReport, validated_answer: 
     return CoverageReport(items=updated, complete=bool(updated) and all(item.status == "answered" for item in updated))
 
 
-__all__ = ["assess_evidence", "assess_delivery"]
+__all__ = ["assess_evidence", "assess_delivery", "public_source_refs_needing_read"]

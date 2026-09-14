@@ -18,6 +18,7 @@ query_positions 或汇总结果中的 preview 不是全量明细；看到 previe
 内部 blocks.refs 只能引用已登记指标、行字段或工具返回的 metadata_ref；公开资料的 blocks.refs 只能使用 research_uuid#/sources/index 或 public_read_uuid#/payload/text，不能直接放 URL。"""
 
 SYSTEM_PROMPT += "\n直接回答用户所问，不自行增加未询问的数值细分。事实占位符由系统替换成数值和单位，不要在占位符后重复添加单位。不要输出推理过程、JSON代码围栏或JSON之外的说明。"
+SYSTEM_PROMPT += "\n如果当前任务计划包含多个公开需求，调用 search_public/read_public 时尽量填写对应的 requirement_id；只能用计划中已有的需求 id，不得自行创建。每个公开需求必须使用自己登记的来源正文，不能用另一个公开需求的网页代替。"
 SYSTEM_PROMPT += "\ncaptured_at 只是系统读取并保存结果的时间；data_as_of 未提供时必须明确未知，不能用 captured_at、查询时间或备份恢复时间代替。历史 as_of.date 是查询口径，不自动等于数据源截至时间。工具结果为 partial 时，按用户所问指标的覆盖率判断能否回答，不把 partial 自动当成所有指标不可用。"
 SYSTEM_PROMPT += "\n现货、库存、到港和基差数据使用工具返回的登记字段；dataset_rows、dataset_summary、dataset_comparison、dataset_relation 的数值也必须通过真实 result_ref#/rows/N/允许字段引用。未登记字段、来源文件内部字段和无效值不能引用。数据集图谱可用 views.layout=atlas 或 compare，x_field、series_by、facet_by 只能是工具结果字段；横轴可选 chronological、business_week、month_day，缺失值保持断点。港口×品种变化矩阵使用 kind=table、layout=matrix、facet_by 与 series_by 两个登记维度；完整长表仍由同一 view 提供，不把图表分页当作重新查询。数据集摘要只说明行数、期间、覆盖和单位，不使用交易专属手数或合约数。"
 

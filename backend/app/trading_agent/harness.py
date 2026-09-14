@@ -80,6 +80,20 @@ def _safe_error_code(exc: Exception) -> str:
     return type(exc).__name__
 
 
+def _envelope_error_code(envelope: Any) -> str | None:
+    """Keep provider/tool diagnostics in the event row without raw payloads."""
+    payload = getattr(envelope, "payload", {})
+    code = payload.get("code") if isinstance(payload, dict) else None
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code):
+        return code
+    status = getattr(envelope, "status", None)
+    if status not in {"complete", "partial"}:
+        kind = payload.get("kind") if isinstance(payload, dict) else None
+        if kind in {"research", "public_search", "public_read", "public"}:
+            return "public_source_unavailable"
+    return None
+
+
 def _position_preflight_args(user_text: str) -> dict[str, Any] | None:
     """Build the narrow, read-only position query needed by mixed requests."""
     text = str(user_text or "")
@@ -584,6 +598,52 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
     protocol21_mode = deps.answer_protocol == "2.1"
     known_result_refs: list[str] = []
     public_query_repair_attempted = False
+    public_full_text_repair_attempted = False
+    public_source_requirements: dict[str, set[str]] = {}
+    public_assigned_requirements: set[str] = set()
+
+    def current_public_requirement_ids() -> list[str]:
+        return [
+            str(requirement.id)
+            for requirement in (getattr(task_plan, "requirements", []) or [])
+            if any(
+                getattr(target, "domain", None) == "public"
+                for target in (getattr(requirement, "targets", []) or [])
+            )
+        ]
+
+    def resolve_public_requirement_ids(arguments: dict[str, Any] | None) -> list[str]:
+        requested = str((arguments or {}).get("requirement_id") or "").strip()
+        public_requirement_ids = current_public_requirement_ids()
+        if requested:
+            return [requested] if requested in public_requirement_ids else []
+        remaining = [item for item in public_requirement_ids if item not in public_assigned_requirements]
+        if remaining:
+            return [remaining[0]]
+        return public_requirement_ids[:1] if len(public_requirement_ids) == 1 else []
+
+    def annotate_public_envelope(envelope: Any, requirement_ids: list[str]) -> Any:
+        if not requirement_ids or not hasattr(envelope, "model_copy"):
+            return envelope
+        payload = getattr(envelope, "payload", {})
+        if not isinstance(payload, dict):
+            return envelope
+        updated_payload = dict(payload)
+        updated_payload["requirement_ids"] = list(dict.fromkeys(requirement_ids))
+        return envelope.model_copy(update={"payload": updated_payload})
+
+    def register_public_sources(envelope: Any, requirement_ids: list[str]) -> None:
+        if not requirement_ids:
+            return
+        payload = getattr(envelope, "payload", {})
+        sources = payload.get("sources") if isinstance(payload, dict) else None
+        if not sources:
+            return
+        public_assigned_requirements.update(requirement_ids)
+        for source in sources or []:
+            if isinstance(source, dict) and source.get("source_ref"):
+                source_ref = str(source["source_ref"])
+                public_source_requirements.setdefault(source_ref, set()).update(requirement_ids)
 
     def mark_public_source_gap():
         if (plan.mode == "research_allowed"
@@ -717,6 +777,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     total_seconds=budget.deadline_seconds,
                     call_seconds=deps.limits.model_timeout_seconds,
                 )
+                task_plan = planner.apply_time_windows(task_plan, user_text, now=current_time)
                 planner.validate_plan(
                     task_plan,
                     planner_catalog,
@@ -1211,6 +1272,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         })
                         continue
                     try:
+                        tool_started = deps.clock()
                         if call.name == 'query_dataset':
                             request_scope.check_query(scope, call.arguments)
                             # Validate locally so bad fields can be repaired without an opaque MCP failure.
@@ -1222,10 +1284,22 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             total_seconds=budget.deadline_seconds,
                             call_seconds=deps.limits.tool_timeout_seconds,
                         )
+                        if call.name == "search_public":
+                            requirement_ids = resolve_public_requirement_ids(call.arguments)
+                            envelope = annotate_public_envelope(envelope, requirement_ids)
+                            register_public_sources(envelope, requirement_ids)
+                        elif call.name == "read_public":
+                            source_ref = str(call.arguments.get("source_ref") or "")
+                            requirement_ids = [str(call.arguments.get("requirement_id"))] if call.arguments.get("requirement_id") else sorted(
+                                public_source_requirements.get(source_ref, set())
+                            )
+                            envelope = annotate_public_envelope(envelope, requirement_ids)
                         if getattr(envelope, "result_ref", None):
                             known_result_refs.append(str(envelope.result_ref))
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
-                                                result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
+                                                result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None),
+                                                error_code=_envelope_error_code(envelope),
+                                                duration_seconds=int(max(0, round(deps.clock() - tool_started))))
                         envelope_payload = getattr(envelope, "payload", None)
                         if call.name in {'query_dataset', 'compare_dataset', 'query_positions'}:
                             query_envelopes.append(envelope)
@@ -1240,7 +1314,17 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             else:
                                 failed_data_tools.add(call.name)
                         if call.name in {"search_public", "read_public"}:
-                            public_unavailable[call.name] = getattr(envelope, "status", None) not in {"complete", "partial"}
+                            payload_kind = envelope_payload.get("kind") if isinstance(envelope_payload, dict) else None
+                            no_sources = (
+                                call.name == "search_public"
+                                and payload_kind in {"research", "public_search", "public"}
+                                and not (envelope_payload.get("sources") or [])
+                            )
+                            public_unavailable[call.name] = (
+                                _envelope_error_code(envelope)
+                                or ("public_no_results" if no_sources else None)
+                                or (getattr(envelope, "status", None) not in {"complete", "partial"})
+                            )
                         if (call.name == "search_public" and isinstance(envelope_payload, dict)
                                 and envelope_payload.get("kind") == "public_query_rejected"):
                             if (not public_query_repair_attempted
@@ -1295,6 +1379,86 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     "根据返回的真实来源作答。无法安全拆分时才说明具体限制。"
                 )})
                 continue
+            if not turn.tool_calls and task_plan is not None and not public_full_text_repair_attempted:
+                missing_public_refs = task_coverage.public_source_refs_needing_read(
+                    task_plan, evidence_envelopes,
+                )
+                if missing_public_refs:
+                    public_full_text_repair_attempted = True
+                    if "read_public" not in allowed_tool_names:
+                        public_unavailable["catalog"] = "public_read_not_authorized"
+                    else:
+                        attempted = False
+                        for source_ref in missing_public_refs:
+                            if budget.tool_calls >= budget.max_tools:
+                                public_unavailable["read_public"] = "tool_budget_exhausted"
+                                break
+                            attempted = True
+                            budget.tool_calls += 1
+                            await asyncio.to_thread(deps.store.record_usage, task_id, tool_calls=1)
+                            try:
+                                tool_started = deps.clock()
+                                envelope = await _bounded_call(
+                                    lambda source_ref=source_ref: deps.mcp.call_tool(
+                                        "read_public", {"source_ref": source_ref}, grant,
+                                    ),
+                                    clock=deps.clock,
+                                    started=started,
+                                    total_seconds=budget.deadline_seconds,
+                                    call_seconds=deps.limits.tool_timeout_seconds,
+                                )
+                                envelope = annotate_public_envelope(
+                                    envelope,
+                                    sorted(public_source_requirements.get(source_ref, set())),
+                                )
+                                if getattr(envelope, "result_ref", None):
+                                    known_result_refs.append(str(envelope.result_ref))
+                                evidence_envelopes.append(envelope)
+                                envelope_error = _envelope_error_code(envelope)
+                                await asyncio.to_thread(
+                                    deps.store.append_event,
+                                    principal,
+                                    "tool",
+                                    tool_name="read_public",
+                                    arguments={"source_ref": source_ref},
+                                    result_ref=getattr(envelope, "result_ref", None),
+                                    status=getattr(envelope, "status", None),
+                                    error_code=envelope_error,
+                                    duration_seconds=int(max(0, round(deps.clock() - tool_started))),
+                                )
+                                if envelope_error:
+                                    public_unavailable["read_public"] = envelope_error
+                                messages.append({
+                                    "role": "system",
+                                    "content": (
+                                        "服务器发现公开需求需要正文，已自动读取已登记公开来源正文；"
+                                        "请只根据下面的工具结果重写答案，不要把搜索摘要当作正文：\n"
+                                        + prompts.project_tool_result(envelope)
+                                    ),
+                                })
+                            except ExecutionDeadline:
+                                public_unavailable["read_public"] = "deadline_exceeded"
+                                await asyncio.to_thread(
+                                    deps.store.append_event,
+                                    principal,
+                                    "tool_error",
+                                    tool_name="read_public",
+                                    arguments={"source_ref": source_ref},
+                                    error_code="deadline_exceeded",
+                                )
+                                break
+                            except Exception as exc:
+                                public_unavailable["read_public"] = _safe_error_code(exc)
+                                await asyncio.to_thread(
+                                    deps.store.append_event,
+                                    principal,
+                                    "tool_error",
+                                    tool_name="read_public",
+                                    arguments={"source_ref": source_ref},
+                                    error_code=_safe_error_code(exc),
+                                )
+                        if attempted:
+                            continue
             raw_answer = turn.content or ""
             if protocol21_mode or _looks_like_answer21(raw_answer):
                 protocol21_mode = True

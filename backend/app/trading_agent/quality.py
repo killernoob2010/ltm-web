@@ -675,7 +675,7 @@ def get_run_detail(task_id: int) -> dict[str, Any] | None:
         ).fetchall() if _table_exists("closing_review_messages") else []
         events = db._exec(
             conn.cursor(),
-            """SELECT seq,kind,tool_name,status,error_code,duration_seconds,created_at
+            """SELECT seq,kind,tool_name,status,error_code,result_ref,duration_seconds,created_at
                FROM agent_v2_events WHERE task_id=? ORDER BY seq ASC""",
             (task_id,),
         ).fetchall() if _table_exists("agent_v2_events") else []
@@ -705,6 +705,7 @@ def get_run_detail(task_id: int) -> dict[str, Any] | None:
                 "tool_name": event["tool_name"],
                 "status": event["status"],
                 "error_code": event["error_code"],
+                "result_ref": str(event["result_ref"]) if event["result_ref"] else None,
                 "duration_seconds": event["duration_seconds"],
                 "created_at": _seconds(event["created_at"]),
             }

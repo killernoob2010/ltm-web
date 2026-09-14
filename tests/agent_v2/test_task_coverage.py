@@ -57,7 +57,7 @@ def test_assess_evidence_requires_public_full_text_and_tracks_each_requirement()
         metrics={"quantity": MetricValue(value="80", unit="吨", status="complete", covered_rows=2, eligible_rows=2)},
     )
     search = _envelope("research", payload={"sources": [{"source_ref": "source-1"}]})
-    read = _envelope("public_read", payload={"source_ref": "source-1", "text": "本周港口有暴雨。"})
+    read = _envelope("public_read", payload={"source_ref": "source-1", "text": "本周港口有暴雨。", "fetch_status": "full_text"})
 
     report = assess_evidence(_plan(), [internal, search, read])
 
@@ -84,6 +84,63 @@ def test_assess_evidence_distinguishes_snippet_only_from_full_text():
     assert weather.status == "partial"
     assert "full_text_required" in weather.missing_codes
     assert report.complete is False
+
+
+def test_unregistered_public_read_does_not_satisfy_public_requirement():
+    from app.trading_agent.coverage import assess_evidence
+
+    report = assess_evidence(
+        _plan(needs_full_text=True),
+        [
+            _envelope("dataset_rows", metrics={"quantity": MetricValue(value="80", unit="吨", status="complete", covered_rows=2, eligible_rows=2)}),
+            _envelope("public_read", payload={"source_ref": "not-registered", "text": "伪造的公开正文。"}),
+        ],
+    )
+
+    weather = next(item for item in report.items if item.requirement_id == "weather")
+    assert weather.status == "partial"
+    assert "target.weather_target.result_missing" in weather.missing_codes
+    assert "full_text_required" in weather.missing_codes
+
+
+def test_public_source_refs_needing_read_only_returns_registered_unread_sources():
+    from app.trading_agent.coverage import public_source_refs_needing_read
+
+    search = _envelope("research", payload={"sources": [
+        {"source_ref": "source-1"}, {"source_ref": "source-2"},
+    ]})
+    read = _envelope("public_read", payload={"source_ref": "source-1", "text": "正文", "fetch_status": "full_text"})
+
+    assert public_source_refs_needing_read(_plan(), [search, read]) == ["source-2"]
+
+
+def test_public_evidence_is_bound_to_requirement_when_multiple_public_requirements_exist():
+    from app.trading_agent.coverage import assess_evidence
+
+    plan = TaskPlan.model_validate({
+        "objective": "核对两个公开主题",
+        "topic_action": "new_topic",
+        "requirements": [{
+            "id": "weather", "question": "公开天气", "source_intent": "public", "needs_full_text": True,
+            "targets": [{"id": "weather_target", "domain": "public", "label": "天气"}],
+        }, {
+            "id": "port_event", "question": "港口事件", "source_intent": "public", "needs_full_text": True,
+            "targets": [{"id": "port_event_target", "domain": "public", "label": "港口事件"}],
+        }],
+    })
+    search = _envelope("research", payload={
+        "requirement_ids": ["weather"], "sources": [{"source_ref": "weather-source"}],
+    })
+    read = _envelope("public_read", payload={
+        "requirement_ids": ["weather"], "source_ref": "weather-source", "text": "天气正文。", "fetch_status": "full_text",
+    })
+
+    report = assess_evidence(plan, [search, read])
+    items = {item.requirement_id: item for item in report.items}
+
+    assert items["weather"].status == "answered"
+    assert items["port_event"].status == "partial"
+    assert "target.port_event_target.result_missing" in items["port_event"].missing_codes
 
 
 def test_assess_delivery_marks_unreferenced_requirement_without_erasing_other_evidence():

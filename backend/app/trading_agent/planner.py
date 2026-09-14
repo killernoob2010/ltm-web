@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta
 import json
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter, ValidationError
 
 from .contracts import FactQuery, PositionFilter
 from .dv_contracts import DataFilters, DatasetQuery, validate_dataset_query
-from .planning_contracts import TaskPlan
+from .planning_contracts import TaskPlan, TimeWindow
 
 
 class PlannerError(ValueError):
@@ -56,6 +57,44 @@ PLANNER_SYSTEM = """你是受控业务 Agent 的任务规划器。
 用户明确说不要联网时，生成 no_web 限制；不要自行取消。公开需求只写公开地区、品种、日期和主题，不写账户、持仓数量、盈亏、客户、订单或内部编码。
 模型不能填写 user_id、account_id、权限、执行令牌、SQL、代码、预算或工具调用。只输出符合给定 JSON Schema 的 JSON，不要输出解释、Markdown 围栏或工具调用。
 """
+
+_RECENT_TIME = re.compile(r"近期|最近|近两周|近一个月|本期|截至目前", re.I)
+_BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def apply_time_windows(task_plan: TaskPlan, user_text: str, *, now: datetime | None = None) -> TaskPlan:
+    """Fill server-owned recent windows without letting the model choose dates silently."""
+    text = str(user_text or "")
+    explicit_dates: list[date] = []
+    for value in re.findall(r"20\d{2}-\d{2}-\d{2}", text):
+        try:
+            explicit_dates.append(date.fromisoformat(value))
+        except ValueError:
+            continue
+    business_now = now or datetime.now(_BUSINESS_TZ)
+    if business_now.tzinfo is None:
+        business_now = business_now.replace(tzinfo=_BUSINESS_TZ)
+    business_date = business_now.astimezone(_BUSINESS_TZ).date()
+    default_start = business_date - timedelta(days=13)
+    requirements = []
+    for requirement in task_plan.requirements:
+        if requirement.time_window is not None or (
+            not _RECENT_TIME.search(requirement.time_requirement or "") and not explicit_dates
+        ):
+            requirements.append(requirement)
+            continue
+        if len(explicit_dates) >= 2 and explicit_dates[0] <= explicit_dates[1]:
+            start_date, end_date, origin = explicit_dates[0], explicit_dates[1], "user"
+        else:
+            start_date, end_date, origin = default_start, business_date, "default"
+        requirements.append(requirement.model_copy(update={
+            "time_window": TimeWindow(
+                start_date=start_date,
+                end_date=end_date,
+                origin=origin,
+            ),
+        }))
+    return task_plan.model_copy(update={"requirements": requirements})
 
 
 def _json_schema() -> dict[str, Any]:

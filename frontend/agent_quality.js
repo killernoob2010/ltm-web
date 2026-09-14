@@ -51,6 +51,10 @@
     definition_available: "题库已登记",
     offline_available: "离线套件已登记",
     not_recorded: "未记录",
+    complete: "完成",
+    temporarily_unavailable: "暂不可用",
+    rejected: "已拒绝",
+    unsupported: "不支持",
   };
 
   function escapeHtml(value) {
@@ -70,6 +74,12 @@
 
   function formatNumber(value) {
     return Number(value || 0).toLocaleString("zh-CN");
+  }
+
+  function formatDuration(value) {
+    if (value == null || value === "") return "--";
+    const number = Number(value);
+    return Number.isFinite(number) ? `${Math.max(0, Math.round(number))}秒` : "--";
   }
 
   function statusChip(value) {
@@ -169,7 +179,7 @@
       detail.textContent = "";
       return;
     }
-    const events = (item.events || []).map((event) => `<li>${escapeHtml(formatTimestamp(event.created_at))}｜${escapeHtml(event.kind)}｜${escapeHtml(event.tool_name || "")}${event.error_code ? `｜${escapeHtml(event.error_code)}` : ""}</li>`).join("");
+    const events = (item.events || []).map((event) => `<li>${escapeHtml(formatTimestamp(event.created_at))}｜${escapeHtml(event.kind)}｜${escapeHtml(event.tool_name || "")}${event.status ? `｜状态：${escapeHtml(event.status)}` : ""}${event.error_code ? `｜原因：${escapeHtml(event.error_code)}` : ""}${event.duration_seconds != null ? `｜耗时：${escapeHtml(formatDuration(event.duration_seconds))}` : ""}${event.result_ref ? "｜结果已登记" : ""}</li>`).join("");
     const feedback = item.feedback ? `<p>当前反馈：${statusChip(item.quality_status)}｜${escapeHtml(item.feedback.note || "")}</p>` : `<p>当前反馈：${statusChip(item.quality_status)}</p>`;
     detail.innerHTML = `<h3>任务 #${escapeHtml(item.task_id)} 详情</h3>
       <div class="agent-quality-detail-grid">

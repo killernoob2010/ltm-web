@@ -54,6 +54,13 @@ def test_mixed_question_keeps_internal_and_external_domains_separate():
     assert set(plan.domains) == {"trading", "spot", "basis", "public"}
 
 
+def test_weather_shipping_question_is_mixed_without_explicit_web_wording():
+    plan = enforce_research_policy("结合近期的天气，分析对矿石发运的影响", _candidate())
+    assert plan.mode == "research_allowed"
+    assert plan.reason == "mixed_research"
+    assert "public" in plan.domains
+
+
 @pytest.mark.parametrize("question", [
     "结合内部库存和公开供需资料分析",
     "查询近期铁矿石供需新闻，并结合库存分析",

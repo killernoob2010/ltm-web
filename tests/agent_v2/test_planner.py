@@ -1,9 +1,10 @@
 import asyncio
 import json
+from datetime import date, datetime, timezone
 
 import pytest
 
-from app.trading_agent.planner import PlannerError, create_plan, validate_plan
+from app.trading_agent.planner import PlannerError, apply_time_windows, create_plan, validate_plan
 from app.trading_agent.model import ModelTurn
 from app.trading_agent.planning_contracts import TaskPlan
 
@@ -84,6 +85,35 @@ def test_create_plan_splits_internal_and_public_requirements():
     ))
     assert {item.source_intent for item in plan.requirements} == {"internal", "public"}
     assert model.calls[0]["schemas"] == []
+
+
+def test_apply_time_windows_records_server_default_for_recent_requirements():
+    plan = TaskPlan.model_validate(_weather_plan())
+    resolved = apply_time_windows(
+        plan,
+        "结合近期的天气，分析矿石发运影响",
+        now=datetime(2026, 9, 14, 9, 0, tzinfo=timezone.utc),
+    )
+
+    windows = {item.id: item.time_window for item in resolved.requirements}
+    assert windows["shipping"].start_date == date(2026, 9, 1)
+    assert windows["shipping"].end_date == date(2026, 9, 14)
+    assert windows["shipping"].origin == "default"
+    assert windows["weather"].origin == "default"
+
+
+def test_apply_time_windows_preserves_explicit_user_dates():
+    plan = TaskPlan.model_validate(_weather_plan())
+    resolved = apply_time_windows(
+        plan,
+        "结合 2026-08-01 至 2026-08-14 的天气，分析矿石发运影响",
+        now=datetime(2026, 9, 14, tzinfo=timezone.utc),
+    )
+
+    window = next(item.time_window for item in resolved.requirements if item.id == "weather")
+    assert window.start_date == date(2026, 8, 1)
+    assert window.end_date == date(2026, 8, 14)
+    assert window.origin == "user"
 
 
 def test_create_plan_rejects_tool_calls_from_planning_turn():

@@ -98,10 +98,12 @@ class EvidenceArgs(StrictModel):
 class PublicSearchArgs(StrictModel):
     public_query: str = Field(min_length=1, max_length=240)
     freshness: Literal["day", "week", "month", "year", "none"] = "none"
+    requirement_id: str | None = Field(default=None, max_length=40)
 
 
 class PublicReadArgs(StrictModel):
     source_ref: str = Field(min_length=1, max_length=500)
+    requirement_id: str | None = Field(default=None, max_length=40)
 
 
 DATASET_TOOL_NAMES = {

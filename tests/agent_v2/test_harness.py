@@ -88,6 +88,13 @@ class PlanningCatalogMCP(FakeMCP):
                 calculation_version="public-research-v1",
                 payload={"kind": "public_search", "sources": [{"source_ref": "weather-source"}]},
             )
+        if name == "read_public":
+            return ToolEnvelope(
+                status="complete",
+                captured_at=datetime.now(timezone.utc),
+                calculation_version="public-research-v1",
+                payload={"kind": "public_read", "source_ref": args.get("source_ref"), "text": "近期公开天气正文。", "fetch_status": "full_text"},
+            )
         return ToolEnvelope(status="complete", captured_at=datetime.now(timezone.utc),
                             calculation_version="test", payload={"kind": "capabilities"})
 
@@ -109,6 +116,34 @@ class CapabilitySnapshotMCP(PlanningCatalogMCP):
                         "research": {},
                     },
                 },
+            )
+        return await super().call_tool(name, args, grant)
+
+
+class RegisteredPublicEvidenceMCP(PlanningCatalogMCP):
+    def __init__(self):
+        super().__init__()
+        self.call_names = []
+        self.read_args = []
+
+    async def call_tool(self, name, args, grant):
+        self.call_names.append(name)
+        if name == "search_public":
+            return ToolEnvelope(
+                status="complete",
+                result_ref=__import__("uuid").uuid4(),
+                captured_at=datetime.now(timezone.utc),
+                calculation_version="public-research-v1",
+                payload={"kind": "research", "sources": [{"source_ref": "weather-source"}]},
+            )
+        if name == "read_public":
+            self.read_args.append(deepcopy(args))
+            return ToolEnvelope(
+                status="complete",
+                result_ref=__import__("uuid").uuid4(),
+                captured_at=datetime.now(timezone.utc),
+                calculation_version="public-research-v1",
+                payload={"kind": "public_read", "source_ref": args["source_ref"], "text": "澳大利亚沿岸近期有强风天气。", "fetch_status": "full_text"},
             )
         return await super().call_tool(name, args, grant)
 
@@ -253,6 +288,7 @@ async def test_enabled_planner_reclassifies_weather_shipping_as_mixed_research(q
         ModelTurn(content=MIXED_PLAN),
         ModelTurn(tool_calls=[{"id": "weather-1", "name": "search_public", "arguments": {"public_query": "近期天气对矿石发运的影响"}}]),
         ModelTurn(content=GOOD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
     ])
     mcp = PlanningCatalogMCP()
 
@@ -268,7 +304,7 @@ async def test_enabled_planner_reclassifies_weather_shipping_as_mixed_research(q
     # requirement coverage gate correctly keeps delivery partial.
     assert result.delivery_status == "partial"
     assert mcp.list_calls == 2
-    assert mcp.calls == 2  # capability discovery plus the approved public search
+    assert mcp.calls == 3  # capability discovery, approved public search, and server-enforced正文读取
     with db.connect() as conn:
         policy = conn.execute(
             "SELECT status,error_code FROM agent_v2_events WHERE task_id=? AND kind='research_policy' ORDER BY seq DESC LIMIT 1",
@@ -302,6 +338,7 @@ async def test_planner_refresh_adds_public_tools_after_initial_catalog_snapshot(
         ModelTurn(content=MIXED_PLAN),
         ModelTurn(tool_calls=[{"id": "weather-refresh", "name": "search_public", "arguments": {"public_query": "近期天气对矿石发运的影响"}}]),
         ModelTurn(content=GOOD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
     ])
     mcp = CapabilitySnapshotMCP()
 
@@ -310,7 +347,7 @@ async def test_planner_refresh_adds_public_tools_after_initial_catalog_snapshot(
         harness.RuntimeDeps(store, model, mcp, worker_id="planner-public-refresh-worker", planning_enabled=True),
     )
 
-    assert mcp.calls == 2
+    assert mcp.calls == 3
     assert any(schema["function"]["name"] == "search_public" for schema in model.schemas[1])
 
 
@@ -373,6 +410,37 @@ async def test_public_research_plan_allows_reading_a_registered_source_after_sea
 
     assert mcp.calls == 3
     assert any(schema["function"]["name"] == "read_public" for schema in model.schemas[2])
+
+
+@pytest.mark.asyncio
+async def test_planner_forces_registered_public_read_when_model_stops_after_search(queued, monkeypatch):
+    from app import db
+
+    task = store.claim_next("planner-auto-read-worker")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE closing_review_messages SET content=? WHERE task_id=? AND role='user'",
+            ("结合近期的天气，帮我分析一下对矿石发运的影响", task),
+        )
+    monkeypatch.setenv("TAVILY_API_KEY", "synthetic-key")
+    model = ScriptedModel([
+        ModelTurn(content=MIXED_PLAN),
+        ModelTurn(tool_calls=[{"id": "search-auto-read", "name": "search_public", "arguments": {"public_query": "近期天气对矿石发运的影响"}}]),
+        # The model tries to answer from the search result without asking for正文。
+        ModelTurn(content=GOOD_ANSWER21),
+        ModelTurn(content=GOOD_ANSWER21),
+    ])
+    mcp = RegisteredPublicEvidenceMCP()
+
+    await harness.run_task(
+        task,
+        harness.RuntimeDeps(store, model, mcp, worker_id="planner-auto-read-worker", planning_enabled=True),
+    )
+
+    assert "search_public" in mcp.call_names
+    assert "read_public" in mcp.call_names
+    assert mcp.read_args == [{"source_ref": "weather-source"}]
+    assert any("已自动读取已登记公开来源正文" in item.get("content", "") for item in model.calls[3])
 
 
 @pytest.mark.asyncio

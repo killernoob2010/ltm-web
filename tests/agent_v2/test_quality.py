@@ -102,6 +102,30 @@ def test_quality_detail_exposes_bounded_planning_coverage_and_schema_versions(qu
     assert context["coverage"]["items"][0]["missing_codes"] == ["full_text_required"]
 
 
+def test_quality_detail_exposes_tool_status_diagnostic_and_result_registration(queued):
+    _, _, task_id = queued
+    task_id = store.claim_next("quality-diagnostic-worker")
+    principal = store.principal_for_task(task_id)
+    result_ref = uuid4()
+    store.append_event(
+        principal,
+        "tool",
+        tool_name="search_public",
+        result_ref=result_ref,
+        status="temporarily_unavailable",
+        error_code="public_auth_failed",
+        duration_seconds=1,
+    )
+
+    detail = quality.get_run_detail(task_id)
+
+    event = next(item for item in detail["events"] if item["tool_name"] == "search_public")
+    assert event["status"] == "temporarily_unavailable"
+    assert event["error_code"] == "public_auth_failed"
+    assert event["result_ref"] == str(result_ref)
+    assert event["duration_seconds"] == 1
+
+
 def test_quality_feedback_is_audited_without_mutating_agent_answer(queued):
     uid, _, task_id = queued
     answer_before = store.task_answer(task_id)
