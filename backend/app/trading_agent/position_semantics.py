@@ -383,15 +383,14 @@ def aggregate_positions(
 
 
 def presentation_preference(text: Any) -> str:
-    """Resolve an explicit user display request without guessing a default."""
-    value = _text(text)
-    if re.search(r"纯文字|纯文本|只要文字|只用文字|不要表格|不用表格|不需要表格|文字展示", value):
-        return "text"
-    if re.search(r"表格|列表", value):
-        return "table"
-    if re.search(r"图表|柱状图|折线图|曲线|画图|绘图", value):
-        return "chart"
-    return "auto"
+    """Resolve an explicit user display request without guessing a default.
+
+    Keep the historical string API for callers, while the shared request
+    contract tracks list-vs-table wording and negative display constraints.
+    """
+    from .request_contract import presentation_preference as _presentation_preference
+
+    return _presentation_preference(text)
 
 
 __all__ = [

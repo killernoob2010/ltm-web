@@ -57,6 +57,30 @@ test("Agent renders server content as text and does not create a client-side tra
   assert.match(agentJs, /client_request_id/);
 });
 
+test("Agent conversations use accessible top tabs with isolated state and recoverable deletion", () => {
+  assert.match(indexHtml, /id="closingReviewHistory"[^>]*role="tablist"/);
+  assert.match(indexHtml, /id="closingReviewMessages"[^>]*role="tabpanel"/);
+  assert.match(indexHtml, /id="closingReviewNewBtn"[^>]*aria-label="新建对话"/);
+  assert.match(agentJs, /setAttribute\("role", "tab"\)/);
+  assert.match(agentJs, /aria-selected/);
+  assert.match(agentJs, /aria-labelledby/);
+  assert.match(agentJs, /focusTab/);
+  assert.match(agentJs, /ArrowRight|ArrowLeft/);
+  assert.match(agentJs, /conversationStates: new Map/);
+  assert.match(agentJs, /scrollTop/);
+  assert.match(agentJs, /itemState\.requestSequence/);
+  assert.match(agentJs, /restore/);
+  assert.doesNotMatch(agentJs, /确认删除这段对话/);
+});
+
+test("Agent keeps the message area wide and lets only the tab rail scroll", () => {
+  assert.match(css, /grid-template-rows: auto minmax\(0, 1fr\)/);
+  assert.match(css, /closing-review-agent-history[^\{]*\{[^}]*overflow-x: auto/s);
+  assert.match(css, /closing-review-agent-message \{[^}]*max-width: 100%/s);
+  assert.match(css, /min-width: 0/);
+  assert.match(css, /agent-answer-view-table-scroll[^\{]*\{[^}]*overflow-x: auto/s);
+});
+
 test("Agent exposes seconds-only timestamps and evidence/status labels", () => {
   assert.match(agentJs, /slice\(0, 19\)/);
   assert.match(agentJs, /statusLabel\(dataStatus\)/);

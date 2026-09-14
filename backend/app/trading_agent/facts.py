@@ -334,6 +334,7 @@ def capture_positions(principal, query: FactQuery, quote_provider):
     metadata = {"as_of":query.as_of.model_dump(mode="json"),"valuation_basis":"historical_unavailable" if historical else "latest_trade",
         "assignment_basis":"unavailable" if historical else "current","data_status":raw["data_status"],"quote_times":quote_times,
         "selection":query.model_dump(mode="json",exclude={"as_of"}),
+        "required_metrics": sorted(requested_metrics),
         "unresolved_rows": unresolved_rows,
         "presentation": query.presentation,
         "provenance":raw.get("provenance") or {"data_as_of":None,"precision":None,"source_observations":[]}}

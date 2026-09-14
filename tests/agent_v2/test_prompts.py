@@ -98,6 +98,21 @@ def test_prompt_only_keeps_the_latest_prior_turn_as_optional_context():
     assert "仅供当前问题指代" in contents
 
 
+def test_prompt_preserves_server_recorded_request_contract_without_replaying_old_user_text():
+    history = [
+        {"role": "user", "content": "旧的无关问题"},
+        {"role": "assistant", "content": "上次回答；resolved_request={\"domain\":\"positions\",\"filters\":{\"contract_months\":[\"2701\"]},\"presentation\":\"text\"}"},
+        {"role": "user", "content": "只看Put"},
+        {"role": "assistant", "content": "最近回答；resolved_request={\"domain\":\"positions\",\"filters\":{\"contract_months\":[\"2701\"],\"option_type\":\"put\"},\"presentation\":\"text\"}"},
+    ]
+    messages = prompts.build_messages(history, {}, user_text="只说数量")
+    contents = "\n".join(item.get("content", "") for item in messages)
+
+    assert "旧的无关问题" not in contents
+    assert "resolved_request=" in contents
+    assert "只说数量" in contents
+
+
 def test_projected_tool_result_preserves_unknown_data_as_of():
     captured = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
     envelope = ToolEnvelope(
@@ -129,6 +144,54 @@ def test_projected_tool_result_is_valid_json_and_marks_group_truncation():
     assert len(prompts.project_tool_result(envelope)) <= 16000
     assert projected["payload"]["groups_truncated"] is True
     assert len(projected["payload"]["groups"]) < len(groups)
+
+
+def test_projected_tool_result_preserves_selection_metrics_and_semantic_groups():
+    groups = [{
+        "dimensions": {"contract_month": f"27{index:02d}", "option_type": "call"},
+        "metrics": {"net_quantity": {
+            "value": str(index), "unit": "手", "status": "complete",
+            "covered_rows": 1, "eligible_rows": 1,
+        }},
+    } for index in range(200)]
+    envelope = ToolEnvelope(
+        status="partial", captured_at=datetime.now(timezone.utc), calculation_version="test",
+        metrics={"net_quantity": {"value": "1", "unit": "手", "status": "partial", "covered_rows": 1, "eligible_rows": 2}},
+        payload={"kind": "positions", "selection": {"filters": {"contract_months": ["2701"]}},
+                 "required_metrics": ["net_quantity", "floating_pnl"], "semantic_groups": groups,
+                 "semantic_group_count": len(groups)},
+    )
+
+    projected = json.loads(prompts.project_tool_result(envelope))
+
+    assert projected["payload"]["selection"]["filters"]["contract_months"] == ["2701"]
+    assert projected["payload"]["required_metrics"] == ["net_quantity", "floating_pnl"]
+    assert projected["payload"].get("semantic_groups")
+    assert projected["payload"]["semantic_groups_truncated"] is True
+
+
+def test_projected_tool_result_minimal_fallback_keeps_metrics_and_coverage_metadata():
+    groups = [{
+        "dimensions": {"contract_month": f"27{index:02d}", "option_type": "call"},
+        "metrics": {"net_quantity": {
+            "value": str(index), "unit": "手", "status": "complete",
+            "covered_rows": 1, "eligible_rows": 1,
+        }},
+    } for index in range(2000)]
+    envelope = ToolEnvelope(
+        status="partial", captured_at=datetime.now(timezone.utc), calculation_version="test",
+        metrics={"net_quantity": {"value": "1", "unit": "手", "status": "partial", "covered_rows": 1, "eligible_rows": 2}},
+        warnings=["部分行情不可用"],
+        payload={"kind": "positions", "selection": {"filters": {"contract_months": ["2701"]}},
+                 "required_metrics": ["net_quantity"], "semantic_groups": groups,
+                 "semantic_group_count": len(groups)},
+    )
+
+    projected = json.loads(prompts.project_tool_result(envelope))
+
+    assert projected["metrics"]["net_quantity"]["status"] == "partial"
+    assert projected["warnings"] == ["部分行情不可用"]
+    assert projected["payload"]["required_metrics"] == ["net_quantity"]
 
 
 def test_prompt_carries_text_only_preference_into_model_contract():

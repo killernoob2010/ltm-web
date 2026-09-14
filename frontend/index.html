@@ -472,17 +472,12 @@
           </div>
 
           <div class="closing-review-agent-layout">
-            <aside class="closing-review-agent-panel closing-review-agent-history-panel" aria-label="对话历史">
-              <div class="closing-review-agent-panel-header">
-                <h2>对话历史</h2>
-                <button id="closingReviewNewBtn" class="secondary closing-review-agent-new" type="button">新建对话</button>
-              </div>
-              <div id="closingReviewHistory" class="closing-review-agent-history"></div>
-              <p class="closing-review-agent-retention">对话内容按保留策略管理；自动持仓结果保留数据状态、来源与证据提示。</p>
-            </aside>
-
+            <div class="closing-review-agent-tabs-shell" aria-label="对话历史">
+              <div id="closingReviewHistory" class="closing-review-agent-history" role="tablist" aria-label="智能贸易助手对话"></div>
+              <button id="closingReviewNewBtn" class="secondary closing-review-agent-new" type="button" aria-label="新建对话" title="新建对话">＋</button>
+            </div>
             <section class="closing-review-agent-main" aria-label="智能贸易助手对话">
-              <div id="closingReviewMessages" class="closing-review-agent-messages" aria-live="polite"></div>
+              <div id="closingReviewMessages" class="closing-review-agent-messages" role="tabpanel" tabindex="0" aria-live="polite" aria-label="消息与自动持仓结果"></div>
 
               <form id="closingReviewComposer" class="closing-review-agent-composer">
                 <textarea id="closingReviewInput" maxlength="1000" aria-label="输入业务分析问题" placeholder="例如：查询本周库存变化，或比较不同港口的基差。"></textarea>

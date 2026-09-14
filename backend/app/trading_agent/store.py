@@ -629,6 +629,9 @@ def task_history(task_id, user_id=None, limit=12):
                         "data_as_of": str(saved.envelope.data_as_of) if saved.envelope.data_as_of else None,
                         "view": ({key: view.get(key) for key in ("id", "kind", "fields", "title")} if view else None)})
                 content = "上次回答状态：" + str(payload.get("delivery_status", "")) + "；当前仍可访问的原结果（改变展示可直接复用，不需重新查询）：" + json.dumps(reusable, ensure_ascii=False)
+                request_contract = payload.get("request")
+                if isinstance(request_contract, dict):
+                    content += "；resolved_request=" + json.dumps(request_contract, ensure_ascii=False, separators=(",", ":"))
         else:
             content = str(row["content"] or "")
         history.append({"role": row["role"], "content": content})

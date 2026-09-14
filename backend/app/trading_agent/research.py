@@ -31,6 +31,12 @@ PRIVATE_WORDS = re.compile(r"(本账户|我的账户|我的持仓|我的交易|�
 _NUMBER_TOKEN = re.compile(r"(?<![A-Za-z0-9])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![A-Za-z0-9])")
 _DATE_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:19|20)\d{2}(?:[-/.年]\d{1,2}(?:[-/.月]\d{1,2}日?)?)?(?![A-Za-z0-9])")
 _FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
+_PUBLIC_ENTITIES = re.compile(
+    r"铁矿石|球团|块矿|焦煤|焦炭|螺纹钢|热卷|铜|铝|原油|"
+    r"必和必拓|力拓|淡水河谷|FMG|澳洲|澳大利亚|巴西|"
+    r"日照港|青岛港|曹妃甸港|唐山港|大连商品交易所|大商所|DCE|交易所",
+    re.I,
+)
 _CONTEXT_KEYS = {
     "account", "account_code", "account_label", "display_name", "masked_name", "username", "name",
     "contract", "underlying_symbol", "quantity", "price", "average_price", "valuation_price", "underlying_price",
@@ -110,6 +116,11 @@ def validate_public_query(query: str, private_context=None, *, freshness="none")
         candidate = value.get("value") if isinstance(value, dict) else value
         candidate = _normalize(candidate)
         if not candidate:
+            continue
+        # Public commodities, companies, ports, and exchanges can legitimately
+        # appear in both an internal snapshot and an external topic.  Keep the
+        # private-value checks below for all other result-owned values.
+        if _PUBLIC_ENTITIES.search(candidate):
             continue
         candidate_number = _canonical_number(candidate)
         if candidate_number is not None:

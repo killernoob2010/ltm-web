@@ -36,6 +36,8 @@ _EXTERNAL = re.compile(
     r"联网|上网|网上|网络(?:查询|搜索)|搜索|查(?:看|找|一下)?(?:新闻|政策|规则|公告|官网|资料)|"
     r"(?:外部|公开)(?:供需|信息|事件|资料|新闻|数据)|"
     r"供需(?:信息|资料|新闻|数据)|"
+    r"(?:今天|今日|昨日|最近|近期|最新)[^，。；;]{0,18}(?:消息|新闻|动态|财报|年报|公告)|"
+    r"(?:查|搜|看看|了解)[^，。；;]{0,24}(?:财报|年报|新闻|消息|公告|官网|公开资料)|"
     r"近期[^，。；;]{0,16}(?:供需|新闻|政策|规则|公告|发运|矿山)|"
     r"(?:海外|国外)(?:供需|发运|矿山)|"
     r"交易所(?:近期|最新)?(?:规则|公告|政策)|官方(?:网站|来源|规则)",
@@ -50,6 +52,11 @@ _CONFLICTING_EXTERNAL = re.compile(r"(?:但|但是|同时|并且|另外|还要|(
 _INTERNAL_REQUEST = re.compile(
     r"持仓|成交|平仓|盈亏|账户|库存|发运|到港|表需|基差|港差|现货|期现|"
     r"数据库|系统口径|登记口径|最新库存|数据表|趋势图|图表|可视化",
+    re.I,
+)
+_EXPLICIT_INTERNAL_SOURCE = re.compile(
+    r"系统|数据库|内部|登记口径|本账户|我的持仓|我的账户|我的盈亏|"
+    r"当前持仓|当前库存|库存分析|库存变化|数据表|按系统|查询系统",
     re.I,
 )
 _RESTRICTED_MODULE_PATTERNS = (
@@ -93,7 +100,10 @@ def enforce_research_policy(user_text: str, candidate: RequestPlan) -> RequestPl
         candidate = RequestPlan.model_validate(candidate)
     no_web = bool(_NO_WEB.search(text))
     external = bool(_EXTERNAL.search(text))
-    internal = bool(_INTERNAL.search(text))
+    public_only = external and not no_web and not _EXPLICIT_INTERNAL_SOURCE.search(text) and bool(
+        re.search(r"公开|新闻|消息|财报|年报|公告|官网|搜索|查", text, re.I)
+    )
+    internal = bool(_INTERNAL.search(text)) and not public_only
     ambiguous = bool(_AMBIGUOUS.search(text))
     if no_web and _CONFLICTING_EXTERNAL.search(text):
         return _plan(
@@ -134,7 +144,11 @@ def restricted_module_requests(user_text: str) -> list[str]:
 
 
 def has_internal_request(user_text: str) -> bool:
-    return bool(_INTERNAL_REQUEST.search(str(user_text or "")))
+    text = str(user_text or "")
+    public_only = bool(_EXTERNAL.search(text)) and not _NO_WEB.search(text) and not _EXPLICIT_INTERNAL_SOURCE.search(text) and bool(
+        re.search(r"公开|新闻|消息|财报|年报|公告|官网|搜索|查", text, re.I)
+    )
+    return bool(_INTERNAL_REQUEST.search(text)) and not public_only
 
 
 def active_plan(principal) -> RequestPlan | None:

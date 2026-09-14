@@ -124,6 +124,68 @@ def test_text_fallback_keeps_verified_net_and_pnl_without_view(queued):
     assert "表格" not in result.plain_text
 
 
+def test_text_fallback_only_renders_requested_metrics_and_labels_month(queued):
+    task = store.claim_next("domain-fallback-quantity-only")
+    principal = store.principal_for_task(task)
+    ref = store.save_result(
+        principal,
+        ToolEnvelope(
+            status="partial",
+            captured_at=datetime.now(timezone.utc),
+            calculation_version="test",
+            metrics={
+                "quantity": MetricValue(value="17", unit="手", status="complete", covered_rows=4, eligible_rows=4),
+                "floating_pnl": MetricValue(value="500", unit="CNY", status="complete", covered_rows=4, eligible_rows=4),
+            },
+            payload={
+                "kind": "positions",
+                "selection": {"filters": {"contract_months": ["2701"]}, "required_metrics": ["quantity"]},
+                "required_metrics": ["quantity"],
+                "semantic_groups": [{"dimensions": {"contract_month": "2701", "option_type": "call"}, "metrics": {
+                    "quantity": {"value": "17", "unit": "手", "status": "complete", "covered_rows": 4, "eligible_rows": 4},
+                    "floating_pnl": {"value": "500", "unit": "CNY", "status": "complete", "covered_rows": 4, "eligible_rows": 4},
+                }}],
+            },
+        ),
+        [],
+        kind="positions",
+    )
+
+    result = answer.build_fallback21(
+        principal, [str(ref)], {}, "budget_exhausted", store, presentation_preference="text"
+    )
+
+    assert result.delivery_status == "partial"
+    assert "总手数 17手" in result.plain_text
+    assert "浮盈亏" not in result.plain_text
+    assert "2701" in result.plain_text or "2701" in str(result.evidence)
+
+
+def test_format_followup_reuses_the_same_snapshot_reference(queued):
+    task = store.claim_next("domain-reuse-presentation")
+    principal = store.principal_for_task(task)
+    ref = store.save_result(
+        principal,
+        ToolEnvelope(
+            status="complete", captured_at=datetime.now(timezone.utc), calculation_version="test",
+            metrics={"quantity": MetricValue(value="2", unit="手", status="complete", covered_rows=1, eligible_rows=1)},
+            payload={"kind": "positions", "selection": {"filters": {"contract_months": ["2701"]}}},
+        ),
+        [{"contract": "i2701-c-700", "quantity": "2", "floating_pnl": None}],
+        kind="positions",
+    )
+
+    table = answer.reuse_presentation21(principal, [str(ref)], store, "table")
+    chart = answer.reuse_presentation21(principal, [str(ref)], store, "chart")
+    text = answer.reuse_presentation21(principal, [str(ref)], store, "text")
+
+    assert table.delivery_status == "complete"
+    assert chart.delivery_status == "complete"
+    assert text.delivery_status == "complete"
+    assert table.views[0]["result_ref"] == chart.views[0]["result_ref"] == str(ref)
+    assert text.evidence[0].result_ref == str(ref)
+
+
 def test_net_only_query_does_not_require_quotes(queued):
     task = store.claim_next("domain-net-only")
     principal = store.principal_for_task(task)

@@ -28,6 +28,25 @@ def test_explicit_external_question_is_allowed_but_configuration_is_still_requir
     assert public_tools_allowed(plan, configured=True) is True
 
 
+@pytest.mark.parametrize("question", [
+    "今天铁矿石有什么消息",
+    "帮我查必和必拓最新财报",
+    "搜索澳洲铁矿石发运新闻",
+    "搜索日照港公开库存新闻",
+])
+def test_public_only_natural_questions_receive_external_plan(question):
+    plan = enforce_research_policy(question, _candidate())
+    assert plan.mode == "research_allowed"
+    assert plan.reason == "external_current_fact"
+    assert plan.domains == ["public"]
+
+
+def test_public_topic_inventory_word_does_not_force_internal_query():
+    plan = enforce_research_policy("请查日照港公开库存新闻", _candidate())
+    assert plan.mode == "research_allowed"
+    assert plan.reason == "external_current_fact"
+
+
 def test_mixed_question_keeps_internal_and_external_domains_separate():
     plan = enforce_research_policy("解释库存变化，并结合近期外部供需信息分析", _candidate())
     assert plan.mode == "research_allowed"

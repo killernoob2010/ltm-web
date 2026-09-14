@@ -67,6 +67,7 @@ _BUSINESS_NUMBER = re.compile(
     r"\s*(?:手|笔|张|合约|元|万元|CNY|%|点)?(?![A-Za-z0-9])",
     re.I,
 )
+_MARKDOWN_TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 
 
 def _issue(code: str, path: str, message: str) -> Answer21ValidationError:
@@ -346,10 +347,56 @@ def _public_evidence(ref: str, saved: Any) -> EvidenceItem | None:
 
 
 def _business_number_without_tokens(text: str) -> bool:
+    return _business_number_without_bound_tokens(text, ())
+
+
+def _replace_bound_identifiers(text: str, identifiers) -> str:
+    """Remove only identifiers proven by the referenced server result.
+
+    Contract months are often written as bare four-digit tokens (for example
+    ``2701``), so the generic alpha-numeric contract-token rule cannot safely
+    recognize them.  The caller supplies only months found in a server-owned
+    position result/request; arbitrary numbers are intentionally untouched.
+    """
+    tokens = sorted({str(value).strip() for value in identifiers or () if str(value).strip()}, key=len, reverse=True)
+    if not tokens:
+        return text
+    pattern = r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(token) for token in tokens) + r")(?![A-Za-z0-9])"
+    return re.sub(pattern, " ", text, flags=re.IGNORECASE)
+
+
+def _business_number_without_bound_tokens(text: str, identifiers) -> bool:
     text = _FACT_TOKEN.sub(" ", text)
     text = _DATE_TOKEN.sub(" ", text)
     text = _CONTRACT_TOKEN.sub(" ", text)
+    text = _replace_bound_identifiers(text, identifiers)
     return bool(_BUSINESS_NUMBER.search(text))
+
+
+def _bound_contract_months(saved: Any) -> set[str]:
+    """Return contract months carried by a server-owned position result."""
+    payload = _payload(saved)
+    if payload.get("kind") != "positions":
+        return set()
+    values: set[str] = set()
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    filters = selection.get("filters") if isinstance(selection.get("filters"), dict) else {}
+    for value in filters.get("contract_months") or ():
+        text = str(value).strip()
+        if text.isdigit() and len(text) in {3, 4}:
+            values.add(text)
+    for row in _value(saved, "rows", []) or []:
+        value = row.get("contract_month") if isinstance(row, dict) else None
+        text = str(value or "").strip()
+        if text.isdigit() and len(text) in {3, 4}:
+            values.add(text)
+    for group in payload.get("semantic_groups") or ():
+        dimensions = group.get("dimensions", {}) if isinstance(group, dict) else {}
+        value = dimensions.get("contract_month") if isinstance(dimensions, dict) else None
+        text = str(value or "").strip()
+        if text.isdigit() and len(text) in {3, 4}:
+            values.add(text)
+    return values
 
 
 def _limitation(code: str, message: str, *, spans=(), views=()) -> Limitation:
@@ -435,9 +482,34 @@ def _plain_text(markdown: str, views_by_id: dict[str, dict]) -> str:
 
     text = _VIEW_TOKEN.sub(view_label, markdown)
     text = re.sub(r"```(?:[^\n]*)\n?", "", text)
-    text = re.sub(r"[`*_>#~-]", "", text)
+    # Remove Markdown markers without destroying financial signs or the
+    # hyphens inside ISO dates/ranges.  A list marker is only a hyphen followed
+    # by whitespace; a negative number and a numeric range remain intact.
+    text = re.sub(r"(?m)^(\s*)-\s+", r"\1", text)
+    text = re.sub(r"(?<![A-Za-z0-9])-(?=\d)", "\uE000", text)
+    text = re.sub(r"(?<=\d)-(?=\d)", "\uE001", text)
+    text = re.sub(r"[`*_>#~]", "", text)
     text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
+    text = text.replace("\uE000", "-").replace("\uE001", "-")
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _strip_markdown_tables(text: str) -> tuple[str, bool]:
+    """Remove Markdown table blocks when the requested mode forbids tables."""
+    lines = text.splitlines()
+    kept: list[str] = []
+    removed = False
+    index = 0
+    while index < len(lines):
+        if index + 1 < len(lines) and "|" in lines[index] and _MARKDOWN_TABLE_SEPARATOR.match(lines[index + 1]):
+            removed = True
+            index += 2
+            while index < len(lines) and "|" in lines[index] and lines[index].strip():
+                index += 1
+            continue
+        kept.append(lines[index])
+        index += 1
+    return "\n".join(kept), removed
 
 
 def _reference_for_span(ref: str, kind: str, principal: Any, store_api: Any):
@@ -480,6 +552,7 @@ def validate_answer21(
     store_api: Any,
     *,
     presentation_preference: str = "auto",
+    prohibited_presentations=(),
 ) -> ValidatedAnswer21:
     draft = parse_answer21(draft)
     spans_by_id = {span.id: span for span in draft.spans}
@@ -494,15 +567,24 @@ def validate_answer21(
             span_errors.append(("missing_reference", "事实或情景片段必须绑定证据。"))
         if span.kind == "public_fact" and not span.refs:
             span_errors.append(("public_excerpt_required", "公开事实必须绑定正文读取证据。"))
-        if span.kind in {"fact", "scenario"} and _business_number_without_tokens(draft.body_markdown[span.start:span.end]):
-            span_errors.append(("unreferenced_number", "事实或情景片段中的业务数字必须使用绑定引用。"))
+        bound_identifiers: set[str] = set()
         for ref in span.refs:
             item, error = _reference_for_span(ref, span.kind, principal, store_api)
             if error:
                 span_errors.append(error)
-            elif item is not None and item.id not in evidence_keys:
-                evidence_keys.add(item.id)
-                evidence.append(item)
+            elif item is not None:
+                if item.kind == "internal":
+                    reference_match = _REFERENCE.fullmatch(ref)
+                    if reference_match:
+                        saved = _load(store_api, principal, reference_match.group(1))
+                        bound_identifiers.update(_bound_contract_months(saved))
+                if item.id not in evidence_keys:
+                    evidence_keys.add(item.id)
+                    evidence.append(item)
+        if span.kind in {"fact", "scenario"} and _business_number_without_bound_tokens(
+            draft.body_markdown[span.start:span.end], bound_identifiers
+        ):
+            span_errors.append(("unreferenced_number", "事实或情景片段中的业务数字必须使用绑定引用。"))
         if span_errors:
             invalid.add(span.id)
             code, message = span_errors[0]
@@ -523,6 +605,11 @@ def validate_answer21(
     valid_view_ids: set[str] = set()
     incomplete_views = False
     for view in draft.views:
+        if view.kind in set(prohibited_presentations or ()):
+            limitation_rows.append(
+                _limitation("presentation_mismatch", f"当前展示要求禁止{view.kind}视图。", views=[view.id])
+            )
+            continue
         saved = _load(store_api, principal, str(view.result_ref))
         if saved is None:
             limitation_rows.append(
@@ -569,6 +656,10 @@ def validate_answer21(
     ranges = [(spans_by_id[span_id].start, spans_by_id[span_id].end) for span_id in invalid]
     ranges.extend(uncovered_ranges)
     body = _remove_ranges(draft.body_markdown, ranges)
+    if presentation_preference == "text" or "table" in set(prohibited_presentations or ()):
+        body, removed_table = _strip_markdown_tables(body)
+        if removed_table:
+            limitation_rows.append(_limitation("presentation_mismatch", "当前展示要求不能在正文中嵌入 Markdown 表格。"))
     body, token_evidence, token_issues = _resolve_fact_tokens(body, principal, store_api)
     for item in token_evidence:
         if item.id not in evidence_keys:
@@ -626,6 +717,7 @@ def validate_answer21(
         evidence=evidence,
         views=valid_views,
         limitations=unique_limitations,
+        presentation_mode=presentation_preference,
     )
 
 
@@ -676,11 +768,21 @@ def _fallback_text_for_result(saved: Any) -> str:
             if candidate_value is not None:
                 net_name = candidate
                 break
-    metric_names = ["quantity"]
-    if net_name:
-        metric_names.append(net_name)
-    metric_names.extend(("floating_pnl", "net_tons", "net_wan_tons"))
-    for name in metric_names:
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    requested_metrics = payload.get("required_metrics") or selection.get("required_metrics") or []
+    requested_metrics = [str(name) for name in requested_metrics if str(name) in labels]
+    if not requested_metrics:
+        requested_metrics = ["quantity"]
+        if net_name:
+            requested_metrics.append(net_name)
+        requested_metrics.extend(("floating_pnl", "net_tons", "net_wan_tons"))
+    elif "net_quantity" in requested_metrics and "net_quantity" not in metrics and net_name:
+        requested_metrics = [net_name if name == "net_quantity" else name for name in requested_metrics]
+    if kind == "positions":
+        months = selection.get("filters", {}).get("contract_months") if isinstance(selection.get("filters"), dict) else []
+        if months:
+            parts.append(f"查询合约月份 {', '.join(str(month) for month in months)}")
+    for name in requested_metrics:
         metric = metrics.get(name) if isinstance(metrics, dict) else None
         value, unit = _metric_value(metric)
         if value is not None:
@@ -689,35 +791,126 @@ def _fallback_text_for_result(saved: Any) -> str:
     if kind == "positions":
         groups = payload.get("semantic_groups") or []
         group_parts = []
+        group_metric_names = set(requested_metrics) & {"net_quantity", "net_sell_quantity", "floating_pnl", "net_tons", "net_wan_tons"}
         for group in groups[:20]:
             dimensions = group.get("dimensions", {}) if isinstance(group, dict) else {}
             option_type = dimensions.get("option_type")
             if option_type not in {"call", "put"}:
                 continue
+            if not group_metric_names:
+                continue
             metric_map = group.get("metrics", {}) if isinstance(group, dict) else {}
-            net = metric_map.get("net_quantity")
+            net = metric_map.get("net_quantity") if "net_quantity" in group_metric_names else None
             if _metric_value(net)[0] is None:
-                net = metric_map.get("net_sell_quantity")
-            pnl = metric_map.get("floating_pnl")
+                net = metric_map.get("net_sell_quantity") if "net_sell_quantity" in group_metric_names else None
+            pnl = metric_map.get("floating_pnl") if "floating_pnl" in group_metric_names else None
+            tons = metric_map.get("net_tons") if "net_tons" in group_metric_names else None
+            wan_tons = metric_map.get("net_wan_tons") if "net_wan_tons" in group_metric_names else None
             net_value, net_unit = _metric_value(net)
             pnl_value, pnl_unit = _metric_value(pnl)
+            tons_value, tons_unit = _metric_value(tons or wan_tons)
+            month_label = dimensions.get("contract_month")
+            prefix = f"{month_label} " if month_label else ""
             detail = (
-                f"{str(option_type).title()} 净卖手数 {net_value}{net_unit or ''}{net_note(net_value)}{coverage_note(net)}"
+                f"{prefix}{str(option_type).title()} 净卖手数 {net_value}{net_unit or ''}{net_note(net_value)}{coverage_note(net)}"
                 if net_value is not None
-                else f"{str(option_type).title()} 净额不可用"
+                else f"{prefix}{str(option_type).title()} 净额不可用"
             )
             if pnl_value is not None:
                 detail += f"，对应实际持仓浮盈亏 {pnl_value}{pnl_unit or ''}{coverage_note(pnl)}"
             elif _value(pnl, "status") == "unavailable":
                 detail += "，对应实际持仓浮盈亏当前不可用"
+            if tons_value is not None:
+                detail += f"，{labels.get('net_tons' if tons is not None else 'net_wan_tons')} {tons_value}{tons_unit or ''}{coverage_note(tons or wan_tons)}"
             group_parts.append(detail)
         if group_parts:
             parts.extend(group_parts)
+        if payload.get("semantic_groups_truncated") or payload.get("groups_truncated"):
+            parts.append("语义分组结果已截断，以上不是全部分组。")
     if parts:
         return "；".join(parts) + "。"
     if payload.get("count") == 0 and _value(_envelope(saved), "status") == "complete":
         return "在当前查询范围内没有有效持仓。"
     return "已保留已核验结果，但所需指标当前不可用。"
+
+
+def reuse_presentation21(
+    principal: Any,
+    result_refs: list[str],
+    store_api: Any,
+    presentation_preference: str,
+) -> ValidatedAnswer21:
+    """Reformat existing immutable results without reading a new snapshot."""
+    views: list[dict] = []
+    evidence: list[EvidenceItem] = []
+    text_parts: list[str] = []
+    statuses: list[str] = []
+    seen: set[str] = set()
+    for value in result_refs[:8]:
+        try:
+            ref = str(UUID(str(value)))
+        except (TypeError, ValueError):
+            continue
+        if ref in seen:
+            continue
+        seen.add(ref)
+        saved = _load(store_api, principal, ref)
+        if saved is None:
+            continue
+        payload = _payload(saved)
+        kind = payload.get("kind")
+        if kind not in {
+            "positions", "trades", "closes", "market_series", "dataset_rows", "dataset_summary",
+            "dataset_comparison", "dataset_relation",
+        }:
+            continue
+        envelope_status = str(_value(_envelope(saved), "status") or "partial")
+        if envelope_status not in {"complete", "partial"}:
+            continue
+        statuses.append(envelope_status)
+        evidence.append(_internal_evidence(ref, saved, None))
+        if presentation_preference == "text":
+            text_parts.append(_fallback_text_for_result(saved))
+            continue
+        from .presentation import _default_fields, allowed_fields_for_saved
+
+        allowed = allowed_fields_for_saved(saved)
+        if presentation_preference == "chart":
+            rows = _value(saved, "rows", []) or []
+            metric = "floating_pnl" if "floating_pnl" in allowed and any(row.get("floating_pnl") is not None for row in rows) else "quantity"
+            fields = [field for field in ("contract", metric) if field in allowed]
+            if len(fields) < 2:
+                fields = [field for field in _default_fields(kind) if field in allowed][:2]
+            views.append({"id": f"v{len(views) + 1}", "kind": "bar", "result_ref": ref,
+                          "fields": fields, "title": "基于同一快照的图形展示"})
+        else:
+            fields = [field for field in _default_fields(kind) if field in allowed]
+            views.append({"id": f"v{len(views) + 1}", "kind": "table", "result_ref": ref,
+                          "fields": fields, "title": "基于同一快照的表格展示"})
+    if not statuses:
+        return ValidatedAnswer21(
+            delivery_status="failed", body_markdown="", plain_text="",
+            limitations=[Limitation(code="reference_unavailable", message="原结果已过期或当前不可复用。")],
+            presentation_mode=presentation_preference,
+        )
+    complete = all(value == "complete" for value in statuses)
+    if presentation_preference == "text":
+        body = "\n\n".join(dict.fromkeys(text_parts))
+    elif views:
+        body = "已切换展示方式，数据值仍来自同一已核验快照。\n\n" + "\n\n".join(
+            f"{{{{view:{view['id']}}}}}" for view in views
+        )
+    else:
+        body = "已保留同一已核验快照，但当前没有可用展示字段。"
+    return ValidatedAnswer21(
+        delivery_status="complete" if complete else "partial",
+        body_markdown=body,
+        plain_text=_plain_text(body, {view["id"]: view for view in views}),
+        evidence=evidence,
+        views=views,
+        limitations=[] if complete else [Limitation(code="query_incomplete", message="原结果本身为部分结果，展示未扩大其数据覆盖。")],
+        presentation_mode=presentation_preference,
+    )
 
 
 def build_fallback21(
@@ -728,10 +921,12 @@ def build_fallback21(
     store_api: Any,
     *,
     presentation_preference: str = "auto",
+    prohibited_presentations=(),
 ) -> ValidatedAnswer21:
     views = []
     evidence = []
     text_parts = []
+    text_mode = presentation_preference in {"text", "chart"} or "table" in set(prohibited_presentations or ())
     for value in result_refs:
         try:
             ref = str(UUID(str(value)))
@@ -756,7 +951,7 @@ def build_fallback21(
                 store_api.load_result_for_view(principal.user_id, principal.conversation_id, ref)
             except Exception:
                 continue
-        if presentation_preference == "text":
+        if text_mode:
             text_parts.append(_fallback_text_for_result(saved))
         else:
             views.append({"id": f"v{len(views) + 1}", "kind": "table", "result_ref": ref, "fields": [], "title": "已核验数据"})
@@ -764,7 +959,7 @@ def build_fallback21(
         if len(views) == 8 or len(text_parts) == 8:
             break
     status = "partial" if views or text_parts or evidence else "failed"
-    if presentation_preference == "text" and text_parts:
+    if text_mode and text_parts:
         message = "\n\n".join(dict.fromkeys(text_parts))
     else:
         message = "已保留已核验数据，但本次回答未能完整交付。" if status == "partial" else "本次回答未通过格式或证据校验，系统未交付业务结论。"
@@ -776,6 +971,7 @@ def build_fallback21(
         evidence=evidence,
         views=views,
         limitations=[limitation],
+        presentation_mode=presentation_preference,
     )
 
 

@@ -9,7 +9,7 @@ import re
 import time
 from typing import Any, Literal
 
-from . import answer, prompts, progress, tools, execution, research_policy, request_scope, position_semantics
+from . import answer, prompts, progress, tools, execution, research_policy, request_scope, request_contract
 from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue, apply_policy_limits, policy_answer21
 from .contracts import AnswerDraft
@@ -260,6 +260,7 @@ def _fallback21(
     code: str,
     *,
     presentation_preference: str = "auto",
+    prohibited_presentations=(),
 ) -> ValidatedAnswer21:
     return answer.build_fallback21(
         principal,
@@ -268,6 +269,7 @@ def _fallback21(
         code,
         store_api,
         presentation_preference=presentation_preference,
+        prohibited_presentations=prohibited_presentations,
     )
 
 
@@ -336,19 +338,55 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             pass
         return final
     user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
-    presentation_preference = position_semantics.presentation_preference(user_text)
+    display_policy = request_contract.presentation_policy(user_text)
+    presentation_preference = display_policy["mode"]
+    prohibited_presentations = tuple(display_policy["prohibited_presentations"])
     current_time = datetime.now(timezone.utc)
     scope = request_scope.resolve(user_text, current_time)
     query_envelopes = []
     failed_data_tools = set()
+    inherited_request = {}
 
     async def finish_checked(result):
         checked = request_scope.assess(result, scope, query_envelopes, failed_data_tools,
             weekly_changes=bool(re.search(r'每周|逐周', user_text) and re.search(r'变化|环比|增减', user_text)))
+        coverage_envelopes = list(query_envelopes)
+        if not coverage_envelopes and inherited_request.get("inherited_result_refs"):
+            for result_ref in inherited_request.get("inherited_result_refs", [])[:8]:
+                try:
+                    saved = await asyncio.to_thread(deps.store.load_result, principal, result_ref)
+                except Exception:
+                    continue
+                coverage_envelopes.append(saved.envelope)
+        resolved_request, coverage = request_contract.assess_position_coverage(
+            user_text, coverage_envelopes, checked, inherited=inherited_request
+        )
+        reusable_refs = list(dict.fromkeys(
+            [str(item.result_ref) for item in checked.evidence if getattr(item, "result_ref", None)]
+            + [str(view.get("result_ref")) for view in checked.views if isinstance(view, dict) and view.get("result_ref")]
+        ))
+        if reusable_refs:
+            resolved_request = resolved_request.model_copy(update={"inherited_result_refs": reusable_refs[:8]})
+        if coverage.status == "partial" and coverage.missing:
+            message = "答案未完整覆盖本次持仓问题：" + "、".join(coverage.missing) + "。"
+            checked = checked.model_copy(update={
+                "delivery_status": "partial" if checked.delivery_status == "complete" else checked.delivery_status,
+                "request": resolved_request,
+                "coverage": coverage,
+                "presentation_mode": presentation_preference,
+                "limitations": [*checked.limitations, Limitation(code="request_coverage_incomplete", message=message)],
+            })
+        else:
+            checked = checked.model_copy(update={
+                "request": resolved_request,
+                "coverage": coverage,
+                "presentation_mode": presentation_preference,
+            })
         issues = [item for item in checked.limitations if item.code in {
             'request_scope_unverified', 'query_incomplete', 'reference_unavailable',
             'uncovered_claim', 'unreferenced_number', 'missing_reference', 'invalid_reference',
             'presentation_mismatch',
+            'request_coverage_incomplete',
         }]
         if scope or issues:
             await asyncio.to_thread(deps.store.append_event, principal, 'business_validation',
@@ -416,6 +454,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 known_result_refs,
                 code,
                 presentation_preference=presentation_preference,
+                prohibited_presentations=prohibited_presentations,
             )
         return _fallback(status, text)
 
@@ -493,6 +532,27 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 "readiness": research_policy.public_provider_readiness(),
             }
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
+        inherited_request = request_contract.inherited_request_from_history(history)
+        if presentation_preference == "auto":
+            inherited_display = inherited_request.get("presentation")
+            if inherited_display in {"text", "table", "chart"}:
+                presentation_preference = inherited_display
+                prohibited_presentations = tuple(inherited_request.get("prohibited_presentations") or ())
+        if (
+            deps.answer_protocol == "2.1"
+            and inherited_request.get("inherited_result_refs")
+            and request_contract.is_presentation_only_followup(user_text)
+            and presentation_preference in {"text", "table", "chart"}
+        ):
+            reused = await asyncio.to_thread(
+                answer.reuse_presentation21,
+                principal,
+                inherited_request.get("inherited_result_refs") or [],
+                deps.store,
+                presentation_preference,
+            )
+            if reused.delivery_status != "failed":
+                return await finish_checked(reused)
         preflight_context = []
         position_preflight_result = None
         preflight_args = (
@@ -511,6 +571,8 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     call_seconds=deps.limits.tool_timeout_seconds,
                 )
                 position_preflight_result = preflight
+                if getattr(preflight, "status", None) in {"complete", "partial"}:
+                    query_envelopes.append(preflight)
                 if getattr(preflight, "result_ref", None):
                     known_result_refs.append(str(preflight.result_ref))
                 await asyncio.to_thread(
@@ -631,6 +693,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 [str(annual_summary_result.result_ref)],
                 "annual_period_end_preflight",
                 presentation_preference=presentation_preference,
+                prohibited_presentations=prohibited_presentations,
             )
             if direct.views or (presentation_preference == "text" and direct.plain_text):
                 payload = getattr(annual_summary_result, "payload", {}) or {}
@@ -666,6 +729,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                 [str(position_preflight_result.result_ref)],
                 "mixed_position_preflight",
                 presentation_preference=presentation_preference,
+                prohibited_presentations=prohibited_presentations,
             )
             if direct.views or (presentation_preference == "text" and direct.plain_text):
                 if presentation_preference == "text":
@@ -689,6 +753,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
             current_time=current_time,
             request_scope=scope,
             presentation_preference=presentation_preference,
+            prohibited_presentations=prohibited_presentations,
         )
         if preflight_context:
             messages.append({"role": "system", "content": "\n\n".join(preflight_context)})
@@ -837,7 +902,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         await asyncio.to_thread(deps.store.append_event, principal, "tool", tool_name=call.name, arguments=call.arguments,
                                                 result_ref=getattr(envelope, "result_ref", None), status=getattr(envelope, "status", None))
                         envelope_payload = getattr(envelope, "payload", None)
-                        if call.name in {'query_dataset', 'compare_dataset'}:
+                        if call.name in {'query_dataset', 'compare_dataset', 'query_positions'}:
                             query_envelopes.append(envelope)
                         if call.name in tools.DATASET_TOOL_NAMES - {'describe_dataset'}:
                             if getattr(envelope, 'status', None) == 'complete':
@@ -916,6 +981,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         draft21,
                         deps.store,
                         presentation_preference=presentation_preference,
+                        prohibited_presentations=prohibited_presentations,
                     )
                     if validated21.views:
                         recoverable_draft21 = draft21
@@ -948,6 +1014,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             v21_issues,
                             finish_reason=turn.finish_reason,
                             presentation_preference=presentation_preference,
+                            prohibited_presentations=prohibited_presentations,
                         )
                         bounded = _bound_messages(messages)
                         if _messages_size(bounded + repair_messages) > 48000:
@@ -958,6 +1025,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                     recoverable_draft21,
                                     deps.store,
                                     presentation_preference=presentation_preference,
+                                    prohibited_presentations=prohibited_presentations,
                                 )
                                 if recoverable_draft21 is not None
                                 else _fallback21(
@@ -966,6 +1034,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                                     known_result_refs,
                                     "answer_validation_failed",
                                     presentation_preference=presentation_preference,
+                                    prohibited_presentations=prohibited_presentations,
                                 )
                             )
                             break
@@ -979,6 +1048,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             recoverable_draft21,
                             deps.store,
                             presentation_preference=presentation_preference,
+                            prohibited_presentations=prohibited_presentations,
                         )
                         if recoverable_draft21 is not None
                         else _fallback21(
@@ -987,6 +1057,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             known_result_refs,
                             "answer_validation_failed",
                             presentation_preference=presentation_preference,
+                            prohibited_presentations=prohibited_presentations,
                         )
                     )
                     break
@@ -1013,6 +1084,7 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                             raw_answer,
                             exc.issues,
                             presentation_preference=presentation_preference,
+                            prohibited_presentations=prohibited_presentations,
                         )
                         bounded = _bound_messages(messages)
                         if _messages_size(bounded + repair_messages) > 48000:

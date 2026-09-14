@@ -19,12 +19,14 @@ def test_followup_history_keeps_authorized_v21_view_and_scope(queued):
         calculation_version="test", payload={"kind": "positions", "selection": {"asset_type": "future"}}),
         [{"contract": "hc2701", "quantity": 2}], kind="positions")
     store.finish(task, "history", "succeeded", "安全摘要", structured_payload={"schema_version": "2.1",
-        "delivery_status": "complete", "views": [{"id": "v1", "kind": "table", "result_ref": str(ref), "fields": ["contract", "quantity"], "title": "期货"}]})
+        "delivery_status": "complete", "request": {"domain": "positions", "filters": {"contract_months": ["2701"]}, "presentation": "text"},
+        "views": [{"id": "v1", "kind": "table", "result_ref": str(ref), "fields": ["contract", "quantity"], "title": "期货"}]})
     followup = store.enqueue({"id": uid}, cid, str(uuid4()), "改成图表", "web")
     content = store.task_history(followup, uid)[-1]["content"]
     assert str(ref) in content
     assert "future" in content
     assert "complete" in content
+    assert "resolved_request=" in content
     with db.connect() as conn:
         conn.execute("UPDATE agent_v2_results SET expires_at=? WHERE id=?", ("2000-01-01T00:00:00+00:00", str(ref)))
     assert str(ref) not in store.task_history(followup, uid)[-1]["content"]

@@ -211,6 +211,135 @@ def test_text_only_validation_removes_views_and_marks_mismatch():
     assert "{{view:" not in result.plain_text
 
 
+def test_text_only_validation_removes_markdown_table_from_body():
+    from app.trading_agent.answer_v21 import validate_answer21
+
+    body = "说明如下。\n\n| 项目 | 口径 |\n|---|---|\n| 来源 | 最新快照 |"
+    result = validate_answer21(
+        SimpleNamespace(),
+        {"schema_version": "2.1", "body_markdown": body, "spans": [], "views": []},
+        SimpleNamespace(load_result=lambda *args, **kwargs: None),
+        presentation_preference="text",
+    )
+
+    assert "| 项目 |" not in result.body_markdown
+    assert any(item.code == "presentation_mismatch" for item in result.limitations)
+
+
+def test_chart_request_forbids_table_view_but_keeps_other_answer_content():
+    from app.trading_agent.answer_v21 import validate_answer21
+
+    ref = uuid4()
+    saved = SimpleNamespace(
+        ref=ref,
+        envelope=SimpleNamespace(
+            metrics={},
+            payload={"kind": "positions"},
+            captured_at=datetime.now(timezone.utc),
+            data_as_of=None,
+            calculation_version="test",
+        ),
+        rows=[{"contract": "i2701-c-700", "quantity": "2"}],
+        parent_ref=None,
+    )
+    result = validate_answer21(
+        SimpleNamespace(),
+        {
+            "schema_version": "2.1",
+            "body_markdown": "图形说明",
+            "spans": [{"id": "s1", "kind": "knowledge", "start": 0, "end": 4, "refs": [], "depends_on": []}],
+            "views": [{"id": "v1", "kind": "table", "result_ref": str(ref), "fields": ["contract"], "title": "表格"}],
+        },
+        SimpleNamespace(load_result=lambda principal, value, **kwargs: saved),
+        presentation_preference="chart",
+        prohibited_presentations=("table",),
+    )
+
+    assert result.views == []
+    assert result.delivery_status == "partial"
+    assert any(item.code == "presentation_mismatch" for item in result.limitations)
+
+
+def test_bound_contract_month_is_not_unreferenced_amount():
+    from app.trading_agent.answer_v21 import validate_answer21
+
+    ref = uuid4()
+    saved = SimpleNamespace(
+        ref=ref,
+        envelope=SimpleNamespace(
+            metrics={"quantity": {"value": "17", "unit": "手", "status": "complete", "covered_rows": 1, "eligible_rows": 1}},
+            payload={"kind": "positions", "selection": {"filters": {"contract_months": ["2701"]}}, "semantic_groups": []},
+            captured_at=datetime.now(timezone.utc),
+            data_as_of=None,
+            calculation_version="test",
+        ),
+        rows=[{"contract": "i2701-c-700", "contract_month": "2701", "quantity": "17"}],
+        parent_ref=None,
+    )
+    store_api = SimpleNamespace(load_result=lambda principal, value, **kwargs: saved)
+    body = f"2701期权总手数 {{{{fact:{ref}#/metrics/quantity}}}}。"
+    result = validate_answer21(
+        SimpleNamespace(),
+        {
+            "schema_version": "2.1",
+            "body_markdown": body,
+            "spans": [{"id": "s1", "kind": "fact", "start": 0, "end": len(body),
+                        "refs": [f"{ref}#/metrics/quantity"], "depends_on": []}],
+            "views": [],
+        },
+        store_api,
+    )
+
+    assert result.delivery_status == "complete"
+    assert not any(item.code == "unreferenced_number" for item in result.limitations)
+    assert "2701期权总手数 17 手" in result.plain_text
+
+
+def test_contract_month_different_from_bound_selection_is_rejected():
+    from app.trading_agent.answer_v21 import validate_answer21
+
+    ref = uuid4()
+    saved = SimpleNamespace(
+        ref=ref,
+        envelope=SimpleNamespace(
+            metrics={"quantity": {"value": "17", "unit": "手", "status": "complete", "covered_rows": 1, "eligible_rows": 1}},
+            payload={"kind": "positions", "selection": {"filters": {"contract_months": ["2701"]}}, "semantic_groups": []},
+            captured_at=datetime.now(timezone.utc),
+            data_as_of=None,
+            calculation_version="test",
+        ),
+        rows=[{"contract": "i2701-c-700", "contract_month": "2701", "quantity": "17"}],
+        parent_ref=None,
+    )
+    store_api = SimpleNamespace(load_result=lambda principal, value, **kwargs: saved)
+    body = f"2705期权总手数 {{{{fact:{ref}#/metrics/quantity}}}}。"
+    result = validate_answer21(
+        SimpleNamespace(),
+        {
+            "schema_version": "2.1",
+            "body_markdown": body,
+            "spans": [{"id": "s1", "kind": "fact", "start": 0, "end": len(body),
+                        "refs": [f"{ref}#/metrics/quantity"], "depends_on": []}],
+            "views": [],
+        },
+        store_api,
+    )
+
+    assert result.delivery_status == "partial"
+    assert any(item.code == "unreferenced_number" for item in result.limitations)
+    assert "2705" not in result.plain_text
+
+
+def test_plain_text_preserves_financial_signs_and_date_ranges():
+    from app.trading_agent.answer_v21 import _plain_text
+
+    text = _plain_text("浮盈亏 -347810 CNY\n\n期间 2026-09-01 - 2026-09-14\n- 文字说明", {})
+
+    assert "-347810 CNY" in text
+    assert "2026-09-01 - 2026-09-14" in text
+    assert "文字说明" in text
+
+
 def test_task_state_is_separate_from_data_status():
     from app.trading_agent.answer_v21 import task_state21
 

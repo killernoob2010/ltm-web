@@ -49,30 +49,20 @@
 
 .closing-review-agent-layout {
   display: grid;
-  grid-template-columns: minmax(210px, .34fr) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
-.closing-review-agent-panel {
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid var(--cra-line);
-  border-radius: 10px;
-  background: #fff;
-}
-
-.closing-review-agent-history-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.closing-review-agent-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
-.closing-review-agent-panel-header h2 { font-size: 16px; }
-.closing-review-agent-new { min-height: 30px; padding: 0 10px; font-size: 12px; }
-
-.closing-review-agent-history { display: grid; gap: 7px; overflow: auto; min-height: 0; flex: 1; align-content: start; overscroll-behavior: contain; }
-.closing-review-agent-history-row { display: flex; min-width: 0; align-items: center; }
-.closing-review-agent-history-row .closing-review-agent-history-item { min-width: 0; flex: 1; }
-.closing-review-agent-delete { padding: 5px; min-height: 28px; font-size: 11px; flex-shrink: 0; }
+.closing-review-agent-tabs-shell { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch; min-width: 0; }
+.closing-review-agent-history { display: flex; gap: 7px; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; padding: 2px 2px 6px; scrollbar-width: thin; }
+.closing-review-agent-history-row { display: flex; min-width: 0; align-items: center; gap: 4px; flex: 0 0 auto; }
+.closing-review-agent-history-row .closing-review-agent-history-item { min-width: 150px; max-width: 240px; flex: 0 1 210px; }
+.closing-review-agent-new { min-width: 36px; min-height: 36px; padding: 0 10px; font-size: 20px; line-height: 1; }
+.closing-review-agent-delete { padding: 4px 6px; min-height: 28px; font-size: 11px; flex-shrink: 0; }
 .closing-review-agent-history-item {
   display: grid;
   gap: 4px;
@@ -89,12 +79,11 @@
 .closing-review-agent-history-item.active { border-color: #bfd0f4; background: var(--cra-blue-soft); }
 .closing-review-agent-history-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .closing-review-agent-history-meta { color: var(--cra-muted); font-size: 11px; }
-.closing-review-agent-retention { margin-top: auto; padding-top: 14px; color: var(--cra-muted); font-size: 11px; line-height: 1.6; }
-
 .closing-review-agent-main { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-width: 0; min-height: 0; }
-.closing-review-agent-messages { min-height: 0; overflow: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 10px; padding: 4px; }
-.closing-review-agent-message { max-width: min(760px, 92%); padding: 13px 15px; border: 1px solid var(--cra-line); border-radius: 10px; background: #fff; box-shadow: 0 4px 14px rgba(15, 23, 42, .04); }
+.closing-review-agent-messages { min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 10px; padding: 4px; }
+.closing-review-agent-message { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; padding: 13px 15px; border: 1px solid var(--cra-line); border-radius: 10px; background: #fff; box-shadow: 0 4px 14px rgba(15, 23, 42, .04); }
 .closing-review-agent-message.is-user { justify-self: end; border-color: #cbdaf6; background: var(--cra-blue-soft); }
+.closing-review-agent-message.is-user { width: min(100%, 760px); }
 .closing-review-agent-message.is-sending { opacity: .86; }
 .closing-review-agent-message.is-automatic { border-color: #c6e0d5; background: #f5fbf8; }
 .closing-review-agent-message-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
@@ -176,19 +165,21 @@
 .closing-review-agent-evidence-list { margin: 0; padding-left: 16px; }
 
 .closing-review-agent-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: end; }
+.closing-review-agent-composer,
+.closing-review-agent-composer textarea,
+.closing-review-agent-main { min-width: 0; box-sizing: border-box; }
 .closing-review-agent-composer textarea { min-height: 60px; height: 60px; resize: none; overflow-y: auto; }
 .closing-review-agent-composer button { min-width: 88px; }
 .closing-review-agent-composer-note { grid-column: 1 / -1; color: var(--cra-muted); font-size: 11px; }
 .closing-review-agent-empty { padding: 24px 12px; color: var(--cra-muted); text-align: center; font-size: 12px; }
 
 @media (max-width: 860px) {
-  .closing-review-agent-layout { grid-template-columns: 1fr; grid-template-rows: minmax(80px, 24%) minmax(0, 1fr); }
-  .closing-review-agent-history { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .closing-review-agent-retention { display: none; }
+  .closing-review-agent-layout { grid-template-rows: auto minmax(0, 1fr); }
+  .closing-review-agent-history-row .closing-review-agent-history-item { min-width: 130px; }
 }
 
 @media (max-width: 560px) {
   .closing-review-agent-header { display: grid; gap: 8px; }
-  .closing-review-agent-history { grid-template-columns: 1fr; }
+  .closing-review-agent-history-row .closing-review-agent-history-item { min-width: 132px; max-width: 190px; }
   .closing-review-agent-composer button { min-width: 60px; }
 }

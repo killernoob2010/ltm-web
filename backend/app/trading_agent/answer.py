@@ -18,6 +18,7 @@ from .answer_v21 import (  # noqa: E402
     AnswerDraft21,
     ValidatedAnswer21,
     build_fallback21,
+    reuse_presentation21,
     parse_answer21,
     task_state21,
     validate_answer21,

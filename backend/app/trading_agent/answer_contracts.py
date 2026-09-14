@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
-from .contracts import StrictModel
+from .contracts import AnswerCoverage, ResolvedRequest, StrictModel
 
 
 class EvidenceSpan(StrictModel):
@@ -100,3 +100,6 @@ class ValidatedAnswer21(StrictModel):
     evidence: list[EvidenceItem] = Field(default_factory=list, max_length=100)
     views: list[dict] = Field(default_factory=list, max_length=8)
     limitations: list[Limitation] = Field(default_factory=list, max_length=80)
+    request: ResolvedRequest | None = None
+    coverage: AnswerCoverage | None = None
+    presentation_mode: Literal["auto", "text", "table", "chart"] = "auto"

@@ -123,7 +123,8 @@ def test_missing_quote_is_partial_and_empty_scope_can_be_explicitly_complete():
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("请纯文字说明", "text"), ("请用表格", "table"), ("画图看变化", "chart"), ("查一下", "auto")],
+    [("请纯文字说明", "text"), ("请用列表说明", "text"), ("请用表格", "table"),
+     ("不要表格，画图看变化", "chart"), ("查一下", "auto")],
 )
 def test_presentation_preference_is_explicit_and_flexible(text, expected):
     assert presentation_preference(text) == expected

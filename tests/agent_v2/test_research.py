@@ -75,6 +75,14 @@ def test_public_query_allows_generic_position_method_without_private_context():
     assert query.approved is True
 
 
+def test_public_query_allows_registered_public_entities_from_private_context():
+    query = validate_public_query(
+        "日照港 铁矿石 公开库存新闻 必和必拓",
+        private_context=["日照港", "铁矿石", "必和必拓"],
+    )
+    assert query.approved is True
+
+
 def test_date_does_not_bypass_private_value():
     with pytest.raises(QueryRejected):
         validate_public_query("2026年9月 铁矿石 987654.32", private_context=["987654.32"])

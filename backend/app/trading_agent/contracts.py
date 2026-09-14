@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from datetime import date as CalendarDate, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -155,6 +155,37 @@ class StoredResult(StrictModel):
     conversation_id: int
     parent_ref: UUID | None = None
     expires_at: datetime
+
+
+class ResolvedRequest(StrictModel):
+    """Server-owned summary of the request that the answer must cover.
+
+    This is deliberately a small, optional contract.  It records the
+    business conditions inferred from the user's words; identity, account
+    scope, and authorization remain outside the model-facing contract.
+    """
+
+    schema_version: Literal["1.0"] = "1.0"
+    domain: Literal["positions", "dataset", "public", "mixed", "general"] = "general"
+    source_mode: Literal["internal", "public", "mixed", "general"] = "general"
+    filters: dict[str, Any] = Field(default_factory=dict)
+    required_metrics: list[str] = Field(default_factory=list, max_length=16)
+    group_by: list[str] = Field(default_factory=list, max_length=8)
+    presentation: Literal["auto", "text", "table", "chart"] = "auto"
+    prohibited_presentations: list[Literal["table", "chart"]] = Field(default_factory=list, max_length=2)
+    refresh: bool = False
+    inherited_result_refs: list[str] = Field(default_factory=list, max_length=8)
+
+
+class AnswerCoverage(StrictModel):
+    """Server-side coverage record for a validated answer."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    status: Literal["complete", "partial", "not_applicable"] = "not_applicable"
+    expected_filters: dict[str, Any] = Field(default_factory=dict)
+    matched_result_refs: list[str] = Field(default_factory=list, max_length=16)
+    covered_metrics: list[str] = Field(default_factory=list, max_length=16)
+    missing: list[str] = Field(default_factory=list, max_length=32)
 
 
 class AnswerParagraph(StrictModel):
