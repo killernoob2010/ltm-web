@@ -287,6 +287,9 @@ def _expected_filters(target: Any) -> dict[str, Any]:
 def _expected_scope(target: Any, requirement: Any | None = None) -> dict[str, Any]:
     expected = _expected_filters(target)
     window = getattr(requirement, "time_window", None)
+    # Position queries are snapshots.  The planner must clear an unrequested
+    # model window before this check; if it does not, retain the mismatch so a
+    # latest result cannot be accepted as a historical range.
     if window is not None:
         expected.setdefault("start_date", window.start_date.isoformat())
         expected.setdefault("end_date", window.end_date.isoformat())
@@ -400,6 +403,43 @@ def _scope_status(target: Any, candidates: list[Any], requirement: Any | None = 
     ) else "unknown"
 
 
+def _source_time_observed(envelope: Any) -> bool:
+    """Return whether the result carries a source observation time/date.
+
+    ``captured_at`` records when this service read the result and is never
+    sufficient.  Query dates and position coverage dates also do not prove a
+    unified source watermark; only explicit source metadata may do so.
+    """
+    if getattr(envelope, "data_as_of", None) is not None:
+        return True
+    payload = _payload(envelope)
+    for key in (
+        "data_as_of", "latest_observed_date", "last_observed_date",
+        "observation_date", "business_date",
+    ):
+        if payload.get(key) not in (None, ""):
+            return True
+    coverage = payload.get("coverage")
+    if isinstance(coverage, dict) and any(
+        coverage.get(key) not in (None, "")
+        for key in ("first_observation", "last_observation")
+    ):
+        return True
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict) and provenance.get("data_as_of") not in (None, ""):
+        return True
+    if _kind(envelope) in {"research", "public_read"}:
+        sources = payload.get("sources")
+        if isinstance(sources, list) and any(
+            isinstance(source, dict) and source.get("published_at") not in (None, "")
+            for source in sources
+        ):
+            return True
+        if payload.get("published_at") not in (None, ""):
+            return True
+    return False
+
+
 def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
     """Assess evidence coverage for every planned requirement."""
     items: list[RequirementCoverage] = []
@@ -482,7 +522,11 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
             result_refs=result_refs,
             missing_codes=list(dict.fromkeys(missing)),
             actual_scope=scope,
-            time_status="observed" if candidates else "unknown",
+            time_status=(
+                "observed"
+                if candidates and all(_source_time_observed(item) for item in candidates)
+                else "unknown"
+            ),
         ))
     return CoverageReport(items=items, complete=bool(items) and all(item.status == "answered" for item in items))
 

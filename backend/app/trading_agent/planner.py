@@ -58,17 +58,124 @@ _DATASET_QUERY_FIELDS = {"dataset", "mode", "start_date", "end_date", "fields", 
 PLANNER_SYSTEM = """你是受控业务 Agent 的任务规划器。
 把用户问题拆成 1 到 8 个可验证的业务需求，每个需求列出独立分析对象、所需来源、指标、范围和时间要求。
 同一个问题可以同时需要内部数据和公开资料。不要因为出现发运、库存、港口或期权就关闭公开资料；先判断完成问题需要哪些证据。
-遇到“净买 Call 与净卖 Put”或类似并列对象时，必须为 Call、Put 建立独立分析目标，保留双边实际持仓，并同时请求 gross 数量、净额和实际浮盈亏；不得用一个 option_type=all 的目标替代对象拆分，也不得先按单边方向过滤原始持仓。
+遇到“净买 Call 与净卖 Put”或类似并列对象时，必须为 Call、Put 建立独立分析目标，保留双边实际持仓；只请求用户明确要求的指标，需要净买/净卖时不要先按单边方向过滤原始持仓。只有用户明确询问浮盈浮亏时才请求浮盈指标；只有用户明确要求比较或排名时才建立比较/排名需求。
 用户明确说不要联网时，生成 no_web 限制；不要自行取消。公开需求只写公开地区、品种、日期和主题，不写账户、持仓数量、盈亏、客户、订单或内部编码。
 模型不能填写 user_id、account_id、权限、执行令牌、SQL、代码、预算或工具调用。只输出符合给定 JSON Schema 的 JSON，不要输出解释、Markdown 围栏或工具调用。
 """
 
-_RECENT_TIME = re.compile(r"近期|最近|近两周|近一个月|本期|截至目前|最新|目前|当前|今天|今日|昨日", re.I)
+_RECENT_TIME = re.compile(r"近期|最近|近两周|近一个月|本期|截至目前|最新|目前|当前|今天|今日|昨日|latest|current", re.I)
+_SNAPSHOT_TIME = re.compile(r"最新|当前|目前|有效持仓|持仓快照|latest|current", re.I)
+_QUANTITY_ONLY = re.compile(r"只(?:要|说|看|询问|输出)(?:数量|手数)|仅(?:看|要|说|输出)(?:数量|手数)", re.I)
+_COMPARISON_REQUEST = re.compile(r"比较|对比|是否一致|差异|变化|环比|同比|排名|排序|前[一二三123]|前三|最大|最小|降幅|增幅", re.I)
+_ONLY_CALL = re.compile(r"(?:只|仅)(?:看|要|说|查)?\s*(?:call|看涨|认购)", re.I)
+_ONLY_PUT = re.compile(r"(?:只|仅)(?:看|要|说|查)?\s*(?:put|看跌|认沽)", re.I)
 _BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 
 
+def _is_position_snapshot_requirement(requirement: Requirement, user_text: str) -> bool:
+    """Return whether a positions requirement asks for the current snapshot."""
+    targets = list(requirement.targets or [])
+    if not targets or any(target.domain != "positions" for target in targets):
+        return False
+    return bool(
+        _SNAPSHOT_TIME.search(str(requirement.time_requirement or ""))
+        or _SNAPSHOT_TIME.search(str(user_text or ""))
+    )
+
+
+def _requested_option_type(user_text: str) -> str | None:
+    text = str(user_text or "")
+    has_call = bool(_ONLY_CALL.search(text))
+    has_put = bool(_ONLY_PUT.search(text))
+    if has_call == has_put:
+        return None
+    return "call" if has_call else "put"
+
+
+def _normalize_user_constraints(task_plan: TaskPlan, user_text: str) -> TaskPlan:
+    """Remove model-only expansions that contradict the user's request."""
+    text = str(user_text or "")
+    quantity_only = bool(_QUANTITY_ONLY.search(text))
+    comparison_requested = bool(_COMPARISON_REQUEST.search(text))
+    requested_option = _requested_option_type(text)
+    pnl_requested = bool(re.search(r"浮盈|浮亏|盈亏|pnl", text, re.I))
+    normalized: list[Requirement] = []
+
+    for requirement in task_plan.requirements:
+        analysis = requirement.analysis
+        if not comparison_requested and analysis is not None and analysis.operation in {"compare", "rank"}:
+            continue
+        targets = []
+        for target in requirement.targets:
+            metrics = list(target.metrics)
+            if quantity_only:
+                if not pnl_requested:
+                    metrics = [metric for metric in metrics if metric != "floating_pnl"]
+                if not re.search(r"总手|gross", text, re.I):
+                    metrics = [
+                        metric for metric in metrics
+                        if metric not in {"gross_quantity", "gross_buy_quantity", "gross_sell_quantity"}
+                    ]
+            filters = dict(target.filters or {})
+            if quantity_only and target.domain == "positions":
+                if not pnl_requested:
+                    filter_metrics = filters.get("required_metrics")
+                    if isinstance(filter_metrics, list):
+                        filters["required_metrics"] = [
+                            metric for metric in filter_metrics if metric != "floating_pnl"
+                        ]
+                    if filters.get("valuation_mode") == "mark_to_market":
+                        filters["valuation_mode"] = "quantity_only"
+                if not re.search(r"总手|gross", text, re.I):
+                    filter_metrics = filters.get("required_metrics")
+                    if isinstance(filter_metrics, list):
+                        filters["required_metrics"] = [
+                            metric for metric in filter_metrics
+                            if metric not in {"gross_quantity", "gross_buy_quantity", "gross_sell_quantity"}
+                        ]
+            if requested_option and target.domain == "positions":
+                target_option = str(filters.get("option_type") or "all").lower()
+                if target_option not in {"all", requested_option}:
+                    continue
+                filters["option_type"] = requested_option
+            if _is_position_snapshot_requirement(requirement, text) and not re.search(r"20\d{2}-\d{2}-\d{2}", text):
+                filters["as_of_mode"] = "latest"
+                filters["as_of_date"] = None
+            if quantity_only and not metrics and target.domain == "positions":
+                metrics = [
+                    "net_quantity"
+                    if target.net_intent in {"net_buy", "net_sell", "net"}
+                    else "quantity"
+                ]
+            targets.append(target.model_copy(update={"metrics": metrics, "filters": filters}))
+        if not targets:
+            continue
+        normalized_analysis = analysis
+        if quantity_only and not pnl_requested and analysis is not None and analysis.metric == "floating_pnl":
+            normalized_analysis = None
+        normalized.append(requirement.model_copy(update={
+            "targets": targets,
+            "analysis": normalized_analysis,
+        }))
+
+    if not normalized:
+        # The contract requires at least one requirement. Keep the first
+        # bounded target if a model produced only unrequested comparisons.
+        normalized = [task_plan.requirements[0].model_copy(update={"analysis": None})]
+    known_ids = {str(item.id) for item in normalized}
+    normalized = [item.model_copy(update={
+        "depends_on": [dep for dep in item.depends_on if str(dep) in known_ids],
+    }) for item in normalized]
+    target_ids = {str(target.id) for item in normalized for target in item.targets}
+    origins = [item for item in task_plan.condition_origins if str(item.target_id) in target_ids]
+    return task_plan.model_copy(update={
+        "requirements": normalized,
+        "condition_origins": origins,
+    })
+
+
 def apply_time_windows(task_plan: TaskPlan, user_text: str, *, now: datetime | None = None) -> TaskPlan:
-    """Fill server-owned recent windows without letting the model choose dates silently."""
+    """Fill server-owned windows and normalize model-owned scope claims."""
     text = str(user_text or "")
     explicit_dates: list[date] = []
     for value in re.findall(r"20\d{2}-\d{2}-\d{2}", text):
@@ -81,25 +188,53 @@ def apply_time_windows(task_plan: TaskPlan, user_text: str, *, now: datetime | N
         business_now = business_now.replace(tzinfo=_BUSINESS_TZ)
     business_date = business_now.astimezone(_BUSINESS_TZ).date()
     default_start = business_date - timedelta(days=13)
+    normalized_plan = _normalize_user_constraints(task_plan, text)
     requirements = []
-    for requirement in task_plan.requirements:
-        if requirement.time_window is not None or (
-            not _RECENT_TIME.search(requirement.time_requirement or "") and not explicit_dates
-        ):
-            requirements.append(requirement)
+    for requirement in normalized_plan.requirements:
+        position_snapshot = _is_position_snapshot_requirement(requirement, text) and not explicit_dates
+        if position_snapshot:
+            requirements.append(requirement.model_copy(update={"time_window": None}))
             continue
-        if len(explicit_dates) >= 2 and explicit_dates[0] <= explicit_dates[1]:
-            start_date, end_date, origin = explicit_dates[0], explicit_dates[1], "user"
-        else:
-            start_date, end_date, origin = default_start, business_date, "default"
-        requirements.append(requirement.model_copy(update={
-            "time_window": TimeWindow(
-                start_date=start_date,
-                end_date=end_date,
-                origin=origin,
-            ),
-        }))
-    return task_plan.model_copy(update={"requirements": requirements})
+        if explicit_dates and len(explicit_dates) == 1 and all(
+            target.domain == "positions" for target in requirement.targets
+        ):
+            as_of_date = explicit_dates[0].isoformat()
+            targets = [target.model_copy(update={
+                "filters": {
+                    **dict(target.filters or {}),
+                    "as_of_mode": "settlement_date",
+                    "as_of_date": as_of_date,
+                },
+            }) for target in requirement.targets]
+            requirements.append(requirement.model_copy(update={
+                "targets": targets,
+                "time_window": None,
+            }))
+            continue
+        if explicit_dates:
+            if len(explicit_dates) >= 2 and explicit_dates[0] <= explicit_dates[1]:
+                start_date, end_date = explicit_dates[0], explicit_dates[1]
+            else:
+                start_date = end_date = explicit_dates[0]
+            requirements.append(requirement.model_copy(update={
+                "time_window": TimeWindow(
+                    start_date=start_date,
+                    end_date=end_date,
+                    origin="user",
+                ),
+            }))
+            continue
+        if _RECENT_TIME.search(requirement.time_requirement or ""):
+            requirements.append(requirement.model_copy(update={
+                "time_window": TimeWindow(
+                    start_date=default_start,
+                    end_date=business_date,
+                    origin="default",
+                ),
+            }))
+            continue
+        requirements.append(requirement)
+    return normalized_plan.model_copy(update={"requirements": requirements})
 
 
 def build_policy_fallback_plan(
