@@ -45,3 +45,14 @@
 - 复审结论：上一轮四项发现已修复；本次定向复审未发现这四项的剩余阻断。下一步可进入 C 接线；创建上下文须显式提供 `sensitive_values`，任务 grant 自动加入检查。模型主循环、公开正文策略及真实管理员验收仍在后续阶段。
 - 关键文件：`backend/app/trading_agent/planning_contracts.py`、`planner.py`、`dv_analysis.py`、`coverage.py`、`pydantic_tools.py`、`runtime_budget.py`、`egress_policy.py`、`store.py` 及 `tests/agent_v2/test_migration_semantics.py` 等四个新增测试文件。
 - 禁止：本阶段不得自动推送/合并/部署或读取凭据；不得修改正式配置、正式数据库、交易事实或执行任何真实交易/资金操作。
+
+## 2026-09-15 批次 C 当前接续状态（以本节为准）
+
+- 当前候选：本工作区 detached HEAD，C 本地提交为 `abdf200`；未推送、未合并、未部署，正式默认仍为 legacy，未启用真实模型、公开搜索或企微。
+- C 已完成：Worker 保留领取、心跳、租约、取消和投递边界，新增服务端会话级 runtime 选择；Pydantic 路径完成“计划 → typed 只读工具 → ModelAnswer21 → 一次无工具修正 → 共享最终交付门禁”，legacy 与新路径共用 delivery gate。临时工具故障最多一次重试并计入同一预算，权限越界立即取消任务上下文；finish 至多一次，任务凭证最终撤销。
+- 质量页已分开显示执行、答案、七项规则核验、投递、人工评估五个维度；旧记录核验为 `not_run`；`live-import` 只读取操作者提供的精简回执，不自行联网、调用模型或落库，且不把回执自报结果当作业务通过。
+- 最新本地证据：`tests/agent_v2` 为 506 passed、4 个依赖弃用警告；相关前端测试为 17 passed；`pip check`、Node/Python 语法、`git diff --check` 均通过。
+- 业务证据边界：以上是本地合成/受控链路证据，尚未证明真实 DeepSeek 最终答案、当前实时持仓、正式实例容量、管理员页面业务验收、公开联网或企微投递；没有创建真实 live receipt。
+- 默认下一步：若继续，先单独确认 P6 的真实模型与管理员只读验收范围，再从当前正式基线做选择性发布；不得因本地通过自动切换正式默认或开启真实服务。
+- 关键文件：`backend/app/trading_agent/runtime_dispatch.py`、`pydantic_runtime.py`、`pydantic_tools.py`、`delivery_gate.py`、`quality.py`、`worker.py`、`frontend/agent_quality.js`、`scripts/run_agent_v2_evals.py`。
+- 禁止：读取或输出凭据；修改正式配置、正式数据库、交易事实；执行真实交易/资金操作；把本地 SDK 合同测试或历史记录包装成真实模型业务验收。
