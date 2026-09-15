@@ -6,6 +6,16 @@
 2. offline-behavior 只运行 offline_behavior_manifest.json 中固定的合成 pytest nodeid，验证 Harness 的预算、答案校验、有限纠错和权限边界。它使用脚本模型或无模型外部依赖，不连接 DeepSeek、Brave、企微或业务数据库。
 3. live 目前没有获准的真实运行器，命令会拒绝执行。真实模型、云端网页和企微验收必须按任务书 C 批单独授权和留证据。
 
+## 迁移定义样本（L0）
+
+`migration_cases.jsonl` 保存本次 Pydantic AI 迁移的 30 条合成、可复核场景：库存 8 条、天气/发运 6 条、持仓 4 条、连续追问 4 条、失败/状态 4 条、安全隔离 4 条。前 24 条为 `regression`，后 6 条为 `holdout`。每条都有独立 oracle、固定的带时区时钟和预期答案状态；没有可核验的历史材料时不填写虚构的历史引用。
+
+只读定义检查命令：
+
+    ./.runtime/agent-v2/bin/python scripts/run_agent_v2_evals.py --mode migration-definition
+
+它只读取并校验 JSONL，检查必需字段、重复 ID、来源/分组、冻结时钟、oracle 和预期状态；不访问数据库、模型、公开搜索或正式数据。`definition_pass` 只说明样本结构合法，输出中的 `business_pass` 始终为 `false`，不能据此评价 Agent 答案或真实业务验收。
+
 命令：
 
     ./.runtime/agent-v2/bin/python scripts/run_agent_v2_evals.py --mode definition --suite regression

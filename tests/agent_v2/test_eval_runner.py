@@ -185,3 +185,80 @@ def test_live_batch_with_no_executed_cases_is_not_a_real_model_pass(pilot):
     assert result["status"] == "partial"
     assert result["real_model_evaluated"] is False
     assert quality.evaluation_catalog()["live"]["real_model_evaluated"] is False
+
+
+def test_migration_case_rejects_empty_oracle():
+    from scripts.run_agent_v2_evals import validate_migration_case
+
+    errors = validate_migration_case({"id": "M-X", "oracle": {}})
+
+    assert "empty_oracle" in errors
+    assert "missing:clock" in errors
+
+
+def test_migration_case_rejects_clock_without_timezone():
+    from scripts.run_agent_v2_evals import validate_migration_case
+
+    errors = validate_migration_case({
+        "id": "M-X",
+        "origin": "synthetic",
+        "source_task_ref": None,
+        "split": "regression",
+        "turns": ["测试"],
+        "snapshot_id": "synthetic-v1",
+        "clock": "2026-09-15T10:00:00",
+        "expected_requirements": ["test"],
+        "oracle": {"status": "partial"},
+        "forbidden": ["answer_complete"],
+        "required_evidence": ["observation_date"],
+        "expected_answer_state": "partial",
+        "live_required": False,
+    })
+
+    assert "clock_missing_timezone" in errors
+
+
+def test_migration_manifest_rejects_duplicate_ids():
+    from scripts.run_agent_v2_evals import validate_migration_manifest
+
+    case = {
+        "id": "M-X",
+        "origin": "synthetic",
+        "source_task_ref": None,
+        "split": "regression",
+        "turns": ["测试"],
+        "snapshot_id": "synthetic-v1",
+        "clock": "2026-09-15T10:00:00+08:00",
+        "expected_requirements": ["test"],
+        "oracle": {"status": "partial"},
+        "forbidden": ["answer_complete"],
+        "required_evidence": ["observation_date"],
+        "expected_answer_state": "partial",
+        "live_required": False,
+    }
+
+    errors = validate_migration_manifest([case, dict(case)])
+
+    assert "duplicate_id:M-X" in errors
+
+
+def test_migration_cases_have_independent_30_case_distribution():
+    from scripts.run_agent_v2_evals import load_migration_cases, validate_migration_case
+
+    cases = load_migration_cases()
+
+    assert len(cases) == 30
+    assert [case["split"] for case in cases[:24]] == ["regression"] * 24
+    assert [case["split"] for case in cases[24:]] == ["holdout"] * 6
+    assert {case["id"][:3] for case in cases} == {"M-I", "M-W", "M-P", "M-C", "M-F", "M-S"}
+    assert all(validate_migration_case(case) == [] for case in cases)
+
+
+def test_migration_definition_never_claims_business_pass():
+    from scripts.run_agent_v2_evals import migration_definition_output
+
+    output = migration_definition_output()
+
+    assert output["mode"] == "migration-definition"
+    assert output["summary"]["definition_pass"] is True
+    assert output["business_pass"] is False

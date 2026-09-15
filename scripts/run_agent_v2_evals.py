@@ -1,5 +1,6 @@
 """Run definition checks or a fixed, synthetic offline behavior suite."""
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 import subprocess
@@ -14,6 +15,7 @@ from app.trading_agent import quality
 
 EVAL_DIR = ROOT / "evals" / "trading_agent_v2"
 MANIFEST_PATH = EVAL_DIR / "offline_behavior_manifest.json"
+MIGRATION_CASES_PATH = EVAL_DIR / "migration_cases.jsonl"
 TOOL_NAMES = {
     "describe_capabilities", "query_trade_facts", "query_close_facts", "query_positions",
     "summarize_positions", "summarize_facts", "read_result_page", "compare_results",
@@ -26,11 +28,32 @@ REQUIRED_FIELDS = {
     "id", "capabilities", "question", "fixture", "required_evidence",
     "allowed_tools", "forbidden_behaviors", "oracle", "split",
 }
+MIGRATION_REQUIRED_FIELDS = {
+    "id", "origin", "source_task_ref", "turns", "snapshot_id", "clock",
+    "expected_requirements", "oracle", "forbidden", "required_evidence",
+    "expected_answer_state", "live_required", "split",
+}
+MIGRATION_ORIGINS = {"history", "synthetic", "holdout"}
+MIGRATION_SPLITS = {"regression", "holdout"}
+MIGRATION_ANSWER_STATES = {"complete", "partial", "failed", "needs_clarification"}
 
 
 def load_cases(suite):
     path = EVAL_DIR / ("cases.jsonl" if suite == "regression" else "holdout.jsonl")
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def load_migration_cases(path=MIGRATION_CASES_PATH):
+    cases = []
+    for line_number, line in enumerate(Path(path).read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            case = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid migration case JSON on line {line_number}") from exc
+        cases.append(case)
+    return cases
 
 
 def _nonempty_string(value):
@@ -73,6 +96,102 @@ def validate_case_definition(case):
         "id": str(case.get("id") or ""),
         "definition_pass": not errors,
         "errors": errors,
+    }
+
+
+def validate_migration_case(case):
+    """Validate a migration case definition without evaluating an answer."""
+    if not isinstance(case, dict):
+        return ["invalid_case"]
+
+    errors = [f"missing:{field}" for field in sorted(MIGRATION_REQUIRED_FIELDS - set(case))]
+    if "id" in case and (not isinstance(case["id"], str) or not case["id"].strip()):
+        errors.append("invalid_id")
+    if "origin" in case and case["origin"] not in MIGRATION_ORIGINS:
+        errors.append("invalid_origin")
+    if "split" in case and case["split"] not in MIGRATION_SPLITS:
+        errors.append("invalid_split")
+    if "turns" in case and (
+        not isinstance(case["turns"], list)
+        or not case["turns"]
+        or not all(isinstance(turn, str) and turn.strip() for turn in case["turns"])
+    ):
+        errors.append("invalid_turns")
+    if "snapshot_id" in case and (
+        not isinstance(case["snapshot_id"], str) or not case["snapshot_id"].strip()
+    ):
+        errors.append("invalid_snapshot_id")
+    if "source_task_ref" in case and case["source_task_ref"] is not None and (
+        not isinstance(case["source_task_ref"], str) or not case["source_task_ref"].strip()
+    ):
+        errors.append("invalid_source_task_ref")
+    for field in ("expected_requirements", "forbidden", "required_evidence"):
+        if field in case and (
+            not isinstance(case[field], list)
+            or not case[field]
+            or not all(isinstance(item, str) and item.strip() for item in case[field])
+        ):
+            errors.append(f"invalid:{field}")
+    if "oracle" in case:
+        if not isinstance(case["oracle"], dict):
+            errors.append("invalid_oracle")
+        elif not case["oracle"]:
+            errors.append("empty_oracle")
+    if "clock" in case:
+        clock = case["clock"]
+        if not isinstance(clock, str) or not clock.strip():
+            errors.append("invalid_clock")
+        else:
+            try:
+                parsed_clock = datetime.fromisoformat(clock)
+            except ValueError:
+                errors.append("invalid_clock")
+            else:
+                if parsed_clock.tzinfo is None or parsed_clock.utcoffset() is None:
+                    errors.append("clock_missing_timezone")
+    if "expected_answer_state" in case and case["expected_answer_state"] not in MIGRATION_ANSWER_STATES:
+        errors.append("invalid_answer_state")
+    if "live_required" in case and not isinstance(case["live_required"], bool):
+        errors.append("invalid_live_required")
+    return errors
+
+
+def validate_migration_manifest(cases):
+    errors = []
+    seen_ids = set()
+    for case in cases:
+        errors.extend(validate_migration_case(case))
+        case_id = case.get("id") if isinstance(case, dict) else None
+        if isinstance(case_id, str) and case_id.strip():
+            if case_id in seen_ids:
+                errors.append(f"duplicate_id:{case_id}")
+            seen_ids.add(case_id)
+    return errors
+
+
+def migration_definition_output(path=MIGRATION_CASES_PATH):
+    cases = load_migration_cases(path)
+    results = [
+        {
+            "id": str(case.get("id") or "") if isinstance(case, dict) else "",
+            "definition_pass": not validate_migration_case(case),
+            "errors": validate_migration_case(case),
+        }
+        for case in cases
+    ]
+    manifest_errors = validate_migration_manifest(cases)
+    return {
+        "mode": "migration-definition",
+        "summary": {
+            "count": len(cases),
+            "definition_failures": sum(not item["definition_pass"] for item in results),
+            "definition_pass": bool(cases) and not manifest_errors,
+            "manifest_errors": manifest_errors,
+        },
+        "cases": results,
+        "business_pass": False,
+        "real_model_evaluated": False,
+        "release_readiness": "not_evaluated",
     }
 
 
@@ -229,7 +348,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["definition", "deterministic", "offline-behavior", "live"],
+        choices=["definition", "deterministic", "migration-definition", "offline-behavior", "live"],
         default="definition",
     )
     parser.add_argument("--suite", choices=["regression", "holdout"], default="regression")
@@ -240,7 +359,12 @@ def main():
     args = parser.parse_args()
     if args.mode == "live":
         parser.error("live mode requires the approved Staging model/tool runner; no external runner is enabled")
-    if args.mode in {"definition", "deterministic"}:
+    if args.mode == "migration-definition" and args.persist:
+        parser.error("migration-definition is read-only and cannot persist evaluation data")
+    if args.mode == "migration-definition":
+        output = migration_definition_output()
+        success = output["summary"]["definition_pass"]
+    elif args.mode in {"definition", "deterministic"}:
         output = _definition_output(args.suite)
         success = output["summary"]["definitions_pass"]
     else:
