@@ -159,12 +159,12 @@ def test_policy_fallback_plan_cannot_open_public_access_for_non_public_candidate
 
 def test_internal_position_fallback_plan_keeps_two_sides_and_only_requested_metrics():
     plan = build_internal_position_fallback_plan(
-        "只用内部数据，汇总当前期权净买 Call 和净卖 Put 的手数，按合约月份列出，只要数量。",
+        "只用内部数据，汇总当前期权净买 Call 和净卖 Put 的手数，按合约月份列出，只要数量，不要表格，不联网。",
         conversation_state={"topic_action": "new_topic"},
     )
     resolved = apply_time_windows(
         plan,
-        "只用内部数据，汇总当前期权净买 Call 和净卖 Put 的手数，按合约月份列出，只要数量。",
+        "只用内部数据，汇总当前期权净买 Call 和净卖 Put 的手数，按合约月份列出，只要数量，不要表格，不联网。",
         now=datetime(2026, 9, 15, 9, 0, tzinfo=timezone.utc),
     )
     validate_plan(resolved, {"tools": [{"id": "query_positions"}], "conditional_sources": []})

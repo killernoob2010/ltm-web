@@ -264,9 +264,15 @@ def build_internal_position_fallback_plan(
         raise PlannerError("当前请求不属于可确定的内部持仓数量兜底范围")
     if re.search(r"20\d{2}-\d{2}-\d{2}", text) or not _SNAPSHOT_TIME.search(text):
         raise PlannerError("兜底计划只支持当前有效持仓快照")
+    no_web_directive = re.compile(
+        r"不要?(?:联网|上网|搜索|网络)|只(?:用|根据)内部(?:数据|资料)?|"
+        r"仅(?:用|根据)内部(?:数据|资料)?|不(?:要|用)外部资料",
+        re.I,
+    )
+    public_request_text = no_web_directive.sub("", text)
     if re.search(
         r"联网|上网|搜索|新闻|消息|财报|年报|公告|天气|公开资料|外部资料",
-        text,
+        public_request_text,
         re.I,
     ):
         raise PlannerError("兜底计划不处理公开资料请求")
@@ -327,11 +333,7 @@ def build_internal_position_fallback_plan(
     topic_action = state.get("topic_action")
     if topic_action not in {"continue", "refine", "presentation_only", "refresh", "new_topic"}:
         topic_action = "new_topic"
-    no_web = bool(re.search(
-        r"不要(?:联网|上网|搜索|网络)|只(?:用|根据)内部|仅(?:用|根据)内部|不(?:要|用)外部资料",
-        text,
-        re.I,
-    ))
+    no_web = bool(no_web_directive.search(text))
     restrictions = [UserRestriction(
         kind="no_web", scope="turn", evidence="用户明确要求仅使用内部数据",
     )] if no_web else []
