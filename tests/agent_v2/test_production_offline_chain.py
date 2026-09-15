@@ -68,11 +68,13 @@ def _model_plan():
 
 
 class ProductionFailureMCP:
-    def __init__(self, *, data_as_of=None):
+    def __init__(self, *, data_as_of=None, call_value="3", put_value="2"):
         self.calls = []
         self.query_args = []
         self.refs = []
         self.data_as_of = data_as_of
+        self.call_value = call_value
+        self.put_value = put_value
 
     async def list_tools(self, grant):
         return {"tools": [
@@ -98,6 +100,7 @@ class ProductionFailureMCP:
         self.query_args.append(args)
         option_type = (args.get("filters") or {}).get("option_type")
         ref = uuid4()
+        value = self.call_value if option_type == "call" else self.put_value
         envelope = ToolEnvelope(
             status="complete",
             result_ref=ref,
@@ -115,20 +118,20 @@ class ProductionFailureMCP:
                 "semantic_groups": [{
                     "dimensions": {"contract_month": "2701", "option_type": option_type},
                     "metrics": {"net_quantity": {
-                        "value": "3" if option_type == "call" else "2",
+                        "value": value,
                         "unit": "手", "status": "complete", "covered_rows": 1, "eligible_rows": 1,
                     }},
                 }],
             },
             metrics={
                 "net_quantity": MetricValue(
-                    value="3" if option_type == "call" else "2",
+                    value=value,
                     unit="手", status="complete", covered_rows=1, eligible_rows=1,
                 ),
             },
         )
         self.refs.append(store.save_result(principal, envelope, [{
-            "contract_month": "2701", "option_type": option_type, "net_quantity": "3",
+            "contract_month": "2701", "option_type": option_type, "net_quantity": value,
         }], kind="positions"))
         return store.load_result(principal, self.refs[-1]).envelope
 
@@ -196,6 +199,32 @@ class FallbackExecutionSDK:
                     f"2701 Put 净卖手数为 {{{{fact:{refs[1]}#/payload/semantic_groups/0/metrics/net_quantity}}}}。"
                 ), "refs": [f"{refs[1]}#/payload/semantic_groups/0/metrics/net_quantity"], "depends_on": []},
             ],
+            "views": [],
+        })])
+
+
+class UnreferencedExecutionSDK:
+    """Return a syntactically valid answer without evidence references."""
+
+    def __init__(self, mcp):
+        self.calls = 0
+        self.mcp = mcp
+
+    def __call__(self, messages, info):
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(parts=[ToolCallPart(tool_name=info.output_tools[0].name, args=_model_plan())])
+        if self.calls in {2, 3}:
+            option_type = "call" if self.calls == 2 else "put"
+            return ModelResponse(parts=[ToolCallPart(tool_name="query_positions", args={
+                "as_of_mode": "latest", "as_of_date": None,
+                "asset_type": "option", "contracts": [], "direction": "all", "classification": "all",
+                "valuation_mode": "quantity_only", "required_metrics": ["net_quantity"],
+                "filters": {"option_type": option_type}, "presentation": "text",
+            })])
+        return ModelResponse(parts=[ToolCallPart(tool_name=info.output_tools[0].name, args={
+            "schema_version": "2.1",
+            "blocks": [{"id": "s1", "kind": "fact", "text": "已读取持仓结果，但暂未生成明细。", "refs": [], "depends_on": []}],
             "views": [],
         })])
 
@@ -302,3 +331,31 @@ async def test_internal_position_fallback_continues_after_strict_planner_failure
     assert planning["fallback_from"]
     plan = payload["agent_context"]["task_plan"]
     assert [item["id"] for item in plan["requirements"]] == ["call", "put"]
+
+
+@pytest.mark.asyncio
+async def test_unreferenced_position_answer_recovers_verified_text_without_relaxing_source_time(queued):
+    _, _, queued_task_id = queued
+    task_id = store.claim_next("production-unreferenced-answer-worker")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE closing_review_messages SET content=? WHERE id=(SELECT user_message_id FROM closing_review_tasks WHERE id=?)",
+            (ORIGINAL_POSITION_QUESTION, task_id),
+        )
+    mcp = ProductionFailureMCP(call_value="-3", put_value="2")
+    scripted = UnreferencedExecutionSDK(mcp)
+    result = await pydantic_runtime.run_task(task_id, RuntimeDeps(
+        store=store,
+        model=object(),
+        mcp=mcp,
+        worker_id="production-unreferenced-answer-worker",
+        sdk_model=FunctionModel(function=scripted),
+        planning_enabled=True,
+    ))
+
+    assert result.delivery_status == "partial"
+    assert result.validation_summary.checks["time"] == "failed"
+    assert len(result.evidence) == 2
+    assert "Call 净买手数 3手" in result.plain_text
+    assert "Put 净卖手数 2手" in result.plain_text
+    assert scripted.calls >= 3

@@ -418,6 +418,74 @@ def _answer_quality(answer: ValidatedAnswer21) -> int:
     return {"complete": 2, "partial": 1, "failed": 0}.get(answer.delivery_status, 0)
 
 
+def _position_fallback_intents(plan: Any) -> dict[str, str]:
+    intents: dict[str, str] = {}
+    for requirement in getattr(plan, "requirements", []) or []:
+        if getattr(requirement, "source_intent", None) != "internal":
+            continue
+        for target in getattr(requirement, "targets", []) or []:
+            if getattr(target, "domain", None) != "positions":
+                continue
+            filters = getattr(target, "filters", {})
+            if not isinstance(filters, dict):
+                continue
+            option_type = str(filters.get("option_type") or "").lower()
+            intent = str(getattr(target, "net_intent", "none") or "none")
+            if option_type in {"call", "put"} and intent in {"net_buy", "net_sell"}:
+                intents[option_type] = intent
+    return intents
+
+
+def _recover_unreferenced_position_answer(
+    plan: Any,
+    envelopes: list[ToolEnvelope],
+    validated: ValidatedAnswer21,
+    *,
+    principal: Any,
+    store_api: Any,
+    presentation_preference: str,
+    prohibited_presentations,
+) -> ValidatedAnswer21:
+    """Recover verified text when a valid model envelope omitted all evidence refs."""
+    if validated.evidence:
+        return validated
+    position_intents = _position_fallback_intents(plan)
+    if not position_intents:
+        return validated
+    result_refs = [
+        str(envelope.result_ref)
+        for envelope in envelopes
+        if getattr(envelope, "result_ref", None)
+        and isinstance(getattr(envelope, "payload", None), dict)
+        and envelope.payload.get("kind") == "positions"
+        and not envelope.payload.get("aggregation")
+    ]
+    if not result_refs:
+        return validated
+    recovered = build_fallback21(
+        principal,
+        list(dict.fromkeys(result_refs)),
+        {},
+        "answer_reference_missing",
+        store_api,
+        presentation_preference=presentation_preference,
+        prohibited_presentations=prohibited_presentations,
+        position_intents=position_intents,
+    )
+    if not recovered.evidence:
+        return validated
+    recovered = delivery_gate.validate_delivery(
+        plan,
+        recovered,
+        envelopes,
+        principal=principal,
+        store_api=store_api,
+        presentation_preference=presentation_preference,
+        prohibited_presentations=prohibited_presentations,
+    )
+    return recovered if _answer_quality(recovered) >= _answer_quality(validated) else validated
+
+
 def _ensure_task_active(budget: RuntimeBudget) -> None:
     if budget.cancelled:
         raise BudgetExceeded("cancelled", "task is cancelled")
@@ -622,6 +690,15 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
                 raise
             except Exception:
                 pass
+        validated = _recover_unreferenced_position_answer(
+            plan,
+            envelopes,
+            validated,
+            principal=principal,
+            store_api=deps.store,
+            presentation_preference=preference,
+            prohibited_presentations=plan.prohibited_presentations,
+        )
         requirement_report = task_coverage.assess_evidence(plan, envelopes)
         requirement_report = task_coverage.assess_delivery(plan, requirement_report, validated)
         refs = [

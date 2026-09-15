@@ -722,7 +722,7 @@ def validate_answer21(
     )
 
 
-def _fallback_text_for_result(saved: Any) -> str:
+def _fallback_text_for_result(saved: Any, *, net_intent: str | None = None) -> str:
     """Render a compact, evidence-preserving text result for a failed model turn."""
     payload = _payload(saved)
     kind = payload.get("kind")
@@ -784,6 +784,13 @@ def _fallback_text_for_result(saved: Any) -> str:
         if months:
             parts.append(f"查询合约月份 {', '.join(str(month) for month in months)}")
     for name in requested_metrics:
+        if net_intent in {"net_buy", "net_sell"} and name in {
+            "quantity", "net_quantity", "net_sell_quantity",
+        }:
+            # A signed net metric across both sides is not the requested
+            # one-sided total.  The per-month section below applies the
+            # target intent to each semantic group instead.
+            continue
         metric = metrics.get(name) if isinstance(metrics, dict) else None
         value, unit = _metric_value(metric)
         if value is not None:
@@ -808,15 +815,26 @@ def _fallback_text_for_result(saved: Any) -> str:
             tons = metric_map.get("net_tons") if "net_tons" in group_metric_names else None
             wan_tons = metric_map.get("net_wan_tons") if "net_wan_tons" in group_metric_names else None
             net_value, net_unit = _metric_value(net)
+            try:
+                signed_value = Decimal(str(net_value)) if net_value is not None else None
+            except (InvalidOperation, TypeError, ValueError):
+                signed_value = None
+            if net_intent == "net_buy" and (signed_value is None or signed_value >= 0):
+                continue
+            if net_intent == "net_sell" and (signed_value is None or signed_value <= 0):
+                continue
             pnl_value, pnl_unit = _metric_value(pnl)
             tons_value, tons_unit = _metric_value(tons or wan_tons)
             month_label = dimensions.get("contract_month")
             prefix = f"{month_label} " if month_label else ""
-            detail = (
-                f"{prefix}{str(option_type).title()} 净卖手数 {net_value}{net_unit or ''}{net_note(net_value)}{coverage_note(net)}"
-                if net_value is not None
-                else f"{prefix}{str(option_type).title()} 净额不可用"
-            )
+            if net_value is None:
+                detail = f"{prefix}{str(option_type).title()} 净额不可用"
+            elif net_intent == "net_buy":
+                detail = f"{prefix}{str(option_type).title()} 净买手数 {abs(signed_value)}{net_unit or ''}（净买）{coverage_note(net)}"
+            elif net_intent == "net_sell":
+                detail = f"{prefix}{str(option_type).title()} 净卖手数 {signed_value}{net_unit or ''}（净卖）{coverage_note(net)}"
+            else:
+                detail = f"{prefix}{str(option_type).title()} 净卖手数 {net_value}{net_unit or ''}{net_note(net_value)}{coverage_note(net)}"
             if pnl_value is not None:
                 detail += f"，对应实际持仓浮盈亏 {pnl_value}{pnl_unit or ''}{coverage_note(pnl)}"
             elif _value(pnl, "status") == "unavailable":
@@ -832,6 +850,8 @@ def _fallback_text_for_result(saved: Any) -> str:
         return "；".join(parts) + "。"
     if payload.get("count") == 0 and _value(_envelope(saved), "status") == "complete":
         return "在当前查询范围内没有有效持仓。"
+    if net_intent in {"net_buy", "net_sell"}:
+        return f"当前没有可交付的{('净买' if net_intent == 'net_buy' else '净卖')}持仓分组。"
     return "已保留已核验结果，但所需指标当前不可用。"
 
 
@@ -946,6 +966,7 @@ def build_fallback21(
     *,
     presentation_preference: str = "auto",
     prohibited_presentations=(),
+    position_intents: dict[str, str] | None = None,
 ) -> ValidatedAnswer21:
     views = []
     evidence = []
@@ -986,7 +1007,11 @@ def build_fallback21(
             except Exception:
                 continue
         if text_mode:
-            text_parts.append(_fallback_text_for_result(saved))
+            selection = metadata.get("selection") if isinstance(metadata.get("selection"), dict) else {}
+            filters = selection.get("filters") if isinstance(selection.get("filters"), dict) else {}
+            option_type = str(filters.get("option_type") or "").lower()
+            intent = (position_intents or {}).get(option_type)
+            text_parts.append(_fallback_text_for_result(saved, net_intent=intent))
         else:
             views.append({"id": f"v{len(views) + 1}", "kind": "table", "result_ref": ref, "fields": [], "title": "已核验数据"})
         evidence.append(_internal_evidence(ref, saved, None).model_dump(mode="json"))
