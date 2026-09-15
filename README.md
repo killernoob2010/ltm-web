@@ -37,11 +37,12 @@
 
 ## 本地运行
 
-Pydantic AI 迁移批次 A、B 当前仍为本地候选，尚未接入 Worker 或部署。根目录 `requirements.txt`
-使用 `requirements-agent-v2.lock` 作为版本约束，Render 原有安装命令也会读取同一约束；
+Pydantic AI 迁移批次 A、B 已收尾，批次 C 已在本地接入 Worker 主流程和质量页；当前仍是本地候选，未部署。
+运行时默认使用 legacy，只有服务端配置试点用户和 `AGENT_V2_RUNTIME_BACKEND=pydantic` 才选择 SDK 路径。
+根目录 `requirements.txt` 使用 `requirements-agent-v2.lock` 作为版本约束，Render 原有安装命令也会读取同一约束；
 约束文件只固定被请求依赖的版本，不会额外安装 pytest 等测试工具。项目 Python 版本为
 `.python-version` 指定的 3.12.14。候选模型工厂只提供非流式请求的 15 秒总截止与传输超时，
-校验证书、主机名、代理和重定向配置；SDK 总调用预算及 Worker 集成仍按后续迁移批次验收。
+校验证书、主机名、代理和重定向配置；SDK 总调用预算、Worker 接入和质量门禁已完成本地合成验证，真实模型与正式验收仍未执行。
 
 2026-09-15 已只读核对 Render 控制台：正式 `ltm-web` 为 Standard（1 CPU / 2 GB，1 实例），
 测试 `ltm-web-staging` 为 Free（0.1 CPU / 512 MB，会闲置休眠）。本批尚未发布；
@@ -97,7 +98,7 @@ http://127.0.0.1:8000
 http://127.0.0.1:8001
 ```
 
-Agent V2 本地/独立 worker 可使用锁定环境；复用 Render 时根目录 `requirements.txt` 已包含 MCP、企微 SDK 和现有 Web 依赖。先在隔离环境安装锁定依赖，再执行本地合同、事实、MCP、Harness、企微适配和前端回归：
+Agent V2 本地/独立 worker 可使用锁定环境；复用 Render 时根目录 `requirements.txt` 已包含 MCP、企微 SDK 和现有 Web 依赖。先在隔离环境安装锁定依赖，再执行本地合同、事实、MCP、Harness、企微适配、SDK 主循环和前端回归：
 
 ```bash
 python3 -m venv .runtime/agent-v2

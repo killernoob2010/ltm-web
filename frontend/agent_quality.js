@@ -35,7 +35,7 @@
   const labels = {
     queued: "排队",
     running: "运行中",
-    succeeded: "已交付",
+    succeeded: "执行成功",
     partial: "部分完成",
     failed: "失败",
     cancelled: "已取消",
@@ -52,8 +52,16 @@
     offline_available: "离线套件已登记",
     not_recorded: "未记录",
     complete: "完成",
+    legacy: "旧版答案",
+    unknown: "状态未知",
+    delivered: "已投递",
+    delivery_unknown: "投递状态未知",
+    not_reviewed: "未人工评估",
+    accepted: "人工通过",
+    validation_passed: "规则检查通过",
+    validation_failed: "规则检查未通过",
     temporarily_unavailable: "暂不可用",
-    rejected: "已拒绝",
+    rejected: "人工未通过",
     unsupported: "不支持",
   };
 
@@ -84,9 +92,10 @@
 
   function statusChip(value) {
     const label = labels[value] || value || "--";
-    const tone = value === "human_pass" ? "good"
-      : value === "failed" || value === "human_fail" || value === "auto_fail" ? "bad"
-        : value === "partial" || value === "needs_review" || value === "human_review" ? "warn" : "";
+    const tone = value === "human_pass" || value === "complete" || value === "passed" || value === "accepted" ? "good"
+      : value === "failed" || value === "human_fail" || value === "auto_fail" || value === "rejected" || value === "validation_failed" ? "bad"
+        : value === "partial" || value === "needs_review" || value === "human_review" || value === "not_run"
+          || value === "not_reviewed" || value === "legacy" || value === "unknown" || value === "delivery_unknown" ? "warn" : "";
     return `<span class="agent-quality-status ${tone}">${escapeHtml(label)}</span>`;
   }
 
@@ -115,6 +124,7 @@
       ["人工已评估", formatNumber(quality.evaluated_count), "质量反馈记录"],
       ["人工通过", formatNumber(quality.passed_count), "不等同于技术成功"],
       ["待复核", formatNumber(quality.needs_review_count), "需要人工判断"],
+      ["新标准核验通过", formatNumber(quality.validation_passed_count), "七项交付检查全部通过或适用"],
       ["真实模型评估", evaluation.real_model_evaluated ? "已执行" : "未记录", evaluation.release_readiness || "not_evaluated"],
     ];
     cards.innerHTML = items.map(([title, value, note]) => `<div class="agent-quality-card"><small>${escapeHtml(title)}</small><strong>${escapeHtml(value)}</strong><span>${escapeHtml(note)}</span></div>`).join("");
@@ -146,8 +156,9 @@
         <td>${escapeHtml(moduleText(item.modules))}</td>
         <td>${escapeHtml(item.model_calls)} / ${escapeHtml(item.tool_calls)} / ${escapeHtml(item.search_calls)}</td>
         <td>${statusChip(item.quality_status)}</td>
+        <td>${statusChip(item.quality_dimensions?.validation || "not_run")}</td>
         <td><button type="button" class="secondary agent-quality-detail-btn" data-run-id="${escapeHtml(item.task_id)}">查看</button></td>
-      </tr>`).join("") : `<tr><td colspan="7" class="empty-state">当前筛选范围没有运行记录。</td></tr>`;
+      </tr>`).join("") : `<tr><td colspan="8" class="empty-state">当前筛选范围没有运行记录。</td></tr>`;
     const total = state.runs?.pagination?.total || 0;
     const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
     pagination.innerHTML = `<span>第 ${state.page} / ${totalPages} 页</span>
@@ -181,12 +192,16 @@
     }
     const events = (item.events || []).map((event) => `<li>${escapeHtml(formatTimestamp(event.created_at))}｜${escapeHtml(event.kind)}｜${escapeHtml(event.tool_name || "")}${event.status ? `｜状态：${escapeHtml(event.status)}` : ""}${event.error_code ? `｜原因：${escapeHtml(event.error_code)}` : ""}${event.duration_seconds != null ? `｜耗时：${escapeHtml(formatDuration(event.duration_seconds))}` : ""}${event.result_ref ? "｜结果已登记" : ""}</li>`).join("");
     const feedback = item.feedback ? `<p>当前反馈：${statusChip(item.quality_status)}｜${escapeHtml(item.feedback.note || "")}</p>` : `<p>当前反馈：${statusChip(item.quality_status)}</p>`;
+    const dimensions = item.quality_dimensions || {};
+    const dimensionLabels = { execution: "执行", answer: "答案", validation: "新标准核验", delivery: "投递", human_review: "人工评估" };
+    const dimensionView = Object.entries(dimensionLabels).map(([key, label]) => `<span>${escapeHtml(label)}：${statusChip(dimensions[key] || "unknown")}</span>`).join("<br>");
     detail.innerHTML = `<h3>任务 #${escapeHtml(item.task_id)} 详情</h3>
       <div class="agent-quality-detail-grid">
         <div class="agent-quality-detail-block"><strong>用户问题</strong><p>${escapeHtml(item.question || "未记录")}</p></div>
         <div class="agent-quality-detail-block"><strong>Agent回答</strong><p>${escapeHtml(item.answer || "尚未生成回答")}</p></div>
         <div class="agent-quality-detail-block"><strong>执行轨迹</strong><p><ul>${events || "<li>暂无事件</li>"}</ul></p></div>
-        <div class="agent-quality-detail-block"><strong>运行状态</strong><p>${statusChip(item.state)}｜投递：${escapeHtml(item.delivery_state || "--")}<br>结束时间：${escapeHtml(formatTimestamp(item.finished_at))}</p></div>
+        <div class="agent-quality-detail-block"><strong>运行状态</strong><p>${statusChip(item.state)}｜投递：${statusChip(dimensions.delivery || item.delivery_state || "unknown")}<br>结束时间：${escapeHtml(formatTimestamp(item.finished_at))}</p></div>
+        <div class="agent-quality-detail-block"><strong>五维质量状态</strong><p>${dimensionView}</p></div>
         <div class="agent-quality-detail-block"><strong>计划与字段覆盖</strong><p>${coverageSummary(item)}</p></div>
       </div>
       <div class="agent-quality-feedback">${feedback}

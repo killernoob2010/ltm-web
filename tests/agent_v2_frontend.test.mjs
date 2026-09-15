@@ -4,6 +4,10 @@ import fs from "node:fs";
 
 const source = fs.readFileSync(new URL("../frontend/closing_review_agent.js", import.meta.url), "utf8");
 const progressSource = fs.readFileSync(new URL("../frontend/agent_progress.js", import.meta.url), "utf8");
+const conversationStateSupport = source.slice(
+  source.indexOf("  function conversationKey"),
+  source.indexOf("  function currentConversationState"),
+);
 
 test("agent page probes V2 capabilities and preserves V1 fallback", () => {
   assert.match(source, /const ENDPOINT = "\/api\/closing-review-agent"/);
@@ -20,8 +24,12 @@ test("conversation history distinguishes active tasks from reusable conversation
   const end = source.indexOf("  function renderHistory", start);
   const historyStatusFunction = source.slice(start, end);
   const run = (state, conversation) => {
-    const context = { state, result: null };
-    vm.runInNewContext(`${historyStatusFunction}\nresult = historyStatusLabel(${JSON.stringify(conversation)});`, context);
+    const context = { state: { ...state, conversationStates: new Map() }, result: null };
+    vm.runInNewContext(`${conversationStateSupport}\n${historyStatusFunction}`, context);
+    vm.runInNewContext(
+      `const item = conversationState(${JSON.stringify(conversation.id)}); item.activeTask = ${JSON.stringify(state.activeTask)}; item.loading = false; result = historyStatusLabel(${JSON.stringify(conversation)});`,
+      context,
+    );
     return context.result;
   };
   assert.equal(run({conversationId: 7, activeTask: {state: "running"}}, {id: 7, status: "active"}), "处理中");
@@ -36,14 +44,17 @@ const pollingFunction = source.slice(source.indexOf('  async function waitForTas
 function pollingHarness(api) {
   let now = 0;
   const context = {
-    state: { activation: 1, requestSequence: 1, conversationId: 7, api: (url) => api(url, now) },
+    state: { activation: 1, requestSequence: 1, conversationId: 7, conversationStates: new Map(), api: (url) => api(url, now) },
     endpoint: () => '/api/trading-agent-v2',
     setStatus: () => {},
+    renderHistory: () => {},
+    loadMessages: async () => {},
     Date: { now: () => now },
     setTimeout: (resolve, delay) => { now += delay; resolve(); },
   };
-  const guard = source.slice(source.indexOf('  function requestIsCurrent'), source.indexOf('  function setStatus'));
-  vm.runInNewContext(guard + pollingFunction, context);
+  const guard = source.slice(source.indexOf('  function isActive'), source.indexOf('  function setStatus'));
+  vm.runInNewContext(conversationStateSupport + guard + pollingFunction, context);
+  vm.runInNewContext('conversationState(7).requestSequence = 1;', context);
   return context.waitForTask;
 }
 
@@ -52,7 +63,7 @@ test('polling includes queue time and returns the server terminal state', async 
     state: elapsed < 120000 ? 'queued' : elapsed < 160000 ? 'running' : 'succeeded',
     poll_timeout_seconds: 225,
   }));
-  assert.equal((await wait(42, 1)).state, 'succeeded');
+  assert.equal((await wait(42, 1, 7, 1)).state, 'succeeded');
 });
 
 test('transient status-read failure retries the same task without resubmitting', async () => {
@@ -62,14 +73,14 @@ test('transient status-read failure retries the same task without resubmitting',
     if (++reads < 3) throw new Error('temporary network failure');
     return { state: 'succeeded' };
   });
-  assert.equal((await wait(42, 1)).state, 'succeeded');
+  assert.equal((await wait(42, 1, 7, 1)).state, 'succeeded');
   assert.equal(reads, 3);
 });
 
 test('repeated status-read failure stops monitoring after three attempts', async () => {
   let reads = 0;
   const wait = pollingHarness(async () => { reads++; throw new Error('unavailable'); });
-  await assert.rejects(wait(42, 1), /unavailable/);
+  await assert.rejects(wait(42, 1, 7, 1), /unavailable/);
   assert.equal(reads, 3);
 });
 

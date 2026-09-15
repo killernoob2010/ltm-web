@@ -15,6 +15,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .. import db
+from .answer_contracts import VALIDATION_CHECKS
 from .tools import agent_module_catalog
 
 
@@ -176,6 +177,54 @@ def _run_quality(state: str, feedback: dict[str, Any] | None) -> str:
     return "pending"
 
 
+def _payload_value(row: dict[str, Any] | None) -> dict[str, Any]:
+    raw = (row or {}).get("structured_payload")
+    if raw is None and any(key in (row or {}) for key in ("schema_version", "delivery_status", "validation_summary")):
+        raw = row
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _validation_dimension(payload: dict[str, Any]) -> str:
+    summary = payload.get("validation_summary")
+    if not isinstance(summary, dict) or summary.get("version") != "migration-v1":
+        return "not_run"
+    checks = summary.get("checks")
+    if not isinstance(checks, dict) or set(checks) != set(VALIDATION_CHECKS):
+        return "not_run"
+    values = set(checks.values())
+    if not values.issubset({"passed", "failed", "not_applicable"}) or values <= {"not_applicable"}:
+        return "not_run"
+    return "failed" if "failed" in values else "passed"
+
+
+def migration_status(row: dict[str, Any], feedback: dict[str, Any] | None = None) -> dict[str, str]:
+    """Return the five migration dimensions without upgrading legacy records."""
+    payload = _payload_value(row)
+    state = str(row.get("state") or row.get("task_state") or "unknown")
+    delivery = str(row.get("delivery_state") or "unknown")
+    answer = str(payload.get("delivery_status") or "legacy")
+    if answer not in {"complete", "partial", "failed", "legacy"}:
+        answer = "legacy"
+    human = {
+        "correct": "accepted",
+        "incorrect": "rejected",
+        "needs_review": "not_reviewed",
+    }.get(str((feedback or {}).get("label") or ""), "not_reviewed")
+    return {
+        "execution": state,
+        "answer": answer,
+        "validation": _validation_dimension(payload),
+        "delivery": delivery if delivery in {"pending", "delivered", "delivery_unknown"} else "unknown",
+        "human_review": human,
+    }
+
+
 def _run_item(row: dict[str, Any], feedback: dict[str, Any] | None = None,
               modules: list[str] | None = None) -> dict[str, Any]:
     task_id = int(row["task_id"])
@@ -193,6 +242,7 @@ def _run_item(row: dict[str, Any], feedback: dict[str, Any] | None = None,
         "last_error": str(row.get("last_error") or "")[:240] or None,
         "modules": modules if modules is not None else _module_codes(task_id),
         "quality_status": _run_quality(state, feedback) if feedback else 'auto_fail' if row.get('business_failed') else _run_quality(state, feedback),
+        "quality_dimensions": migration_status(row, feedback),
         "feedback": feedback,
     }
 
@@ -219,7 +269,10 @@ def _run_query(start_date: str | None = None, end_date: str | None = None, modul
             f"AND me.tool_name IN ({placeholders}))"
         )
         params.extend(names)
-    sql = """SELECT r.*, EXISTS(SELECT 1 FROM agent_v2_events bv WHERE bv.task_id=r.task_id AND bv.kind='business_validation' AND bv.status='failed') AS business_failed
+    sql = """SELECT r.*,
+             (SELECT m.structured_payload FROM closing_review_messages m
+              WHERE m.task_id=r.task_id AND m.role='assistant' ORDER BY m.id DESC LIMIT 1) AS structured_payload,
+             EXISTS(SELECT 1 FROM agent_v2_events bv WHERE bv.task_id=r.task_id AND bv.kind='business_validation' AND bv.status='failed') AS business_failed
              FROM agent_v2_runs r
              WHERE """ + " AND ".join(clauses) + " ORDER BY r.created_at DESC,r.task_id DESC"
     with db.connect() as conn:
@@ -267,6 +320,7 @@ def build_summary(start_date: str | None = None, end_date: str | None = None) ->
             feedback_counts[item["label"]] += 1
     successful = state_counts.get("succeeded", 0)
     technical_rate = round(successful / terminal_count, 4) if terminal_count else None
+    dimensions = [migration_status(row, feedback.get(int(row["task_id"]))) for row in rows]
     evaluation = evaluation_catalog()
     return {
         "version": QUALITY_VERSION,
@@ -287,6 +341,9 @@ def build_summary(start_date: str | None = None, end_date: str | None = None) ->
             "failed_count": feedback_counts["incorrect"],
             "needs_review_count": feedback_counts["needs_review"],
             "not_evaluated_count": max(0, terminal_count - len(feedback)),
+            "validation_passed_count": sum(item["validation"] == "passed" for item in dimensions),
+            "validation_failed_count": sum(item["validation"] == "failed" for item in dimensions),
+            "validation_not_run_count": sum(item["validation"] == "not_run" for item in dimensions),
         },
         "evaluation": evaluation,
         "modules": agent_module_catalog(),
@@ -617,7 +674,10 @@ def _preview_payload(raw: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
-    allowed = {"schema_version", "status", "delivery_status", "body_markdown", "plain_text", "limitations", "missing"}
+    allowed = {
+        "schema_version", "status", "delivery_status", "body_markdown", "plain_text",
+        "limitations", "missing", "validation_summary",
+    }
     result = {key: payload[key] for key in allowed if key in payload}
     for key in ("body_markdown", "plain_text"):
         if key in result:
@@ -625,6 +685,20 @@ def _preview_payload(raw: Any) -> dict[str, Any] | None:
     for key in ("limitations", "missing"):
         if isinstance(result.get(key), list):
             result[key] = result[key][:20]
+    summary = result.get("validation_summary")
+    if isinstance(summary, dict):
+        checks = summary.get("checks")
+        checks = checks if isinstance(checks, dict) else {}
+        unresolved_codes = summary.get("unresolved_codes")
+        unresolved_codes = unresolved_codes if isinstance(unresolved_codes, list) else []
+        result["validation_summary"] = {
+            "version": str(summary.get("version") or "")[:40],
+            "checks": {
+                str(key)[:40]: str(value)[:24]
+                for key, value in checks.items()
+            },
+            "unresolved_codes": [str(value)[:80] for value in unresolved_codes[:40]],
+        }
     context = payload.get("agent_context")
     if isinstance(context, dict):
         safe_context: dict[str, Any] = {}
@@ -688,12 +762,17 @@ def get_run_detail(task_id: int) -> dict[str, Any] | None:
     question = None
     answer = None
     payload = None
+    raw_answer_payload = None
     for message in messages:
         if message["role"] == "user" and question is None:
             question = str(message["content"] or "")[:MAX_TEXT]
         if message["role"] == "assistant":
             answer = str(message["content"] or "")[:MAX_TEXT]
+            raw_answer_payload = message["structured_payload"]
             payload = _preview_payload(message["structured_payload"])
+    item["quality_dimensions"] = migration_status(
+        {**dict(row), "structured_payload": raw_answer_payload}, feedback,
+    )
     item.update({
         "question": question,
         "answer": answer,
@@ -717,6 +796,6 @@ def get_run_detail(task_id: int) -> dict[str, Any] | None:
 
 __all__ = [
     "QUALITY_VERSION", "FEEDBACK_LABELS", "build_summary", "evaluation_catalog", "evaluation_batch",
-    "get_run_detail", "list_runs", "record_feedback", "create_evaluation_batch",
+    "get_run_detail", "list_runs", "record_feedback", "create_evaluation_batch", "migration_status",
     "record_evaluation_case", "finish_evaluation_batch",
 ]

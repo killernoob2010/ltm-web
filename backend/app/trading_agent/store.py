@@ -175,6 +175,52 @@ def principal_for_task(task_id):
     return principal
 
 
+_RUNTIME_BACKENDS = {"legacy", "pydantic"}
+
+
+def runtime_backend_for_task(task_id):
+    """Return the first runtime binding recorded for this conversation."""
+    with db.connect() as conn:
+        task = db._exec(conn.cursor(), """SELECT user_id,conversation_id
+            FROM closing_review_tasks WHERE id=?""", (int(task_id),)).fetchone()
+        if not task:
+            return None
+        row = db._exec(conn.cursor(), """SELECT e.status
+            FROM agent_v2_events e
+            JOIN agent_v2_runs r ON r.task_id=e.task_id
+            JOIN closing_review_tasks t ON t.id=r.task_id
+            WHERE t.user_id=? AND t.conversation_id=?
+              AND e.kind='runtime_selected' AND e.status IN ('legacy','pydantic')
+            ORDER BY e.created_at ASC,r.task_id ASC,e.seq ASC LIMIT 1""",
+            (int(task["user_id"]), int(task["conversation_id"]))).fetchone()
+    return str(row["status"]) if row else None
+
+
+def bind_runtime(principal, backend):
+    """Persist one runtime choice for a conversation; later turns reuse it."""
+    backend = str(backend or "").strip()
+    if backend not in _RUNTIME_BACKENDS:
+        raise ValueError("invalid_runtime_backend")
+    with db.connect() as conn:
+        _transaction(conn)
+        cur = conn.cursor()
+        task_id = _active_run(cur, principal)
+        row = db._exec(cur, """SELECT e.status
+            FROM agent_v2_events e
+            JOIN agent_v2_runs r ON r.task_id=e.task_id
+            JOIN closing_review_tasks t ON t.id=r.task_id
+            WHERE t.user_id=? AND t.conversation_id=?
+              AND e.kind='runtime_selected' AND e.status IN ('legacy','pydantic')
+            ORDER BY e.created_at ASC,r.task_id ASC,e.seq ASC LIMIT 1""",
+            (principal.user_id, principal.conversation_id)).fetchone()
+        if row:
+            return str(row["status"])
+        if db._is_pg():
+            db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE task_id=? FOR UPDATE", (task_id,))
+        _append_event_row(cur, task_id, "runtime_selected", status=backend)
+    return backend
+
+
 def _active_run(cur, principal):
     execution.checkpoint()
     row = db._exec(cur, """SELECT r.task_id FROM agent_v2_runs r JOIN closing_review_tasks t ON t.id=r.task_id

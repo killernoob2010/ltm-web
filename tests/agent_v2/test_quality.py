@@ -175,3 +175,59 @@ def test_quality_default_window_is_business_timezone_and_empty_feedback_is_empty
     assert start_bound and end_bound
     assert window["timezone"] == "Asia/Shanghai"
     assert quality._latest_feedback(set()) == {}
+
+
+def test_quality_migration_status_does_not_call_old_delivery_a_new_validation_pass():
+    status = quality.migration_status({
+        "state": "partial",
+        "delivery_state": "delivered",
+        "structured_payload": {"schema_version": "2.1", "delivery_status": "partial"},
+    })
+
+    assert status == {
+        "execution": "partial",
+        "answer": "partial",
+        "validation": "not_run",
+        "delivery": "delivered",
+        "human_review": "not_reviewed",
+    }
+
+
+def test_quality_migration_status_maps_validation_and_human_review_separately():
+    checks = {
+        "scope": "passed", "time": "not_applicable", "metrics": "passed",
+        "evidence": "passed", "analysis": "passed", "presentation": "passed",
+        "rendered_content": "passed",
+    }
+    payload = {
+        "schema_version": "2.1",
+        "delivery_status": "complete",
+        "validation_summary": {"version": "migration-v1", "checks": checks},
+    }
+
+    assert quality.migration_status({
+        "state": "succeeded", "delivery_state": "delivered", "structured_payload": payload,
+    }, feedback={"label": "correct"})["validation"] == "passed"
+    assert quality.migration_status({
+        "state": "succeeded", "delivery_state": "delivered", "structured_payload": payload,
+    }, feedback={"label": "correct"})["human_review"] == "accepted"
+
+
+def test_quality_detail_treats_malformed_validation_summary_as_not_run(queued):
+    _, _, task_id = queued
+    task_id = store.claim_next("quality-malformed-summary-worker")
+    store.finish(
+        task_id,
+        "quality-malformed-summary-worker",
+        "partial",
+        "部分完成",
+        structured_payload={
+            "schema_version": "2.1",
+            "delivery_status": "partial",
+            "validation_summary": {"version": "migration-v1", "checks": None},
+        },
+    )
+
+    detail = quality.get_run_detail(task_id)
+
+    assert detail["quality_dimensions"]["validation"] == "not_run"

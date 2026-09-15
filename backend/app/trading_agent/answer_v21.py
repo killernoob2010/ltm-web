@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from .answer_contracts import AnswerDraft21, EvidenceItem, Limitation, ValidatedAnswer21
+from .answer_contracts import AnswerDraft21, EvidenceItem, Limitation, ModelAnswer21, ValidatedAnswer21
 
 
 @dataclass(frozen=True)
@@ -167,9 +167,11 @@ def _validate_spans(draft: AnswerDraft21) -> None:
         visit(span.id)
 
 
-def parse_answer21(raw: AnswerDraft21 | str | dict[str, Any]) -> AnswerDraft21:
+def parse_answer21(raw: AnswerDraft21 | ModelAnswer21 | str | dict[str, Any]) -> AnswerDraft21:
     if isinstance(raw, AnswerDraft21):
         return raw
+    if isinstance(raw, ModelAnswer21):
+        return raw.compile()
     if isinstance(raw, str):
         raw = _json_object(raw)
     elif not isinstance(raw, dict):
@@ -185,7 +187,6 @@ def parse_answer21(raw: AnswerDraft21 | str | dict[str, Any]) -> AnswerDraft21:
         if len(encoded) > 64 * 1024:
             raise _issue("answer_too_large", "/", "答案超过长度限制。")
     try:
-        from .answer_contracts import ModelAnswer21
         draft = ModelAnswer21.model_validate(raw).compile() if "blocks" in raw else AnswerDraft21.model_validate(raw)
     except ValidationError as exc:
         raise _validation_error(exc) from None

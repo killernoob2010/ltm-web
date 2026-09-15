@@ -10,6 +10,7 @@ from scripts.run_agent_v2_evals import (
     run_offline_behavior,
     summarize_definitions,
     validate_case_definition,
+    validate_live_receipt,
 )
 
 
@@ -280,3 +281,39 @@ def test_migration_definition_never_claims_business_pass():
     assert output["mode"] == "migration-definition"
     assert output["summary"]["definition_pass"] is True
     assert output["business_pass"] is False
+
+
+def test_live_receipt_import_requires_deployment_task_final_and_tool_evidence():
+    errors = validate_live_receipt({"mode": "live", "status": "passed"})
+
+    assert "missing:deployment_sha" in errors
+    assert "missing:task_id" in errors
+    assert "missing:final_answer_ref" in errors
+    assert "missing:tool_events" in errors
+
+
+def test_live_receipt_import_accepts_a_bounded_receipt_without_persisting_it():
+    receipt = {
+        "case_id": "C-LIVE-1",
+        "mode": "live",
+        "deployment_sha": "abc123",
+        "task_id": 17,
+        "conversation_id": 9,
+        "runtime": "pydantic",
+        "model_config_id": "deepseek-v4-flash-disabled-thinking",
+        "snapshot_refs": ["r1"],
+        "tool_events": [{"tool_name": "query_positions", "status": "complete", "result_ref": "r1"}],
+        "final_answer_ref": "answer-1",
+        "validation_summary": {"version": "migration-v1", "checks": {
+            "scope": "passed", "time": "passed", "metrics": "passed", "evidence": "passed",
+            "analysis": "passed", "presentation": "passed", "rendered_content": "passed",
+        }},
+        "usage": {"model_calls": 2, "tool_calls": 1, "search_calls": 0},
+        "human_review": None,
+        "started_at": "2026-09-15T10:00:00+08:00",
+        "finished_at": "2026-09-15T10:00:02+08:00",
+        "final_answer": {"delivery_status": "partial", "body_markdown": "已保留核验结果。"},
+        "evidence": [{"result_ref": "r1", "source": "internal"}],
+    }
+
+    assert validate_live_receipt(receipt) == []

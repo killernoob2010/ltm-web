@@ -170,6 +170,120 @@ def validate_migration_manifest(cases):
     return errors
 
 
+def validate_live_receipt(receipt):
+    """Validate an externally supplied live receipt without contacting services."""
+    if not isinstance(receipt, dict):
+        return ["invalid_receipt"]
+    errors = []
+    required = {
+        "case_id": _nonempty_string,
+        "deployment_sha": _nonempty_string,
+        "task_id": lambda value: isinstance(value, int) and not isinstance(value, bool) and value > 0,
+        "conversation_id": lambda value: isinstance(value, int) and not isinstance(value, bool) and value > 0,
+        "runtime": lambda value: value in {"legacy", "pydantic"},
+        "model_config_id": _nonempty_string,
+        "snapshot_refs": lambda value: isinstance(value, list),
+        "tool_events": lambda value: isinstance(value, list) and bool(value),
+        "final_answer_ref": _nonempty_string,
+        "validation_summary": lambda value: isinstance(value, dict),
+        "usage": lambda value: isinstance(value, dict),
+        "human_review": lambda value: value is None or isinstance(value, dict),
+        "started_at": _nonempty_string,
+        "finished_at": _nonempty_string,
+    }
+    for field, check in required.items():
+        if field not in receipt:
+            errors.append(f"missing:{field}")
+        elif not check(receipt[field]):
+            errors.append(f"invalid:{field}")
+    for field in ("started_at", "finished_at"):
+        value = receipt.get(field)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                errors.append(f"invalid:{field}")
+            else:
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    errors.append(f"invalid:{field}.timezone")
+    summary = receipt.get("validation_summary")
+    if isinstance(summary, dict):
+        checks = summary.get("checks")
+        if summary.get("version") != "migration-v1" or not isinstance(checks, dict):
+            errors.append("invalid:validation_summary")
+        elif set(checks) != {
+            "scope", "time", "metrics", "evidence", "analysis", "presentation", "rendered_content",
+        }:
+            errors.append("invalid:validation_summary.checks")
+    usage = receipt.get("usage")
+    if isinstance(usage, dict):
+        for field in ("model_calls", "tool_calls", "search_calls"):
+            if field in usage and (not isinstance(usage[field], int) or usage[field] < 0):
+                errors.append(f"invalid:usage.{field}")
+    trace = receipt.get("tool_events")
+    if isinstance(trace, list):
+        for index, item in enumerate(trace[:40]):
+            if not isinstance(item, dict) or not _nonempty_string(item.get("tool_name")):
+                errors.append(f"invalid:tool_events[{index}]")
+                continue
+            if item.get("status") not in {"complete", "partial", "temporarily_unavailable", "failed"}:
+                errors.append(f"invalid:tool_events[{index}].status")
+    answer = receipt.get("final_answer")
+    if answer is not None and not isinstance(answer, dict):
+        errors.append("invalid:final_answer")
+    if isinstance(answer, dict):
+        if answer.get("delivery_status") not in {"complete", "partial", "failed"}:
+            errors.append("invalid:final_answer.delivery_status")
+        if not _nonempty_string(answer.get("body_markdown")):
+            errors.append("missing:final_answer.body_markdown")
+    evidence = receipt.get("evidence")
+    if evidence is not None and not isinstance(evidence, list):
+        errors.append("invalid:evidence")
+    if isinstance(evidence, list):
+        for index, item in enumerate(evidence[:40]):
+            if not isinstance(item, dict) or not _nonempty_string(item.get("result_ref")):
+                errors.append(f"invalid:evidence[{index}]")
+    return list(dict.fromkeys(errors))
+
+
+def live_import_output(receipts_path):
+    """Import only a bounded receipt file; this path never persists or calls a model."""
+    path = Path(receipts_path)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {
+            "mode": "live-import", "summary": {"count": 0, "valid": 0, "invalid": 1},
+            "cases": [{"id": "receipt-file", "status": "invalid", "errors": ["invalid_receipt_file"]}],
+            "business_pass": False, "real_model_evaluated": False, "release_readiness": "not_evaluated",
+        }
+    receipts = raw.get("receipts") if isinstance(raw, dict) else raw
+    if isinstance(raw, dict) and "receipts" not in raw:
+        receipts = [raw]
+    if not isinstance(receipts, list) or not receipts:
+        receipts = []
+    cases = []
+    for index, receipt in enumerate(receipts):
+        errors = validate_live_receipt(receipt)
+        case_id = str(receipt.get("case_id") or receipt.get("task_id") or f"receipt-{index + 1}") if isinstance(receipt, dict) else f"receipt-{index + 1}"
+        cases.append({
+            "id": case_id[:120],
+            "status": "unverifiable" if not errors else "invalid",
+            "errors": errors,
+            "task_id": receipt.get("task_id") if isinstance(receipt, dict) else None,
+            "deployment_sha": str(receipt.get("deployment_sha") or "")[:80] if isinstance(receipt, dict) else "",
+        })
+    valid = sum(item["status"] == "unverifiable" for item in cases)
+    return {
+        "mode": "live-import",
+        "summary": {"count": len(cases), "valid": valid, "invalid": len(cases) - valid},
+        "cases": cases,
+        "business_pass": False,
+        "real_model_evaluated": bool(cases) and valid == len(cases),
+        "release_readiness": "not_evaluated",
+    }
+
+
 def migration_definition_output(path=MIGRATION_CASES_PATH):
     cases = load_migration_cases(path)
     results = [
@@ -349,7 +463,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["definition", "deterministic", "migration-definition", "offline-behavior", "live"],
+        choices=["definition", "deterministic", "migration-definition", "offline-behavior", "live", "live-import"],
         default="definition",
     )
     parser.add_argument("--suite", choices=["regression", "holdout"], default="regression")
@@ -357,17 +471,25 @@ def main():
     parser.add_argument("--persist", action="store_true", help="将本次定义/离线执行记录写入 Evaluation 附表")
     parser.add_argument("--environment", default="local")
     parser.add_argument("--idempotency-key")
+    parser.add_argument("--receipts", type=Path, help="受控 live receipt JSON 文件；只读导入，不落库")
     args = parser.parse_args()
     if args.mode == "live":
         parser.error("live mode requires the approved Staging model/tool runner; no external runner is enabled")
     if args.mode == "migration-definition" and args.persist:
         parser.error("migration-definition is read-only and cannot persist evaluation data")
+    if args.mode == "live-import" and args.persist:
+        parser.error("live-import is read-only and cannot persist evaluation data")
+    if args.mode == "live-import" and not args.receipts:
+        parser.error("live-import requires --receipts")
     if args.mode == "migration-definition":
         output = migration_definition_output()
         success = output["summary"]["definition_pass"]
     elif args.mode in {"definition", "deterministic"}:
         output = _definition_output(args.suite)
         success = output["summary"]["definitions_pass"]
+    elif args.mode == "live-import":
+        output = live_import_output(args.receipts)
+        success = output["business_pass"]
     else:
         output = run_offline_behavior()
         success = output["offline_behavior_pass"]

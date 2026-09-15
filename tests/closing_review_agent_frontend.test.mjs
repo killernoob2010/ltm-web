@@ -105,8 +105,10 @@ test("Agent keeps the newly created conversation at the leftmost position", () =
 });
 
 test("Agent quality detail exposes bounded plan versions and coverage gaps", () => {
-  assert.match(indexHtml, /agent_quality\.js\?v=agent-quality-planning-20260914/);
+  assert.match(indexHtml, /agent_quality\.js\?v=agent-quality-migration-20260915/);
   assert.match(agentQualityJs, /agent_context/);
   assert.match(agentQualityJs, /catalog_version/);
   assert.match(agentQualityJs, /missing_codes/);
+  assert.match(agentQualityJs, /quality_dimensions/);
+  assert.match(agentQualityJs, /五维质量状态/);
 });

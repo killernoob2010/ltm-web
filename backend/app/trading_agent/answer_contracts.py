@@ -92,6 +92,25 @@ class Limitation(StrictModel):
     affected_view_ids: list[str] = Field(default_factory=list)
 
 
+VALIDATION_CHECKS = (
+    "scope", "time", "metrics", "evidence", "analysis", "presentation", "rendered_content",
+)
+
+
+class ValidationSummary(StrictModel):
+    """Server-owned delivery checks for the migration quality page."""
+
+    version: Literal["migration-v1"] = "migration-v1"
+    checks: dict[str, Literal["passed", "failed", "not_applicable"]]
+    unresolved_codes: list[str] = Field(default_factory=list, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_check_set(self):
+        if set(self.checks) != set(VALIDATION_CHECKS):
+            raise ValueError("validation summary must contain the seven delivery checks")
+        return self
+
+
 class ValidatedAnswer21(StrictModel):
     schema_version: Literal["2.1"] = "2.1"
     delivery_status: Literal["complete", "partial", "failed"]
@@ -103,3 +122,4 @@ class ValidatedAnswer21(StrictModel):
     request: ResolvedRequest | None = None
     coverage: AnswerCoverage | None = None
     presentation_mode: Literal["auto", "text", "table", "chart"] = "auto"
+    validation_summary: ValidationSummary | None = None

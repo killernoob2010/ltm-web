@@ -10,7 +10,7 @@ import time
 from typing import Any, Literal
 
 from . import answer, prompts, progress, tools, execution, research_policy, request_scope, request_contract
-from . import capability_catalog, planner, coverage as task_coverage, conversation_state
+from . import capability_catalog, planner, coverage as task_coverage, conversation_state, delivery_gate
 from .answer_contracts import ValidatedAnswer21, Limitation
 from .answer_v21 import Answer21Issue, apply_policy_limits, policy_answer21
 from .contracts import AnswerDraft
@@ -49,6 +49,8 @@ class RuntimeDeps:
     # Keep the legacy harness path deterministic for existing callers; the
     # production worker opts into the bounded planner explicitly.
     planning_enabled: bool = False
+    # The SDK model is opt-in; the legacy model remains the default runtime.
+    sdk_model: Any | None = None
 
 
 @dataclass
@@ -559,6 +561,18 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                         ),
                     ],
                 })
+            if isinstance(checked, ValidatedAnswer21):
+                checked = delivery_gate.validate_delivery(
+                    task_plan,
+                    checked,
+                    requirement_envelopes,
+                    principal=principal,
+                    store_api=deps.store,
+                    presentation_preference=presentation_preference,
+                    prohibited_presentations=prohibited_presentations,
+                )
+                if checked.coverage is not None:
+                    task_context["coverage"] = checked.coverage.model_dump(mode="json")
         issues = [item for item in checked.limitations if item.code in {
             'request_scope_unverified', 'query_incomplete', 'reference_unavailable',
             'uncovered_claim', 'unreferenced_number', 'missing_reference', 'invalid_reference',

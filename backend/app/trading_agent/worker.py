@@ -6,7 +6,7 @@ from typing import Any
 
 import uvicorn
 
-from . import harness, mcp_client, mcp_server, model, resources, store, execution
+from . import harness, mcp_client, mcp_server, model, resources, store, execution, runtime_dispatch, pydantic_runtime
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ async def worker_once(deps: harness.RuntimeDeps, *, heartbeat_seconds=execution.
             if not await asyncio.to_thread(deps.store.heartbeat, task_id, deps.worker_id):
                 return
 
-    run = asyncio.create_task(harness.run_task(task_id, deps))
+    run = asyncio.create_task(runtime_dispatch.run_task(task_id, deps))
     renewal = asyncio.create_task(renew())
     try:
         done, _ = await asyncio.wait(
@@ -32,8 +32,11 @@ async def worker_once(deps: harness.RuntimeDeps, *, heartbeat_seconds=execution.
         )
         if run in done:
             result = await run
-            from . import wecom
-            await wecom.deliver_task(task_id)
+            if result is not None:
+                from . import wecom
+                await wecom.deliver_task(task_id)
+            else:
+                await asyncio.to_thread(deps.store.fail_owned, task_id, deps.worker_id, "worker_error")
             return result
         reason = "lease_lost" if renewal in done else "execution_timeout"
         run.cancel()
@@ -100,14 +103,36 @@ async def worker_main():
             wecom_client = wecom.build_client()
             await wecom_client.connect()
         async with mcp_client.MCPToolClient() as mcp:
+            sdk_model = None
+            sdk_http_client = None
+            config = runtime_dispatch.runtime_config()
+            if config["backend"] == "pydantic" and config["pilot_user_ids"] and not config["disabled"]:
+                import httpx2
+
+                sdk_http_client = httpx2.AsyncClient(
+                    timeout=httpx2.Timeout(15.0),
+                    follow_redirects=False,
+                    trust_env=False,
+                )
+                sdk_model = pydantic_runtime.create_sdk_model(
+                    api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+                    base_url=os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
+                    model_name=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                    http_client=sdk_http_client,
+                )
             deps = harness.RuntimeDeps(
                 store=store,
                 model=model.DeepSeekModel(),
                 mcp=mcp,
                 worker_id=os.environ.get("AGENT_V2_WORKER_ID", "agent-v2"),
                 planning_enabled=True,
+                sdk_model=sdk_model,
             )
-            await worker_loop(deps, resource_guard=resources.default_resource_guard())
+            try:
+                await worker_loop(deps, resource_guard=resources.default_resource_guard())
+            finally:
+                if sdk_http_client is not None:
+                    await sdk_http_client.aclose()
     finally:
         if wecom_client is not None:
             wecom_client.disconnect()

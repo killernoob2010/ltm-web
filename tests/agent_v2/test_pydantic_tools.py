@@ -29,6 +29,20 @@ class FakeMCP:
         return self.envelope
 
 
+class TransientMCP(FakeMCP):
+    def __init__(self, envelope, *, failures=1):
+        super().__init__(envelope)
+        self.failures = failures
+
+    async def call_tool(self, name, arguments, grant):
+        self.calls.append((name, arguments, grant))
+        if self.failures:
+            self.failures -= 1
+            from app.trading_agent.mcp_client import MCPToolError
+            raise MCPToolError("upstream_timeout")
+        return self.envelope
+
+
 class FakeStore:
     def __init__(self):
         self.events = []
@@ -129,6 +143,61 @@ async def test_search_consumes_tool_and_search_budget_together(monkeypatch):
     await invoke_registered_tool("search_public", {"public_query": "公开天气"}, ctx=ctx)
 
     assert ctx.budget.counters == {"model": 0, "tool": 1, "search": 1}
+
+
+@pytest.mark.asyncio
+async def test_transient_tool_failure_has_one_budgeted_retry(monkeypatch):
+    envelope = ToolEnvelope(
+        status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
+        calculation_version="test", payload={"kind": "positions", "canonical_value": "2"},
+    )
+    ctx = _context(envelope, limits=RuntimeLimits(max_tools=2))
+    ctx.mcp = TransientMCP(envelope, failures=1)
+    monkeypatch.setattr("app.trading_agent.pydantic_tools._live_tool_allowed", lambda *_a, **_k: True)
+
+    summary = await invoke_registered_tool(
+        "query_positions", {"asset_type": "future", "valuation_mode": "quantity_only"}, ctx=ctx
+    )
+
+    assert summary["status"] == "complete"
+    assert len(ctx.mcp.calls) == 2
+    assert ctx.budget.counters["tool"] == 2
+    assert len(ctx.envelopes) == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_tool_failure_does_not_retry_more_than_once(monkeypatch):
+    envelope = ToolEnvelope(
+        status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
+        calculation_version="test", payload={"kind": "positions"},
+    )
+    ctx = _context(envelope, limits=RuntimeLimits(max_tools=4))
+    ctx.mcp = TransientMCP(envelope, failures=3)
+    monkeypatch.setattr("app.trading_agent.pydantic_tools._live_tool_allowed", lambda *_a, **_k: True)
+
+    summary = await invoke_registered_tool(
+        "query_positions", {"asset_type": "future", "valuation_mode": "quantity_only"}, ctx=ctx
+    )
+
+    assert summary == {"status": "temporarily_unavailable", "error_code": "upstream_timeout"}
+    assert len(ctx.mcp.calls) == 2
+    assert ctx.budget.counters["tool"] == 2
+
+
+@pytest.mark.asyncio
+async def test_permission_denial_cancels_task_context(monkeypatch):
+    envelope = ToolEnvelope(
+        status="complete", result_ref=uuid4(), captured_at=datetime.now(timezone.utc),
+        calculation_version="test", payload={"kind": "positions"},
+    )
+    ctx = _context(envelope, allowed=())
+    monkeypatch.setattr("app.trading_agent.pydantic_tools._live_tool_allowed", lambda *_a, **_k: False)
+
+    with pytest.raises(ToolInvocationDenied) as error:
+        await invoke_registered_tool("query_positions", {}, ctx=ctx)
+
+    assert error.value.code == "tool_not_authorized"
+    assert ctx.budget.cancelled
 
 
 def test_model_schemas_are_per_tool_and_never_expose_generic_executor(monkeypatch):
