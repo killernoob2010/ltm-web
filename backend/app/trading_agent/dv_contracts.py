@@ -54,6 +54,15 @@ class DatasetCompare(StrictModel):
     group_by: list[str] = Field(default_factory=list, max_length=6)
     current_date: date | None = None
     previous_date: date | None = None
+    ranking_measure: Literal["value", "delta", "pct_change", "abs_delta"] | None = None
+    descending: bool = False
+    top_k: int | None = Field(default=None, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def ranking_options(self):
+        if self.ranking_measure is None and (self.top_k is not None or self.descending):
+            raise ValueError("ranking_measure_required")
+        return self
 
 
 class DatasetSummary(StrictModel):

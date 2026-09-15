@@ -38,10 +38,10 @@
 
 ## 2026-09-15 批次 B 当前接续状态（以本节为准）
 
-- 当前候选：本工作区为 detached HEAD，本地提交 `7d7abb3c2c026749c5665bf3508526e5bcd41c6b`；批次 B 已完成本地实现并保持工作区干净，未推送、未合并、未部署、未启用 Worker。
+- 当前候选：本工作区为 detached HEAD；原 B 提交 `98003fa` 后追加本次四项审查修复，精确修复版本以本工作区 `git log -1` 为准；未推送、未合并、未部署、未启用 Worker。
 - B 已完成：L2 `AnalysisSpec` 与 planner 业务约束、全量不可变比较结果排名、精确 requirement/target/dataset/filter/period/metric/result_ref 覆盖、真实交付正文的权限历史复用；L3 任务级 typed 工具上下文、原 MCP/实时授权重核、原子 RuntimeBudget、模型出口字段投影与敏感值/异常/日志/目的地检查、计划与研究策略审计门禁。
-- 新鲜证据：`env -u DATABASE_URL ... pytest -q tests/agent_v2` 为 478 passed、4 个既有依赖弃用警告；`git diff --check` 与 Python 编译检查通过。全仓为 1329 passed、2 failed、17 warnings、14 subtests；失败均在未改动的 `tests/test_order_finance.py`（到期日随当前日期状态变化、外部工作簿缺少“订单”页签）。
+- 最新修复证据：Agent 全量 489 passed、4 个依赖弃用警告；本次复审回归 11 项通过，覆盖逐目标引用、敏感值和错误码、MCP 排名参数、全量排名及实际摘要字段保留；编译和差异检查通过。全仓 1329 passed、2 failed 为修复前历史结果，本次未重跑全仓。
 - 边界：本批使用本地临时 SQLite/合成测试，没有真实模型、搜索、正式业务数据或部署；测试通过不等于真实管理员业务验收、Production 资源容量验收或完整数据泄露审计。B 停在权限/安全/语义门禁，未实现 C 的 SDK 主循环、Worker 路由与正式验收。
-- 默认下一步：先由主 Agent 审查 B 提交与安全边界，再决定是否执行 C；如进入正式验收，必须重新核对当前 SHA、正式管理员身份、真实新问题、实际答案/证据和费用。不得把本地通过包装成迁移完成。
+- 复审结论：上一轮四项发现已修复；本次定向复审未发现这四项的剩余阻断。下一步可进入 C 接线；创建上下文须显式提供 `sensitive_values`，任务 grant 自动加入检查。模型主循环、公开正文策略及真实管理员验收仍在后续阶段。
 - 关键文件：`backend/app/trading_agent/planning_contracts.py`、`planner.py`、`dv_analysis.py`、`coverage.py`、`pydantic_tools.py`、`runtime_budget.py`、`egress_policy.py`、`store.py` 及 `tests/agent_v2/test_migration_semantics.py` 等四个新增测试文件。
 - 禁止：本阶段不得自动推送/合并/部署或读取凭据；不得修改正式配置、正式数据库、交易事实或执行任何真实交易/资金操作。

@@ -158,7 +158,9 @@ def build_mcp_server() -> MCPServer:
 
     def compare_dataset(result_ref: str, method: Literal["previous_week", "previous_observation", "explicit_periods", "all_previous_weeks"],
                         measure: str, group_by: list[str] | None = None,
-                        current_date: str | None = None, previous_date: str | None = None) -> tools.ToolResponse:
+                        current_date: str | None = None, previous_date: str | None = None,
+                        ranking_measure: Literal["value", "delta", "pct_change", "abs_delta"] | None = None,
+                        descending: bool = False, top_k: int | None = None) -> tools.ToolResponse:
         return _response("compare_dataset", {
             **locals(), "group_by": group_by or [], "current_date": current_date, "previous_date": previous_date,
         })

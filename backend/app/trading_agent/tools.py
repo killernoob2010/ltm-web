@@ -453,7 +453,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "describe_dataset": {"model": DatasetDescribeArgs, "description": "返回一个已登记现货或期现数据集的字段、筛选维度和覆盖语义。"},
     "query_dataset": {"model": DatasetQuery, "description": "按已登记字段和筛选读取现货、到港、库存或期现只读事实；不接受 SQL、代码或任意连接条件。"},
     "summarize_dataset": {"model": DatasetSummary, "description": "基于不可变数据集快照执行已登记的确定性汇总。"},
-    "compare_dataset": {"model": DatasetCompare, "description": "基于不可变数据集快照按已登记周期计算变化量和适用变化率。"},
+    "compare_dataset": {"model": DatasetCompare, "description": "基于不可变数据集快照按已登记周期计算变化量和适用变化率。指定 ranking_measure=value/delta/pct_change/abs_delta 时对全量可比较结果排名，descending 控制方向，top_k 仅在明确要求前 N 项时设置；缺失或异常行不参与排名，须说明 ranking.excluded_rows。未指定排名时保持原结果顺序。"},
     "relate_datasets": {"model": DatasetRelation, "description": "按已登记关系匹配两个授权数据集并返回可比或未匹配观察。"},
     "get_optimal_warrant": {"model": OptimalWarrantArgs, "description": "读取当前年度全局固定范围内的系统最优仓单候选；不接受任意港口或品种筛选，也不构成交易承诺。"},
     "summarize_positions": {"model": SummaryArgs, "description": "基于完整持仓快照按白名单属性汇总；可按 account、contract、product、exchange、asset_type、direction、contract_month、option_type、strike_price 分组。除 quantity/floating_pnl 外，期权净额使用 net_quantity 或 net_sell_quantity（卖出减买入，负数表示净买，零表示净平），需要单位换算时使用 net_tons/net_wan_tons；每个分组可用 /payload/groups/{index}/metrics/{metric} 引用，query_positions 的月份/Call/Put 受控汇总可用 /payload/semantic_groups/{index}/metrics/{metric} 引用。分页和 preview 不改变全量汇总。"},

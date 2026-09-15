@@ -344,6 +344,18 @@ def compare_dataset(principal, args: DatasetCompare) -> ToolEnvelope:
         "unit": spec.unit,
     }
     status = "complete" if output and all(row["comparison_status"] == "complete" for row in output) else "partial" if output else "waiting_for_data"
+    if args.ranking_measure is not None:
+        ranked = rank_comparison_rows(output, measure=args.ranking_measure, descending=args.descending)
+        payload["ranking"] = {
+            "measure": args.ranking_measure, "descending": args.descending,
+            "top_k": args.top_k, "total_rows": len(output),
+            "participating_rows": len(ranked), "excluded_rows": len(output) - len(ranked),
+            "returned_rows": min(len(ranked), args.top_k) if args.top_k is not None else len(ranked),
+        }
+        payload["selection"] = dict(_metadata(saved).get("selection") or {})
+        output = ranked[:args.top_k] if args.top_k is not None else ranked
+        if payload["ranking"]["excluded_rows"]:
+            status = "partial"
     return _save_derived(principal, _result_envelope(status, payload, output), output,
                          kind="dataset_comparison", input_refs=[str(args.result_ref)], resources=_resources(saved))
 

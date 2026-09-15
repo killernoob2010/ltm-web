@@ -43,6 +43,7 @@ def _context(envelope, *, allowed=("query_positions",), limits=None):
         principal=SimpleNamespace(user_id=7),
         plan=SimpleNamespace(),
         grant="task-grant",
+        sensitive_values=("INTERNAL-CUSTOMER-CANARY",),
         mcp=FakeMCP(envelope),
         store=FakeStore(),
         budget=RuntimeBudget(limits or RuntimeLimits(), clock=lambda: 10.0, started_at=10.0),

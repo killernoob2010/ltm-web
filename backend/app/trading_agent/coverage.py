@@ -455,6 +455,8 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
             public_evidence = [item for target in public_targets for item in target_candidates.get(str(target.id), [])]
             if requirement.needs_full_text and not _has_full_text(public_evidence):
                 missing.append("full_text_required")
+            candidates = list({id(item): item for values in target_candidates.values() for item in values}.values())
+            result_refs = list(dict.fromkeys(ref for ref in (_result_ref(item) for item in candidates) if ref))
             if any(_status(item) not in {"complete"} for item in candidates):
                 missing.append("source_partial")
             status = "answered" if not missing else "partial"
@@ -463,6 +465,9 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
         scope["targets"] = {
                 str(target.id): {
                 **_target_scope(target, target_candidates.get(str(target.id), [])),
+                "result_refs": list(dict.fromkeys(
+                    ref for ref in (_result_ref(item) for item in target_candidates.get(str(target.id), [])) if ref
+                )),
                 "filter_status": _scope_status(
                     target,
                     target_scope_candidates.get(str(target.id), []),
@@ -521,6 +526,13 @@ def assess_delivery(plan: TaskPlan, coverage: CoverageReport, validated_answer: 
             if not answer_refs.intersection(current.result_refs):
                 blocks.append("answer_reference_missing")
                 status = "partial"
+        target_scopes = current.actual_scope.get("targets", {})
+        for target in requirement.targets:
+            target_scope = target_scopes.get(str(target.id), {})
+            if "result_refs" in target_scope and target.domain in {"positions", "dataset", "public"}:
+                if not answer_refs.intersection(target_scope["result_refs"]):
+                    blocks.append(f"target.{target.id}.answer_reference_missing")
+                    status = "partial"
         if current.status == "answered" and answer_status != "complete":
             blocks.append("answer_delivery_partial")
             status = "partial"

@@ -8,7 +8,7 @@ from typing import Any
 
 from . import tools
 from .contracts import Principal, ToolEnvelope
-from .egress_policy import redact_exception, sanitize_model_payload
+from .egress_policy import EgressDenied, redact_exception, sanitize_model_payload
 from .planning_contracts import TaskPlan
 from .runtime_budget import BudgetExceeded, RuntimeBudget
 
@@ -32,6 +32,7 @@ class AgentRunContext:
     mcp: Any
     store: Any
     budget: RuntimeBudget
+    sensitive_values: tuple[str, ...]
     envelopes: list[ToolEnvelope] = field(default_factory=list)
     allowed_tool_names: frozenset[str] | None = None
     research_allowed: bool = False
@@ -45,6 +46,23 @@ _MODEL_PAYLOAD_PATHS = {
     "previous_date", "current_value", "previous_value", "delta", "delta_pct", "value",
     "comparison_status", "relation_status", "row_ref", "status",
     "metrics.*.value", "metrics.*.unit", "metrics.*.status",
+}
+
+_DATASET_SUMMARY_PATHS = {
+    "dataset", "row_count", "preview_count", "preview_truncated", "value_fields.*",
+    *{f"periods.{key}" for key in ("current", "previous", "start", "end", "method")},
+    *{f"coverage.{key}" for key in (
+        "current_rows", "previous_rows", "matched_rows", "missing_previous", "unmatched_rows",
+        "first_observation", "last_observation",
+    )},
+    "coverage.observed_years.*", "coverage.requested_years.*", "coverage.missing_years.*",
+    *{f"ranking.{key}" for key in ("measure", "descending", "top_k", "total_rows", "participating_rows", "excluded_rows", "returned_rows")},
+    *{f"preview.*.{key}" for key in (
+        "port", "product", "category", "grade", "observation_date", "business_date",
+        "business_year", "period_start", "period_end", "current_date", "previous_date",
+        "current_value", "previous_value", "delta", "delta_pct", "value", "unit",
+        "comparison_status", "status", "row_ref", "covered_rows", "eligible_rows",
+    )},
 }
 
 
@@ -68,11 +86,17 @@ def _error_summary(status: str, code: str) -> dict[str, Any]:
     return {"status": status, "error_code": str(code)[:64]}
 
 
-def _model_summary(envelope: ToolEnvelope) -> dict[str, Any]:
+def _model_summary(envelope: ToolEnvelope, *, sensitive_values: tuple[str, ...]) -> dict[str, Any]:
     payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+    # Scan every part of the envelope, including metadata outside payload.
+    sanitize_model_payload(envelope.model_dump(mode="json"), allowed_paths=(), sensitive_values=sensitive_values)
+    allowed_paths = set(_MODEL_PAYLOAD_PATHS)
+    if payload.get("kind") in {"dataset_rows", "dataset_summary", "dataset_comparison"}:
+        allowed_paths.update(_DATASET_SUMMARY_PATHS)
     safe_payload = sanitize_model_payload(
         payload,
-        allowed_paths=_MODEL_PAYLOAD_PATHS,
+        allowed_paths=allowed_paths,
+        sensitive_values=sensitive_values,
     )
     summary: dict[str, Any] = {
         "status": envelope.status,
@@ -91,6 +115,7 @@ def _model_summary(envelope: ToolEnvelope) -> dict[str, Any]:
         summary["metrics"] = sanitize_model_payload(
             metric_payload,
             allowed_paths={"*.value", "*.unit", "*.status"},
+            sensitive_values=sensitive_values,
         )
     if envelope.missing:
         summary["missing_codes"] = [
@@ -164,13 +189,26 @@ async def invoke_registered_tool(name: str, arguments: dict[str, Any], *, ctx: A
         return _error_summary("temporarily_unavailable", "tool_timeout")
     except Exception as exc:
         error = redact_exception(exc)["code"]
+        try:
+            sanitize_model_payload({"code": error}, allowed_paths={"code"},
+                                   sensitive_values=(*ctx.sensitive_values, ctx.grant))
+        except EgressDenied:
+            ctx.budget.cancel()
+            error = "private_content"
         if not _audit_tool(ctx, name, None, error):
             return _audit_failed(ctx)
         return _error_summary("temporarily_unavailable", error)
+    try:
+        summary = _model_summary(envelope, sensitive_values=(*ctx.sensitive_values, ctx.grant))
+    except EgressDenied as exc:
+        ctx.budget.cancel()
+        if not _audit_tool(ctx, name, None, exc.code):
+            return _audit_failed(ctx)
+        return _error_summary("temporarily_unavailable", exc.code)
     if not _audit_tool(ctx, name, envelope):
         return _audit_failed(ctx)
     ctx.envelopes.append(envelope)
-    return _model_summary(envelope)
+    return summary
 
 
 def model_tool_schemas(ctx: AgentRunContext) -> list[dict[str, Any]]:
