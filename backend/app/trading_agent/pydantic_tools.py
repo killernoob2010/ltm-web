@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,6 +79,65 @@ _DATASET_SUMMARY_PATHS = {
 }
 
 
+_PUBLIC_SOURCE_FIELDS = {
+    "source_ref", "title", "url", "description", "published_at",
+    "published_label", "fetch_status",
+}
+_PUBLIC_SEARCH_PATHS = {
+    "provider", "search_status", "provider_status", "source_count",
+    "candidate_count", "registered_source_count",
+    *{f"sources.*.{key}" for key in _PUBLIC_SOURCE_FIELDS},
+}
+_PUBLIC_READ_PATHS = _PUBLIC_SOURCE_FIELDS | {"text", "untrusted_content", "truncated"}
+_POSITION_FIELDS = {
+    "contract_symbol", "product", "exchange", "asset_type", "direction",
+    "contract_month", "option_type", "strike_price", "fact_status", "assignment_status",
+    "row_ref", "quantity", "average_price", "floating_pnl", "valuation_price",
+    "valuation_status", "market_time", "contract_multiplier", "underlying_symbol",
+    "underlying_price", "expiry_date", "gross_quantity", "gross_buy_quantity",
+    "gross_sell_quantity", "net_quantity", "net_sell_quantity", "net_tons",
+    "net_signed_tons", "net_wan_tons", "strike_min", "strike_max",
+    "count", "covered_rows", "eligible_rows", "iv", "delta", "gamma", "theta", "vega", "rho",
+}
+_METRIC_FIELDS = {"value", "unit", "status", "covered_rows", "eligible_rows"}
+_POSITION_PATHS = {
+    "count", "preview_count", "preview_truncated", "page", "page_size",
+    "group_count", "groups_truncated", "semantic_group_count", "semantic_groups_truncated",
+    "aggregation", "source_ref", "valuation_basis", "data_status",
+    "as_of.mode", "as_of.date", "required_metrics.*", "group_by.*",
+    *{f"preview.*.{key}" for key in _POSITION_FIELDS},
+    *{f"{group}.*.dimensions.{key}" for group in ("groups", "semantic_groups")
+      for key in _POSITION_FIELDS},
+    *{f"{group}.*.metrics.{metric}.{field}" for group in ("groups", "semantic_groups")
+      for metric in _POSITION_FIELDS for field in _METRIC_FIELDS},
+    "groups.*.row_refs.*", "semantic_groups.*.row_refs.*",
+}
+
+
+def _position_model_payload(payload: dict[str, Any], *, restore=False) -> dict[str, Any]:
+    # The generic egress policy forbids commercial contract material. Rename
+    # only the exchange instrument code at known trading-row boundaries while
+    # filtering, then restore its registered name for evidence/view consumers.
+    # Never relax the global prohibition or mutate the stored evidence.
+    result = deepcopy(payload)
+    rows = list(result.get("preview") or [])
+    for key in ("groups", "semantic_groups"):
+        rows.extend(group.get("dimensions", {}) for group in (result.get(key) or [])
+                    if isinstance(group, dict))
+    source, destination = ("contract_symbol", "contract") if restore else ("contract", "contract_symbol")
+    seen = set()
+    for row in rows:
+        if isinstance(row, dict) and id(row) not in seen:
+            seen.add(id(row))
+            row.pop(destination, None)
+            if source in row:
+                row[destination] = row.pop(source)
+    if isinstance(result.get("group_by"), list):
+        result["group_by"] = [destination if key == source else key
+                              for key in result["group_by"] if key != "account"]
+    return result
+
+
 def _candidate_tools(ctx: AgentRunContext) -> set[str]:
     if ctx.allowed_tool_names is not None:
         return set(ctx.allowed_tool_names)
@@ -105,11 +165,20 @@ def _model_summary(envelope: ToolEnvelope, *, sensitive_values: tuple[str, ...])
     allowed_paths = set(_MODEL_PAYLOAD_PATHS)
     if payload.get("kind") in {"dataset_rows", "dataset_summary", "dataset_comparison"}:
         allowed_paths.update(_DATASET_SUMMARY_PATHS)
+    elif payload.get("kind") == "research":
+        allowed_paths.update(_PUBLIC_SEARCH_PATHS)
+    elif payload.get("kind") == "public_read":
+        allowed_paths.update(_PUBLIC_READ_PATHS)
+    elif payload.get("kind") == "positions":
+        allowed_paths.update(_POSITION_PATHS)
+        payload = _position_model_payload(payload)
     safe_payload = sanitize_model_payload(
         payload,
         allowed_paths=allowed_paths,
         sensitive_values=sensitive_values,
     )
+    if payload.get("kind") == "positions":
+        safe_payload = _position_model_payload(safe_payload, restore=True)
     summary: dict[str, Any] = {
         "status": envelope.status,
         "result_ref": str(envelope.result_ref) if envelope.result_ref else None,
@@ -126,7 +195,7 @@ def _model_summary(envelope: ToolEnvelope, *, sensitive_values: tuple[str, ...])
         }
         summary["metrics"] = sanitize_model_payload(
             metric_payload,
-            allowed_paths={"*.value", "*.unit", "*.status"},
+            allowed_paths={f"*.{field}" for field in _METRIC_FIELDS},
             sensitive_values=sensitive_values,
         )
     if envelope.missing:
