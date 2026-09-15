@@ -59,9 +59,12 @@
 - 关键文件：`backend/app/trading_agent/runtime_dispatch.py`、`pydantic_runtime.py`、`pydantic_tools.py`、`delivery_gate.py`、`quality.py`、`worker.py`、`frontend/agent_quality.js`、`scripts/run_agent_v2_evals.py`。
 - 禁止：读取或输出凭据；修改正式配置、正式数据库、交易事实；执行真实交易/资金操作；把本地 SDK 合同测试或历史记录包装成真实模型业务验收。
 
-## 2026-09-15 批次 C 验收返修（当前接续入口）
+## 2026-09-15 批次 C 六项返修完成（当前接续入口）
 
-- 审查候选 `abdf200`，文档基线 `254f971`；C 暂不通过，待修六项：临时故障脱敏、兜底核验误报、整阶段超时、SDK 工具串行、旧路径逐项覆盖、修正诊断反馈。
-- 前四项已合成复现，后两项已确认代码调用链。最近重跑后端 506、前端 17 仍通过，说明已有回归未覆盖这些缺陷，不能以此放行。
-- 用户决定：工作量较大时由主 Agent 写说明书，用户随后自行安排 Luna Max 执行。本轮仅准备说明书，未启动 Luna 或修改业务代码。
-- 执行入口：`docs/superpowers/plans/2026-09-15-batch-c-six-fixes-luna-max.md`。限定单个 Luna、本地六项修复、合成测试与本地提交；不自动发布或真实调用，完成后交主 Agent 复验。
+- 六项本地修复已完成并提交：`b4b06d5`（分支 `codex/agent-batch-c-six-fixes-20260915-447c`），基于候选文档提交 `bfbc44b`；未推送、未合并、未部署、未启用 Worker。
+- R1 临时故障/异常出口先脱敏再控制，未知异常码固定化且不自动重试，隐私/权限拒绝停止；R2 未执行交付核验的失败兜底为 `validation not_run`；R3 区分单次请求 15 秒与共享 SDK 阶段剩余时间，并按成功/异常/取消记录模型请求；R4 SDK 工具实际串行且取消/权限拒绝阻止后续调用；R5 保留最终逐项 `CoverageReport`；R6 唯一修正回合收到具体且受限的服务端缺口诊断。
+- 新鲜本地证据：`tests/agent_v2` 516 passed、4 个既有第三方弃用警告；相关前端 17 passed；`pip check`、Python 编译、JavaScript 语法和 `git diff --check` 均通过。新增测试包含 SDK 同轮调用峰值为 1、权限失败后无第二次工具调用、未知错误码不重试和公开服务未配置不取消内部任务。
+- 业务证据边界：以上是本地临时 SQLite/合成和受控 SDK 链路验证，不证明真实模型最终答案、当前实时持仓、正式实例容量、管理员页面业务验收、公开联网或企微投递；没有真实 live receipt。
+- 默认下一步：在选择性发布前，按本次实际提交进行正式环境资源/配置复核，并由正式管理员完成只读业务问答验收；不得因本地测试通过自动切换正式默认或开启真实服务。
+- 关键文件：`backend/app/trading_agent/pydantic_runtime.py`、`pydantic_tools.py`、`runtime_budget.py`、`harness.py`、`tests/agent_v2/test_batch_c_acceptance.py`。
+- 禁止：读取或输出凭据；修改正式配置、正式数据库、交易事实；执行真实交易/资金操作；把本地 SDK 合同测试或历史记录包装成真实模型业务验收。
