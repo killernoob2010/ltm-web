@@ -18,10 +18,33 @@ from .contracts import AnswerCoverage
 _ACK_ONLY = {"行", "收到", "好的", "好", "可以", "明白", "了解", "ok", "好的收到"}
 _RANK_CONCLUSION = re.compile(r"(?:排名|排序|第一|前\s*[一二三1-9]|最大|最小|最高|最低|领先|占比最高|降幅最大|增幅最大)")
 _COMPARE_CONCLUSION = re.compile(r"(?:同比|环比|较上期|较前期|变化|增加|减少|上升|下降|差异|对比)")
+_SUMMARY_LIMITATION_CODES = frozenset({
+    "answer_reference_missing", "result_missing", "result_ref_missing",
+    "full_text_required", "source_partial", "scope_mismatch", "metric_missing",
+    "internal_source_required", "public_source_required", "answer_delivery_partial",
+    "coverage_missing", "requirement_incomplete", "delivery_quality_check_failed",
+    "ack_only_answer", "presentation_mismatch", "request_coverage_incomplete",
+    "requirement_coverage_incomplete", "uncovered_claim", "unreferenced_number",
+    "missing_reference", "invalid_reference", "reference_unavailable",
+    "dependent_content_unavailable", "view_data_unavailable", "query_incomplete",
+    "public_source_unavailable",
+})
 
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _summary_limitation_code(value: Any) -> str | None:
+    code = _text(value)
+    if code in _SUMMARY_LIMITATION_CODES:
+        return code
+    for suffix in ("answer_reference_missing", "result_missing", "result_ref_missing", "scope_mismatch"):
+        if code.endswith("." + suffix):
+            return suffix
+    if code.startswith("metric."):
+        return "metric_missing"
+    return None
 
 
 def _is_ack_only(value: str) -> bool:
@@ -208,6 +231,11 @@ def validate_delivery(
         for item in (getattr(report, "items", []) or [])
         for code in [*(getattr(item, "missing_codes", []) or []), *(getattr(item, "delivery_blocks", []) or [])]
     ]
+    unresolved.extend(
+        code
+        for limitation in (getattr(validated, "limitations", []) or [])
+        if (code := _summary_limitation_code(getattr(limitation, "code", None)))
+    )
     if any(value == "failed" for value in checks.values()):
         unresolved.append("delivery_quality_check_failed")
     if body and _is_ack_only(body):

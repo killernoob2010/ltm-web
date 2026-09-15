@@ -37,6 +37,7 @@ def _evidence_store():
         status="complete",
         result_ref=ref,
         captured_at=datetime.now(timezone.utc),
+        data_as_of=datetime.now(timezone.utc),
         calculation_version="test-v1",
         payload={"kind": "positions", "selection": {"filters": {}}},
         metrics={"quantity": MetricValue(value="3", unit="手", status="complete", covered_rows=1, eligible_rows=1)},

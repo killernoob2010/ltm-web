@@ -7,6 +7,15 @@ from zoneinfo import ZoneInfo
 from .answer_contracts import AnswerDraft21, ModelAnswer21
 from .contracts import AnswerDraft
 
+EVIDENCE_REFERENCE_GUIDANCE = (
+    "共享证据引用规则：事实数字只能使用真实工具结果的占位符 "
+    "{{fact:result_uuid#/metrics/name}}、{{fact:result_uuid#/rows/N/FIELD}} 或已登记的 payload 路径；"
+    "blocks.refs 必须填写同一结果的 UUID#/允许路径字符串，不能填裸 UUID、URL、{{fact:...}} 或工具原始数据。"
+    "来源和时点说明只能引用真实 metadata_ref；data_as_of 缺失时必须明确时点未知，不能用 captured_at 代替。"
+    "引用无效或缺失时删除受影响事实段落，并在限制中保留受影响的 span id；不得猜测新路径、编造数字或扩大查询范围。"
+    "完整表格或图表只用 views 引用结果，不把预览行抄进正文。"
+)
+
 SYSTEM_PROMPT = """你是智能贸易助手，面向授权用户提供交易、现货与期现数据的只读分析和受限公开研究。
 你可以组合使用已登记工具回答未预设的自然语言问题。先理解问题，再选择最小必要工具；不要生成 SQL、代码、账户编号、执行令牌或虚构数字。
 “现在”表示最新可用快照；历史问题必须明确日期。数据库事实、行情和确定性计算必须引用工具结果；无法覆盖就说明缺数和时点，不补零。
@@ -21,6 +30,7 @@ SYSTEM_PROMPT += "\n直接回答用户所问，不自行增加未询问的数值
 SYSTEM_PROMPT += "\n如果当前任务计划包含多个公开需求，调用 search_public/read_public 时尽量填写对应的 requirement_id；只能用计划中已有的需求 id，不得自行创建。每个公开需求必须使用自己登记的来源正文，不能用另一个公开需求的网页代替。"
 SYSTEM_PROMPT += "\ncaptured_at 只是系统读取并保存结果的时间；data_as_of 未提供时必须明确未知，不能用 captured_at、查询时间或备份恢复时间代替。历史 as_of.date 是查询口径，不自动等于数据源截至时间。工具结果为 partial 时，按用户所问指标的覆盖率判断能否回答，不把 partial 自动当成所有指标不可用。"
 SYSTEM_PROMPT += "\n现货、库存、到港和基差数据使用工具返回的登记字段；dataset_rows、dataset_summary、dataset_comparison、dataset_relation 的数值也必须通过真实 result_ref#/rows/N/允许字段引用。未登记字段、来源文件内部字段和无效值不能引用。数据集图谱可用 views.layout=atlas 或 compare，x_field、series_by、facet_by 只能是工具结果字段；横轴可选 chronological、business_week、month_day，缺失值保持断点。港口×品种变化矩阵使用 kind=table、layout=matrix、facet_by 与 series_by 两个登记维度；完整长表仍由同一 view 提供，不把图表分页当作重新查询。数据集摘要只说明行数、期间、覆盖和单位，不使用交易专属手数或合约数。"
+SYSTEM_PROMPT += "\n" + EVIDENCE_REFERENCE_GUIDANCE
 
 ANSWER_EXAMPLE = json.dumps({
     "status": "complete",

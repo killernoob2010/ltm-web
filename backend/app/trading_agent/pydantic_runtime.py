@@ -2,8 +2,11 @@
 import asyncio
 import inspect
 import json
+import re
 import ssl
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from httpx2 import AsyncHTTPTransport, MockTransport, Timeout
 from httpcore2 import AsyncConnectionPool
@@ -13,7 +16,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RunUsage
 
-from . import capability_catalog, conversation_state, delivery_gate, planner, research_policy
+from . import capability_catalog, conversation_state, delivery_gate, planner, prompts, research_policy
 from . import coverage as task_coverage
 from . import tools as registered_tools
 from . import pydantic_tools
@@ -308,6 +311,8 @@ _REPAIR_SAFE_CODES = frozenset({
     "delivery_quality_check_failed", "ack_only_answer", "presentation_mismatch",
     "request_coverage_incomplete", "requirement_coverage_incomplete",
     "uncovered_claim", "unreferenced_number", "missing_reference", "invalid_reference",
+    "dependent_content_unavailable", "view_data_unavailable", "query_incomplete",
+    "public_source_unavailable", "reference_unavailable",
 })
 
 
@@ -325,6 +330,23 @@ def _safe_repair_code(value: Any) -> str | None:
     return None
 
 
+def _execution_system_prompt() -> str:
+    return (
+        "你是受控业务回答器。只能根据已批准计划和工具返回的证据回答；"
+        "不得编造数字、来源、权限或身份信息。必须输出 ModelAnswer21；"
+        "事实片段要绑定精确 result_ref 引用，不能把工具原始数据复制进答案。\n"
+        + prompts.EVIDENCE_REFERENCE_GUIDANCE
+    )
+
+
+def _repair_system_prompt() -> str:
+    return (
+        "你是受控答案修正器。只能修正已有答案的格式、证据绑定和完整性；"
+        "不得调用工具、请求新数据或编造事实。必须输出 ModelAnswer21。\n"
+        + prompts.EVIDENCE_REFERENCE_GUIDANCE
+    )
+
+
 def _repair_feedback(plan: Any, validated: ValidatedAnswer21, envelopes: list[ToolEnvelope]) -> dict[str, Any]:
     report = task_coverage.assess_evidence(plan, envelopes)
     report = task_coverage.assess_delivery(plan, report, validated)
@@ -336,6 +358,19 @@ def _repair_feedback(plan: Any, validated: ValidatedAnswer21, envelopes: list[To
         unresolved.extend(
             code for code in (_safe_repair_code(item) for item in summary.unresolved_codes) if code
         )
+    span_issues: list[dict[str, Any]] = []
+    for limitation in (getattr(validated, "limitations", []) or []):
+        code = _safe_repair_code(getattr(limitation, "code", None))
+        if not code:
+            continue
+        unresolved.append(code)
+        span_ids = [
+            str(span_id)[:8]
+            for span_id in (getattr(limitation, "affected_span_ids", []) or [])
+            if re.fullmatch(r"s(?:[1-9]|[1-7][0-9]|80)", str(span_id))
+        ]
+        if span_ids:
+            span_issues.append({"code": code, "span_ids": list(dict.fromkeys(span_ids))[:8]})
     requirements = []
     for item in report.items:
         missing = list(dict.fromkeys(
@@ -360,6 +395,7 @@ def _repair_feedback(plan: Any, validated: ValidatedAnswer21, envelopes: list[To
     return {
         "failed_checks": failed_checks[:7],
         "unresolved_codes": list(dict.fromkeys(unresolved))[:40],
+        "span_issues": span_issues[:16],
         "requirements": requirements[:8],
         "presentation": str(getattr(plan, "presentation", "auto"))[:20],
         "prohibited_presentations": [
@@ -459,8 +495,10 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
         user_text = await asyncio.to_thread(deps.store.task_text, task_id, principal.user_id)
         history = await asyncio.to_thread(deps.store.task_history, task_id, principal.user_id)
         previous_state = conversation_state.extract_conversation_state(history)
+        business_date = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
         plan_prompt = json.dumps({
             "question": str(user_text or "")[:2000],
+            "business_date": business_date,
             "conversation_state": previous_state,
             "history": history[-8:],
             "capability_catalog": catalog,
@@ -509,11 +547,7 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
         execution_agent = Agent(
             deps.sdk_model,
             output_type=ModelAnswer21,
-            system_prompt=(
-                "你是受控业务回答器。只能根据已批准计划和工具返回的证据回答；"
-                "不得编造数字、来源、权限或身份信息。必须输出 ModelAnswer21；"
-                "事实片段要绑定精确 result_ref 引用，不能把工具原始数据复制进答案。"
-            ),
+            system_prompt=_execution_system_prompt(),
             deps_type=pydantic_tools.AgentRunContext,
             tools=sdk_tools,
             retries=0,
@@ -542,10 +576,7 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
                 repair_agent = Agent(
                     deps.sdk_model,
                     output_type=ModelAnswer21,
-                    system_prompt=(
-                        "你是受控答案修正器。只能修正已有答案的格式、证据绑定和完整性；"
-                        "不得调用工具、请求新数据或编造事实。必须输出 ModelAnswer21。"
-                    ),
+                    system_prompt=_repair_system_prompt(),
                     retries=0,
                 )
                 repaired_result = await _run_agent(

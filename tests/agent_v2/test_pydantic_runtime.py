@@ -48,15 +48,23 @@ class TwoBusinessToolMCP:
             )
         if name == "query_positions":
             envelope = ToolEnvelope(
-                status="complete", captured_at=now, calculation_version="positions-v1",
-                payload={"kind": "positions", "selection": {"filters": {}}},
+                status="complete", captured_at=now, data_as_of=now, calculation_version="positions-v1",
+                payload={
+                    "kind": "positions",
+                    "selection": {"filters": {}},
+                    "as_of": {"mode": "latest", "date": None},
+                },
                 metrics={"quantity": MetricValue(value="3", unit="手", status="complete", covered_rows=1, eligible_rows=1)},
             )
             self.last_ref = store.save_result(principal, envelope, [{"quantity": "3"}], kind="positions")
         elif name == "summarize_positions":
             envelope = ToolEnvelope(
-                status="complete", captured_at=now, calculation_version="positions-summary-v1",
-                payload={"kind": "positions", "selection": {"filters": {}}},
+                status="complete", captured_at=now, data_as_of=now, calculation_version="positions-summary-v1",
+                payload={
+                    "kind": "positions",
+                    "selection": {"filters": {}},
+                    "as_of": {"mode": "latest", "date": None},
+                },
                 metrics={"quantity": MetricValue(value="3", unit="手", status="complete", covered_rows=1, eligible_rows=1)},
             )
             self.last_ref = store.save_result(
@@ -125,6 +133,14 @@ class ScriptedSDK:
                 self.repair_tool_names = {
                     item.name for item in [*info.function_tools, *info.output_tools]
                 }
+                feedback = "\n".join(str(item) for item in messages)
+                if "missing_reference" not in feedback or "span_issues" not in feedback:
+                    args = {
+                        "schema_version": "2.1",
+                        "blocks": [{"id": "s1", "kind": "fact", "text": "行。", "refs": [], "depends_on": []}],
+                        "views": [],
+                    }
+                    return ModelResponse(parts=[ToolCallPart(tool_name=info.output_tools[0].name, args=args)])
             ref = str(self.mcp.last_ref)
             args = {
                 "schema_version": "2.1",
@@ -215,5 +231,8 @@ async def test_pydantic_repair_prompt_contains_safe_specific_delivery_feedback(q
     assert "failed_checks" in repair_message
     assert "delivery_quality_check_failed" in repair_message
     assert "positions" in repair_message
+    assert "span_issues" in repair_message
+    assert "missing_reference" in repair_message
+    assert "s1" in repair_message
     assert "raw payload" not in repair_message.lower()
     assert "task-grant" not in repair_message
