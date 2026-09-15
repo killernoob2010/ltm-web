@@ -91,12 +91,14 @@ def _plan_args():
 class ScriptedSDK:
     def __init__(self, mcp, *, repair_first=False):
         self.calls = 0
+        self.messages = []
         self.mcp = mcp
         self.repair_first = repair_first
         self.repair_tool_names = None
 
     def __call__(self, messages, info):
         self.calls += 1
+        self.messages.append(messages)
         if self.calls == 1:
             args = _plan_args()
         elif self.calls == 2:
@@ -113,10 +115,9 @@ class ScriptedSDK:
             }
             return ModelResponse(parts=[ToolCallPart(tool_name="summarize_positions", args=args)])
         elif self.calls == 4 and self.repair_first:
-            ref = str(self.mcp.last_ref)
             args = {
                 "schema_version": "2.1",
-                "blocks": [{"id": "s1", "kind": "fact", "text": "行。", "refs": [f"{ref}#/metrics/quantity"], "depends_on": []}],
+                "blocks": [{"id": "s1", "kind": "fact", "text": "行。", "refs": [], "depends_on": []}],
                 "views": [],
             }
         else:
@@ -192,3 +193,27 @@ async def test_pydantic_repair_does_not_expose_business_tools_again(queued):
     assert scripted.repair_tool_names is not None
     assert scripted.repair_tool_names.isdisjoint({"query_positions", "summarize_positions"})
     assert mcp.calls == ["describe_capabilities", "query_positions", "summarize_positions"]
+
+
+@pytest.mark.asyncio
+async def test_pydantic_repair_prompt_contains_safe_specific_delivery_feedback(queued):
+    task_id = store.claim_next("pydantic-repair-feedback-worker")
+    mcp = TwoBusinessToolMCP()
+    scripted = ScriptedSDK(mcp, repair_first=True)
+    deps = RuntimeDeps(
+        store=store,
+        model=ExplodingLegacyModel(),
+        mcp=mcp,
+        worker_id="pydantic-repair-feedback-worker",
+        sdk_model=FunctionModel(function=scripted),
+        planning_enabled=True,
+    )
+
+    await pydantic_runtime.run_task(task_id, deps)
+
+    repair_message = "\n".join(str(item) for item in scripted.messages[-1])
+    assert "failed_checks" in repair_message
+    assert "delivery_quality_check_failed" in repair_message
+    assert "positions" in repair_message
+    assert "raw payload" not in repair_message.lower()
+    assert "task-grant" not in repair_message

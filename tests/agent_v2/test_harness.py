@@ -332,6 +332,13 @@ async def test_enabled_planner_reclassifies_weather_shipping_as_mixed_research(q
     assert policy["status"] == "research_allowed"
     assert policy["error_code"] == "mixed_research"
     assert "search_public" in catalog["tool_name"]
+    with db.connect() as conn:
+        message = conn.execute(
+            "SELECT structured_payload FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+            (task,),
+        ).fetchone()
+    payload = json.loads(message["structured_payload"])
+    assert payload["agent_context"]["coverage"]["items"]
     assert any(
         "task_plan" in item.get("content", "") and "public" in item.get("content", "")
         for item in model.calls[1]

@@ -21,14 +21,15 @@ class ToolInvocationDenied(PermissionError):
         super().__init__(message or code)
 
 
-_TRANSIENT_ERROR_MARKERS = (
-    "timeout", "temporar", "unavailable", "connection", "connect", "reset",
-    "rate_limit", "ratelimit", "overload", "service_unavailable",
-)
 _PERMISSION_ERROR_MARKERS = (
     "unauthor", "forbidden", "permission", "invalid_grant", "grant_expired",
     "grant_revoked", "authentication",
 )
+_TRANSIENT_RETRY_CODES = frozenset({
+    "temporarily_unavailable", "service_unavailable", "upstream_timeout",
+    "tool_timeout", "connection_error", "connection_reset", "rate_limit",
+    "rate_limited", "ratelimit", "overload", "public_source_unavailable",
+})
 
 
 @dataclass
@@ -174,8 +175,11 @@ def _error_code(exc: BaseException) -> str:
 def _is_transient_error(exc: BaseException, code: str) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return True
-    text = f"{code} {type(exc).__name__}".casefold()
-    return any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
+    if code.casefold() in _TRANSIENT_RETRY_CODES:
+        return True
+    return type(exc).__name__.casefold() in {
+        "connecttimeout", "readtimeout", "connectionerror", "connectionreseterror",
+    }
 
 
 def _is_permission_error(exc: BaseException, code: str) -> bool:
@@ -185,6 +189,17 @@ def _is_permission_error(exc: BaseException, code: str) -> bool:
     return any(marker in text for marker in _PERMISSION_ERROR_MARKERS)
 
 
+def _safe_exception_code(exc: BaseException, raw_code: str) -> str:
+    normalized = raw_code.casefold()
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "tool_timeout"
+    if normalized in _TRANSIENT_RETRY_CODES:
+        return normalized
+    if _is_permission_error(exc, raw_code):
+        return "tool_not_authorized"
+    return "temporarily_unavailable"
+
+
 def _transient_envelope_code(envelope: ToolEnvelope) -> str | None:
     if envelope.status != "temporarily_unavailable":
         return None
@@ -192,8 +207,54 @@ def _transient_envelope_code(envelope: ToolEnvelope) -> str | None:
     for key in ("error_code", "code"):
         value = payload.get(key)
         if isinstance(value, str) and value:
-            return value[:64]
+            return value[:64] if value.casefold() in _TRANSIENT_RETRY_CODES else "temporarily_unavailable"
     return "temporarily_unavailable"
+
+
+def _transient_envelope_retryable(envelope: ToolEnvelope) -> bool:
+    payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+    if str(payload.get("kind") or "").casefold() in {"public_query_rejected", "public_research_blocked"}:
+        return False
+    for key in ("error_code", "code"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value.casefold() in _TRANSIENT_RETRY_CODES
+    return True
+
+
+def _transient_envelope_requires_stop(envelope: ToolEnvelope) -> bool:
+    payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+    if str(payload.get("kind") or "").casefold() == "public_query_rejected":
+        return True
+    for key in ("error_code", "code"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        normalized = value.casefold()
+        if any(marker in normalized for marker in _PERMISSION_ERROR_MARKERS):
+            return True
+        if any(marker in normalized for marker in ("private", "privacy", "query_rejected")):
+            return True
+    return False
+
+
+def _sanitize_envelope_before_control(
+    ctx: AgentRunContext, name: str, envelope: ToolEnvelope,
+) -> dict[str, Any] | None:
+    """Reject sensitive envelopes before any retry, audit or model projection."""
+    try:
+        sanitize_model_payload(
+            envelope.model_dump(mode="json"),
+            allowed_paths=(),
+            sensitive_values=(*ctx.sensitive_values, ctx.grant),
+        )
+    except EgressDenied as exc:
+        safe_code = exc.code if exc.code in {"private_content", "payload_depth_exceeded"} else "private_content"
+        ctx.budget.cancel()
+        if not _audit_tool(ctx, name, None, safe_code):
+            return _audit_failed(ctx)
+        return _error_summary("temporarily_unavailable", safe_code)
+    return None
 
 
 def _reserve_transient_retry(ctx: AgentRunContext, name: str) -> str | None:
@@ -235,6 +296,10 @@ async def invoke_registered_tool(name: str, arguments: dict[str, Any], *, ctx: A
     if not isinstance(ctx.grant, str) or not ctx.grant:
         _deny(ctx, "missing_grant")
     while True:
+        if ctx.budget.cancelled:
+            raise asyncio.CancelledError
+        if not _live_tool_allowed(ctx, name):
+            _deny(ctx, "tool_not_authorized")
         try:
             call = ctx.mcp.call_tool(name, serialized, ctx.grant)
             envelope = await asyncio.wait_for(
@@ -255,19 +320,23 @@ async def invoke_registered_tool(name: str, arguments: dict[str, Any], *, ctx: A
                 retry_error if retry_error != "retry_exhausted" else error,
             )
         except Exception as exc:
-            error = _error_code(exc)
+            raw_error = _error_code(exc)
+            transient = _is_transient_error(exc, raw_error)
+            permission = _is_permission_error(exc, raw_error)
             try:
-                sanitize_model_payload({"code": error}, allowed_paths={"code"},
+                sanitize_model_payload({"code": raw_error}, allowed_paths={"code"},
                                        sensitive_values=(*ctx.sensitive_values, ctx.grant))
             except EgressDenied:
                 ctx.budget.cancel()
                 error = "private_content"
+            else:
+                error = _safe_exception_code(exc, raw_error)
             if not _audit_tool(ctx, name, None, error):
                 return _audit_failed(ctx)
-            if _is_permission_error(exc, error):
+            if permission:
                 ctx.budget.cancel()
                 raise ToolInvocationDenied("tool_not_authorized") from exc
-            if _is_transient_error(exc, error):
+            if transient:
                 retry_error = _reserve_transient_retry(ctx, name)
                 if retry_error is None:
                     continue
@@ -276,9 +345,20 @@ async def invoke_registered_tool(name: str, arguments: dict[str, Any], *, ctx: A
                     retry_error if retry_error != "retry_exhausted" else error,
                 )
             return _error_summary("temporarily_unavailable", error)
+        envelope_error = _sanitize_envelope_before_control(ctx, name, envelope)
+        if envelope_error is not None:
+            return envelope_error
         transient_code = _transient_envelope_code(envelope)
         if transient_code is not None:
-            if not _audit_tool(ctx, name, envelope, transient_code):
+            if not _transient_envelope_retryable(envelope):
+                payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+                stop_code = "public_query_rejected" if payload.get("kind") == "public_query_rejected" else "temporarily_unavailable"
+                if _transient_envelope_requires_stop(envelope):
+                    ctx.budget.cancel()
+                if not _audit_tool(ctx, name, None, stop_code):
+                    return _audit_failed(ctx)
+                return _error_summary("temporarily_unavailable", stop_code)
+            if not _audit_tool(ctx, name, None, transient_code):
                 return _audit_failed(ctx)
             retry_error = _reserve_transient_retry(ctx, name)
             if retry_error is None:

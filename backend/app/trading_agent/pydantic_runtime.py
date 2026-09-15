@@ -11,12 +11,13 @@ from openai import AsyncOpenAI
 from pydantic_ai import Agent, RunContext, Tool, UsageLimits
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import RunUsage
 
 from . import capability_catalog, conversation_state, delivery_gate, planner, research_policy
 from . import coverage as task_coverage
 from . import tools as registered_tools
 from . import pydantic_tools
-from .answer_contracts import Limitation, ModelAnswer21, ValidatedAnswer21, ValidationSummary, VALIDATION_CHECKS
+from .answer_contracts import Limitation, ModelAnswer21, ValidatedAnswer21, VALIDATION_CHECKS
 from .answer_v21 import build_fallback21
 from .contracts import ToolEnvelope
 from .runtime_budget import BudgetExceeded, RuntimeBudget
@@ -88,6 +89,15 @@ def _usage_requests(result: Any) -> int:
         return 1
 
 
+def _record_agent_requests(budget: RuntimeBudget, result: Any, usage: RunUsage) -> None:
+    observed = max(_usage_requests(result), int(getattr(usage, "requests", 0) or 0), 1)
+    for _ in range(max(0, observed - 1)):
+        try:
+            budget.reserve("model")
+        except BudgetExceeded:
+            budget.record("model")
+
+
 async def _run_agent(agent: Agent, prompt: str, *, deps, budget: RuntimeBudget,
                      agent_deps=None, message_history=None):
     """Run one SDK stage while charging its actual request count to the budget."""
@@ -95,23 +105,28 @@ async def _run_agent(agent: Agent, prompt: str, *, deps, budget: RuntimeBudget,
     if available <= 0:
         raise BudgetExceeded("budget_exhausted", "model budget exceeded")
     budget.reserve("model")
-    timeout = min(float(deps.limits.model_timeout_seconds), budget.remaining_seconds())
-    if timeout <= 0:
+    stage_timeout = budget.remaining_seconds()
+    if stage_timeout <= 0:
         raise BudgetExceeded("deadline_exceeded", "task deadline exceeded")
-    result = await asyncio.wait_for(
-        agent.run(
-            prompt,
-            message_history=message_history,
-            deps=agent_deps,
-            usage_limits=UsageLimits(
-                request_limit=available,
-                tool_calls_limit=max(0, budget.max_tools - budget.tool_calls),
+    usage = RunUsage()
+    try:
+        result = await asyncio.wait_for(
+            agent.run(
+                prompt,
+                message_history=message_history,
+                deps=agent_deps,
+                usage_limits=UsageLimits(
+                    request_limit=available,
+                    tool_calls_limit=max(0, budget.max_tools - budget.tool_calls),
+                ),
+                usage=usage,
             ),
-        ),
-        timeout=timeout,
-    )
-    for _ in range(max(0, _usage_requests(result) - 1)):
-        budget.reserve("model")
+            timeout=stage_timeout,
+        )
+    except BaseException:
+        _record_agent_requests(budget, None, usage)
+        raise
+    _record_agent_requests(budget, result, usage)
     return result
 
 
@@ -212,7 +227,12 @@ def _build_sdk_tool(name: str, context: pydantic_tools.AgentRunContext) -> Tool:
     annotations["return"] = dict[str, Any]
 
     async def invoke(run_ctx, **kwargs):
-        return await pydantic_tools.invoke_registered_tool(name, kwargs, ctx=run_ctx.deps)
+        if run_ctx.deps.budget.cancelled:
+            raise asyncio.CancelledError
+        result = await pydantic_tools.invoke_registered_tool(name, kwargs, ctx=run_ctx.deps)
+        if run_ctx.deps.budget.cancelled:
+            raise asyncio.CancelledError
+        return result
 
     invoke.__name__ = name
     invoke.__annotations__ = annotations
@@ -224,6 +244,7 @@ def _build_sdk_tool(name: str, context: pydantic_tools.AgentRunContext) -> Tool:
         description=str(spec["description"]),
         max_retries=0,
         timeout=context.tool_timeout_seconds,
+        sequential=True,
     )
 
 
@@ -276,13 +297,85 @@ def _failure_answer(principal: Any, deps, refs: list[str], code: str, preference
             limitations=[Limitation(code=code, message="本次处理未完成，未核验内容未交付。")],
             presentation_mode=preference,
         )
-    checks = {name: "not_applicable" for name in VALIDATION_CHECKS}
-    checks["rendered_content"] = "passed" if result.body_markdown.strip() else "failed"
-    if refs:
-        checks["evidence"] = "passed"
-    return result.model_copy(update={
-        "validation_summary": ValidationSummary(checks=checks, unresolved_codes=[code]),
-    })
+    return result.model_copy(update={"validation_summary": None})
+
+
+_REPAIR_SAFE_CODES = frozenset({
+    "answer_reference_missing", "result_missing", "result_ref_missing",
+    "full_text_required", "source_partial", "scope_mismatch", "metric_missing",
+    "internal_source_required", "public_source_required", "answer_delivery_partial",
+    "coverage_missing", "requirement_incomplete",
+    "delivery_quality_check_failed", "ack_only_answer", "presentation_mismatch",
+    "request_coverage_incomplete", "requirement_coverage_incomplete",
+    "uncovered_claim", "unreferenced_number", "missing_reference", "invalid_reference",
+})
+
+
+def _safe_repair_code(value: Any) -> str | None:
+    code = str(value or "").strip()
+    if code in VALIDATION_CHECKS or code in _REPAIR_SAFE_CODES:
+        return code
+    for suffix in (
+        "answer_reference_missing", "result_missing", "result_ref_missing", "scope_mismatch",
+    ):
+        if code.endswith("." + suffix):
+            return suffix
+    if code.startswith("metric."):
+        return "metric_missing"
+    return None
+
+
+def _repair_feedback(plan: Any, validated: ValidatedAnswer21, envelopes: list[ToolEnvelope]) -> dict[str, Any]:
+    report = task_coverage.assess_evidence(plan, envelopes)
+    report = task_coverage.assess_delivery(plan, report, validated)
+    summary = getattr(validated, "validation_summary", None)
+    checks = getattr(summary, "checks", {}) if summary is not None else {}
+    failed_checks = [name for name in VALIDATION_CHECKS if checks.get(name) == "failed"]
+    unresolved: list[str] = []
+    if summary is not None:
+        unresolved.extend(
+            code for code in (_safe_repair_code(item) for item in summary.unresolved_codes) if code
+        )
+    requirements = []
+    for item in report.items:
+        missing = list(dict.fromkeys(
+            code for code in (_safe_repair_code(value) for value in item.missing_codes) if code
+        ))[:16]
+        blocks = list(dict.fromkeys(
+            code for code in (_safe_repair_code(value) for value in item.delivery_blocks) if code
+        ))[:16]
+        unresolved.extend([*missing, *blocks])
+        if item.status != "answered" or missing or blocks:
+            requirement = {
+                "requirement_id": str(item.requirement_id)[:40],
+                "status": item.status,
+            }
+            if missing:
+                requirement["missing_codes"] = missing
+            if blocks:
+                requirement["delivery_blocks"] = blocks
+            if not missing and not blocks:
+                requirement["delivery_blocks"] = ["requirement_incomplete"]
+            requirements.append(requirement)
+    return {
+        "failed_checks": failed_checks[:7],
+        "unresolved_codes": list(dict.fromkeys(unresolved))[:40],
+        "requirements": requirements[:8],
+        "presentation": str(getattr(plan, "presentation", "auto"))[:20],
+        "prohibited_presentations": [
+            str(item)[:20]
+            for item in (getattr(plan, "prohibited_presentations", []) or [])[:2]
+        ],
+    }
+
+
+def _repair_prompt(plan: Any, validated: ValidatedAnswer21, envelopes: list[ToolEnvelope]) -> str:
+    feedback = _repair_feedback(plan, validated, envelopes)
+    return (
+        "请只根据以下服务端交付诊断修正已有答案，只返回完整 ModelAnswer21。"
+        "不得调用工具、请求新数据、重新规划或扩大范围；保留已有可用证据引用。\n"
+        + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def _answer_quality(answer: ValidatedAnswer21) -> int:
@@ -444,10 +537,7 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
             prohibited_presentations=plan.prohibited_presentations,
         )
         if validated.delivery_status != "complete" and budget.remaining_models() > 0:
-            repair_prompt = (
-                "请根据服务端最终交付检查修正答案，只返回完整 ModelAnswer21。"
-                "保留可用证据引用，删除未核验数字，并补齐问题要求的确定性结论。"
-            )
+            repair_prompt = _repair_prompt(plan, validated, envelopes)
             try:
                 repair_agent = Agent(
                     deps.sdk_model,

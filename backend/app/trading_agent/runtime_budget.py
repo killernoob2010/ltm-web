@@ -99,5 +99,19 @@ class RuntimeBudget:
             self._counts["tool"] += tool_increment
             self._counts["search"] += search_increment
 
+    def record(self, kind: str, count: int = 1) -> None:
+        """Record already-observed work after admission is no longer possible."""
+        if kind not in self._KINDS:
+            raise BudgetExceeded("budget_exhausted", "invalid budget kind")
+        count = max(0, int(count))
+        with self._lock:
+            if kind == "model":
+                self._counts["model"] += count
+            elif kind == "tool":
+                self._counts["tool"] += count
+            else:
+                self._counts["tool"] += count
+                self._counts["search"] += count
+
 
 __all__ = ["BudgetExceeded", "RuntimeBudget"]

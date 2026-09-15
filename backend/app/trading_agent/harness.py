@@ -571,8 +571,6 @@ async def run_task(task_id: int, deps: RuntimeDeps) -> AnswerDraft:
                     presentation_preference=presentation_preference,
                     prohibited_presentations=prohibited_presentations,
                 )
-                if checked.coverage is not None:
-                    task_context["coverage"] = checked.coverage.model_dump(mode="json")
         issues = [item for item in checked.limitations if item.code in {
             'request_scope_unverified', 'query_incomplete', 'reference_unavailable',
             'uncovered_claim', 'unreferenced_number', 'missing_reference', 'invalid_reference',
