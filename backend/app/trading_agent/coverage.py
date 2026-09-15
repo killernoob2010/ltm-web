@@ -129,6 +129,9 @@ def _metric_names(envelope: Any) -> set[str]:
     if isinstance(metrics, dict):
         names.update(str(name) for name in metrics)
     payload = _payload(envelope)
+    for key in ("measure", "metric"):
+        if payload.get(key):
+            names.add(str(payload[key]))
     value_fields = payload.get("value_fields")
     if isinstance(value_fields, list):
         names.update(str(name) for name in value_fields)
@@ -180,6 +183,13 @@ def _candidate_envelopes(requirement: Any, envelopes: list[Any]) -> list[Any]:
 
 
 def _target_envelopes(target: Any, envelopes: list[Any], requirement: Any | None = None) -> list[Any]:
+    return [
+        item for item in _target_candidates(target, envelopes, requirement)
+        if _scope_matches(target, item, requirement)
+    ]
+
+
+def _target_candidates(target: Any, envelopes: list[Any], requirement: Any | None = None) -> list[Any]:
     allowed_kinds = _target_kinds(str(getattr(target, "domain", "")))
     return [
         item for item in envelopes
@@ -246,7 +256,7 @@ def _selection(envelope: Any) -> dict[str, Any]:
     payload = _payload(envelope)
     selection = payload.get("selection")
     if not isinstance(selection, dict):
-        return {}
+        selection = {}
     flat = {
         key: value for key, value in selection.items()
         if key != "filters" and key != "as_of"
@@ -274,10 +284,98 @@ def _expected_filters(target: Any) -> dict[str, Any]:
     return flat
 
 
+def _expected_scope(target: Any, requirement: Any | None = None) -> dict[str, Any]:
+    expected = _expected_filters(target)
+    window = getattr(requirement, "time_window", None)
+    if window is not None:
+        expected.setdefault("start_date", window.start_date.isoformat())
+        expected.setdefault("end_date", window.end_date.isoformat())
+    return expected
+
+
+def _envelope_scope(envelope: Any) -> dict[str, Any]:
+    payload = _payload(envelope)
+    actual = _selection(envelope)
+    for key in ("dataset", "measure", "metric", "operation", "mode"):
+        if payload.get(key) is not None:
+            actual.setdefault(key, payload[key])
+    if payload.get("measure") is not None:
+        actual.setdefault("metric", payload["measure"])
+    periods = payload.get("periods")
+    if isinstance(periods, dict):
+        aliases = {
+            "current": "current_date", "previous": "previous_date",
+            "start": "start_date", "end": "end_date",
+        }
+        for source, target in aliases.items():
+            if periods.get(source) is not None:
+                actual.setdefault(target, periods[source])
+    coverage = payload.get("coverage")
+    if isinstance(coverage, dict):
+        if coverage.get("first_observation") is not None:
+            actual.setdefault("start_date", coverage["first_observation"])
+        if coverage.get("last_observation") is not None:
+            actual.setdefault("end_date", coverage["last_observation"])
+    preview = payload.get("preview")
+    if isinstance(preview, list):
+        dates = [
+            str(row.get("observation_date") or row.get("business_date") or row.get("period_start"))[:10]
+            for row in preview
+            if isinstance(row, dict)
+            and (row.get("observation_date") or row.get("business_date") or row.get("period_start"))
+        ]
+        if dates:
+            actual.setdefault("start_date", min(dates))
+            actual.setdefault("end_date", max(dates))
+        for key in ("port", "region", "product", "category", "grade"):
+            values = list(dict.fromkeys(
+                str(row[key]) for row in preview
+                if isinstance(row, dict) and row.get(key) not in (None, "")
+            ))
+            if values:
+                actual.setdefault(key, values)
+    return actual
+
+
+def _period_value_matches(expected: Any, actual: Any, *, start: bool) -> bool:
+    if actual in (None, ""):
+        return False
+    expected_date = str(expected)[:10]
+    actual_date = str(actual)[:10]
+    return actual_date <= expected_date if start else actual_date >= expected_date
+
+
+def _scope_matches(target: Any, envelope: Any, requirement: Any | None = None) -> bool:
+    expected = _expected_scope(target, requirement)
+    if not expected:
+        return True
+    actual = _envelope_scope(envelope)
+    for key, value in expected.items():
+        if key == "start_date":
+            if not _period_value_matches(value, actual.get(key), start=True):
+                return False
+            continue
+        if key == "end_date":
+            if not _period_value_matches(value, actual.get(key), start=False):
+                return False
+            continue
+        if not _value_matches(value, actual.get(key)):
+            return False
+    return True
+
+
+def _scope_metadata_available(target: Any, envelope: Any, requirement: Any | None = None) -> bool:
+    expected = _expected_scope(target, requirement)
+    actual = _envelope_scope(envelope)
+    return any(key in actual for key in expected)
+
+
 def _value_matches(expected: Any, actual: Any) -> bool:
     if isinstance(expected, list):
-        if actual in (None, [], "") or actual == "all":
+        if not expected:
             return True
+        if actual in (None, [], "") or actual == "all":
+            return actual == "all"
         if not isinstance(actual, list):
             return False
         return set(str(value) for value in expected).issubset(set(str(value) for value in actual))
@@ -285,18 +383,21 @@ def _value_matches(expected: Any, actual: Any) -> bool:
         return expected in (None, "")
     if actual == "all":
         return True
+    if isinstance(actual, list):
+        return str(expected) in {str(value) for value in actual}
     return str(expected) == str(actual)
 
 
-def _scope_status(target: Any, candidates: list[Any]) -> str:
-    expected = _expected_filters(target)
-    if not expected or str(getattr(target, "domain", "")) == "public":
+def _scope_status(target: Any, candidates: list[Any], requirement: Any | None = None) -> str:
+    expected = _expected_scope(target, requirement)
+    if not expected:
         return "not_requested"
     for envelope in candidates:
-        actual = _selection(envelope)
-        if actual and all(_value_matches(value, actual.get(key)) for key, value in expected.items()):
+        if _scope_matches(target, envelope, requirement):
             return "matched"
-    return "unknown" if not any(_selection(item) for item in candidates) else "mismatch"
+    return "mismatch" if any(
+        _scope_metadata_available(target, item, requirement) for item in candidates
+    ) else "unknown"
 
 
 def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
@@ -306,18 +407,32 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
         candidates = _candidate_envelopes(requirement, list(envelopes or []))
         result_refs = list(dict.fromkeys(ref for ref in (_result_ref(item) for item in candidates) if ref))
         missing: list[str] = []
+        target_candidates: dict[str, list[Any]] = {}
+        target_scope_candidates: dict[str, list[Any]] = {}
 
         if requirement.source_intent in {"knowledge", "discover"}:
             status = "answered"
         else:
-            target_candidates: dict[str, list[Any]] = {}
             for target in requirement.targets:
                 target_id = str(target.id)
+                target_scope_candidates[target_id] = _target_candidates(
+                    target, list(envelopes or []), requirement
+                )
                 target_candidates[target_id] = _target_envelopes(target, list(envelopes or []), requirement)
                 if target.domain in {"positions", "dataset", "public"} and not target_candidates[target_id]:
-                    missing.append(f"target.{target_id}.result_missing")
-                if target_candidates[target_id] and _scope_status(target, target_candidates[target_id]) == "mismatch":
-                    missing.append(f"target.{target_id}.scope_mismatch")
+                    scope_status = _scope_status(
+                        target, target_scope_candidates[target_id], requirement
+                    )
+                    missing.append(
+                        f"target.{target_id}.scope_mismatch"
+                        if scope_status == "mismatch" else
+                        f"target.{target_id}.result_missing"
+                    )
+                target_refs = {
+                    ref for ref in (_result_ref(item) for item in target_candidates[target_id]) if ref
+                }
+                if target_candidates[target_id] and not target_refs:
+                    missing.append(f"target.{target_id}.result_ref_missing")
             internal_targets = [target for target in requirement.targets if target.domain in {"positions", "dataset"}]
             public_targets = [target for target in requirement.targets if target.domain == "public"]
             if requirement.source_intent == "both":
@@ -327,6 +442,8 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
                     missing.append("public_source_required")
             if not candidates:
                 missing.append("result_missing")
+            elif not result_refs:
+                missing.append("result_ref_missing")
             for target in requirement.targets:
                 if target.domain == "public":
                     continue
@@ -345,8 +462,12 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
         scope = _actual_scope(requirement, candidates)
         scope["targets"] = {
                 str(target.id): {
-                **_target_scope(target, _target_envelopes(target, list(envelopes or []), requirement)),
-                "filter_status": _scope_status(target, _target_envelopes(target, list(envelopes or []), requirement)),
+                **_target_scope(target, target_candidates.get(str(target.id), [])),
+                "filter_status": _scope_status(
+                    target,
+                    target_scope_candidates.get(str(target.id), []),
+                    requirement,
+                ),
             }
             for target in requirement.targets
         }
@@ -359,6 +480,17 @@ def assess_evidence(plan: TaskPlan, envelopes: list[Any]) -> CoverageReport:
             time_status="observed" if candidates else "unknown",
         ))
     return CoverageReport(items=items, complete=bool(items) and all(item.status == "answered" for item in items))
+
+
+def validate_coverage_report(plan: TaskPlan, report: CoverageReport) -> CoverageReport:
+    """Require a coverage item for exactly every requirement in the plan."""
+    if not isinstance(report, CoverageReport):
+        report = CoverageReport.model_validate(report)
+    expected = [str(item.id) for item in plan.requirements]
+    actual = [str(item.requirement_id) for item in report.items]
+    if set(actual) != set(expected):
+        raise ValueError("覆盖报告需求 id 必须与任务计划完全一致")
+    return report
 
 
 def _answer_result_refs(validated_answer: Any) -> set[str]:
@@ -375,6 +507,7 @@ def _answer_result_refs(validated_answer: Any) -> set[str]:
 
 def assess_delivery(plan: TaskPlan, coverage: CoverageReport, validated_answer: Any) -> CoverageReport:
     """Add answer-reference coverage without removing valid independent items."""
+    validate_coverage_report(plan, coverage)
     answer_refs = _answer_result_refs(validated_answer)
     answer_status = str(getattr(validated_answer, "delivery_status", "partial"))
     updated: list[RequirementCoverage] = []
@@ -398,4 +531,7 @@ def assess_delivery(plan: TaskPlan, coverage: CoverageReport, validated_answer: 
     return CoverageReport(items=updated, complete=bool(updated) and all(item.status == "answered" for item in updated))
 
 
-__all__ = ["assess_evidence", "assess_delivery", "public_source_refs_needing_read"]
+__all__ = [
+    "assess_evidence", "assess_delivery", "validate_coverage_report",
+    "public_source_refs_needing_read",
+]

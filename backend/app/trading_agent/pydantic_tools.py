@@ -1,0 +1,192 @@
+"""Task-scoped typed tool adapters for the Pydantic AI execution path."""
+from __future__ import annotations
+
+import asyncio
+import inspect
+from dataclasses import dataclass, field
+from typing import Any
+
+from . import tools
+from .contracts import Principal, ToolEnvelope
+from .egress_policy import redact_exception, sanitize_model_payload
+from .planning_contracts import TaskPlan
+from .runtime_budget import BudgetExceeded, RuntimeBudget
+
+
+class ToolInvocationDenied(PermissionError):
+    """The model requested an unregistered, unauthorized or invalid operation."""
+
+    def __init__(self, code: str, message: str | None = None):
+        self.code = code
+        super().__init__(message or code)
+
+
+@dataclass
+class AgentRunContext:
+    """Mutable execution state that belongs to exactly one leased task."""
+
+    task_id: int
+    principal: Principal
+    plan: TaskPlan
+    grant: str
+    mcp: Any
+    store: Any
+    budget: RuntimeBudget
+    envelopes: list[ToolEnvelope] = field(default_factory=list)
+    allowed_tool_names: frozenset[str] | None = None
+    research_allowed: bool = False
+    tool_timeout_seconds: float = 25.0
+
+
+_MODEL_PAYLOAD_PATHS = {
+    "kind", "unit", "canonical_value", "data_as_of", "date_range", "measure", "metric",
+    "periods", "coverage", "value_fields", "port", "product", "category", "grade",
+    "observation_date", "business_date", "period_start", "period_end", "current_date",
+    "previous_date", "current_value", "previous_value", "delta", "delta_pct", "value",
+    "comparison_status", "relation_status", "row_ref", "status",
+    "metrics.*.value", "metrics.*.unit", "metrics.*.status",
+}
+
+
+def _candidate_tools(ctx: AgentRunContext) -> set[str]:
+    if ctx.allowed_tool_names is not None:
+        return set(ctx.allowed_tool_names)
+    return set(tools.tool_names_for_principal(
+        ctx.principal, research_allowed=ctx.research_allowed
+    ))
+
+
+def _live_tool_allowed(ctx: AgentRunContext, name: str) -> bool:
+    if name not in tools.TOOL_SPECS or name not in _candidate_tools(ctx):
+        return False
+    return bool(tools._tool_authorized(
+        ctx.principal, name, research_allowed=ctx.research_allowed
+    ))
+
+
+def _error_summary(status: str, code: str) -> dict[str, Any]:
+    return {"status": status, "error_code": str(code)[:64]}
+
+
+def _model_summary(envelope: ToolEnvelope) -> dict[str, Any]:
+    payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+    safe_payload = sanitize_model_payload(
+        payload,
+        allowed_paths=_MODEL_PAYLOAD_PATHS,
+    )
+    summary: dict[str, Any] = {
+        "status": envelope.status,
+        "result_ref": str(envelope.result_ref) if envelope.result_ref else None,
+        "snapshot_ref": str(envelope.snapshot_ref) if envelope.snapshot_ref else None,
+        "data_as_of": envelope.data_as_of.isoformat(timespec="seconds") if envelope.data_as_of else None,
+        "captured_at": envelope.captured_at.isoformat(timespec="seconds"),
+        "calculation_version": envelope.calculation_version,
+        "payload": safe_payload,
+    }
+    if envelope.metrics:
+        metric_payload = {
+            name: value.model_dump(mode="json")
+            for name, value in envelope.metrics.items()
+        }
+        summary["metrics"] = sanitize_model_payload(
+            metric_payload,
+            allowed_paths={"*.value", "*.unit", "*.status"},
+        )
+    if envelope.missing:
+        summary["missing_codes"] = [
+            str(item["code"])[:64]
+            for item in envelope.missing
+            if isinstance(item, dict) and isinstance(item.get("code"), str)
+        ][:16]
+    return summary
+
+
+async def _await(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
+
+
+def _audit_tool(ctx: AgentRunContext, name: str, envelope: ToolEnvelope | None, error: str | None = None) -> bool:
+    append_event = getattr(ctx.store, "append_event", None)
+    if not callable(append_event):
+        return False
+    try:
+        result = append_event(
+            ctx.principal,
+            "tool",
+            tool_name=name,
+            result_ref=getattr(envelope, "result_ref", None),
+            status=getattr(envelope, "status", None) if envelope else "failed",
+            error_code=error,
+        )
+    except Exception:
+        return False
+    return result is not False
+
+
+def _audit_failed(ctx: AgentRunContext) -> dict[str, Any]:
+    # Without a durable event, the result cannot be placed in the model's
+    # evidence context.  Cancellation also prevents a caller from continuing
+    # with an unaudited sequence of tools.
+    ctx.budget.cancel()
+    return _error_summary("temporarily_unavailable", "audit_write_failed")
+
+
+async def invoke_registered_tool(name: str, arguments: dict[str, Any], *, ctx: AgentRunContext) -> dict[str, Any]:
+    """Invoke one pre-registered tool with task-local identity and budget."""
+    if not isinstance(name, str) or name not in tools.TOOL_SPECS:
+        raise ToolInvocationDenied("unknown_tool")
+    try:
+        ctx.budget.reserve("search" if name == "search_public" else "tool")
+    except BudgetExceeded as exc:
+        return _error_summary("limit_exceeded", exc.code)
+    if not _live_tool_allowed(ctx, name):
+        raise ToolInvocationDenied("tool_not_authorized")
+    if not isinstance(arguments, dict):
+        raise ToolInvocationDenied("invalid_arguments")
+    try:
+        validated = tools.TOOL_SPECS[name]["model"].model_validate(arguments)
+    except Exception as exc:
+        raise ToolInvocationDenied("invalid_arguments") from exc
+    serialized = validated.model_dump(mode="json")
+    if not isinstance(ctx.grant, str) or not ctx.grant:
+        raise ToolInvocationDenied("missing_grant")
+    try:
+        call = ctx.mcp.call_tool(name, serialized, ctx.grant)
+        envelope = await asyncio.wait_for(
+            _await(call),
+            timeout=min(ctx.tool_timeout_seconds, ctx.budget.remaining_seconds()),
+        )
+        if not isinstance(envelope, ToolEnvelope):
+            envelope = ToolEnvelope.model_validate(envelope)
+    except asyncio.TimeoutError:
+        if not _audit_tool(ctx, name, None, "tool_timeout"):
+            return _audit_failed(ctx)
+        return _error_summary("temporarily_unavailable", "tool_timeout")
+    except Exception as exc:
+        error = redact_exception(exc)["code"]
+        if not _audit_tool(ctx, name, None, error):
+            return _audit_failed(ctx)
+        return _error_summary("temporarily_unavailable", error)
+    if not _audit_tool(ctx, name, envelope):
+        return _audit_failed(ctx)
+    ctx.envelopes.append(envelope)
+    return _model_summary(envelope)
+
+
+def model_tool_schemas(ctx: AgentRunContext) -> list[dict[str, Any]]:
+    """Return individual registered schemas; the generic executor is never exposed."""
+    names = sorted(_candidate_tools(ctx))
+    return [
+        {
+            "name": name,
+            "description": tools.TOOL_SPECS[name]["description"],
+            "inputSchema": tools.TOOL_SPECS[name]["model"].model_json_schema(),
+        }
+        for name in names
+        if name in tools.TOOL_SPECS and _live_tool_allowed(ctx, name)
+    ]
+
+
+__all__ = [
+    "AgentRunContext", "ToolInvocationDenied", "invoke_registered_tool", "model_tool_schemas",
+]

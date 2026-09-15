@@ -440,4 +440,63 @@ def relate_datasets(principal, args: DatasetRelation) -> ToolEnvelope:
         kind="dataset_relation", input_refs=[str(args.left_ref), str(args.right_ref)], resources=resources)
 
 
-__all__ = ["VERSION", "MICRO_BASE", "compare_values", "summarize_dataset", "compare_dataset", "relate_datasets"]
+def rank_comparison_rows(rows: list[dict], *, measure: str, descending: bool = False,
+                         top_k: int | None = None) -> list[dict]:
+    """Rank the complete comparison result, excluding rows without a valid value."""
+    fields = {
+        "value": "current_value",
+        "delta": "delta",
+        "pct_change": "delta_pct",
+    }
+    if measure not in {"value", "delta", "pct_change", "abs_delta"}:
+        raise ValueError(f"unsupported_rank_measure:{measure}")
+    if top_k is not None and int(top_k) < 1:
+        raise ValueError("top_k_must_be_positive")
+
+    derived_fields = {
+        "current_value", "previous_value", "delta", "delta_pct", "comparison_status", "row_ref",
+    }
+
+    def stable_text(value: Any) -> str:
+        if isinstance(value, dict):
+            return "{" + ",".join(
+                f"{str(key)}:{stable_text(value[key])}"
+                for key in sorted(value, key=str)
+            ) + "}"
+        if isinstance(value, (list, tuple)):
+            return "[" + ",".join(stable_text(item) for item in value) + "]"
+        return "" if value is None else str(value)
+
+    candidates: list[tuple[Decimal, tuple[str, ...], dict]] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("comparison_status") != "complete":
+            continue
+        raw = row.get(fields[measure]) if measure != "abs_delta" else row.get("delta")
+        value = _decimal(raw)
+        if value is None:
+            continue
+        if measure == "abs_delta":
+            value = abs(value)
+        business_key = tuple(
+            f"{str(field)}={stable_text(row[field])}"
+            for field in sorted(row, key=str)
+            if field not in derived_fields
+        )
+        stable_key = business_key + (
+            f"row_ref={str(row.get('row_ref') or '')}",
+            repr(sorted(row.items(), key=lambda item: str(item[0]))),
+        )
+        candidates.append((value, stable_key, dict(row)))
+    if descending:
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+    else:
+        candidates.sort(key=lambda item: (item[0], item[1]))
+    if top_k is not None:
+        candidates = candidates[: int(top_k)]
+    return [row for _, _, row in candidates]
+
+
+__all__ = [
+    "VERSION", "MICRO_BASE", "compare_values", "rank_comparison_rows",
+    "summarize_dataset", "compare_dataset", "relate_datasets",
+]

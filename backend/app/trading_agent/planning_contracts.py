@@ -32,6 +32,18 @@ class TimeWindow(StrictModel):
         return self
 
 
+class AnalysisSpec(StrictModel):
+    """Server-reviewed operation needed for deterministic analysis."""
+
+    operation: Literal["lookup", "compare", "rank", "explain"]
+    metric: str = Field(min_length=1, max_length=80)
+    comparison_basis: Literal["none", "previous_period", "year_over_year", "explicit"]
+    ranking_measure: Literal["value", "delta", "pct_change", "abs_delta"] | None = None
+    descending: bool = False
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    conclusion_required: bool = False
+
+
 class Requirement(StrictModel):
     id: str = Field(min_length=1, max_length=40)
     question: str = Field(min_length=1, max_length=400)
@@ -41,6 +53,7 @@ class Requirement(StrictModel):
     needs_full_text: bool = False
     time_requirement: str = Field(default="", max_length=160)
     time_window: TimeWindow | None = None
+    analysis: AnalysisSpec | None = None
 
 
 class ConditionOrigin(StrictModel):
@@ -76,8 +89,12 @@ class CoverageReport(StrictModel):
         ids = [item.requirement_id for item in self.items]
         if len(ids) != len(set(ids)):
             raise ValueError("覆盖报告的需求 id 不能重复")
+        if self.complete and not self.items:
+            raise ValueError("覆盖报告不能为空")
         if self.complete and any(item.status != "answered" for item in self.items):
             raise ValueError("只有所有需求均已回答时覆盖报告才能完整")
+        if self.complete and any(item.missing_codes or item.delivery_blocks for item in self.items):
+            raise ValueError("完整覆盖不能包含未解决缺口或交付阻断")
         return self
 
 

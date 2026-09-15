@@ -12,7 +12,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from .contracts import FactQuery, PositionFilter
 from .dv_contracts import DataFilters, DatasetQuery, validate_dataset_query
-from .planning_contracts import AnalysisTarget, Requirement, TaskPlan, TimeWindow
+from .planning_contracts import AnalysisTarget, AnalysisSpec, Requirement, TaskPlan, TimeWindow
+from .semantic_catalog import get_dataset_spec
 
 
 class PlannerError(ValueError):
@@ -321,9 +322,68 @@ def _validate_dataset_target(filters: dict[str, Any]) -> None:
         raise PlannerError(f"数据目标的筛选类型或字段不合法: {exc}") from exc
 
 
+def _dataset_name(filters: dict[str, Any]) -> str | None:
+    value = filters.get("dataset")
+    if isinstance(value, str):
+        return value
+    nested = filters.get("filters")
+    if isinstance(nested, dict) and isinstance(nested.get("dataset"), str):
+        return nested["dataset"]
+    return None
+
+
+def _validate_requirement_analysis(requirement: Requirement) -> None:
+    analysis: AnalysisSpec | None = requirement.analysis
+    if analysis is not None:
+        if analysis.operation == "compare" and analysis.comparison_basis == "none":
+            raise PlannerError("comparison_basis is required for compare")
+        if analysis.operation != "compare" and analysis.comparison_basis != "none":
+            raise PlannerError("comparison_basis is only valid for compare")
+        if analysis.operation == "rank" and analysis.ranking_measure is None:
+            raise PlannerError("ranking_measure is required for rank")
+        if analysis.operation == "rank" and not analysis.conclusion_required:
+            raise PlannerError("rank conclusion is required")
+        if analysis.operation != "rank" and analysis.ranking_measure is not None:
+            raise PlannerError("ranking_measure is only valid for rank")
+        if analysis.operation != "rank" and analysis.top_k is not None:
+            raise PlannerError("top_k is only valid for rank")
+    for target in requirement.targets:
+        if target.domain == "positions":
+            allowed = _POSITION_METRICS
+        elif target.domain == "dataset":
+            dataset = _dataset_name(target.filters)
+            if dataset:
+                try:
+                    allowed = set(get_dataset_spec(dataset).measure_fields) | {"count"}
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise PlannerError(f"数据目标的数据集未登记: {dataset}") from exc
+            else:
+                # A legacy plan may defer the dataset selection to a server-owned
+                # capability lookup; still reject obviously unregistered fields.
+                allowed = {"value", "count"}
+        else:
+            continue
+        unknown = sorted(set(target.metrics) - allowed)
+        if unknown:
+            raise PlannerError(f"数据目标的指标未登记: {unknown[0]}")
+        if analysis is not None and analysis.metric not in allowed:
+            raise PlannerError(f"分析指标未登记: {analysis.metric}")
+    if analysis is not None and analysis.operation == "compare" and analysis.comparison_basis == "explicit":
+        has_explicit_range = requirement.time_window is not None or any(
+            isinstance(target.filters, dict)
+            and any(key in target.filters for key in ("current_date", "previous_date", "start_date", "end_date"))
+            for target in requirement.targets
+        )
+        if not has_explicit_range:
+            raise PlannerError("比较基期不可解析")
+
+
 def validate_plan(plan: TaskPlan, catalog: dict[str, Any], restrictions: list[dict[str, Any]] | None = None) -> TaskPlan:
     """Validate plan actions against descriptive capabilities and explicit limits."""
-    restrictions = restrictions or []
+    restrictions = (
+        [item.model_dump(mode="json") for item in plan.restrictions]
+        if restrictions is None else restrictions
+    )
     def walk_keys(value: Any):
         if isinstance(value, dict):
             for key, child in value.items():
@@ -334,6 +394,7 @@ def validate_plan(plan: TaskPlan, catalog: dict[str, Any], restrictions: list[di
                 yield from walk_keys(child)
 
     for requirement in plan.requirements:
+        _validate_requirement_analysis(requirement)
         for target in requirement.targets:
             filters = target.filters if isinstance(target.filters, dict) else {}
             private_keys = {key.lower() for key in walk_keys(filters)} & _PRIVATE_PLAN_KEYS

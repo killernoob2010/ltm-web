@@ -603,7 +603,7 @@ def task_history(task_id, user_id=None, limit=12):
             # presentation without taking a new snapshot.
             if isinstance(payload, dict):
                 for item in payload.get("evidence", []) or []:
-                    if isinstance(item, dict) and item.get("kind") == "internal" and item.get("result_ref"):
+                    if isinstance(item, dict) and item.get("result_ref"):
                         refs = [*refs, str(item["result_ref"])]
             refs = list(dict.fromkeys(str(value) for value in refs if value))
             status = payload.get("status", "") if isinstance(payload, dict) else ""
@@ -628,7 +628,15 @@ def task_history(task_id, user_id=None, limit=12):
                         "captured_at": saved.envelope.captured_at.isoformat(timespec="seconds"),
                         "data_as_of": str(saved.envelope.data_as_of) if saved.envelope.data_as_of else None,
                         "view": ({key: view.get(key) for key in ("id", "kind", "fields", "title")} if view else None)})
-                content = "上次回答状态：" + str(payload.get("delivery_status", "")) + "；当前仍可访问的原结果（改变展示可直接复用，不需重新查询）：" + json.dumps(reusable, ensure_ascii=False)
+                available_refs = {item["result_ref"] for item in reusable}
+                body_refs = list(dict.fromkeys([*refs, *views_by_ref]))
+                can_reuse_body = not body_refs or all(ref in available_refs for ref in body_refs)
+                body = str(row["content"] or "").strip()
+                delivered = (
+                    f"上次实际交付正文（证据仍可访问）：{body}；"
+                    if body and can_reuse_body else ""
+                )
+                content = delivered + "上次回答状态：" + str(payload.get("delivery_status", "")) + "；当前仍可访问的原结果（改变展示可直接复用，不需重新查询）：" + json.dumps(reusable, ensure_ascii=False)
                 request_contract = payload.get("request")
                 if isinstance(request_contract, dict):
                     content += "；resolved_request=" + json.dumps(request_contract, ensure_ascii=False, separators=(",", ":"))
@@ -741,9 +749,70 @@ def append_event(principal, kind, *, tool_name=None, arguments=None, result_ref=
         task_id = _active_run(cur,principal)
         if db._is_pg():
             db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE task_id=? FOR UPDATE", (task_id,))
-        row = db._exec(cur, "SELECT COALESCE(MAX(seq),0)+1 AS next_seq FROM agent_v2_events WHERE task_id=?", (task_id,)).fetchone()
-        db._exec(cur, """INSERT INTO agent_v2_events
-            (id,task_id,seq,kind,tool_name,argument_hash,result_ref,duration_seconds,status,error_code,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (str(uuid4()),task_id,int(row["next_seq"]),kind,tool_name,
-            digest(json.dumps(arguments,sort_keys=True,ensure_ascii=False)) if arguments is not None else None,
-            str(result_ref) if result_ref else None,duration_seconds,status,error_code,stamp()))
+        _append_event_row(
+            cur, task_id, kind, tool_name=tool_name, arguments=arguments,
+            result_ref=result_ref, duration_seconds=duration_seconds,
+            status=status, error_code=error_code,
+        )
+
+
+def _append_event_row(cur, task_id, kind, *, tool_name=None, arguments=None,
+                      result_ref=None, duration_seconds=None, status=None,
+                      error_code=None, created_at=None):
+    """Insert one event into an already locked task transaction."""
+    row = db._exec(
+        cur,
+        "SELECT COALESCE(MAX(seq),0)+1 AS next_seq FROM agent_v2_events WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    argument_hash = None
+    if arguments is not None:
+        argument_hash = digest(json.dumps(arguments, sort_keys=True, ensure_ascii=False))
+    db._exec(cur, """INSERT INTO agent_v2_events
+        (id,task_id,seq,kind,tool_name,argument_hash,result_ref,duration_seconds,status,error_code,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (
+            str(uuid4()), task_id, int(row["next_seq"]), kind, tool_name,
+            argument_hash, str(result_ref) if result_ref else None,
+            duration_seconds, status, error_code, created_at or stamp(),
+        ))
+
+
+def record_plan_authorization(principal, task_plan, research_plan):
+    """Atomically persist a validated plan and its derived research policy.
+
+    Only bounded metadata is hashed in the audit rows.  The plan itself stays
+    in the task-local execution context and is not made model-readable here.
+    """
+    requirements = list(getattr(task_plan, "requirements", []) or [])
+    requirement_ids = [str(getattr(item, "id", "")) for item in requirements]
+    if not requirement_ids or any(not item for item in requirement_ids):
+        raise ValueError("validated task plan requires requirement ids")
+    mode = str(getattr(research_plan, "mode", ""))
+    reason = str(getattr(research_plan, "reason", ""))
+    domains = [str(item) for item in (getattr(research_plan, "domains", []) or []) if item]
+    if mode not in {"internal_only", "research_allowed", "clarification_required"}:
+        raise ValueError("invalid research policy mode")
+    if not reason:
+        raise ValueError("research policy reason is required")
+
+    plan_audit = {
+        "requirement_ids": requirement_ids[:40],
+        "requirement_count": len(requirement_ids),
+        "plan_schema": str(getattr(task_plan, "schema_version", ""))[:20],
+    }
+    policy_audit = {"mode": mode, "reason": reason, "domains": domains[:4]}
+    with db.connect() as conn:
+        _transaction(conn)
+        cur = conn.cursor()
+        task_id = _active_run(cur, principal)
+        if db._is_pg():
+            db._exec(cur, "SELECT task_id FROM agent_v2_runs WHERE task_id=? FOR UPDATE", (task_id,))
+        _append_event_row(
+            cur, task_id, "task_plan", arguments=plan_audit,
+            status="complete", error_code=reason,
+        )
+        _append_event_row(
+            cur, task_id, "research_policy", tool_name=",".join(domains),
+            arguments=policy_audit, status=mode, error_code=reason,
+        )
+    return True

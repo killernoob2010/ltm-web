@@ -196,13 +196,25 @@ def active_plan(principal) -> RequestPlan | None:
     """Read the current run's server-recorded policy, never client arguments."""
     try:
         with db.connect() as conn:
-            row = db._exec(conn.cursor(), """SELECT e.status, e.error_code, e.tool_name
+            row = db._exec(conn.cursor(), """SELECT e.status, e.error_code, e.tool_name,
+                    e.task_id, e.seq,
+                    EXISTS (
+                        SELECT 1 FROM agent_v2_events p
+                        WHERE p.task_id=e.task_id AND p.kind='task_plan'
+                          AND p.status IN ('complete','fallback') AND p.seq=e.seq-1
+                    ) AS has_authorized_plan
                 FROM agent_v2_events e JOIN agent_v2_runs r ON r.task_id=e.task_id
-                WHERE r.execution_id=? AND r.user_id=? AND r.state='running' AND e.kind='research_policy'
-                ORDER BY e.seq DESC LIMIT 1""", (str(principal.execution_id), principal.user_id)).fetchone()
+                JOIN closing_review_tasks t ON t.id=r.task_id
+                WHERE r.execution_id=? AND r.user_id=? AND t.conversation_id=?
+                  AND r.state='running' AND e.kind='research_policy'
+                ORDER BY e.seq DESC LIMIT 1""", (
+                str(principal.execution_id), principal.user_id, principal.conversation_id,
+            )).fetchone()
     except Exception:
         return None
     if not row:
+        return None
+    if row["status"] == "research_allowed" and not row["has_authorized_plan"]:
         return None
     try:
         domains = [item for item in str(row["tool_name"] or "").split(",") if item]
