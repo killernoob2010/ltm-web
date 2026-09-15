@@ -12,7 +12,14 @@ from pydantic import TypeAdapter, ValidationError
 
 from .contracts import FactQuery, PositionFilter
 from .dv_contracts import DataFilters, DatasetQuery, validate_dataset_query
-from .planning_contracts import AnalysisTarget, AnalysisSpec, Requirement, TaskPlan, TimeWindow
+from .planning_contracts import (
+    AnalysisTarget,
+    AnalysisSpec,
+    Requirement,
+    TaskPlan,
+    TimeWindow,
+    UserRestriction,
+)
 from .semantic_catalog import get_dataset_spec
 
 
@@ -235,6 +242,109 @@ def apply_time_windows(task_plan: TaskPlan, user_text: str, *, now: datetime | N
             continue
         requirements.append(requirement)
     return normalized_plan.model_copy(update={"requirements": requirements})
+
+
+def build_internal_position_fallback_plan(
+    user_text: str,
+    *,
+    conversation_state: dict[str, Any] | None = None,
+) -> TaskPlan:
+    """Build a narrow, server-owned plan for an unambiguous current position ask.
+
+    The Pydantic planner normally owns this translation.  When an OpenAI
+    compatible provider cannot produce the strict ``TaskPlan`` output, this
+    fallback keeps only the small position vocabulary that can be checked
+    deterministically.  It deliberately refuses historical dates, public
+    research, and requests that do not identify an option type and quantity.
+    """
+    text = str(user_text or "").strip()
+    if not re.search(r"持仓|期权|期货|合约", text, re.I) or not re.search(
+        r"手数|数量|多少手", text, re.I
+    ):
+        raise PlannerError("当前请求不属于可确定的内部持仓数量兜底范围")
+    if re.search(r"20\d{2}-\d{2}-\d{2}", text) or not _SNAPSHOT_TIME.search(text):
+        raise PlannerError("兜底计划只支持当前有效持仓快照")
+    if re.search(
+        r"联网|上网|搜索|新闻|消息|财报|年报|公告|天气|公开资料|外部资料",
+        text,
+        re.I,
+    ):
+        raise PlannerError("兜底计划不处理公开资料请求")
+
+    has_call = bool(re.search(r"\bcall\b|看涨|认购", text, re.I))
+    has_put = bool(re.search(r"\bput\b|看跌|认沽", text, re.I))
+    if not (has_call or has_put):
+        raise PlannerError("兜底计划需要明确 Call 或 Put 范围")
+
+    def has_intent(option_type: str, intent: str) -> bool:
+        aliases = {
+            "call": r"call|看涨|认购",
+            "put": r"put|看跌|认沽",
+        }[option_type]
+        intent_aliases = {
+            "net_buy": r"净买|净购",
+            "net_sell": r"净卖|净售",
+        }[intent]
+        return bool(
+            re.search(rf"(?:{intent_aliases}).{{0,8}}(?:{aliases})", text, re.I)
+            or re.search(rf"(?:{aliases}).{{0,8}}(?:{intent_aliases})", text, re.I)
+        )
+
+    quantity_only = bool(_QUANTITY_ONLY.search(text))
+    group_by = ["contract_month"] if re.search(r"月份|月度|按月", text, re.I) else []
+    requirements: list[Requirement] = []
+    for option_type, enabled in (("call", has_call), ("put", has_put)):
+        if not enabled:
+            continue
+        if has_intent(option_type, "net_buy"):
+            net_intent = "net_buy"
+        elif has_intent(option_type, "net_sell"):
+            net_intent = "net_sell"
+        else:
+            net_intent = "none"
+        metrics = ["net_quantity"] if net_intent != "none" else ["quantity"]
+        label = option_type.title()
+        intent_label = {"net_buy": "净买", "net_sell": "净卖", "none": "数量"}[net_intent]
+        requirements.append(Requirement(
+            id=option_type,
+            question=f"当前期权 {label} {intent_label}手数",
+            targets=[AnalysisTarget(
+                id=f"{option_type}_target",
+                domain="positions",
+                filters={"asset_type": "option", "option_type": option_type},
+                metrics=metrics,
+                group_by=group_by,
+                net_intent=net_intent,
+                label=f"{label}{intent_label}",
+            )],
+            source_intent="internal",
+            time_requirement="当前持仓（最新快照）",
+        ))
+    if not requirements:
+        raise PlannerError("兜底计划没有可执行的期权目标")
+
+    state = conversation_state if isinstance(conversation_state, dict) else {}
+    topic_action = state.get("topic_action")
+    if topic_action not in {"continue", "refine", "presentation_only", "refresh", "new_topic"}:
+        topic_action = "new_topic"
+    no_web = bool(re.search(
+        r"不要(?:联网|上网|搜索|网络)|只(?:用|根据)内部|仅(?:用|根据)内部|不(?:要|用)外部资料",
+        text,
+        re.I,
+    ))
+    restrictions = [UserRestriction(
+        kind="no_web", scope="turn", evidence="用户明确要求仅使用内部数据",
+    )] if no_web else []
+    text_only = quantity_only or bool(re.search(r"不要表格|简短|列点|纯文字", text, re.I))
+    return TaskPlan(
+        objective="汇总当前期权持仓数量",
+        topic_action=topic_action,
+        requirements=requirements,
+        restrictions=restrictions,
+        presentation="text" if text_only else "auto",
+        prohibited_presentations=["table"] if text_only else [],
+        clarification=None,
+    )
 
 
 def build_policy_fallback_plan(

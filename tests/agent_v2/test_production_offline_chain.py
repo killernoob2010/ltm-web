@@ -68,10 +68,11 @@ def _model_plan():
 
 
 class ProductionFailureMCP:
-    def __init__(self):
+    def __init__(self, *, data_as_of=None):
         self.calls = []
         self.query_args = []
         self.refs = []
+        self.data_as_of = data_as_of
 
     async def list_tools(self, grant):
         return {"tools": [
@@ -101,7 +102,7 @@ class ProductionFailureMCP:
             status="complete",
             result_ref=ref,
             captured_at=now,
-            data_as_of=None,
+            data_as_of=self.data_as_of,
             calculation_version="positions-offline-v1",
             payload={
                 "kind": "positions",
@@ -146,6 +147,38 @@ class ProductionFailureSDK:
             return ModelResponse(parts=[ToolCallPart(tool_name=info.output_tools[0].name, args=args)])
         if self.calls in {2, 3}:
             option_type = "call" if self.calls == 2 else "put"
+            return ModelResponse(parts=[ToolCallPart(tool_name="query_positions", args={
+                "as_of_mode": "latest", "as_of_date": None,
+                "asset_type": "option", "contracts": [], "direction": "all", "classification": "all",
+                "valuation_mode": "quantity_only", "required_metrics": ["net_quantity"],
+                "filters": {"option_type": option_type}, "presentation": "text",
+            })])
+        refs = list(self.mcp.refs)
+        return ModelResponse(parts=[ToolCallPart(tool_name=info.output_tools[0].name, args={
+            "schema_version": "2.1",
+            "blocks": [
+                {"id": "s1", "kind": "fact", "text": (
+                    f"2701 Call 净买手数为 {{{{fact:{refs[0]}#/payload/semantic_groups/0/metrics/net_quantity}}}}。"
+                ), "refs": [f"{refs[0]}#/payload/semantic_groups/0/metrics/net_quantity"], "depends_on": []},
+                {"id": "s2", "kind": "fact", "text": (
+                    f"2701 Put 净卖手数为 {{{{fact:{refs[1]}#/payload/semantic_groups/0/metrics/net_quantity}}}}。"
+                ), "refs": [f"{refs[1]}#/payload/semantic_groups/0/metrics/net_quantity"], "depends_on": []},
+            ],
+            "views": [],
+        })])
+
+
+class FallbackExecutionSDK:
+    """Model script used after the strict planner has failed closed."""
+
+    def __init__(self, mcp):
+        self.calls = 0
+        self.mcp = mcp
+
+    def __call__(self, messages, info):
+        self.calls += 1
+        if self.calls in {1, 2}:
+            option_type = "call" if self.calls == 1 else "put"
             return ModelResponse(parts=[ToolCallPart(tool_name="query_positions", args={
                 "as_of_mode": "latest", "as_of_date": None,
                 "asset_type": "option", "contracts": [], "direction": "all", "classification": "all",
@@ -218,3 +251,54 @@ async def test_production_failure_query_is_repaired_end_to_end_without_real_mode
         for target in item["targets"]
         for metric in target["metrics"]
     )
+
+
+@pytest.mark.asyncio
+async def test_internal_position_fallback_continues_after_strict_planner_failure(queued, monkeypatch):
+    _, _, queued_task_id = queued
+    task_id = store.claim_next("production-planner-fallback-worker")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE closing_review_messages SET content=? WHERE id=(SELECT user_message_id FROM closing_review_tasks WHERE id=?)",
+            (ORIGINAL_POSITION_QUESTION, task_id),
+        )
+    mcp = ProductionFailureMCP(
+        data_as_of=datetime(2026, 9, 15, 11, 0, tzinfo=timezone.utc),
+    )
+    scripted = FallbackExecutionSDK(mcp)
+    original_run_agent = pydantic_runtime._run_agent
+    planner_attempt = []
+
+    async def fail_planner_once(agent, prompt, **kwargs):
+        if not planner_attempt:
+            planner_attempt.append(True)
+            kwargs["budget"].reserve("model")
+            raise ValueError("strict task plan output is invalid")
+        return await original_run_agent(agent, prompt, **kwargs)
+
+    monkeypatch.setattr(pydantic_runtime, "_run_agent", fail_planner_once)
+    result = await pydantic_runtime.run_task(task_id, RuntimeDeps(
+        store=store,
+        model=object(),
+        mcp=mcp,
+        worker_id="production-planner-fallback-worker",
+        sdk_model=FunctionModel(function=scripted),
+        planning_enabled=True,
+    ))
+
+    assert result.delivery_status == "complete"
+    assert mcp.calls == ["describe_capabilities", "query_positions", "query_positions"]
+    assert scripted.calls >= 3
+    assert [args["filters"]["option_type"] for args in mcp.query_args] == ["call", "put"]
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT structured_payload FROM closing_review_messages WHERE task_id=? AND role='assistant' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    payload = json.loads(row["structured_payload"])
+    planning = payload["agent_context"]["planning"]
+    assert planning["status"] == "fallback_approved"
+    assert planning["fallback_from"]
+    plan = payload["agent_context"]["task_plan"]
+    assert [item["id"] for item in plan["requirements"]] == ["call", "put"]

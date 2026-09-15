@@ -7,6 +7,7 @@ import pytest
 from app.trading_agent.planner import (
     PlannerError,
     apply_time_windows,
+    build_internal_position_fallback_plan,
     build_policy_fallback_plan,
     create_plan,
     validate_plan,
@@ -154,6 +155,35 @@ def test_policy_fallback_plan_cannot_open_public_access_for_non_public_candidate
     candidate = RequestPlan(mode="internal_only", reason="internal_lookup", domains=["trading"])
     with pytest.raises(PlannerError, match="没有批准公开研究"):
         build_policy_fallback_plan("查询内部库存", candidate)
+
+
+def test_internal_position_fallback_plan_keeps_two_sides_and_only_requested_metrics():
+    plan = build_internal_position_fallback_plan(
+        "只用内部数据，汇总当前期权净买 Call 和净卖 Put 的手数，按合约月份列出，只要数量。",
+        conversation_state={"topic_action": "new_topic"},
+    )
+    resolved = apply_time_windows(
+        plan,
+        "只用内部数据，汇总当前期权净买 Call 和净卖 Put 的手数，按合约月份列出，只要数量。",
+        now=datetime(2026, 9, 15, 9, 0, tzinfo=timezone.utc),
+    )
+    validate_plan(resolved, {"tools": [{"id": "query_positions"}], "conditional_sources": []})
+
+    assert [item.id for item in resolved.requirements] == ["call", "put"]
+    assert [item.targets[0].net_intent for item in resolved.requirements] == ["net_buy", "net_sell"]
+    assert all(item.targets[0].metrics == ["net_quantity"] for item in resolved.requirements)
+    assert all(item.targets[0].group_by == ["contract_month"] for item in resolved.requirements)
+    assert all(item.time_window is None for item in resolved.requirements)
+    assert resolved.presentation == "text"
+    assert resolved.prohibited_presentations == ["table"]
+    assert [item.kind for item in resolved.restrictions] == ["no_web"]
+
+
+def test_internal_position_fallback_plan_rejects_historical_or_public_requests():
+    with pytest.raises(PlannerError, match="当前有效持仓快照"):
+        build_internal_position_fallback_plan("查询 2024-08-01 的期权持仓手数")
+    with pytest.raises(PlannerError, match="公开资料"):
+        build_internal_position_fallback_plan("查询当前期权手数并搜索新闻")
 
 
 def test_create_plan_rejects_tool_calls_from_planning_turn():

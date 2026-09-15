@@ -436,6 +436,8 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
     envelopes: list[ToolEnvelope] = []
     preference = "auto"
     finished_attempted = False
+    planning_status = "not_run"
+    planning_error = None
 
     async def finish_once(result: ValidatedAnswer21, *, error: str | None = None,
                           coverage_report=None, conversation=None):
@@ -458,12 +460,14 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
             "runtime_backend": "pydantic",
             "planning": {
                 "enabled": True,
-                "status": "approved" if plan is not None else "not_run",
+                "status": planning_status,
                 "policy_mode": getattr(policy, "mode", None),
                 "policy_reason": getattr(policy, "reason", None),
                 "catalog_version": "capability-catalog-v1",
             },
         }
+        if planning_error:
+            agent_context["planning"]["fallback_from"] = planning_error
         if plan is not None:
             agent_context["task_plan"] = plan.model_dump(mode="json")
         if coverage_report is not None:
@@ -509,20 +513,42 @@ async def run_task(task_id: int, deps) -> ValidatedAnswer21 | None:
             system_prompt=planner.PLANNER_SYSTEM,
             retries=0,
         )
-        plan_result = await _run_agent(
-            planner_agent, plan_prompt, deps=deps, budget=budget,
-        )
-        _ensure_task_active(budget)
-        plan = planner.apply_time_windows(plan_result.output, user_text)
-        planner.validate_plan(plan, catalog)
+        fallback_from = None
+        try:
+            plan_result = await _run_agent(
+                planner_agent, plan_prompt, deps=deps, budget=budget,
+            )
+            _ensure_task_active(budget)
+            plan = planner.apply_time_windows(plan_result.output, user_text)
+            planner.validate_plan(plan, catalog)
+        except Exception as exc:
+            # A provider can return HTTP 200 while still failing the strict
+            # TaskPlan output contract.  Keep that failure fail-closed unless
+            # this is the narrow, deterministic current-position vocabulary.
+            if isinstance(exc, BudgetExceeded) or budget.cancelled or budget.remaining_seconds() <= 0:
+                raise
+            fallback_plan = planner.build_internal_position_fallback_plan(
+                user_text,
+                conversation_state=previous_state,
+            )
+            fallback_plan = planner.apply_time_windows(
+                fallback_plan, user_text,
+            )
+            planner.validate_plan(fallback_plan, catalog)
+            plan = fallback_plan
+            fallback_from = _failure_code(exc)
         preference = plan.presentation
         candidate_policy = research_policy.policy_from_task_plan(
             plan, configured=research_policy.public_tools_configured(), user_text=user_text,
         )
         policy = research_policy.enforce_research_policy(user_text, candidate_policy)
+        if fallback_from and policy.mode != "internal_only":
+            raise planner.PlannerError("持仓兜底计划不能扩大公开研究范围")
         if policy.mode == "clarification_required":
             plan = plan.model_copy(update={"clarification": policy.clarification})
         await asyncio.to_thread(deps.store.record_plan_authorization, principal, plan, policy)
+        planning_status = "fallback_approved" if fallback_from else "approved"
+        planning_error = fallback_from
         allowed_names = _allowed_tool_names(
             principal, plan,
             research_allowed=research_policy.public_tools_allowed(
