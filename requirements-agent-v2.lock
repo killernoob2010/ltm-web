@@ -13,7 +13,9 @@ et_xmlfile==2.0.0
 fastapi==0.115.6
 filelock==3.32.6
 frozenlist==1.8.0
+genai-prices==0.1.6
 graphql-core==3.2.12
+griffelib==2.3.0
 h11==0.16.0
 httpcore==1.0.9
 httpcore2==2.12.0
@@ -22,12 +24,15 @@ httpx==0.28.1
 httpx2==2.12.0
 idna==3.19
 iniconfig==2.3.0
+jiter==0.17.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+logfire-api==5.1.0
 mcp==2.2.0
 mcp-types==2.2.0
 multidict==6.7.1
 numpy==2.5.3
+openai==3.14.0
 openpyxl==3.1.5
 opentelemetry-api==1.44.0
 packaging==26.3
@@ -38,6 +43,8 @@ propcache==0.5.2
 psutil==7.2.2
 psycopg2-binary==2.9.12
 pycparser==3.0
+pydantic-ai-slim==2.43.0
+pydantic-graph==2.43.0
 pydantic==2.13.5
 pydantic_core==2.46.5
 pyee==14.0.0
@@ -51,6 +58,7 @@ python-dotenv==1.2.3
 python-multipart==0.0.32
 PyYAML==6.0.3
 referencing==0.37.0
+regex==2026.9.10
 reportlab==4.4.4
 requests==2.32.3
 rpds-py==2026.6.3
@@ -59,8 +67,10 @@ sgqlc==18
 shinny-structlog==0.0.4
 simplejson==4.1.2
 six==1.17.0
+sniffio==1.3.1
 sse-starlette==3.0.3
 starlette==0.41.3
+tiktoken==0.14.0
 tqsdk==3.10.1
 tqsdk-ctpse==1.2.0
 tqsdk-sm==1.0.5
@@ -75,3 +85,12 @@ websockets==17.1
 wecom-aibot-python-sdk==1.0.2
 xlrd==2.0.2
 yarl==1.24.5
+
+# L1 candidate provenance (not an approval for Production):
+# pydantic-ai-slim==2.43.0, pydantic_ai_slim-2.43.0-py3-none-any.whl,
+# SHA256=b7843c2b8a8499beeb7dc82b143951bb47765256fa21732f1d4dcbfd7b84eacc
+# Source/license: https://pypi.org/project/pydantic-ai-slim/ ; MIT.
+# Candidate docs/API reference: current Pydantic AI 2.43.0 docs, checked 2026-09-15.
+# Official installation/API docs checked on 2026-09-15:
+# https://pydantic.dev/docs/ai/overview/install/
+# https://pydantic.dev/docs/ai/models/openai/

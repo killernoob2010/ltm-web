@@ -12,3 +12,5 @@ cryptography==49.0.0
 mcp==2.2.0
 wecom-aibot-python-sdk==1.0.2
 tqsdk==3.10.1
+# L1 migration candidate; keep this pin aligned with requirements-agent-v2.lock.
+pydantic-ai-slim[openai]==2.43.0
