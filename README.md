@@ -37,6 +37,19 @@
 
 ## 本地运行
 
+Pydantic AI 迁移批次 A 仍为本地候选，尚未接入 Worker 或部署。根目录 `requirements.txt`
+使用 `requirements-agent-v2.lock` 作为版本约束，Render 原有安装命令也会读取同一约束；
+约束文件只固定被请求依赖的版本，不会额外安装 pytest 等测试工具。项目 Python 版本为
+`.python-version` 指定的 3.12.14。候选模型工厂只提供非流式请求的 15 秒总截止与传输超时，
+校验证书、主机名、代理和重定向配置；SDK 总调用预算及 Worker 集成仍按后续迁移批次验收。
+
+2026-09-15 已只读核对 Render 控制台：正式 `ltm-web` 为 Standard（1 CPU / 2 GB，1 实例），
+测试 `ltm-web-staging` 为 Free（0.1 CPU / 512 MB，会闲置休眠）。本批尚未发布；
+当时正式运行提交为 `9471c4e`，测试运行提交为 `3884c79`。Linux x86_64 / Python 3.12
+二进制包解析已通过（包含 manylinux_2_28 支持）；这不是服务器实机运行或容量验收。
+本机单进程仅导入 Web 和 SDK 的 RSS 分别约 141 / 192 MiB，不能据此推断生产峰值；
+后续仍需在正式实例核对 Web、Worker、MCP 合计峰值及既有资源保护阈值。
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate

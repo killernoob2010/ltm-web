@@ -5,6 +5,70 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_factory_rejects_disabled_certificate_verification():
+    from httpx2 import AsyncClient
+    from app.trading_agent.pydantic_runtime import create_sdk_model
+
+    async with AsyncClient(verify=False, trust_env=False, follow_redirects=False) as client:
+        with pytest.raises(ValueError, match="certificate"):
+            create_sdk_model(api_key="synthetic", base_url="https://example.test",
+                             model_name="synthetic", http_client=client)
+
+
+@pytest.mark.asyncio
+async def test_factory_rejects_insecure_mount_and_explicit_proxy():
+    from httpx2 import AsyncClient, AsyncHTTPTransport
+    from app.trading_agent.pydantic_runtime import create_sdk_model
+
+    clients = [
+        AsyncClient(mounts={"https://": AsyncHTTPTransport(verify=False)},
+                    trust_env=False, follow_redirects=False),
+        AsyncClient(proxy="http://127.0.0.1:9", trust_env=False, follow_redirects=False),
+    ]
+    for client in clients:
+        async with client:
+            with pytest.raises(ValueError):
+                create_sdk_model(api_key="synthetic", base_url="https://example.test",
+                                 model_name="synthetic", http_client=client)
+
+
+@pytest.mark.asyncio
+async def test_factory_bounds_sdk_timeout():
+    from httpx2 import AsyncClient
+    from app.trading_agent.pydantic_runtime import create_sdk_model
+
+    async with AsyncClient(trust_env=False, follow_redirects=False) as client:
+        model = create_sdk_model(api_key="synthetic", base_url="https://example.test",
+                                 model_name="synthetic", http_client=client)
+        timeout = model._provider.client.timeout
+        assert max(timeout.connect, timeout.read, timeout.write, timeout.pool) <= 15
+
+
+@pytest.mark.asyncio
+async def test_factory_cancels_stalled_model_request_at_deadline():
+    from httpx2 import AsyncClient, MockTransport
+    from pydantic_ai import Agent
+    from app.trading_agent.pydantic_runtime import create_sdk_model
+
+    cancelled = asyncio.Event()
+
+    async def stalled(request):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async with AsyncClient(transport=MockTransport(stalled), trust_env=False,
+                           follow_redirects=False) as client:
+        model = create_sdk_model(api_key="synthetic", base_url="https://example.test",
+                                 model_name="synthetic", http_client=client)
+        async with asyncio.timeout(20):
+            with pytest.raises(TimeoutError):
+                await Agent(model).run("合成截止测试")
+        assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
 async def test_sdk_factory_creates_openai_compatible_model_without_next_turn():
     from httpx2 import AsyncClient
     from pydantic_ai.models.openai import OpenAIChatModel

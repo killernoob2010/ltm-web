@@ -107,9 +107,9 @@ def validate_migration_case(case):
     errors = [f"missing:{field}" for field in sorted(MIGRATION_REQUIRED_FIELDS - set(case))]
     if "id" in case and (not isinstance(case["id"], str) or not case["id"].strip()):
         errors.append("invalid_id")
-    if "origin" in case and case["origin"] not in MIGRATION_ORIGINS:
+    if "origin" in case and (not isinstance(case["origin"], str) or case["origin"] not in MIGRATION_ORIGINS):
         errors.append("invalid_origin")
-    if "split" in case and case["split"] not in MIGRATION_SPLITS:
+    if "split" in case and (not isinstance(case["split"], str) or case["split"] not in MIGRATION_SPLITS):
         errors.append("invalid_split")
     if "turns" in case and (
         not isinstance(case["turns"], list)
@@ -149,7 +149,8 @@ def validate_migration_case(case):
             else:
                 if parsed_clock.tzinfo is None or parsed_clock.utcoffset() is None:
                     errors.append("clock_missing_timezone")
-    if "expected_answer_state" in case and case["expected_answer_state"] not in MIGRATION_ANSWER_STATES:
+    if "expected_answer_state" in case and (not isinstance(case["expected_answer_state"], str)
+                                           or case["expected_answer_state"] not in MIGRATION_ANSWER_STATES):
         errors.append("invalid_answer_state")
     if "live_required" in case and not isinstance(case["live_required"], bool):
         errors.append("invalid_live_required")

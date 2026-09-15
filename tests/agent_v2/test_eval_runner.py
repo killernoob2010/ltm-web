@@ -196,6 +196,24 @@ def test_migration_case_rejects_empty_oracle():
     assert "missing:clock" in errors
 
 
+def test_migration_enum_fields_reject_unhashable_values():
+    from scripts.run_agent_v2_evals import validate_migration_case
+    for field, error in (("split", "invalid_split"), ("origin", "invalid_origin"),
+                         ("expected_answer_state", "invalid_answer_state")):
+        for value in ([], {}, None, 1):
+            assert error in validate_migration_case({field: value})
+
+
+def test_followup_cases_have_explicit_turns_and_context():
+    from scripts.run_agent_v2_evals import load_migration_cases
+    cases = [case for case in load_migration_cases() if case["id"].startswith("M-C")]
+    assert len(cases) == 4
+    for case in cases:
+        assert len(case["turns"]) >= 2
+        assert case["oracle"]["initial_answer"]
+        assert case["oracle"]["turn_expectations"]
+
+
 def test_migration_case_rejects_clock_without_timezone():
     from scripts.run_agent_v2_evals import validate_migration_case
 
